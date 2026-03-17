@@ -34,3 +34,5 @@ ENV/
 # Durable Streams temporary/test data
 /tmp/
 .durable-streams/
+django_rakaia_dev.db
+db.sqlite3

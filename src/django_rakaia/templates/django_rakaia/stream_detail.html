@@ -1,0 +1,485 @@
+{% extends "django_rakaia/base.html" %}
+
+{% block title %}Stream: {{ stream_id }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stream-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+
+    .stream-header h2 {
+        font-family: 'Monaco', 'Consolas', monospace;
+        font-size: 1rem;
+        background: var(--bg-color);
+        padding: 8px 12px;
+        border-radius: 6px;
+        word-break: break-all;
+    }
+
+    .stream-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin-bottom: 20px;
+    }
+
+    .stream-stat {
+        background: var(--bg-color);
+        padding: 15px;
+        border-radius: 6px;
+        text-align: center;
+    }
+
+    .stream-stat .value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: var(--primary-color);
+    }
+
+    .stream-stat .label {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+    }
+
+    .events-container {
+        max-height: 600px;
+        overflow-y: auto;
+    }
+
+    .events-table {
+        width: 100%;
+    }
+
+    .events-table tbody tr {
+        transition: background-color 0.3s;
+    }
+
+    .events-table tbody tr.new-event {
+        animation: highlight 2s ease-out;
+    }
+
+    @keyframes highlight {
+        0% { background-color: rgba(37, 99, 235, 0.2); }
+        100% { background-color: transparent; }
+    }
+
+    .event-data {
+        font-family: 'Monaco', 'Consolas', monospace;
+        font-size: 0.75rem;
+        background: var(--bg-color);
+        padding: 8px;
+        border-radius: 4px;
+        max-width: 500px;
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+
+    .connection-status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 15px;
+        border-radius: 6px;
+        margin-bottom: 20px;
+        font-size: 0.875rem;
+    }
+
+    .connection-status.connected {
+        background: rgba(34, 197, 94, 0.1);
+        color: var(--success-color);
+    }
+
+    .connection-status.disconnected {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--danger-color);
+    }
+
+    .connection-status.reconnecting {
+        background: rgba(245, 158, 11, 0.1);
+        color: var(--warning-color);
+    }
+
+    .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: currentColor;
+    }
+
+    .status-dot.pulse {
+        animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(0.9); }
+    }
+
+    .load-more {
+        text-align: center;
+        padding: 20px;
+    }
+
+    .load-more button {
+        background: var(--primary-color);
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.875rem;
+        transition: background-color 0.2s;
+    }
+
+    .load-more button:hover {
+        background: var(--primary-hover);
+    }
+
+    .load-more button:disabled {
+        background: var(--border-color);
+        cursor: not-allowed;
+    }
+
+    .no-events {
+        text-align: center;
+        padding: 40px;
+        color: var(--text-muted);
+    }
+
+    .back-link {
+        display: inline-block;
+        margin-bottom: 20px;
+        color: var(--primary-color);
+        text-decoration: none;
+    }
+
+    .back-link:hover {
+        text-decoration: underline;
+    }
+
+    .json-toggle {
+        cursor: pointer;
+        color: var(--primary-color);
+        font-size: 0.75rem;
+        margin-left: 8px;
+    }
+
+    .json-expanded {
+        display: block;
+        margin-top: 8px;
+    }
+
+    .json-collapsed {
+        display: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="/streams/" class="back-link">&larr; Back to Streams</a>
+
+{% if exists %}
+<div class="stream-header">
+    <h2>{{ stream_id }}</h2>
+    <div class="live-indicator">
+        <span class="live-dot pulse"></span>
+        Live Updates
+    </div>
+</div>
+
+<!-- Connection Status -->
+<div id="connection-status" class="connection-status connected">
+    <span class="status-dot pulse"></span>
+    <span id="connection-text">Connected to event stream</span>
+</div>
+
+<!-- Stream Statistics -->
+<div class="stream-stats">
+    <div class="stream-stat">
+        <div class="value">{{ stats.event_count }}</div>
+        <div class="label">Total Events</div>
+    </div>
+    <div class="stream-stat">
+        <div class="value">{{ stats.min_offset }}</div>
+        <div class="label">First Offset</div>
+    </div>
+    <div class="stream-stat">
+        <div class="value">{{ stats.max_offset }}</div>
+        <div class="label">Last Offset</div>
+    </div>
+    <div class="stream-stat">
+        <div class="value" id="new-events-count" style="display: none; color: var(--success-color);">0</div>
+        <div class="label">New Events</div>
+    </div>
+</div>
+
+<!-- Events Table -->
+<div class="card">
+    <h2>Events</h2>
+    <div class="events-container">
+        {% if events %}
+        <table class="events-table" id="events-table">
+            <thead>
+                <tr>
+                    <th>Offset</th>
+                    <th>Type</th>
+                    <th>Timestamp</th>
+                    <th>Data</th>
+                </tr>
+            </thead>
+            <tbody id="events-body">
+                {% for event in events %}
+                <tr data-offset="{{ event.offset }}" data-id="{{ event.id }}">
+                    <td><code>{{ event.offset }}</code></td>
+                    <td><span class="badge badge-{{ event.event_type }}">{{ event.event_type }}</span></td>
+                    <td>{{ event.created_at|date:"M d, Y H:i:s.u" }}</td>
+                    <td>
+                        <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
+                            {{ event.data|truncatechars:80 }}
+                            <span class="json-toggle">▼ Expand</span>
+                        </div>
+                        <pre class="json-collapsed" style="display: none;">{{ event.data|escape }}</pre>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div class="load-more">
+            <button id="load-more-btn" onclick="loadMoreEvents()">Load Earlier Events</button>
+        </div>
+        {% else %}
+        <div class="no-events">No events in this stream yet</div>
+        {% endif %}
+    </div>
+</div>
+
+{% else %}
+<div class="card">
+    <h2>Stream Not Found</h2>
+    <div class="empty-state">
+        <p>Stream <code>{{ stream_id }}</code> does not exist yet.</p>
+        <p>Events will appear here when a model with this stream ID is saved.</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Stream event data
+    const streamId = "{{ stream_id|escapejs }}";
+    const exists = {{ exists|yesno:"true,false" }};
+    let lastOffset = exists ? {{ events.0.offset|default:0 }} : 0;
+    let minOffset = exists ? {{ stats.min_offset|default:0 }} : 0;
+    let newEventsCount = 0;
+    let eventSource = null;
+
+    // Initialize SSE connection for real-time updates
+    function connectToEventStream() {
+        const statusEl = document.getElementById('connection-status');
+        const statusText = document.getElementById('connection-text');
+
+        // Close existing connection if any
+        if (eventSource) {
+            eventSource.close();
+        }
+
+        // Create new SSE connection
+        eventSource = new EventSource(`/streams/api/streams/${encodeURIComponent(streamId)}/sse/`);
+
+        eventSource.onopen = function() {
+            statusEl.className = 'connection-status connected';
+            statusText.textContent = 'Connected to event stream';
+        };
+
+        eventSource.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.event) {
+                    addNewEvent(data.event);
+                }
+            } catch (e) {
+                console.error('Error parsing SSE message:', e);
+            }
+        };
+
+        eventSource.onerror = function() {
+            statusEl.className = 'connection-status disconnected';
+            statusText.textContent = 'Disconnected - Reconnecting...';
+            eventSource.close();
+
+            // Attempt to reconnect after 3 seconds
+            setTimeout(connectToEventStream, 3000);
+        };
+    }
+
+    // Add a new event to the table
+    function addNewEvent(eventData) {
+        const tbody = document.getElementById('events-body');
+        if (!tbody) return;
+
+        // Check if event already exists
+        if (document.querySelector(`tr[data-offset="${eventData.offset}"]`)) {
+            return;
+        }
+
+        const row = document.createElement('tr');
+        row.setAttribute('data-offset', eventData.offset);
+        row.setAttribute('data-id', eventData.id);
+        row.className = 'new-event';
+
+        const timestamp = new Date(eventData.created_at).toLocaleString();
+        const dataPreview = JSON.stringify(eventData.data).substring(0, 80) + '...';
+
+        row.innerHTML = `
+            <td><code>${eventData.offset}</code></td>
+            <td><span class="badge badge-${eventData.event_type}">${eventData.event_type}</span></td>
+            <td>${timestamp}</td>
+            <td>
+                <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
+                    ${dataPreview}
+                    <span class="json-toggle">▼ Expand</span>
+                </div>
+                <pre class="json-collapsed" style="display: none;">${escapeHtml(JSON.stringify(eventData.data, null, 2))}</pre>
+            </td>
+        `;
+
+        tbody.appendChild(row);
+        lastOffset = Math.max(lastOffset, eventData.offset);
+
+        // Update new events count
+        newEventsCount++;
+        updateNewEventsCount();
+
+        // Scroll to bottom of events container
+        const container = document.querySelector('.events-container');
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Remove animation class after animation completes
+        setTimeout(() => row.classList.remove('new-event'), 2000);
+    }
+
+    // Update new events count display
+    function updateNewEventsCount() {
+        const countEl = document.getElementById('new-events-count');
+        if (newEventsCount > 0) {
+            countEl.textContent = newEventsCount;
+            countEl.style.display = 'block';
+        } else {
+            countEl.style.display = 'none';
+        }
+    }
+
+    // Reset new events count when user scrolls to bottom
+    function resetNewEventsCount() {
+        newEventsCount = 0;
+        updateNewEventsCount();
+    }
+
+    // Load more events (earlier events)
+    function loadMoreEvents() {
+        const btn = document.getElementById('load-more-btn');
+        if (!btn || minOffset <= 1) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+
+        fetch(`/streams/api/streams/${encodeURIComponent(streamId)}/?after_offset=0&limit=50`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.events && data.events.length > 0) {
+                    const tbody = document.getElementById('events-body');
+                    const firstRow = tbody.querySelector('tr:first-child');
+
+                    data.events.reverse().forEach(event => {
+                        if (event.offset < minOffset) {
+                            const row = document.createElement('tr');
+                            row.setAttribute('data-offset', event.offset);
+                            row.setAttribute('data-id', event.id);
+
+                            const timestamp = new Date(event.created_at).toLocaleString();
+                            const dataPreview = JSON.stringify(event.data).substring(0, 80) + '...';
+
+                            row.innerHTML = `
+                                <td><code>${event.offset}</code></td>
+                                <td><span class="badge badge-${event.event_type}">${event.event_type}</span></td>
+                                <td>${timestamp}</td>
+                                <td>
+                                    <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
+                                        ${dataPreview}
+                                        <span class="json-toggle">▼ Expand</span>
+                                    </div>
+                                    <pre class="json-collapsed" style="display: none;">${escapeHtml(JSON.stringify(event.data, null, 2))}</pre>
+                                </td>
+                            `;
+
+                            if (firstRow) {
+                                tbody.insertBefore(row, firstRow);
+                            } else {
+                                tbody.appendChild(row);
+                            }
+
+                            minOffset = Math.min(minOffset, event.offset);
+                        }
+                    });
+                }
+
+                btn.disabled = false;
+                btn.textContent = 'Load Earlier Events';
+
+                if (minOffset <= 1) {
+                    btn.style.display = 'none';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading more events:', error);
+                btn.disabled = false;
+                btn.textContent = 'Load Earlier Events';
+            });
+    }
+
+    // Toggle JSON display
+    function toggleJson(element) {
+        const preview = element;
+        const expanded = preview.nextElementSibling;
+
+        if (expanded && expanded.classList.contains('json-collapsed')) {
+            if (expanded.style.display === 'none') {
+                expanded.style.display = 'block';
+                preview.querySelector('.json-toggle').textContent = '▲ Collapse';
+            } else {
+                expanded.style.display = 'none';
+                preview.querySelector('.json-toggle').textContent = '▼ Expand';
+            }
+        }
+    }
+
+    // Escape HTML for safe display
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        if (exists && streamId) {
+            connectToEventStream();
+        }
+    });
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', function() {
+        if (eventSource) {
+            eventSource.close();
+        }
+    });
+</script>
+{% endblock %}

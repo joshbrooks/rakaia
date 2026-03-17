@@ -1,0 +1,137 @@
+{% extends "django_rakaia/base.html" %}
+
+{% block title %}Data Streams Dashboard{% endblock %}
+
+{% block content %}
+<!-- Statistics -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="value">{{ total_streams }}</div>
+        <div class="label">Active Streams</div>
+    </div>
+    <div class="stat-card">
+        <div class="value">{{ total_events }}</div>
+        <div class="label">Total Events</div>
+    </div>
+    <div class="stat-card">
+        <div class="value">
+            {% if event_types %}
+                {{ event_types.0.count }}
+            {% else %}
+                0
+            {% endif %}
+        </div>
+        <div class="label">Most Common Event</div>
+    </div>
+</div>
+
+<!-- Event Type Breakdown -->
+<div class="card">
+    <h2>Event Type Breakdown</h2>
+    {% if event_types %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Event Type</th>
+                    <th>Count</th>
+                    <th>Percentage</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for et in event_types %}
+                <tr>
+                    <td><span class="badge badge-{{ et.event_type }}">{{ et.event_type }}</span></td>
+                    <td>{{ et.count }}</td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="flex: 1; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
+                                <div style="width: {{ et.count|floatformat:0 }}%; height: 100%; background: var(--primary-color);"></div>
+                            </div>
+                            <span style="font-size: 0.875rem; color: var(--text-muted);">
+                                {{ et.count|floatformat:1 }}%
+                            </span>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="empty-state">No events recorded yet</div>
+    {% endif %}
+</div>
+
+<!-- Streams List -->
+<div class="card">
+    <h2>Active Streams</h2>
+    {% if streams %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Stream ID</th>
+                    <th>Events</th>
+                    <th>Offset Range</th>
+                    <th>Last Activity</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for stream in streams %}
+                <tr>
+                    <td>
+                        <a href="/streams/{{ stream.stream_id }}/" class="stream-link">
+                            {{ stream.stream_id }}
+                        </a>
+                    </td>
+                    <td>{{ stream.event_count }}</td>
+                    <td>{{ stream.min_offset }} &ndash; {{ stream.max_offset }}</td>
+                    <td>{{ stream.last_event|date:"M d, Y H:i:s" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="empty-state">
+            <p>No streams found. Create a model with the <code>@stream_model</code> decorator to start streaming events.</p>
+        </div>
+    {% endif %}
+</div>
+
+<!-- Recent Events -->
+<div class="card">
+    <h2>Recent Events</h2>
+    {% if recent_events %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Stream</th>
+                    <th>Type</th>
+                    <th>Offset</th>
+                    <th>Time</th>
+                    <th>Data</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for event in recent_events %}
+                <tr>
+                    <td>
+                        <a href="/streams/{{ event.stream_id }}/" class="stream-link">
+                            {{ event.stream_id|truncatechars:30 }}
+                        </a>
+                    </td>
+                    <td><span class="badge badge-{{ event.event_type }}">{{ event.event_type }}</span></td>
+                    <td>{{ event.offset }}</td>
+                    <td>{{ event.created_at|date:"M d, Y H:i:s" }}</td>
+                    <td>
+                        <div class="data-preview" title="{{ event.data|escape }}">
+                            {{ event.data|truncatechars:50 }}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="empty-state">No recent events</div>
+    {% endif %}
+</div>
+{% endblock %}
