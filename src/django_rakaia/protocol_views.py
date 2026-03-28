@@ -22,10 +22,9 @@ Usage:
     ]
 """
 
+import asyncio
 import json
 import re
-import time
-from collections.abc import Generator
 
 from django.db import transaction
 from django.db.models import Max
@@ -360,7 +359,7 @@ def read_stream(request, stream_path: str) -> HttpResponse:
 # =============================================================================
 
 
-def sse_event_generator(stream_id: str, cursor_offset: int) -> Generator[str, None, None]:
+async def sse_event_generator(stream_id: str, cursor_offset: int):
     """
     Generate Server-Sent Events for a stream.
     
@@ -369,46 +368,43 @@ def sse_event_generator(stream_id: str, cursor_offset: int) -> Generator[str, No
         cursor_offset: Start streaming events after this offset.
         
     Yields:
-        SSE-formatted event strings.
+        SSE-formatted event strings as bytes.
     """
     last_offset = cursor_offset
 
     try:
-        stream = Stream.objects.get(stream_id=stream_id)
+        await Stream.objects.aget(stream_id=stream_id)
     except Stream.DoesNotExist:
-        # Send error event and stop
-        yield f"event: error\ndata: {json.dumps({'error': 'Stream not found'})}\n\n"
+        yield f"event: error\ndata: {json.dumps({'error': 'Stream not found'})}\n\n".encode('utf-8')
         return
 
     while True:
-        # Get new entries
-        entries = (
-            stream.entries
-            .select_related("event")
-            .filter(offset__gt=last_offset)
-            .order_by("offset")
-        )
-
-        for entry in entries:
-            last_offset = entry.offset
-
-            # SSE format per Durable Streams spec
-            # event: message
-            # id: {offset}
-            # data: {json_data}
-            event_data = json.dumps(entry.event.data)
-            yield (
-                f"event: message\n"
-                f"id: {format_offset(entry.offset)}\n"
-                f"data: {event_data}\n\n"
+        try:
+            entries = (
+                StreamEntry.objects
+                .select_related("event")
+                .filter(stream__stream_id=stream_id)
+                .filter(offset__gt=last_offset)
+                .order_by("offset")
             )
 
-        # Poll interval
-        time.sleep(1)
+            async for entry in entries:
+                last_offset = entry.offset
+
+                event_data = json.dumps(entry.event.data)
+                yield (
+                    f"event: message\n"
+                    f"id: {format_offset(entry.offset)}\n"
+                    f"data: {event_data}\n\n"
+                ).encode('utf-8')
+        except asyncio.CancelledError:
+            return
+
+        await asyncio.sleep(0.1)
 
 
 @require_http_methods(["GET"])
-def read_stream_sse(request, stream_path: str) -> StreamingHttpResponse:
+async def read_stream_sse(request, stream_path: str) -> StreamingHttpResponse:
     """
     Read events from a stream using Server-Sent Events (live mode).
     

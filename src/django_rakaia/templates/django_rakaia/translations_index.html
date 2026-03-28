@@ -1,0 +1,383 @@
+{% extends "django_rakaia/base.html" %}
+{% load static %}
+
+{% block title %}Translation Management{% endblock %}
+
+{% block content %}
+<div
+    class="container"
+    id="translations-app"
+    data-api-translations-url="{% url 'django_rakaia:translations_api' %}"
+    data-api-create-url="{% url 'django_rakaia:translation_create_update_api' %}"
+    data-sse-url="{% url 'django_rakaia:translation_streams_sse' %}"
+>
+    <header>
+        <h1>Translation Management</h1>
+        <button id="add-translation-btn" class="btn btn-primary">Add Translation</button>
+    </header>
+
+    <div class="dashboard-grid">
+        <!-- Filters Section -->
+        <section class="card">
+            <h2>Filters</h2>
+            <div class="filter-controls">
+                <div class="form-group">
+                    <label for="langcode-filter">Language:</label>
+                    <select id="langcode-filter" class="form-control">
+                        <option value="">All Languages</option>
+                        {% for lang in languages %}
+                        <option value="{{ lang }}">{{ lang }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="msgid-filter">Search Message ID:</label>
+                    <input type="text" id="msgid-filter" class="form-control" placeholder="Search...">
+                </div>
+                <button id="apply-filters-btn" class="btn btn-secondary">Apply Filters</button>
+                <button id="clear-filters-btn" class="btn btn-outline">Clear</button>
+            </div>
+        </section>
+
+        <!-- Translations Table -->
+        <section class="card">
+            <h2>Translations</h2>
+            <div class="table-container">
+                <table id="translations-table" class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Message ID</th>
+                            <th>Translation</th>
+                            <th>Language</th>
+                            <th>Domain</th>
+                            <th>Context</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="translations-tbody">
+                        <!-- Translations will be loaded here -->
+                    </tbody>
+                </table>
+                <div id="loading-indicator" class="loading">Loading translations...</div>
+                <div id="no-results" class="no-results" style="display: none;">No translations found</div>
+            </div>
+        </section>
+
+        <!-- Recent Activity -->
+        <section class="card">
+            <h2>Recent Activity</h2>
+            <div id="recent-activity" class="activity-list">
+                {% for stream in recent_streams %}
+                <div class="activity-item">
+                    <div class="activity-header">
+                        <span class="activity-user">{{ stream.user }}</span>
+                        <span class="activity-action">{{ stream.action }}</span>
+                        <span class="activity-lang">[{{ stream.langcode }}]</span>
+                        <span class="activity-time">{{ stream.created_at|date:"H:i" }}</span>
+                    </div>
+                    <div class="activity-content">
+                        <strong>{{ stream.translatable.msgid }}</strong>
+                        {% if stream.translatable.msgstr %}
+                        → {{ stream.translatable.msgstr }}
+                        {% endif %}
+                    </div>
+                    <div class="activity-url">{{ stream.url }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+</div>
+
+<!-- Translation Modal -->
+<div id="translation-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modal-title">Add Translation</h3>
+            <span class="close">&times;</span>
+        </div>
+        <div class="modal-body">
+            <form id="translation-form">
+                <div class="form-group">
+                    <label for="msgid-input">Message ID:</label>
+                    <input type="text" id="msgid-input" class="form-control" required>
+                </div>
+                <div class="form-group">
+                    <label for="msgstr-input">Translation:</label>
+                    <textarea id="msgstr-input" class="form-control" rows="3" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="langcode-input">Language:</label>
+                    <select id="langcode-input" class="form-control" required>
+                        <option value="">Select Language</option>
+                        {% for lang in languages %}
+                        <option value="{{ lang }}">{{ lang }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="domain-input">Domain:</label>
+                    <input type="text" id="domain-input" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label for="msgctxt-input">Context:</label>
+                    <input type="text" id="msgctxt-input" class="form-control">
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button type="button" id="save-translation-btn" class="btn btn-primary">Save</button>
+            <button type="button" id="cancel-translation-btn" class="btn btn-outline">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+}
+
+.card {
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.card h2 {
+    margin-bottom: 15px;
+    color: var(--text-color);
+}
+
+.filter-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto auto;
+    gap: 15px;
+    align-items: end;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.form-group label {
+    margin-bottom: 5px;
+    font-weight: 500;
+    color: var(--text-color);
+}
+
+.form-control {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    display: inline-block;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: var(--primary-hover);
+}
+
+.btn-secondary {
+    background: var(--text-muted);
+    color: white;
+}
+
+.btn-outline {
+    background: transparent;
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+}
+
+.btn-outline:hover {
+    background: var(--bg-color);
+}
+
+.table-container {
+    overflow-x: auto;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+.data-table th,
+.data-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.data-table th {
+    background: var(--bg-color);
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.data-table tr:hover {
+    background: var(--bg-color);
+}
+
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+}
+
+.no-results {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+}
+
+.activity-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.activity-item {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.activity-item:last-child {
+    border-bottom: none;
+}
+
+.activity-header {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+}
+
+.activity-user {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.activity-action {
+    text-transform: capitalize;
+}
+
+.activity-content {
+    margin-bottom: 5px;
+}
+
+.activity-url {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    margin: 5% auto;
+    padding: 0;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 600px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: var(--text-color);
+}
+
+.close {
+    color: var(--text-muted);
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.close:hover {
+    color: var(--text-color);
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.modal-footer {
+    padding: 20px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.modal-body .form-group {
+    margin-bottom: 15px;
+}
+
+.modal-body textarea {
+    resize: vertical;
+}
+
+@media (max-width: 768px) {
+    .filter-controls {
+        grid-template-columns: 1fr;
+    }
+    
+    .modal-content {
+        margin: 10% auto;
+        width: 95%;
+    }
+}
+</style>
+
+{{ recent_streams|json_script:"initial-translation-activity" }}
+<script type="module" src="{% static 'django_rakaia/translations_app.js' %}"></script>
+{% endblock %}

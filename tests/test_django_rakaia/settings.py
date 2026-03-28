@@ -1,5 +1,6 @@
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -12,6 +13,7 @@ INSTALLED_APPS = [
 USE_TZ = True
 SECRET_KEY = "dummy"
 ROOT_URLCONF = "tests.test_django_rakaia.urls"
+ASGI_APPLICATION = "tests.test_django_rakaia.asgi.application"
 STATIC_URL = "/static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MIDDLEWARE = [
