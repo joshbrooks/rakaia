@@ -222,8 +222,16 @@
 <div class="card">
     <h2>Events</h2>
     <div class="events-container">
-        {% if events %}
-        <table class="events-table" id="events-table">
+        <!-- Loading state -->
+        <div id="loading-events" class="text-center" style="padding: 40px;">
+            <div style="color: var(--text-muted);">
+                <div style="font-size: 1.2rem; margin-bottom: 10px;">Loading events...</div>
+                <div style="font-size: 0.875rem;">Fetching stream data via API</div>
+            </div>
+        </div>
+        
+        <!-- Events table (initially hidden) -->
+        <table class="events-table" id="events-table" style="display: none;">
             <thead>
                 <tr>
                     <th>Offset</th>
@@ -233,28 +241,19 @@
                 </tr>
             </thead>
             <tbody id="events-body">
-                {% for event in events %}
-                <tr data-offset="{{ event.offset }}" data-id="{{ event.id }}">
-                    <td><code>{{ event.offset }}</code></td>
-                    <td><span class="badge badge-{{ event.event_type }}">{{ event.event_type }}</span></td>
-                    <td>{{ event.created_at|date:"M d, Y H:i:s.u" }}</td>
-                    <td>
-                        <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
-                            {{ event.data|truncatechars:80 }}
-                            <span class="json-toggle">▼ Expand</span>
-                        </div>
-                        <pre class="json-collapsed" style="display: none;">{{ event.data|escape }}</pre>
-                    </td>
-                </tr>
-                {% endfor %}
+                <!-- Events will be loaded via AJAX -->
             </tbody>
         </table>
-        <div class="load-more">
+        
+        <!-- Load more button (initially hidden) -->
+        <div class="load-more" id="load-more-container" style="display: none;">
             <button id="load-more-btn" onclick="loadMoreEvents()">Load Earlier Events</button>
         </div>
-        {% else %}
-        <div class="no-events">No events in this stream yet</div>
-        {% endif %}
+        
+        <!-- No events message (initially hidden) -->
+        <div id="no-events" class="no-events" style="display: none;">
+            No events in this stream yet
+        </div>
     </div>
 </div>
 
@@ -274,10 +273,124 @@
     // Stream event data
     const streamId = "{{ stream_id|escapejs }}";
     const exists = {{ exists|yesno:"true,false" }};
-    let lastOffset = exists ? {{ events.0.offset|default:0 }} : 0;
-    let minOffset = exists ? {{ stats.min_offset|default:0 }} : 0;
+    let lastOffset = 0;
+    let minOffset = 0;
     let newEventsCount = 0;
     let eventSource = null;
+
+    // Load initial events via AJAX
+    function loadInitialEvents() {
+        if (!exists) return;
+
+        const loadingEl = document.getElementById('loading-events');
+        const tableEl = document.getElementById('events-table');
+        const noEventsEl = document.getElementById('no-events');
+        const loadMoreEl = document.getElementById('load-more-container');
+
+        // Fetch initial events
+        fetch(`/streams/api/streams/${encodeURIComponent(streamId)}/?limit=50`)
+            .then(response => response.json())
+            .then(data => {
+                // Hide loading state
+                if (loadingEl) loadingEl.style.display = 'none';
+
+                if (data.events && data.events.length > 0) {
+                    // Show table and populate events
+                    if (tableEl) tableEl.style.display = 'table';
+                    if (loadMoreEl) loadMoreEl.style.display = 'block';
+
+                    // Add events to table
+                    data.events.forEach(event => {
+                        addEventToTable(event);
+                    });
+
+                    // Update offset tracking
+                    if (data.events.length > 0) {
+                        lastOffset = Math.max(...data.events.map(e => e.offset));
+                        minOffset = Math.min(...data.events.map(e => e.offset));
+                    }
+
+                    // Show/hide load more button based on available events
+                    const loadMoreBtn = document.getElementById('load-more-btn');
+                    if (loadMoreBtn && minOffset <= 1) {
+                        loadMoreBtn.style.display = 'none';
+                    }
+                } else {
+                    // Show no events message
+                    if (noEventsEl) noEventsEl.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading initial events:', error);
+                if (loadingEl) {
+                    loadingEl.innerHTML = `
+                        <div style="color: var(--danger-color);">
+                            <div style="font-size: 1.2rem; margin-bottom: 10px;">Error loading events</div>
+                            <div style="font-size: 0.875rem;">Please refresh the page to try again</div>
+                        </div>
+                    `;
+                }
+            });
+    }
+
+    // Add an event to the table (both for initial load and new events)
+    function addEventToTable(eventData, prepend = false) {
+        const tbody = document.getElementById('events-body');
+        if (!tbody) return;
+
+        // Check if event already exists
+        if (document.querySelector(`tr[data-offset="${eventData.offset}"]`)) {
+            return;
+        }
+
+        const row = document.createElement('tr');
+        row.setAttribute('data-offset', eventData.offset);
+        row.setAttribute('data-id', eventData.id);
+        if (!prepend) {
+            row.className = 'new-event';
+        }
+
+        const timestamp = new Date(eventData.created_at).toLocaleString();
+        const dataPreview = JSON.stringify(eventData.data).substring(0, 80) + '...';
+
+        row.innerHTML = `
+            <td><code>${eventData.offset}</code></td>
+            <td><span class="badge badge-${eventData.event_type}">${eventData.event_type}</span></td>
+            <td>${timestamp}</td>
+            <td>
+                <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
+                    ${dataPreview}
+                    <span class="json-toggle">▼ Expand</span>
+                </div>
+                <pre class="json-collapsed" style="display: none;">${escapeHtml(JSON.stringify(eventData.data, null, 2))}</pre>
+            </td>
+        `;
+
+        if (prepend && tbody.firstChild) {
+            tbody.insertBefore(row, tbody.firstChild);
+        } else {
+            tbody.appendChild(row);
+        }
+
+        // Update offset tracking
+        lastOffset = Math.max(lastOffset, eventData.offset);
+        minOffset = Math.min(minOffset, eventData.offset);
+
+        // Update new events count for real-time events
+        if (!prepend) {
+            newEventsCount++;
+            updateNewEventsCount();
+
+            // Scroll to bottom for new events
+            const container = document.querySelector('.events-container');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+
+            // Remove animation class after animation completes
+            setTimeout(() => row.classList.remove('new-event'), 2000);
+        }
+    }
 
     // Initialize SSE connection for real-time updates
     function connectToEventStream() {
@@ -301,7 +414,7 @@
             try {
                 const data = JSON.parse(event.data);
                 if (data.event) {
-                    addNewEvent(data.event);
+                    addEventToTable(data.event);
                 }
             } catch (e) {
                 console.error('Error parsing SSE message:', e);
@@ -316,54 +429,6 @@
             // Attempt to reconnect after 3 seconds
             setTimeout(connectToEventStream, 3000);
         };
-    }
-
-    // Add a new event to the table
-    function addNewEvent(eventData) {
-        const tbody = document.getElementById('events-body');
-        if (!tbody) return;
-
-        // Check if event already exists
-        if (document.querySelector(`tr[data-offset="${eventData.offset}"]`)) {
-            return;
-        }
-
-        const row = document.createElement('tr');
-        row.setAttribute('data-offset', eventData.offset);
-        row.setAttribute('data-id', eventData.id);
-        row.className = 'new-event';
-
-        const timestamp = new Date(eventData.created_at).toLocaleString();
-        const dataPreview = JSON.stringify(eventData.data).substring(0, 80) + '...';
-
-        row.innerHTML = `
-            <td><code>${eventData.offset}</code></td>
-            <td><span class="badge badge-${eventData.event_type}">${eventData.event_type}</span></td>
-            <td>${timestamp}</td>
-            <td>
-                <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
-                    ${dataPreview}
-                    <span class="json-toggle">▼ Expand</span>
-                </div>
-                <pre class="json-collapsed" style="display: none;">${escapeHtml(JSON.stringify(eventData.data, null, 2))}</pre>
-            </td>
-        `;
-
-        tbody.appendChild(row);
-        lastOffset = Math.max(lastOffset, eventData.offset);
-
-        // Update new events count
-        newEventsCount++;
-        updateNewEventsCount();
-
-        // Scroll to bottom of events container
-        const container = document.querySelector('.events-container');
-        if (container) {
-            container.scrollTop = container.scrollHeight;
-        }
-
-        // Remove animation class after animation completes
-        setTimeout(() => row.classList.remove('new-event'), 2000);
     }
 
     // Update new events count display
@@ -395,38 +460,9 @@
             .then(response => response.json())
             .then(data => {
                 if (data.events && data.events.length > 0) {
-                    const tbody = document.getElementById('events-body');
-                    const firstRow = tbody.querySelector('tr:first-child');
-
                     data.events.reverse().forEach(event => {
                         if (event.offset < minOffset) {
-                            const row = document.createElement('tr');
-                            row.setAttribute('data-offset', event.offset);
-                            row.setAttribute('data-id', event.id);
-
-                            const timestamp = new Date(event.created_at).toLocaleString();
-                            const dataPreview = JSON.stringify(event.data).substring(0, 80) + '...';
-
-                            row.innerHTML = `
-                                <td><code>${event.offset}</code></td>
-                                <td><span class="badge badge-${event.event_type}">${event.event_type}</span></td>
-                                <td>${timestamp}</td>
-                                <td>
-                                    <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">
-                                        ${dataPreview}
-                                        <span class="json-toggle">▼ Expand</span>
-                                    </div>
-                                    <pre class="json-collapsed" style="display: none;">${escapeHtml(JSON.stringify(event.data, null, 2))}</pre>
-                                </td>
-                            `;
-
-                            if (firstRow) {
-                                tbody.insertBefore(row, firstRow);
-                            } else {
-                                tbody.appendChild(row);
-                            }
-
-                            minOffset = Math.min(minOffset, event.offset);
+                            addEventToTable(event, true); // Prepend earlier events
                         }
                     });
                 }
@@ -471,6 +507,7 @@
     // Initialize on page load
     document.addEventListener('DOMContentLoaded', function() {
         if (exists && streamId) {
+            loadInitialEvents();
             connectToEventStream();
         }
     });

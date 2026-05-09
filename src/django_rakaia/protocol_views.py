@@ -16,7 +16,7 @@ Endpoints:
 Usage:
     # urls.py
     from django_rakaia.protocol_views import protocol_urlpatterns
-    
+
     urlpatterns = [
         path("protocol/", include(protocol_urlpatterns)),
     ]
@@ -60,10 +60,10 @@ CACHE_CONTROL_HEADER = "Cache-Control"
 def format_offset(offset: int) -> str:
     """
     Format an integer offset as a protocol-compliant offset string.
-    
+
     Args:
         offset: Integer offset value.
-        
+
     Returns:
         Formatted offset string (e.g., "0_0000000000000001").
     """
@@ -73,13 +73,13 @@ def format_offset(offset: int) -> str:
 def parse_offset(offset_str: str) -> int:
     """
     Parse a protocol offset string to an integer.
-    
+
     Args:
         offset_str: Offset string in format "read_seq_byte_offset".
-        
+
     Returns:
         Integer byte offset.
-        
+
     Raises:
         ValueError: If offset format is invalid.
     """
@@ -102,12 +102,12 @@ def parse_offset(offset_str: str) -> int:
 def get_next_offset(stream: Stream) -> int:
     """
     Calculate the next monotonic offset for a stream.
-    
+
     Uses atomic MAX(offset)+1 calculation.
-    
+
     Args:
         stream: The stream to calculate offset for.
-        
+
     Returns:
         Next offset value (1-indexed).
     """
@@ -118,14 +118,14 @@ def get_next_offset(stream: Stream) -> int:
     return max_offset + 1
 
 
-def create_stream_record(stream_id: str, content_type: str) -> Stream:
+def create_stream_record(stream_id: str, content_type: str) -> Stream:  # noqa: ARG001
     """
     Create or retrieve a Stream record.
-    
+
     Args:
         stream_id: Unique stream identifier.
         content_type: Content type for the stream.
-        
+
     Returns:
         The Stream instance (new or existing).
     """
@@ -143,20 +143,20 @@ def create_stream_record(stream_id: str, content_type: str) -> Stream:
 def create_stream(request, stream_path: str) -> HttpResponse:
     """
     Create a new stream at the given path.
-    
+
     Protocol: PUT /{stream-path}
-    
+
     Request Headers:
         Content-Type: MIME type of the stream (default: application/octet-stream)
         Stream-TTL: Optional TTL in seconds
         Stream-Expires-At: Optional absolute expiry (RFC 3339)
         Stream-Closed: Optional, set to "true" to create closed stream
-    
+
     Response:
         201 Created: Stream created successfully
         200 OK: Stream already exists with same config (idempotent)
         409 Conflict: Stream exists with different config
-    
+
     Response Headers:
         Stream-Next-Offset: Initial offset (0_0000000000000000)
         Content-Type: The stream's content type
@@ -213,9 +213,9 @@ def create_stream(request, stream_path: str) -> HttpResponse:
 def append_to_stream(request, stream_path: str) -> HttpResponse:
     """
     Append data to an existing stream.
-    
+
     Protocol: POST /{stream-path}
-    
+
     Request Headers:
         Content-Type: Must match stream's content type
         Stream-Seq: Optional sequence number for coordination
@@ -223,12 +223,12 @@ def append_to_stream(request, stream_path: str) -> HttpResponse:
         Producer-Id: Optional producer ID for idempotent writes
         Producer-Epoch: Optional producer epoch
         Producer-Seq: Optional producer sequence number
-    
+
     Response:
         204 No Content: Append successful
         404 Not Found: Stream does not exist
         409 Conflict: Content type mismatch or stream closed
-    
+
     Response Headers:
         Stream-Next-Offset: New tail offset after append
         Stream-Closed: Present if stream is now closed
@@ -285,18 +285,18 @@ def append_to_stream(request, stream_path: str) -> HttpResponse:
 def read_stream(request, stream_path: str) -> HttpResponse:
     """
     Read events from a stream starting at the given offset.
-    
+
     Protocol: GET /{stream-path}?offset={offset}
-    
+
     Query Parameters:
         offset: Start reading after this offset (default: -1, meaning from beginning)
         cursor: Alternative to offset (for protocol compatibility)
-    
+
     Response:
         200 OK: Returns concatenated event data
         404 Not Found: Stream does not exist
         400 Bad Request: Invalid offset format
-    
+
     Response Headers:
         Content-Type: The stream's content type
         Stream-Next-Offset: Current tail offset
@@ -326,8 +326,7 @@ def read_stream(request, stream_path: str) -> HttpResponse:
 
     # Get entries after offset
     entries = (
-        stream.entries
-        .select_related("event")
+        stream.entries.select_related("event")
         .filter(offset__gt=offset)
         .order_by("offset")
     )
@@ -362,11 +361,11 @@ def read_stream(request, stream_path: str) -> HttpResponse:
 async def sse_event_generator(stream_id: str, cursor_offset: int):
     """
     Generate Server-Sent Events for a stream.
-    
+
     Args:
         stream_id: The stream to stream events from.
         cursor_offset: Start streaming events after this offset.
-        
+
     Yields:
         SSE-formatted event strings as bytes.
     """
@@ -375,14 +374,13 @@ async def sse_event_generator(stream_id: str, cursor_offset: int):
     try:
         await Stream.objects.aget(stream_id=stream_id)
     except Stream.DoesNotExist:
-        yield f"event: error\ndata: {json.dumps({'error': 'Stream not found'})}\n\n".encode('utf-8')
+        yield f"event: error\ndata: {json.dumps({'error': 'Stream not found'})}\n\n".encode()
         return
 
     while True:
         try:
             entries = (
-                StreamEntry.objects
-                .select_related("event")
+                StreamEntry.objects.select_related("event")
                 .filter(stream__stream_id=stream_id)
                 .filter(offset__gt=last_offset)
                 .order_by("offset")
@@ -396,7 +394,7 @@ async def sse_event_generator(stream_id: str, cursor_offset: int):
                     f"event: message\n"
                     f"id: {format_offset(entry.offset)}\n"
                     f"data: {event_data}\n\n"
-                ).encode('utf-8')
+                ).encode()
         except asyncio.CancelledError:
             return
 
@@ -407,15 +405,15 @@ async def sse_event_generator(stream_id: str, cursor_offset: int):
 async def read_stream_sse(request, stream_path: str) -> StreamingHttpResponse:
     """
     Read events from a stream using Server-Sent Events (live mode).
-    
+
     Protocol: GET /{stream-path}/sse?cursor={cursor}
-    
+
     Query Parameters:
         cursor: Start streaming events after this cursor/offset.
-    
+
     Response:
         200 OK: Streaming response with text/event-stream content type
-    
+
     Response Headers:
         Content-Type: text/event-stream
         Cache-Control: no-cache
@@ -444,16 +442,16 @@ async def read_stream_sse(request, stream_path: str) -> StreamingHttpResponse:
 
 
 @require_http_methods(["HEAD"])
-def stream_metadata(request, stream_path: str) -> HttpResponse:
+def stream_metadata(request, stream_path: str) -> HttpResponse:  # noqa: ARG001
     """
     Get metadata for a stream without transferring data.
-    
+
     Protocol: HEAD /{stream-path}
-    
+
     Response:
         200 OK: Stream exists
         404 Not Found: Stream does not exist
-    
+
     Response Headers:
         Content-Type: The stream's content type
         Stream-Next-Offset: Current tail offset
@@ -487,7 +485,6 @@ urlpatterns = [
     path("streams/<str:stream_path>/append", append_to_stream, name="append"),
     path("streams/<str:stream_path>/read", read_stream, name="read"),
     path("streams/<str:stream_path>/metadata", stream_metadata, name="metadata"),
-
     # SSE endpoint
     path("streams/<str:stream_path>/sse", read_stream_sse, name="sse"),
 ]

@@ -16,7 +16,12 @@ from django.dispatch import receiver
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
-StreamPathResolver = str | Callable[[models.Model], str] | list[str] | Callable[[models.Model], list[str]]
+StreamPathResolver = (
+    str
+    | Callable[[models.Model], str]
+    | list[str]
+    | Callable[[models.Model], list[str]]
+)
 DataclassTransformer = Callable[[models.Model], Any]
 
 
@@ -96,7 +101,9 @@ def create_stream_event(
     dc_instance = to_dataclass(instance)
 
     if not dataclasses.is_dataclass(dc_instance):
-        raise TypeError(f"to_dataclass must return a dataclass, got {type(dc_instance)}")
+        raise TypeError(
+            f"to_dataclass must return a dataclass, got {type(dc_instance)}"
+        )
 
     payload = dataclasses.asdict(dc_instance)
 

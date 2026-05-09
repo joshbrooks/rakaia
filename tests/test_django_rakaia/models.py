@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from django.contrib.auth.models import User
 from django.db import models
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -30,6 +31,7 @@ from django_rakaia.models import StreamEvent
 @dataclass
 class UserData:
     """Dataclass for streaming User model changes."""
+
     id: int
     username: str
     email: str
@@ -40,6 +42,7 @@ class UserData:
 @dataclass
 class AreaData:
     """Dataclass for streaming Area model changes."""
+
     id: int
     name: str
 
@@ -47,6 +50,7 @@ class AreaData:
 @dataclass
 class ProjectData:
     """Dataclass for streaming Project model changes."""
+
     id: int
     name: str
     area_id: int
@@ -65,8 +69,6 @@ class AppStreamEvent(StreamEvent):
         app_label = "test_django_rakaia"
         db_table = "test_app_streamevent"
 
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import User
 
 def to_user_data(instance: User) -> UserData:
     """Convert User model to UserData dataclass."""
@@ -76,7 +78,7 @@ def to_user_data(instance: User) -> UserData:
         email=instance.email,
         first_name=instance.first_name,
         last_name=instance.last_name,
-    ) # type: ignore[attr-defined]
+    )  # type: ignore[attr-defined]
 
 
 # Signal handlers for Django's built-in User model
@@ -132,7 +134,7 @@ class Area(models.Model):
         app_label = "test_django_rakaia"
 
     def __str__(self) -> str:
-        return str(self.name or '')
+        return str(self.name or "")
 
 
 def get_project_stream_paths(instance: Project) -> list[str]:
@@ -181,7 +183,7 @@ class Project(models.Model):
         app_label = "test_django_rakaia"
 
     def __str__(self) -> str:
-        return str(self.name or '')
+        return str(self.name or "")
 
     @property
     def area_id(self) -> int:

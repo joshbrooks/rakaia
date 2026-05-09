@@ -1,6 +1,7 @@
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
 INSTALLED_APPS = [
     "daphne",
+    "channels",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -9,6 +10,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django_rakaia",
     "tests.test_django_rakaia.apps.TestDjangoRakaiaConfig",
+    "django_extensions",
 ]
 USE_TZ = True
 SECRET_KEY = "dummy"
@@ -16,6 +18,11 @@ ROOT_URLCONF = "tests.test_django_rakaia.urls"
 ASGI_APPLICATION = "tests.test_django_rakaia.asgi.application"
 STATIC_URL = "/static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

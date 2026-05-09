@@ -2,20 +2,13 @@
 Django Integration for Rakaia Durable Streams.
 
 This module provides Django-specific integration for the Durable Streams protocol,
-allowing model changes (save/delete) to automatically update a stream table.
+allowing model changes (save/delete) to automatically emit stream events.
 
 Usage:
-    from django_rakaia import AbstractStreamEvent, stream_model, create_stream_event
+    from django_rakaia.decorators import stream_model, create_stream_event
 
-    # Define your stream event model
-    class MyStreamEvent(AbstractStreamEvent):
-        class Meta(AbstractStreamEvent.Meta):
-            app_label = 'myapp'
-
-    # Decorate your models
     @stream_model(
-        event_model=MyStreamEvent,
-        stream_path=lambda obj: f"user:{obj.id}:updates",
+        stream_paths=lambda obj: f"user:{obj.id}:updates",
         to_dataclass=lambda obj: MyData(id=obj.id, name=obj.name),
     )
     class MyModel(models.Model):
@@ -25,15 +18,13 @@ Usage:
     @receiver(post_save, sender=User)
     def handle_user_save(sender, instance, created, **kwargs):
         create_stream_event(
-            event_model=MyStreamEvent,
-            stream_path=f"user:{instance.id}:activity",
+            stream_paths=f"user:{instance.id}:activity",
             to_dataclass=to_user_data,
             instance=instance,
             action="create" if created else "update",
         )
 
 Public API:
-    - AbstractStreamEvent: Abstract base model for stream events
     - stream_model: Decorator for automatically streaming model changes
     - create_stream_event: Helper function for manually creating stream events
     - register_stream_event_admin: Register stream event model with Django admin

@@ -7,4 +7,4 @@ class DjangoRakaiaConfig(AppConfig):
     verbose_name = "Rakaia Streams"
 
     def ready(self) -> None:
-        pass
+        import django_rakaia.channels_signals  # noqa: F401

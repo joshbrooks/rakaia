@@ -178,12 +178,10 @@ class TestMultiStreamEvents:
 
         # Filter for the Project's create event specifically (by data content)
         user_entry = user_stream.entries.filter(
-            event__event_type="create",
-            event__data__name="Shared Data Project"
+            event__event_type="create", event__data__name="Shared Data Project"
         ).first()
         area_entry = area_stream.entries.filter(
-            event__event_type="create",
-            event__data__name="Shared Data Project"
+            event__event_type="create", event__data__name="Shared Data Project"
         ).first()
 
         assert user_entry is not None
@@ -349,9 +347,7 @@ class TestCanonicalExample:
 
         # Verify project data is in area stream
         project_names = [
-            e.event.data["name"]
-            for e in area_entries
-            if e.event.event_type == "create"
+            e.event.data["name"] for e in area_entries if e.event.event_type == "create"
         ]
         assert "Development" in project_names  # area name
         assert "Project Alpha" in project_names

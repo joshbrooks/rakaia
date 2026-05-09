@@ -6,39 +6,78 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('django_rakaia', '0001_initial'),
+        ("django_rakaia", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='AppStreamEvent',
+            name="AppStreamEvent",
             fields=[
-                ('streamevent_ptr', models.OneToOneField(auto_created=True, on_delete=django.db.models.deletion.CASCADE, parent_link=True, primary_key=True, serialize=False, to='django_rakaia.streamevent')),
+                (
+                    "streamevent_ptr",
+                    models.OneToOneField(
+                        auto_created=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        parent_link=True,
+                        primary_key=True,
+                        serialize=False,
+                        to="django_rakaia.streamevent",
+                    ),
+                ),
             ],
             options={
-                'db_table': 'test_app_streamevent',
+                "db_table": "test_app_streamevent",
             },
-            bases=('django_rakaia.streamevent',),
+            bases=("django_rakaia.streamevent",),
         ),
         migrations.CreateModel(
-            name='Area',
+            name="Area",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=100)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=100)),
             ],
         ),
         migrations.CreateModel(
-            name='Project',
+            name="Project",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=100)),
-                ('area', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='projects', to='test_django_rakaia.area')),
-                ('created_by', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='created_projects', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=100)),
+                (
+                    "area",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="projects",
+                        to="test_django_rakaia.area",
+                    ),
+                ),
+                (
+                    "created_by",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="created_projects",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
     ]
