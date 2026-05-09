@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Rakaia Chat — Rooms</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; }
+        h1 { margin-bottom: 0.5em; }
+        ul { list-style: none; padding: 0; }
+        li { padding: 0.5em 0; border-bottom: 1px solid #eee; }
+        a { color: #2563eb; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        form { margin-top: 1em; display: flex; gap: 0.5em; }
+        input[type="text"] { flex: 1; padding: 0.5em; font-size: 1em; }
+        button { padding: 0.5em 1em; font-size: 1em; }
+    </style>
+</head>
+<body>
+    <h1>Rakaia Chat</h1>
+    <p>A minimal demo of <code>django_rakaia</code> with multi-stream events and SSE.</p>
+
+    <h2>Rooms</h2>
+    {% if rooms %}
+        <ul>
+            {% for room in rooms %}
+                <li><a href="{% url 'chat:room_detail' room.id %}">{{ room.name }}</a></li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p><em>No rooms yet — create one below.</em></p>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        <input type="text" name="name" placeholder="New room name" required>
+        <button type="submit">Create</button>
+    </form>
+</body>
+</html>

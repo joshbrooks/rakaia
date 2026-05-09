@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ room.name }} — Rakaia Chat</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; }
+        h1 { margin-bottom: 0.25em; }
+        .stream-id { color: #64748b; font-family: monospace; font-size: 0.9em; }
+        #messages { border: 1px solid #e5e7eb; border-radius: 8px; padding: 1em; margin: 1em 0; min-height: 200px; }
+        .message { padding: 0.5em 0; border-bottom: 1px solid #f1f5f9; position: relative; }
+        .message:last-child { border-bottom: none; }
+        .message:hover .actions { visibility: visible; }
+        .author { font-weight: 600; color: #1e40af; }
+        .body { margin-top: 0.25em; white-space: pre-wrap; word-wrap: break-word; }
+        .actions { visibility: hidden; margin-top: 0.4em; display: flex; gap: 0.4em; }
+        .actions button { padding: 0.2em 0.6em; font-size: 0.8em; background: #f1f5f9;
+                          border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; }
+        .actions button:hover { background: #e2e8f0; }
+        .actions button[data-action="delete"] { color: #b91c1c; }
+        .message.editing .actions { visibility: visible; }
+        .message.editing .body { margin-top: 0.4em; }
+        .edit-input { width: 100%; padding: 0.4em; font-size: 1em; font-family: inherit;
+                      box-sizing: border-box; resize: vertical; min-height: 2.5em; }
+        #post-form { display: flex; gap: 0.5em; }
+        #post-form textarea { flex: 1; padding: 0.5em; font-size: 1em; resize: vertical; min-height: 3em; }
+        #post-form button { padding: 0.5em 1em; font-size: 1em; }
+        .live-indicator { display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%; background: #10b981; margin-right: 0.4em; vertical-align: middle; }
+        .live-indicator.disconnected { background: #ef4444; }
+    </style>
+</head>
+<body>
+    <p><a href="{% url 'chat:room_list' %}">&larr; All rooms</a></p>
+    <h1>{{ room.name }}</h1>
+    <p>
+        <span class="live-indicator" id="live"></span>
+        <span class="stream-id">{{ stream_id }}</span>
+    </p>
+
+    <div id="messages" data-room-id="{{ room.id }}">
+        {% for msg in messages %}
+            <div class="message" data-id="{{ msg.id }}">
+                <div class="author">{{ msg.author.username }}</div>
+                <div class="body">{{ msg.body }}</div>
+                <div class="actions">
+                    <button type="button" data-action="edit">Edit</button>
+                    <button type="button" data-action="delete">Delete</button>
+                </div>
+            </div>
+        {% empty %}
+            <p><em>No messages yet — say hello!</em></p>
+        {% endfor %}
+    </div>
+
+    <form id="post-form" method="post" action="{% url 'chat:post_message' room.id %}">
+        {% csrf_token %}
+        <textarea name="body" placeholder="Write a message…" required></textarea>
+        <button type="submit">Send</button>
+    </form>
+
+    <script>
+        // Subscribe to the room's stream over SSE. The django_rakaia signal
+        // handlers broadcast every Message create/update/delete into this
+        // stream — including saves made through /admin/.
+        const streamId = "{{ stream_id }}";
+        const url = `/streams/api/streams/${encodeURIComponent(streamId)}/sse/`;
+        const messagesEl = document.getElementById("messages");
+        const roomId = messagesEl.dataset.roomId;
+        const liveEl = document.getElementById("live");
+        const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+
+        const es = new EventSource(url);
+
+        es.onopen = () => liveEl.classList.remove("disconnected");
+        es.onerror = () => liveEl.classList.add("disconnected");
+
+        const DEFAULT_ACTIONS_HTML =
+            '<button type="button" data-action="edit">Edit</button>' +
+            '<button type="button" data-action="delete">Delete</button>';
+
+        function findMessage(messageId) {
+            return messagesEl.querySelector(
+                `.message[data-id="${CSS.escape(String(messageId))}"]`
+            );
+        }
+
+        function renderMessage(data) {
+            // Drop the empty-state placeholder if present.
+            const placeholder = messagesEl.querySelector("p em");
+            if (placeholder) messagesEl.innerHTML = "";
+
+            const messageId = String(data.id);
+            let div = findMessage(messageId);
+
+            // Don't clobber an in-progress edit. The user's local state
+            // wins until they save or cancel.
+            if (div && div.classList.contains("editing")) return;
+
+            if (!div) {
+                div = document.createElement("div");
+                div.className = "message";
+                div.dataset.id = messageId;
+                div.innerHTML =
+                    '<div class="author"></div>' +
+                    '<div class="body"></div>' +
+                    '<div class="actions">' + DEFAULT_ACTIONS_HTML + '</div>';
+                messagesEl.appendChild(div);
+            }
+            div.querySelector(".author").textContent = data.author_username || "?";
+            div.querySelector(".body").textContent = data.body || "";
+        }
+
+        function removeMessage(data) {
+            const existing = findMessage(data.id);
+            if (existing) existing.remove();
+        }
+
+        function startEdit(div) {
+            if (div.classList.contains("editing")) return;
+            const bodyEl = div.querySelector(".body");
+            div.dataset.originalBody = bodyEl.textContent;
+            const ta = document.createElement("textarea");
+            ta.className = "edit-input";
+            ta.value = bodyEl.textContent;
+            bodyEl.textContent = "";
+            bodyEl.appendChild(ta);
+            div.classList.add("editing");
+            div.querySelector(".actions").innerHTML =
+                '<button type="button" data-action="save">Save</button>' +
+                '<button type="button" data-action="cancel">Cancel</button>';
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+        }
+
+        function exitEdit(div, restoreOriginal) {
+            if (!div.classList.contains("editing")) return;
+            const bodyEl = div.querySelector(".body");
+            if (restoreOriginal) {
+                bodyEl.textContent = div.dataset.originalBody || "";
+            }
+            delete div.dataset.originalBody;
+            div.classList.remove("editing");
+            div.querySelector(".actions").innerHTML = DEFAULT_ACTIONS_HTML;
+        }
+
+        async function postFetch(url, formData) {
+            return fetch(url, {
+                method: "POST",
+                body: formData,
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+            });
+        }
+
+        // Event delegation for edit / delete / save / cancel
+        messagesEl.addEventListener("click", async (e) => {
+            const btn = e.target.closest("button[data-action]");
+            if (!btn) return;
+            const div = btn.closest(".message");
+            if (!div) return;
+            const messageId = div.dataset.id;
+            const action = btn.dataset.action;
+
+            if (action === "edit") {
+                startEdit(div);
+                return;
+            }
+
+            if (action === "cancel") {
+                exitEdit(div, /*restoreOriginal=*/true);
+                return;
+            }
+
+            if (action === "delete") {
+                if (!confirm("Delete this message?")) return;
+                btn.disabled = true;
+                const fd = new FormData();
+                fd.append("csrfmiddlewaretoken", csrfToken);
+                try {
+                    const r = await postFetch(
+                        `/rooms/${roomId}/messages/${messageId}/delete/`,
+                        fd
+                    );
+                    if (!r.ok) {
+                        console.warn("delete failed", r.status);
+                        btn.disabled = false;
+                    }
+                    // SSE delete event will remove the div.
+                } catch (err) {
+                    console.warn("delete error", err);
+                    btn.disabled = false;
+                }
+                return;
+            }
+
+            if (action === "save") {
+                const ta = div.querySelector("textarea.edit-input");
+                const newBody = (ta.value || "").trim();
+                if (!newBody) return;
+                btn.disabled = true;
+                const fd = new FormData();
+                fd.append("csrfmiddlewaretoken", csrfToken);
+                fd.append("body", newBody);
+                try {
+                    const r = await postFetch(
+                        `/rooms/${roomId}/messages/${messageId}/update/`,
+                        fd
+                    );
+                    if (!r.ok) {
+                        console.warn("update failed", r.status);
+                        btn.disabled = false;
+                        return;
+                    }
+                    // Optimistically reflect the new body so there's no
+                    // flash of the old text before the SSE event lands.
+                    div.dataset.originalBody = newBody;
+                    exitEdit(div, /*restoreOriginal=*/true);
+                } catch (err) {
+                    console.warn("update error", err);
+                    btn.disabled = false;
+                }
+                return;
+            }
+        });
+
+        es.onmessage = (msg) => {
+            let payload;
+            try {
+                payload = JSON.parse(msg.data);
+            } catch (e) {
+                return;
+            }
+            const event = payload.event || payload;
+            const data = event.data || {};
+            if (data.id == null) return;
+
+            // The DOM is the source of truth — find-by-id and create / update
+            // / remove in place. This is also catch-up safe: if the SSE
+            // connect phase replays an event for a message that's already
+            // rendered, renderMessage() just rewrites the same content.
+            switch (event.event_type) {
+                case "delete":
+                    removeMessage(data);
+                    break;
+                case "create":
+                case "update":
+                default:
+                    renderMessage(data);
+                    break;
+            }
+        };
+
+        // Intercept the post form: fetch + let the SSE feed render the message
+        // back via the round-trip. No page reload, no optimistic insert — the
+        // server is the source of truth.
+        const postForm = document.getElementById("post-form");
+        const bodyInput = postForm.querySelector('textarea[name="body"]');
+        const sendButton = postForm.querySelector('button[type="submit"]');
+
+        postForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            if (!bodyInput.value.trim()) return;
+
+            sendButton.disabled = true;
+            try {
+                const response = await fetch(postForm.action, {
+                    method: "POST",
+                    body: new FormData(postForm),
+                    headers: {
+                        // Tells the view to return 204 instead of a redirect.
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                });
+                if (!response.ok) {
+                    console.warn("post_message failed", response.status);
+                    return;
+                }
+                bodyInput.value = "";
+                bodyInput.focus();
+            } catch (err) {
+                console.warn("post_message error", err);
+            } finally {
+                sendButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
