@@ -27,7 +27,20 @@ def _format_sse_event(event_name: str, html: str) -> bytes:
 
 @require_GET
 async def stream_events_sse(_request: Any, stream_id: str) -> Any:
-    """SSE endpoint for real-time stream event updates via channel layer."""
+    """SSE endpoint for real-time stream event updates via channel layer.
+
+    On (re)connect, replays historical entries strictly after the
+    `Last-Event-ID` header (sent by the EventSource client when it
+    auto-reconnects). On a fresh connect that header is absent, so we
+    replay the full history. Each event is tagged with `id: <offset>`
+    so the browser knows where to resume.
+    """
+
+    last_event_id = _request.headers.get("Last-Event-ID", "")
+    try:
+        after_offset = int(last_event_id) if last_event_id else 0
+    except ValueError:
+        after_offset = 0
 
     async def event_generator():
         channel_layer = get_channel_layer()
@@ -37,12 +50,13 @@ async def stream_events_sse(_request: Any, stream_id: str) -> Any:
         await channel_layer.group_add(group_name, channel)
 
         try:
-            # Send existing entries first (one-time query)
-            async for entry in (
+            # Replay entries the client hasn't seen.
+            entries_qs = (
                 StreamEntry.objects.select_related("event")
-                .filter(stream__stream_id=stream_id)
-                .order_by("offset")[:20]
-            ):
+                .filter(stream__stream_id=stream_id, offset__gt=after_offset)
+                .order_by("offset")
+            )
+            async for entry in entries_qs:
                 data: dict[str, Any] = {
                     "event": {
                         "id": entry.event.id,
@@ -54,14 +68,17 @@ async def stream_events_sse(_request: Any, stream_id: str) -> Any:
                         "data": entry.event.data,
                     }
                 }
-                yield f"data: {json.dumps(data)}\n\n".encode()
+                yield f"id: {entry.offset}\ndata: {json.dumps(data)}\n\n".encode()
 
             # Wait for new events from channel layer
             while True:
                 message = await channel_layer.receive(channel)
                 # Extract the payload (exclude the 'type' key used by channel layer)
                 payload = {k: v for k, v in message.items() if k != "type"}
-                yield f"data: {json.dumps(payload)}\n\n".encode()
+                event = payload.get("event") or {}
+                offset = event.get("offset")
+                prefix = f"id: {offset}\n" if offset is not None else ""
+                yield f"{prefix}data: {json.dumps(payload)}\n\n".encode()
 
         except asyncio.CancelledError:
             return
