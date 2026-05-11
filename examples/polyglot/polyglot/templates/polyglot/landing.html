@@ -1,0 +1,338 @@
+<!doctype html>
+{% load polyglot_tags %}
+<html lang="{{ langcode }}">
+<head>
+    <meta charset="utf-8">
+    <title>Rakaia Polyglot</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #ffffff;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --accent: #2563eb;
+            --line: #e2e8f0;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: var(--ink);
+            background: #f8fafc;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            min-height: 100vh;
+        }
+        @media (max-width: 900px) {
+            body { grid-template-columns: 1fr; }
+        }
+        /* ---------- Preview pane (left) ---------- */
+        .preview {
+            background: var(--panel);
+            border-right: 1px solid var(--line);
+            padding: 0;
+            overflow-y: auto;
+        }
+        nav.bar {
+            display: flex;
+            gap: 1.5em;
+            padding: 1em 2em;
+            border-bottom: 1px solid var(--line);
+            font-size: 0.95em;
+        }
+        nav.bar a { color: var(--ink); text-decoration: none; }
+        .hero {
+            padding: 3em 2em 2em;
+            text-align: left;
+        }
+        .hero h1 {
+            font-size: 2.4em;
+            margin: 0 0 0.4em;
+            line-height: 1.15;
+            letter-spacing: -0.02em;
+        }
+        .hero p.sub {
+            font-size: 1.15em;
+            color: var(--muted);
+            margin: 0 0 1.5em;
+            max-width: 32em;
+        }
+        .hero .cta {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 0.7em 1.4em;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .features {
+            padding: 1em 2em 3em;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5em;
+        }
+        .feature h3 { margin: 0 0 0.4em; font-size: 1.05em; }
+        .feature p { margin: 0; color: var(--muted); font-size: 0.95em; }
+        footer {
+            padding: 1em 2em 2em;
+            color: var(--muted);
+            font-size: 0.85em;
+            border-top: 1px solid var(--line);
+        }
+        /* ---------- Editor pane (right) ---------- */
+        .editor {
+            padding: 1em 1.5em;
+            background: #f1f5f9;
+            overflow-y: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .editor header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1em;
+            font-family: system-ui, sans-serif;
+        }
+        .editor header h2 { margin: 0; font-size: 1.05em; }
+        .editor header .live {
+            display: inline-flex; align-items: center; gap: 0.4em;
+            font-size: 0.85em; color: var(--muted);
+        }
+        .live-dot {
+            width: 0.55em; height: 0.55em; border-radius: 50%;
+            background: #10b981;
+        }
+        .live-dot.disconnected { background: #ef4444; }
+        select.lang {
+            font: inherit; padding: 0.3em 0.5em;
+            border: 1px solid var(--line); border-radius: 6px;
+            background: white;
+        }
+        .row {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 0.6em 0.8em;
+            margin-bottom: 0.5em;
+            font-size: 0.85em;
+        }
+        .row .msgid {
+            color: var(--muted);
+            font-size: 0.78em;
+            margin-bottom: 0.3em;
+        }
+        .row input {
+            width: 100%;
+            padding: 0.45em 0.55em;
+            border: 1px solid var(--line);
+            border-radius: 4px;
+            font: inherit;
+            font-size: 0.95em;
+        }
+        .row input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+        .row .field {
+            display: flex; gap: 0.4em; align-items: stretch;
+        }
+        .row .field input { flex: 1; }
+        .row button.save {
+            padding: 0.4em 0.8em;
+            background: var(--accent); color: white;
+            border: 1px solid var(--accent); border-radius: 4px;
+            font: inherit; font-size: 0.85em; cursor: pointer;
+        }
+        .row button.save:disabled {
+            background: #cbd5e1; border-color: #cbd5e1; cursor: default;
+        }
+        .row.dirty button.save { background: #f59e0b; border-color: #f59e0b; }
+        .row .saved {
+            font-size: 0.7em; color: #10b981;
+            opacity: 0; transition: opacity 0.3s;
+            margin-left: 0.5em;
+        }
+        .row .saved.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    {# ---------- LEFT: live preview ---------- #}
+    <section class="preview">
+        <nav class="bar">
+            <a href="#" data-msgid="nav.product">{{ t|lookup:"nav.product"|lookup:"msgstr" }}</a>
+            <a href="#" data-msgid="nav.pricing">{{ t|lookup:"nav.pricing"|lookup:"msgstr" }}</a>
+            <a href="#" data-msgid="nav.docs">{{ t|lookup:"nav.docs"|lookup:"msgstr" }}</a>
+        </nav>
+        <div class="hero">
+            <h1 data-msgid="hero.title">{{ t|lookup:"hero.title"|lookup:"msgstr" }}</h1>
+            <p class="sub" data-msgid="hero.subtitle">{{ t|lookup:"hero.subtitle"|lookup:"msgstr" }}</p>
+            <a class="cta" href="#" data-msgid="hero.cta">{{ t|lookup:"hero.cta"|lookup:"msgstr" }}</a>
+        </div>
+        <div class="features">
+            <div class="feature">
+                <h3 data-msgid="feature.realtime.title">{{ t|lookup:"feature.realtime.title"|lookup:"msgstr" }}</h3>
+                <p data-msgid="feature.realtime.body">{{ t|lookup:"feature.realtime.body"|lookup:"msgstr" }}</p>
+            </div>
+            <div class="feature">
+                <h3 data-msgid="feature.durable.title">{{ t|lookup:"feature.durable.title"|lookup:"msgstr" }}</h3>
+                <p data-msgid="feature.durable.body">{{ t|lookup:"feature.durable.body"|lookup:"msgstr" }}</p>
+            </div>
+        </div>
+        <footer>
+            <span data-msgid="footer.tagline">{{ t|lookup:"footer.tagline"|lookup:"msgstr" }}</span>
+        </footer>
+    </section>
+
+    {# ---------- RIGHT: editor ---------- #}
+    <section class="editor">
+        <header>
+            <h2>Translation editor</h2>
+            <div style="display: flex; gap: 1em; align-items: center;">
+                <select class="lang" id="lang-switcher">
+                    {% for code, label in languages %}
+                        <option value="{{ code }}" {% if code == langcode %}selected{% endif %}>{{ label }} ({{ code }})</option>
+                    {% endfor %}
+                </select>
+                <span class="live"><span class="live-dot" id="live"></span><span id="live-label">live</span></span>
+            </div>
+        </header>
+        <p style="color: var(--muted); font-size: 0.85em; font-family: system-ui, sans-serif;">
+            Stream: <code>{{ stream_id }}</code> — edits broadcast over SSE.
+        </p>
+        <form id="editor-form" onsubmit="return false;">
+            {% csrf_token %}
+            {% for e in entries %}
+                <div class="row" data-id="{{ e.id }}">
+                    <div class="msgid">{{ e.msgid }} <span class="saved">saved</span></div>
+                    <div class="field">
+                        <input type="text" name="msgstr"
+                               value="{{ e.msgstr }}"
+                               data-msgid="{{ e.msgid }}"
+                               data-id="{{ e.id }}"
+                               autocomplete="off">
+                        <button type="button" class="save" data-action="save" disabled>Save</button>
+                    </div>
+                </div>
+            {% endfor %}
+        </form>
+    </section>
+
+    <script>
+        // --- Editor: explicit save per row ---
+        // Edits stay local until the user clicks Save (or hits Enter in the
+        // input). The Save button is enabled only when the value differs
+        // from what's on the server, so the translation stream only sees
+        // intentional, deliberate updates.
+        const csrfToken = document.querySelector('input[name="csrfmiddlewaretoken"]').value;
+        const lastSaved = new WeakMap();   // input -> last value we sent
+
+        document.querySelectorAll(".row").forEach(row => {
+            const input = row.querySelector("input[data-id]");
+            const button = row.querySelector("button.save");
+            lastSaved.set(input, input.value);
+
+            const refreshDirty = () => {
+                const dirty = input.value !== lastSaved.get(input);
+                row.classList.toggle("dirty", dirty);
+                button.disabled = !dirty;
+            };
+
+            input.addEventListener("input", refreshDirty);
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (!button.disabled) save(row);
+                }
+            });
+            button.addEventListener("click", () => save(row));
+        });
+
+        async function save(row) {
+            const input = row.querySelector("input[data-id]");
+            const button = row.querySelector("button.save");
+            const id = input.dataset.id;
+            const value = input.value;
+
+            const fd = new FormData();
+            fd.append("csrfmiddlewaretoken", csrfToken);
+            fd.append("msgstr", value);
+
+            button.disabled = true;
+            try {
+                const r = await fetch(`/translations/${id}/update/`, {
+                    method: "POST",
+                    body: fd,
+                    headers: { "X-Requested-With": "XMLHttpRequest" },
+                    credentials: "same-origin",
+                });
+                if (r.ok) {
+                    lastSaved.set(input, value);
+                    row.classList.remove("dirty");
+                    flashSaved(input);
+                } else {
+                    button.disabled = false;
+                }
+            } catch (e) {
+                console.warn("save failed", e);
+                button.disabled = false;
+            }
+        }
+
+        function flashSaved(input) {
+            const saved = input.closest(".row").querySelector(".saved");
+            saved.classList.add("show");
+            setTimeout(() => saved.classList.remove("show"), 800);
+        }
+
+        // --- SSE: live preview updates from the per-langcode stream ---
+        // We defer opening the EventSource until after window.load. If we
+        // open it inline during script execution, the long-lived SSE
+        // connection becomes part of the page's load resource graph; a
+        // later refresh then logs "connection interrupted while page was
+        // loading" because, as far as the browser is concerned, the page
+        // never finished loading. Opening after `load` sidesteps that.
+        const streamId = "{{ stream_id|escapejs }}";
+        const url = `/streams/api/streams/${encodeURIComponent(streamId)}/sse/`;
+        const liveEl = document.getElementById("live");
+        const previewRoot = document.querySelector("section.preview");
+        let es = null;
+
+        function openStream() {
+            es = new EventSource(url);
+            es.onopen = () => liveEl.classList.remove("disconnected");
+            es.onerror = () => liveEl.classList.add("disconnected");
+            es.onmessage = (msg) => {
+                let payload;
+                try { payload = JSON.parse(msg.data); } catch { return; }
+                const event = payload.event || payload;
+                const data = event.data || {};
+                const msgid = data.msgid;
+                if (!msgid) return;
+                // SSE only writes into the preview pane. Editor inputs are
+                // locally controlled — letting SSE replays touch them would
+                // resurrect stale values on every reconnect.
+                previewRoot
+                    .querySelectorAll(`[data-msgid="${CSS.escape(msgid)}"]`)
+                    .forEach(el => { el.textContent = data.msgstr || ""; });
+            };
+        }
+
+        function closeStream() {
+            if (es) { es.close(); es = null; }
+        }
+
+        if (document.readyState === "complete") {
+            openStream();
+        } else {
+            window.addEventListener("load", openStream, { once: true });
+        }
+
+        // Close cleanly on refresh / nav / tab close.
+        window.addEventListener("pagehide", closeStream);
+
+        // --- Language switcher ---
+        document.getElementById("lang-switcher").addEventListener("change", e => {
+            closeStream();
+            window.location.href = `/?lang=${encodeURIComponent(e.target.value)}`;
+        });
+    </script>
+</body>
+</html>

@@ -24,6 +24,7 @@ REDIS_URL       := env_var_or_default("REDIS_URL", "redis://localhost:" + REDIS_
 # Where the chat sample lives. The justfile recipes change into this dir
 # so manage.py / hypercorn / chat_project.* imports all resolve.
 CHAT_DIR        := "examples/chat"
+POLYGLOT_DIR    := "examples/polyglot"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -141,6 +142,35 @@ smoke host="http://localhost:8000":
     @curl -fsS {{host}}/ > /dev/null && echo "OK: {{host}}/"
 
 # ---------------------------------------------------------------------------
+# Polyglot sample (live-editable translations demo)
+# ---------------------------------------------------------------------------
+
+# Single-worker dev server for the polyglot sample
+polyglot-dev:
+    cd {{POLYGLOT_DIR}} && uv run python manage.py migrate
+    cd {{POLYGLOT_DIR}} && uv run python manage.py runserver 0.0.0.0:8001
+
+# Multi-worker hypercorn run for the polyglot sample
+polyglot-serve workers="4" host="0.0.0.0" port="8001": redis-up
+    @echo "Starting polyglot on http://{{host}}:{{port}} ({{workers}} worker(s))"
+    cd {{POLYGLOT_DIR}} && \
+        DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
+        REDIS_URL={{REDIS_URL}} \
+        uv run python manage.py migrate --noinput
+    cd {{POLYGLOT_DIR}} && \
+        DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
+        REDIS_URL={{REDIS_URL}} \
+        uv run python manage.py collectstatic --noinput
+    cd {{POLYGLOT_DIR}} && \
+        DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
+        REDIS_URL={{REDIS_URL}} \
+        uv run hypercorn \
+            --bind {{host}}:{{port}} \
+            --workers {{workers}} \
+            --access-logfile - \
+            polyglot_project.asgi:application
+
+# ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
 # ---------------------------------------------------------------------------
 
@@ -203,6 +233,8 @@ clean:
     -find . -type f -name "*.pyc" -delete
     -rm -f {{CHAT_DIR}}/db.sqlite3
     -rm -rf {{CHAT_DIR}}/staticfiles/
+    -rm -f {{POLYGLOT_DIR}}/db.sqlite3
+    -rm -rf {{POLYGLOT_DIR}}/staticfiles/
     -rm -rf site/
 
 # Tear down everything: stop Redis container and clean caches
