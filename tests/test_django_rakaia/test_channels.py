@@ -13,6 +13,38 @@ from channels.layers import get_channel_layer
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 
+def _extract_data_payload(chunk: bytes | str) -> dict | None:
+    """Pull the JSON payload from an SSE chunk.
+
+    A chunk looks like one of:
+        b"data: {...}\\n\\n"
+        b"id: 17\\ndata: {...}\\n\\n"      # post-Last-Event-ID fix
+
+    Returns None if the chunk has no `data:` line (e.g. a keepalive).
+    """
+    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+    for line in text.splitlines():
+        if line.startswith("data: "):
+            return json.loads(line.removeprefix("data: ").strip())
+    return None
+
+
+async def _collect_payloads(streaming_content, count: int, timeout: float = 3.0):
+    """Read SSE chunks until `count` payloads collected. Times out fast on hang."""
+    payloads: list[dict] = []
+
+    async def _consume():
+        async for chunk in streaming_content:
+            payload = _extract_data_payload(chunk)
+            if payload is not None:
+                payloads.append(payload)
+            if len(payloads) >= count:
+                break
+
+    await asyncio.wait_for(_consume(), timeout=timeout)
+    return payloads
+
+
 @pytest.mark.django_db(transaction=True)
 class TestChannelLayerSignals:
     """Test that model saves broadcast to the channel layer."""
@@ -156,17 +188,7 @@ class TestChannelLayerSSEViews:
         assert response["Cache-Control"] == "no-cache"
         assert response["X-Accel-Buffering"] == "no"
 
-        # Read the first chunk from the streaming response
-        chunks = []
-        async for chunk in response.streaming_content:
-            data_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            if data_str.startswith("data: "):
-                parsed = json.loads(data_str.removeprefix("data: ").strip())
-                chunks.append(parsed)
-            # Only read existing entries, then stop
-            if len(chunks) >= 1:
-                break
-
+        chunks = await _collect_payloads(response.streaming_content, count=1)
         assert len(chunks) == 1
         assert chunks[0]["event"]["data"] == {"pre": "existing"}
         assert chunks[0]["event"]["offset"] == 1
@@ -206,16 +228,7 @@ class TestChannelLayerSSEViews:
             )
 
         push_task = asyncio.create_task(push_event())
-
-        chunks = []
-        async for chunk in response.streaming_content:
-            data_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            if data_str.startswith("data: "):
-                parsed = json.loads(data_str.removeprefix("data: ").strip())
-                chunks.append(parsed)
-            if len(chunks) >= 1:
-                break
-
+        chunks = await _collect_payloads(response.streaming_content, count=1)
         await push_task
 
         assert len(chunks) == 1
@@ -261,16 +274,7 @@ class TestChannelLayerSSEViews:
             )
 
         push_task = asyncio.create_task(push_translation())
-
-        chunks = []
-        async for chunk in response.streaming_content:
-            data_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            if data_str.startswith("data: "):
-                parsed = json.loads(data_str.removeprefix("data: ").strip())
-                chunks.append(parsed)
-            if len(chunks) >= 1:
-                break
-
+        chunks = await _collect_payloads(response.streaming_content, count=1)
         await push_task
 
         assert chunks[0]["stream"]["translatable"]["msgid"] == "hello"
