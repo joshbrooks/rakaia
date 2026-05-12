@@ -128,37 +128,6 @@ class StreamEntry(models.Model):
         return f"{self.stream.stream_id}#{self.offset}"
 
 
-# Keep AbstractStreamEvent for backward compatibility
-# New code should use the normalized models above
-class AbstractStreamEvent(models.Model):
-    """
-    Legacy abstract model for backward compatibility.
-
-    DEPRECATED: Use the normalized Stream/StreamEvent/StreamEntry models instead.
-
-    This model is kept to avoid breaking existing code but should not be used
-    for new development.
-    """
-
-    stream_id = models.CharField(max_length=255, db_index=True)
-    data = models.JSONField()
-    event_type = models.CharField(max_length=50)
-    created_at = models.DateTimeField(auto_now_add=True)
-    offset = models.BigIntegerField()
-
-    class Meta:
-        abstract = True
-        ordering = ["stream_id", "offset"]
-        unique_together = ["stream_id", "offset"]
-        indexes = [
-            models.Index(fields=["stream_id", "offset"]),
-            models.Index(fields=["stream_id", "-offset"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.stream_id}#{self.offset} ({self.event_type})"
-
-
 class TranslatableManager(models.Manager["Translatable"]):
     @staticmethod
     def plural_formula(langcode: str, number: int):  # noqa: ARG004
