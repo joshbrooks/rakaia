@@ -1,0 +1,284 @@
+# Versioned Handlers
+
+Versioned handlers let you replay a Rakaia stream and have *the handler
+that was active when each event was originally written* run against that
+event — not the current code. They make replay deterministic and
+idempotent even when business logic has changed over time.
+
+This page walks through the design and a realistic example based on
+Partisipa's `Submission` import pipeline.
+
+## The problem
+
+Business logic that interprets events changes. A common workaround is to
+write a one-off migration that iterates historical rows and re-saves them
+so newer signals fire. Partisipa's `partisipa-import` repo carries this
+pattern in `form_submission/post_migration_tasks.py` — entries like
+`_task_sf12_backfill_project_ids` and `_task_ff4_backfill` exist precisely
+because the only way to apply newer logic to old data is to re-trigger
+save signals manually.
+
+Versioned handlers replace that ad-hoc pattern with a first-class one:
+
+- Every handler registers with a `[from_seq, to_seq)` range over the
+  stream's sequence numbers.
+- The replay orchestrator picks the version whose range covers each event.
+- Handlers are **pure** — they return `Effect` descriptions, not direct DB
+  writes. A separate executor applies the effects via `update_or_create`,
+  so re-running replay converges instead of duplicating rows.
+- Schema-shape changes are handled by **upcasters**, separately and
+  composably.
+
+## Concepts
+
+| Term            | Meaning                                                                                       |
+|-----------------|-----------------------------------------------------------------------------------------------|
+| **Handler**     | Pure function `event -> Effect | list[Effect]`. No I/O.                                       |
+| **Version**     | One registered handler is one version. Multiple versions of the same handler-name are layered |
+|                 | by sequence range; the dispatcher picks the one whose `[from, to)` covers the event's seq.    |
+| **Effect**      | Frozen dataclass describing one side-effect (`op="update_or_create"` or `op="external"`).     |
+| **Executor**    | Applies effects. `DjangoExecutor` runs `Model.objects.update_or_create()` in a transaction.   |
+| **Upcaster**    | Pure function `dict -> dict` that bumps an event from schema version *N* to *N+1*.            |
+| **Replay**      | Reads the stream, runs each event through the upcaster chain and resolved handlers, applies. |
+| **Drift**       | The live source body of a handler/upcaster no longer matches the hash captured at registration. |
+
+Key invariants:
+
+- **Half-open intervals** `[from, to)`. `to=None` means "currently active."
+- **Overlap rejected** at registration time. **Gaps raise** at replay time.
+- **Multiple handlers** can fire on one event; they're independent and unordered.
+- **Sibling effects** writing the same field on the same row raise
+  `EffectCollisionError`.
+- **External effects** (emails, third-party calls) are tagged `op="external"`
+  and **skipped on replay** unless `include_external=True`.
+
+## Example: Partisipa SF_1_2 import
+
+The Partisipa `Submission` model has a `key` (UUID), a `form_type`
+discriminator (`"SF_1_2"`, `"TF_6_1_1"`, ...), and a `fields` JSON payload.
+On save it should populate a typed row in `ida_forms.Sf_1_2`.
+
+Two real changes from Partisipa's recent history are easy to express:
+
+1. **Bug fix**: the original `cost_estimation` calculation didn't include
+   tax. We fixed it in a later refactor — but only for events from that
+   point onward, since older Submissions had already been processed with
+   the wrong-but-recorded value.
+2. **Schema rename**: the JSON field used to be `repeaterContribution`;
+   newer submissions use `contributions`.
+
+### `partisipa_import/handlers.py`
+
+Django autodiscovery picks up this module on app `ready()`.
+
+```python
+from rakaia.effects import Effect
+from rakaia.registry import register_handler, register_upcaster
+
+
+# ---------------------------------------------------------------------------
+# Upcaster: rename `repeaterContribution` -> `contributions` (v1 -> v2)
+# ---------------------------------------------------------------------------
+
+@register_upcaster(event_match="submissions:SF_1_2", from_version=1)
+def upcast_sf12_v1_to_v2(event: dict) -> dict:
+    """Older SF_1_2 submissions used `repeaterContribution`. Normalise
+    so handlers only ever see the new shape."""
+    fields = event.get("fields", {})
+    if "repeaterContribution" in fields:
+        fields = {**fields, "contributions": fields.pop("repeaterContribution")}
+    return {**event, "fields": fields}
+
+
+# ---------------------------------------------------------------------------
+# Handler v1: original cost_estimation (active for seq 0..4999)
+# Bug: did not include tax. Stays in source so historical events still
+# replay against the calculation that was correct at the time.
+# ---------------------------------------------------------------------------
+
+@register_handler(
+    name="sf12_cost_sync",
+    event_match="submissions:SF_1_2",
+    effective_from=0,
+    effective_to=5000,
+)
+def sf12_cost_sync_v1(event: dict) -> Effect:
+    contributions = event["fields"].get("contributions", [])
+    cost = sum(c["amount"] for c in contributions)
+    return Effect(
+        op="update_or_create",
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"cost_estimation": cost},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handler v2: same intent, applies tax. Active from seq 5000 onward.
+# ---------------------------------------------------------------------------
+
+@register_handler(
+    name="sf12_cost_sync",
+    event_match="submissions:SF_1_2",
+    effective_from=5000,
+    effective_to=None,
+)
+def sf12_cost_sync_v2(event: dict) -> Effect:
+    contributions = event["fields"].get("contributions", [])
+    subtotal = sum(c["amount"] for c in contributions)
+    return Effect(
+        op="update_or_create",
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"cost_estimation": subtotal * 1.1},  # 10% tax
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sibling handler — sets project_status on VERIFIED submissions.
+# Runs alongside sf12_cost_sync on every event. Writes a different
+# `defaults` key, so no EffectCollisionError.
+# ---------------------------------------------------------------------------
+
+@register_handler(
+    name="sf12_project_status",
+    event_match="submissions:SF_1_2",
+    effective_from=0,
+    effective_to=None,
+)
+def sf12_project_status(event: dict) -> Effect | None:
+    if event.get("status") != "VERIFIED":
+        return None
+    return Effect(
+        op="update_or_create",
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_status": 1},
+    )
+```
+
+### Producer side
+
+Wherever Submissions are saved today, emit an event with a producer-declared
+`schema_version`. The producer doesn't have to be at the latest version —
+upcasters will normalise on read.
+
+```python
+import json
+from rakaia.store import StreamStore   # or your durable store of choice
+
+store: StreamStore = ...               # singleton
+
+def emit_submission_event(submission):
+    store.append(
+        f"submissions:{submission.form_type}",
+        json.dumps({
+            "schema_version": 2,
+            "key": str(submission.key),
+            "form_type": submission.form_type,
+            "status": submission.status,
+            "fields": submission.fields,
+        }).encode("utf-8"),
+    )
+```
+
+### Running replay
+
+The equivalent of running every `_task_*_backfill` together:
+
+```bash
+python manage.py replay submissions:SF_1_2 --from 0
+# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external_skipped=0
+```
+
+Options:
+
+| Flag                  | Effect                                                                  |
+|-----------------------|-------------------------------------------------------------------------|
+| `--from N`            | First event index to replay (default 0).                                |
+| `--to M`              | One past the last event index to replay (default: stream head).         |
+| `--strict-drift`      | Raise `HandlerDriftError` on source-hash mismatch instead of warning.   |
+| `--include-external`  | Apply `op="external"` effects (emails, etc.) instead of skipping them.  |
+| `--dry-run`           | Resolve handlers and count effects without applying them.               |
+
+What this gets you:
+
+1. **Idempotent**. Running replay twice produces identical DB state because
+   `update_or_create` converges.
+2. **Time-correct**. Events at seq 0–4999 run through `sf12_cost_sync_v1`
+   (no tax); events from 5000 onward run through `v2`. The bugfix doesn't
+   silently rewrite history.
+3. **Composable schema changes**. The upcaster ensures handlers never see
+   the legacy `repeaterContribution` field, even on the oldest events.
+
+If you decide that *all* historical events should use v2's tax math after
+all, you'd retire v1 and register a new version covering `[0, 5000)`:
+
+```python
+# (Hypothetical follow-up registration)
+@register_handler(
+    name="sf12_cost_sync",
+    event_match="submissions:SF_1_2",
+    effective_from=0,
+    effective_to=5000,    # would overlap v1 — must retire v1 first
+)
+def sf12_cost_sync_v1b(event): ...
+```
+
+This is intentionally explicit: retroactive changes are first-class events
+in the registry stream, not silent edits to frozen functions.
+
+## Drift detection
+
+A handler's source body is hashed at registration time and stored
+alongside the version. On replay, the live hash is recomputed and
+compared.
+
+```bash
+python manage.py replay submissions:SF_1_2 --from 0
+# RAKAIA_DRIFT handler='sf12_cost_sync' stored=ab12cd34ef56 current=99887766ddee
+# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external_skipped=0
+```
+
+By default replay **warns and continues** — useful in development. CI or
+pre-deploy checks can pass `--strict-drift` to fail loudly:
+
+```bash
+python manage.py replay submissions:SF_1_2 --strict-drift
+# raises HandlerDriftError("handler='sf12_cost_sync' stored=... current=...")
+```
+
+The drift signal tells you that a function you'd promised to leave alone
+(because old events were processed under it) has been edited. The
+remedy is either to revert the change or to formalise it as a new
+version covering the appropriate seq range.
+
+## Replacing `post_migration_tasks.py`
+
+Existing `PostMigrationTask` entries map naturally onto versioned handlers
+plus a replay. Each task that calls `Submission.objects.filter(...).save()`
+to re-trigger newer logic is, in the new model:
+
+1. The new business logic is already in place as a handler version with
+   the right `effective_from`.
+2. A one-shot `python manage.py replay <stream> --from N` re-derives the
+   downstream state.
+3. Idempotency is guaranteed by the executor's `update_or_create`, so the
+   replay can be re-run safely if it gets interrupted.
+
+Concretely, `_task_sf12_backfill_project_ids` becomes:
+
+- The corrected mapping logic registered as `sf12_project_id_sync` v2,
+  covering the seq range from which migration 0096 took effect.
+- `python manage.py replay submissions:SF_1_2 --from <seq>`.
+- The `PostMigrationTaskStatus` row that recorded completion is replaced
+  by the durable `__rakaia__:handlers` registration event itself.
+
+Migration is incremental: tasks can be ported one at a time, with the new
+and old systems coexisting until the last task is removed.
+
+## See also
+
+- [`docs/protocol.md`](protocol.md) — the underlying durable-streams protocol.
+- [`docs/django-integration.md`](django-integration.md) — the `@stream_model`
+  decorator and Django stream storage.

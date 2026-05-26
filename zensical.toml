@@ -19,6 +19,7 @@ Copyright &copy; 2026 Josh Brooks
 nav = [
     { "Overview" = "index.md" },
     { "Django integration" = "django-integration.md" },
+    { "Versioned handlers" = "versioned-handlers.md" },
     { "Translations" = "translations.md" },
     { "Deployment" = "deployment.md" },
     { Reference = [
