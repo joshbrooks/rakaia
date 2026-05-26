@@ -75,6 +75,41 @@ Pages live in [`docs/`](docs/) and the site config is in
 - [Deployment](docs/deployment.md)
 - [Protocol specification](docs/protocol.md)
 
+## Versioned handlers (event replay with history)
+
+Rakaia ships a subsystem for replaying a stream through handlers whose
+*current* and *historical* versions are both kept in source. Handlers are
+pure — they return `Effect` descriptions that an executor applies via
+idempotent `update_or_create`, so replay can be re-run safely.
+
+```python
+from rakaia import Effect, register_handler, register_upcaster
+
+@register_handler(name="mogrify", event_match="room:*:messages",
+                  effective_from=0, effective_to=10_000)
+def mogrify_v1(event):
+    return Effect(op="update_or_create", model_label="myapp.Room",
+                  lookup={"id": event["room_id"]},
+                  defaults={"name": event["name"]})
+
+@register_handler(name="mogrify", event_match="room:*:messages",
+                  effective_from=10_000)
+def mogrify_v2(event):  # bugfix only for events from seq 10_000 onward
+    ...
+
+@register_upcaster(event_match="room:*:messages", from_version=1)
+def upcast_v1_to_v2(event):  # schema-shape change handled separately
+    return {**event, "currency": "USD"}
+```
+
+`python manage.py replay room:5:messages --from 0` then runs every event
+through its time-correct handler version, with drift detection (`--strict-drift`)
+and dry-run (`--dry-run`) modes.
+
+See [`docs/versioned-handlers.md`](docs/versioned-handlers.md) for the
+full story, including a worked example based on Partisipa's submissions
+pipeline.
+
 ## Sample application
 
 A standalone Django chat app demonstrating the library lives in
