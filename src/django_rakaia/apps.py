@@ -8,3 +8,6 @@ class DjangoRakaiaConfig(AppConfig):
 
     def ready(self) -> None:
         import django_rakaia.channels_signals  # noqa: F401
+        from django_rakaia.handlers_autodiscover import autodiscover
+
+        autodiscover()
