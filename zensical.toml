@@ -1,0 +1,64 @@
+# Zensical configuration for the Rakaia documentation site.
+#
+# Build:   uv run zensical build
+# Serve:   uv run zensical serve
+#
+# Install the docs extras first: `uv sync --extra docs`
+
+[project]
+site_name = "Rakaia"
+site_description = "Python implementation of the Durable Streams protocol — zero-dependency ASGI server plus a Django integration."
+site_author = "Josh Brooks"
+site_url = "https://github.com/joshbrooks/durable-streams"
+
+copyright = """
+Copyright &copy; 2026 Josh Brooks
+"""
+
+# Explicit navigation. Order matters; nested tables become sections.
+nav = [
+    { "Overview" = "index.md" },
+    { "Django integration" = "django-integration.md" },
+    { "Versioned handlers" = "versioned-handlers.md" },
+    { "Translations" = "translations.md" },
+    { "Deployment" = "deployment.md" },
+    { Reference = [
+        { "Protocol specification" = "protocol.md" },
+        { "Backend storage" = "streams-backend-storage.md" },
+    ] },
+]
+
+[project.theme]
+language = "en"
+
+features = [
+    "announce.dismiss",
+    "content.code.annotate",
+    "content.code.copy",
+    "content.code.select",
+    "content.tabs.link",
+    "content.tooltips",
+    "navigation.footer",
+    "navigation.indexes",
+    "navigation.instant",
+    "navigation.instant.prefetch",
+    "navigation.path",
+    "navigation.sections",
+    "navigation.top",
+    "navigation.tracking",
+    "search.highlight",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/joshbrooks/durable-streams"

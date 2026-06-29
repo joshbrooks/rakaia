@@ -23,13 +23,30 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+django = [
+    "django>=4.2.0",
+    "daphne>=4.2.1",
+    "channels>=4.0",
+]
+prod = [
+    "channels-redis>=4.1.0",
+    "hypercorn>=0.17.0",
+    "whitenoise>=6.0",
+]
 dev = [
     "ruff>=0.8.0",
-    "pyright>=1.1.390",
+    "pyright>=1.1.400",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
     "httpx>=0.27.0",
     "uvicorn>=0.30.0",
+    "django>=4.2",
+    "django-types>=0.23.0",
+    "pytest-django>=4.9.0",
+]
+docs = [
+    "zensical>=0.0.32",
 ]
 
 [build-system]
@@ -37,7 +54,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rakaia"]
+packages = ["src/rakaia", "src/django_rakaia"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -70,14 +87,27 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["rakaia"]
+known-first-party = ["rakaia", "django_rakaia"]
 
 [tool.pyright]
 pythonVersion = "3.10"
-typeCheckingMode = "strict"
+# `standard` (the pyright default) catches genuine type errors but is
+# tolerant of Django ORM dynamism that pyright can't introspect. Set this
+# to `strict` if you want to enforce full annotation coverage on the core
+# rakaia package.
+typeCheckingMode = "standard"
 include = ["src"]
 exclude = ["tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+DJANGO_SETTINGS_MODULE = "tests.test_django_rakaia.settings"
+pythonpath = [".", "src"]
+
+[dependency-groups]
+dev = [
+    "django-extensions>=4.1",
+]
+

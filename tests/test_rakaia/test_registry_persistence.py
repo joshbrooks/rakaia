@@ -1,0 +1,177 @@
+"""Tests for stream-backed persistence of the HandlerRegistry."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from rakaia.registry import (
+    HANDLERS_META_STREAM,
+    HandlerRegistry,
+    HandlerVersion,
+)
+from rakaia.store import StreamStore
+
+
+def _fn(tag: str):
+    def handler(event):  # noqa: ARG001
+        return tag
+
+    handler.__qualname__ = f"_fn.<{tag}>"
+    return handler
+
+
+@pytest.fixture
+def store() -> StreamStore:
+    return StreamStore()
+
+
+class TestPersistence:
+    def test_first_registration_creates_meta_stream(self, store: StreamStore):
+        HandlerRegistry(store=store)
+        assert store.has(HANDLERS_META_STREAM)
+
+    def test_register_appends_event(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("mogrify", "room:*", _fn("v1"), 0, 10)
+
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages) == 1
+        payload = json.loads(messages[0].data)
+        assert payload["name"] == "mogrify"
+        assert payload["event_match"] == "room:*"
+        assert payload["effective_from"] == 0
+        assert payload["effective_to"] == 10
+        assert payload["source_hash"]
+        assert payload["dotted_path"]
+
+    def test_register_open_ended_persists_null(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("m", "e", _fn("v1"), 10, None)
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        payload = json.loads(messages[0].data)
+        assert payload["effective_to"] is None
+
+    def test_multiple_registrations_append(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("mogrify", "room:*", _fn("v1"), 0, 10)
+        reg.register("mogrify", "room:*", _fn("v2"), 10, 20)
+        reg.register("zap", "chat:*", _fn("z1"), 0, None)
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages) == 3
+
+    def test_no_store_no_persistence(self):
+        reg = HandlerRegistry()
+        reg.register("m", "e", _fn("v"), 0, 10)
+        # No store - no exception, no stream created elsewhere
+        assert reg.all_versions()
+
+
+class TestIdempotency:
+    def test_same_registration_twice_in_one_process_is_noop(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        fn = _fn("v1")
+        v1 = reg.register("m", "e", fn, 0, 10)
+        v2 = reg.register("m", "e", fn, 0, 10)
+        assert v1 is v2
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages) == 1
+        assert len(reg.all_versions()) == 1
+
+    def test_registration_persists_across_registry_instances(self, store: StreamStore):
+        """Simulate a process restart by creating a fresh registry against
+        the same store; the same handler re-registering must not append a
+        duplicate event."""
+        reg1 = HandlerRegistry(store=store)
+        fn = _fn("v1")
+        reg1.register("m", "e", fn, 0, 10)
+        messages_before, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages_before) == 1
+
+        # Simulate restart
+        reg2 = HandlerRegistry(store=store)
+        reg2.register("m", "e", fn, 0, 10)
+
+        messages_after, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages_after) == 1
+        # And the new registry should know about the handler
+        assert len(reg2.all_versions()) == 1
+        assert reg2.all_versions()[0].name == "m"
+
+    def test_source_change_appends_new_event(self, store: StreamStore):
+        """If a handler's source body changes, that's drift; we record a new
+        registration event so the audit log captures it."""
+        reg = HandlerRegistry(store=store)
+        fn_a = _fn("a")
+        reg.register("m", "e", fn_a, 0, 10)
+
+        # Different function (different source) — different identity
+        def fn_b(event):  # noqa: ARG001
+            return "b"
+
+        fn_b.__qualname__ = "_fn.<b-other-source>"
+        # Use a different range to avoid the overlap rejection — we're
+        # testing the persistence side, not in-memory dedup.
+        reg.register("m", "e", fn_b, 10, 20)
+
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages) == 2
+
+
+class TestRehydrate:
+    def test_rehydrate_on_empty_store_is_noop(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.rehydrate()
+        assert reg.all_versions() == []
+
+    def test_rehydrate_without_store_is_noop(self):
+        reg = HandlerRegistry()
+        reg.rehydrate()
+        assert reg.all_versions() == []
+
+    def test_loaded_persisted_ids_populates_on_init(self, store: StreamStore):
+        # Pre-populate the stream manually (no content_type — meta-stream
+        # stores one JSON blob per message, not a flattened JSON array).
+        store.create(HANDLERS_META_STREAM)
+        payload = {
+            "name": "ghost",
+            "event_match": "x",
+            "effective_from": 0,
+            "effective_to": 5,
+            "dotted_path": "some.module.ghost",
+            "source_hash": "deadbeef" * 8,
+        }
+        store.append(
+            HANDLERS_META_STREAM,
+            json.dumps(payload).encode("utf-8"),
+        )
+
+        # New registry should see the ID as already persisted
+        reg = HandlerRegistry(store=store)
+        # Sanity: in-memory is empty (module wasn't imported)
+        assert reg.all_versions() == []
+        # But re-registering ghost (if its source matched) would be a no-op append.
+        # We assert that by checking the internal set was loaded.
+        assert any(
+            ident[0] == "ghost"
+            for ident in reg._persisted_ids  # type: ignore[attr-defined]
+        )
+
+
+def test_handler_version_immutable_identity():
+    # Sanity: HandlerVersion is frozen, dotted_path + source_hash are part of
+    # the identity tuple used for stream dedup.
+    fn = _fn("x")
+    v = HandlerVersion(
+        name="m",
+        event_match="e",
+        effective_from=0,
+        effective_to=None,
+        fn=fn,
+        dotted_path="x.y.z",
+        source_hash="h",
+    )
+    with pytest.raises(FrozenInstanceError):
+        v.name = "other"  # type: ignore[misc]

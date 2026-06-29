@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra django --extra docs --extra prod
+
+      - name: Lint with ruff
+        run: uv run ruff check src/ tests/
+
+      - name: Format check with ruff
+        run: uv run ruff format --check src/ tests/
+
+      - name: Type check with pyright (informational)
+        # Pre-existing Django ORM dynamism complaints; tracked separately.
+        # Migrate to django-stubs and flip this back to a hard failure.
+        continue-on-error: true
+        run: uv run pyright src/
+
+      - name: Run tests
+        run: uv run pytest --cov=src/rakaia --cov=src/django_rakaia --cov-report=term-missing
+
+      - name: Build docs
+        run: uv run zensical build

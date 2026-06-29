@@ -18,7 +18,32 @@ Usage:
 """
 
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
+from .effects import (
+    Effect,
+    EffectCollisionError,
+    EffectOp,
+    Executor,
+    check_disjoint_defaults,
+)
 from .handler import ServerOptions, create_app
+from .registry import (
+    HANDLERS_META_STREAM,
+    UPCASTERS_META_STREAM,
+    HandlerDriftError,
+    HandlerGapError,
+    HandlerOverlapError,
+    HandlerRegistry,
+    HandlerVersion,
+    UpcasterChainError,
+    UpcasterConflictError,
+    UpcasterRegistry,
+    UpcasterVersion,
+    get_default_registry,
+    get_default_upcaster_registry,
+    register_handler,
+    register_upcaster,
+)
+from .replay import ReplayResult, replay
 from .store import StreamStore
 from .types import (
     AppendOptions,
@@ -70,6 +95,31 @@ __all__ = [
     # Cursor
     "calculate_cursor",
     "generate_response_cursor",
+    # Versioned handlers — effects
+    "Effect",
+    "EffectOp",
+    "Executor",
+    "EffectCollisionError",
+    "check_disjoint_defaults",
+    # Versioned handlers — registry
+    "register_handler",
+    "register_upcaster",
+    "HandlerRegistry",
+    "UpcasterRegistry",
+    "HandlerVersion",
+    "UpcasterVersion",
+    "HandlerOverlapError",
+    "HandlerGapError",
+    "HandlerDriftError",
+    "UpcasterConflictError",
+    "UpcasterChainError",
+    "get_default_registry",
+    "get_default_upcaster_registry",
+    "HANDLERS_META_STREAM",
+    "UPCASTERS_META_STREAM",
+    # Versioned handlers — replay
+    "replay",
+    "ReplayResult",
     # Version
     "__version__",
 ]

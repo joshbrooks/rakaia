@@ -30,7 +30,21 @@ ENV/
 .idea/
 .vscode/
 .history/
+.windsurf/
+
+# Coverage
+.coverage
+htmlcov/
 
 # Durable Streams temporary/test data
 /tmp/
 .durable-streams/
+django_rakaia_dev.db
+db.sqlite3
+
+# Collected static files (chat sample → WhiteNoise)
+examples/chat/staticfiles/
+
+# Zensical build output
+/site/
+.zensical-cache/

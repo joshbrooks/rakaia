@@ -1,0 +1,11 @@
+{% for t in translations %}
+<tr id="translation-{{ t.id }}">
+    <td>{{ t.msgid }}</td>
+    <td>{{ t.msgstr|default:"—" }}</td>
+    <td>{{ t.langcode }}</td>
+    <td>{{ t.domain|default:"" }}</td>
+    <td>{{ t.msgctxt|default:"" }}</td>
+</tr>
+{% empty %}
+<tr><td colspan="5" class="no-results">No translations found</td></tr>
+{% endfor %}
