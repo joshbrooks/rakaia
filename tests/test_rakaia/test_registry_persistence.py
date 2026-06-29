@@ -70,9 +70,7 @@ class TestPersistence:
 
 
 class TestIdempotency:
-    def test_same_registration_twice_in_one_process_is_noop(
-        self, store: StreamStore
-    ):
+    def test_same_registration_twice_in_one_process_is_noop(self, store: StreamStore):
         reg = HandlerRegistry(store=store)
         fn = _fn("v1")
         v1 = reg.register("m", "e", fn, 0, 10)
@@ -82,9 +80,7 @@ class TestIdempotency:
         assert len(messages) == 1
         assert len(reg.all_versions()) == 1
 
-    def test_registration_persists_across_registry_instances(
-        self, store: StreamStore
-    ):
+    def test_registration_persists_across_registry_instances(self, store: StreamStore):
         """Simulate a process restart by creating a fresh registry against
         the same store; the same handler re-registering must not append a
         duplicate event."""
@@ -159,7 +155,8 @@ class TestRehydrate:
         # But re-registering ghost (if its source matched) would be a no-op append.
         # We assert that by checking the internal set was loaded.
         assert any(
-            ident[0] == "ghost" for ident in reg._persisted_ids  # type: ignore[attr-defined]
+            ident[0] == "ghost"
+            for ident in reg._persisted_ids  # type: ignore[attr-defined]
         )
 
 

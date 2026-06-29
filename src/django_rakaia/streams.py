@@ -74,11 +74,15 @@ class ModelStreamReader:
         self._chunk_size = chunk_size
 
     def read(
-        self, path: str, offset: str | None = None  # noqa: ARG002
+        self,
+        path: str,
+        offset: str | None = None,  # noqa: ARG002
     ) -> tuple[list[_ReaderMessage], bool]:
         """Return (messages, up_to_date) for the given stream path."""
         qs = self._queryset_for(path).order_by(self._order_by)
-        messages = [self._encode(obj) for obj in qs.iterator(chunk_size=self._chunk_size)]
+        messages = [
+            self._encode(obj) for obj in qs.iterator(chunk_size=self._chunk_size)
+        ]
         return messages, True
 
     def has(self, path: str) -> bool:  # noqa: ARG002
@@ -128,7 +132,9 @@ class DjangoStreamReader:
         self._chunk_size = chunk_size
 
     def read(
-        self, path: str, offset: str | None = None  # noqa: ARG002
+        self,
+        path: str,
+        offset: str | None = None,  # noqa: ARG002
     ) -> tuple[list[_ReaderMessage], bool]:
         """Return (messages, up_to_date) for the given stream id."""
         try:

@@ -28,7 +28,9 @@ class Command(BaseCommand):
     help = "Replay a rakaia stream through registered versioned handlers."
 
     def add_arguments(self, parser: CommandParser) -> None:
-        parser.add_argument("stream", help="Stream path to replay (e.g. 'room:5:messages')")
+        parser.add_argument(
+            "stream", help="Stream path to replay (e.g. 'room:5:messages')"
+        )
         parser.add_argument(
             "--from",
             dest="start_seq",
@@ -60,9 +62,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:  # noqa: ARG002
-        executor: Any = (
-            _DryRunExecutor() if options["dry_run"] else DjangoExecutor()
-        )
+        executor: Any = _DryRunExecutor() if options["dry_run"] else DjangoExecutor()
         result = replay(
             store=get_store(),
             stream_path=options["stream"],

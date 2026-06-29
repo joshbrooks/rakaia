@@ -127,25 +127,19 @@ class TestApplyChain:
         # Have v2->v3 but not v1->v2
         reg.register("room:*", 2, _up_v2_to_v3)
         with pytest.raises(UpcasterChainError, match="v1 -> v2"):
-            reg.apply_chain(
-                {"schema_version": 1, "x": 1}, "room:5", target_version=3
-            )
+            reg.apply_chain({"schema_version": 1, "x": 1}, "room:5", target_version=3)
 
     def test_target_lower_than_current_raises(self, reg: UpcasterRegistry):
         # Producer wrote v5; registry only knows up to v2 → target=2 → can't
         # downcast, raise clearly.
         with pytest.raises(UpcasterChainError, match="newer schema"):
-            reg.apply_chain(
-                {"schema_version": 5, "x": 1}, "room:5", target_version=2
-            )
+            reg.apply_chain({"schema_version": 5, "x": 1}, "room:5", target_version=2)
 
     def test_pattern_doesnt_match_no_progress_raises(self, reg: UpcasterRegistry):
         reg.register("room:*", 1, _up_v1_to_v2)
         # Asking for chain on chat:5 from v1->v2; no matching pattern → raise
         with pytest.raises(UpcasterChainError, match="v1 -> v2"):
-            reg.apply_chain(
-                {"schema_version": 1}, "chat:5", target_version=2
-            )
+            reg.apply_chain({"schema_version": 1}, "chat:5", target_version=2)
 
 
 class TestPersistence:

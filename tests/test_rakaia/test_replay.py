@@ -91,7 +91,10 @@ class TestBasicReplay:
 
         assert result.events_processed == 1
         assert len(ex.all_effects) == 2
-        assert {e.defaults["a"] if e.defaults and "a" in e.defaults else None for e in ex.all_effects} == {1, None}
+        assert {
+            e.defaults["a"] if e.defaults and "a" in e.defaults else None
+            for e in ex.all_effects
+        } == {1, None}
 
     def test_handler_returning_list_of_effects(self, store: StreamStore):
         reg = HandlerRegistry()
@@ -215,9 +218,7 @@ class TestExternalEffects:
         _seed_stream(store, "s", [{"x": 1}])
         ex = CaptureExecutor()
 
-        result = replay(
-            store, "s", ex, handler_registry=reg, include_external=True
-        )
+        result = replay(store, "s", ex, handler_registry=reg, include_external=True)
 
         assert result.external_effects_skipped == 0
         assert len(ex.all_effects) == 1
@@ -345,9 +346,7 @@ class TestErrors:
 
 
 class TestNoHandlers:
-    def test_replay_with_no_handlers_just_counts_events(
-        self, store: StreamStore
-    ):
+    def test_replay_with_no_handlers_just_counts_events(self, store: StreamStore):
         reg = HandlerRegistry()
         _seed_stream(store, "s", [{"id": 1}, {"id": 2}])
         ex = CaptureExecutor()

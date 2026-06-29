@@ -128,9 +128,7 @@ def replay(
             all_effects.extend(effects)
 
         external_count = sum(1 for e in all_effects if e.op == "external")
-        result.external_effects_skipped += (
-            external_count if not include_external else 0
-        )
+        result.external_effects_skipped += external_count if not include_external else 0
         to_apply = (
             all_effects
             if include_external
@@ -189,8 +187,7 @@ def _decode_event(data: bytes, stream_path: str, seq: int) -> dict:
         return json.loads(data)
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError(
-            f"Cannot decode event at seq={seq} in stream={stream_path!r} "
-            f"as JSON: {exc}"
+            f"Cannot decode event at seq={seq} in stream={stream_path!r} as JSON: {exc}"
         ) from exc
 
 
