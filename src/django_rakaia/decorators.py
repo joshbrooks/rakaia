@@ -35,8 +35,12 @@ def _get_next_offset(stream: Stream) -> int:
     """
     Calculate the next monotonic offset for a stream.
 
-    Uses atomic MAX(offset)+1 calculation.
+    Must be called inside a transaction: locks the stream row with
+    select_for_update() so concurrent writers serialize on offset
+    allocation instead of colliding on unique_together(stream, offset).
     """
+    # Lock the stream row for the duration of the enclosing transaction.
+    Stream.objects.select_for_update().get(pk=stream.pk)
     agg = stream.entries.aggregate(max_offset=Max("offset"))
     max_offset = agg["max_offset"]
     if max_offset is None:

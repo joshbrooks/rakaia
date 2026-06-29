@@ -9,7 +9,8 @@ import json
 from typing import Any
 
 from django.contrib import admin
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from django.utils.safestring import mark_safe
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent, Translatable
 
@@ -90,7 +91,9 @@ class StreamEventAdmin(admin.ModelAdmin):
         streams = obj.get_streams()
         if not streams:
             return "-"
-        return format_html("<br>".join(f"<code>{s}</code>" for s in streams))
+        return format_html_join(
+            mark_safe("<br>"), "<code>{}</code>", ((s,) for s in streams)
+        )
 
     streams_list.short_description = "Streams"
 
@@ -214,7 +217,9 @@ def register_stream_event_admin(event_model_class):
             streams = obj.get_streams()
             if not streams:
                 return "-"
-            return format_html("<br>".join(f"<code>{s}</code>" for s in streams))
+            return format_html_join(
+                mark_safe("<br>"), "<code>{}</code>", ((s,) for s in streams)
+            )
 
         streams_list.short_description = "Streams"
 

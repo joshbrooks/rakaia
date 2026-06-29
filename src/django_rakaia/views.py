@@ -6,18 +6,21 @@ Uses the normalized Stream/StreamEvent/StreamEntry model structure.
 """
 
 import json
+import logging
 from typing import Any
 
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Max, Min
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import Stream, StreamEntry, StreamEvent, Translatable
 
+_log = logging.getLogger("django_rakaia.views")
 
+
+@login_required
 @require_GET
 def streams_index(_request: Any) -> HttpResponse:
     """
@@ -88,6 +91,7 @@ def streams_index(_request: Any) -> HttpResponse:
     return render(_request, "django_rakaia/streams_index.html", context)
 
 
+@login_required
 @require_GET
 def stream_detail(_request: Any, stream_id: str) -> Any:
     """
@@ -153,6 +157,7 @@ def stream_detail(_request: Any, stream_id: str) -> Any:
     return render(_request, "django_rakaia/stream_detail.html", context)
 
 
+@login_required
 @require_GET
 def stream_events_api(_request: Any, stream_id: str) -> Any:
     """
@@ -162,7 +167,11 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
     """
     # Get parameters
     after_offset = _request.GET.get("after_offset")
-    limit = int(_request.GET.get("limit", 50))
+    try:
+        limit = int(_request.GET.get("limit", 50))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "limit must be an integer"}, status=400)
+    limit = max(1, min(limit, 200))
 
     # Get stream
     try:
@@ -174,7 +183,13 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
     query = stream.entries.select_related("event").order_by("offset")
 
     if after_offset:
-        query = query.filter(offset__gt=int(after_offset))
+        try:
+            after_offset_int = int(after_offset)
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {"error": "after_offset must be an integer"}, status=400
+            )
+        query = query.filter(offset__gt=after_offset_int)
 
     # Get entries
     entries = list(
@@ -210,6 +225,7 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
     )
 
 
+@login_required
 @require_GET
 def streams_api(_request: Any) -> Any:
     """
@@ -355,6 +371,7 @@ def translations_index(request: Any) -> Any:
 
 
 @require_GET
+@login_required
 def translations_api(request: Any) -> Any:
     """
     API endpoint to get all translations with filtering options.
@@ -396,7 +413,6 @@ def translations_api(request: Any) -> Any:
 
 
 @require_POST
-@csrf_exempt
 @login_required
 def translation_create_update_api(request: Any) -> Any:
     """
@@ -453,5 +469,6 @@ def translation_create_update_api(request: Any) -> Any:
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+    except Exception:
+        _log.exception("translation_create_update_api failed")
+        return JsonResponse({"error": "Internal server error"}, status=500)
