@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rakaia Orders — versioned handlers</title>
+    <style>
+        :root {
+            --ink: #0f172a;
+            --muted: #64748b;
+            --accent: #2563eb;
+            --line: #e2e8f0;
+            --pre: #f1f5f9;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: var(--ink);
+            background: #f8fafc;
+            line-height: 1.5;
+        }
+        .wrap { max-width: 60em; margin: 0 auto; padding: 3em 2em; }
+        h1 { font-size: 2em; margin: 0 0 0.2em; letter-spacing: -0.02em; }
+        p.sub { color: var(--muted); margin: 0 0 2em; max-width: 40em; }
+        .banner {
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            padding: 1em 1.25em;
+            margin: 0 0 2em;
+        }
+        .banner code, code.inline {
+            background: var(--pre);
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+        th, td { text-align: right; padding: 0.6em 0.8em; border-bottom: 1px solid var(--line); }
+        th:first-child, td:first-child,
+        th:nth-child(2), td:nth-child(2) { text-align: left; }
+        thead th { color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--line); }
+        tbody tr:hover { background: #eef2ff; }
+        .taxed td.rate { color: var(--accent); font-weight: 600; }
+        .empty { color: var(--muted); font-style: italic; padding: 2em 0; }
+        footer { color: var(--muted); font-size: 0.85em; margin-top: 2.5em; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <h1>Orders projection</h1>
+    <p class="sub">
+        These rows are <strong>derived state</strong>, re-computed by replaying
+        the order event stream through versioned handlers. The tax rule changed
+        at sequence {{ tax_change_seq }}: orders placed before it keep 0% tax;
+        later orders are taxed at 10% — the newer handler never rewrites
+        history.
+    </p>
+
+    {% if not orders %}
+    <div class="banner">
+        No orders yet. Populate the projection by running:
+        <br><br>
+        <code>python manage.py demo_orders --twice</code>
+    </div>
+    {% endif %}
+
+    {% if orders %}
+    <table>
+        <thead>
+            <tr>
+                <th>Order</th><th>Status</th><th>Subtotal</th>
+                <th>Tax rate</th><th>Tax</th><th>Total</th><th>Points</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for o in orders %}
+            <tr class="{% if o.tax_rate > 0 %}taxed{% endif %}">
+                <td>{{ o.order_id }}</td>
+                <td>{{ o.status }}</td>
+                <td>{{ o.subtotal }}</td>
+                <td class="rate">{{ o.tax_rate }}</td>
+                <td>{{ o.tax }}</td>
+                <td>{{ o.total }}</td>
+                <td>{{ o.loyalty_points }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <footer>
+        Re-run <code class="inline">demo_orders</code> as often as you like — the
+        projection is rebuilt idempotently via <code class="inline">update_or_create</code>.
+    </footer>
+</div>
+</body>
+</html>
