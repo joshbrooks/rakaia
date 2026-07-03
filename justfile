@@ -25,6 +25,7 @@ REDIS_URL       := env_var_or_default("REDIS_URL", "redis://localhost:" + REDIS_
 # so manage.py / hypercorn / chat_project.* imports all resolve.
 CHAT_DIR        := "examples/chat"
 POLYGLOT_DIR    := "examples/polyglot"
+ORDERS_DIR      := "examples/orders"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -169,6 +170,20 @@ polyglot-serve workers="4" host="0.0.0.0" port="8001": redis-up
             --workers {{workers}} \
             --access-logfile - \
             polyglot_project.asgi:application
+
+# ---------------------------------------------------------------------------
+# Orders sample (versioned handlers / replay demo)
+# ---------------------------------------------------------------------------
+
+# Seed the orders stream and replay it through versioned handlers
+orders-demo:
+    cd {{ORDERS_DIR}} && uv run python manage.py migrate
+    cd {{ORDERS_DIR}} && uv run python manage.py demo_orders --twice
+
+# Dev server showing the materialized orders projection
+orders-dev:
+    cd {{ORDERS_DIR}} && uv run python manage.py migrate
+    cd {{ORDERS_DIR}} && uv run python manage.py runserver 0.0.0.0:8002
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
