@@ -471,3 +471,83 @@ class TestDrift:
                 upcaster_registry=upcasters,
                 on_drift="raise",
             )
+
+
+# ---------------------------------------------------------------------------
+# Delete effects
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteEffects:
+    def test_delete_effect_reaches_executor(self, store: StreamStore):
+        reg = HandlerRegistry()
+
+        def h(event):
+            return Effect(
+                op="delete",
+                model_label="x.X",
+                lookup={"parent_id": event["id"]},
+                exclude={"idx__in": event["keep"]},
+            )
+
+        reg.register("h", "stream", h, 0, None)
+        _seed_stream(store, "stream", [{"id": 1, "keep": [0, 1]}])
+        ex = CaptureExecutor()
+
+        result = replay(store, "stream", ex, handler_registry=reg)
+
+        assert result.effects_applied == 1
+        assert len(ex.all_effects) == 1
+        eff = ex.all_effects[0]
+        assert eff.op == "delete"
+        assert eff.lookup == {"parent_id": 1}
+        assert eff.exclude == {"idx__in": [0, 1]}
+
+
+# ---------------------------------------------------------------------------
+# Content-based routing (match_field)
+# ---------------------------------------------------------------------------
+
+
+class TestMatchFieldRouting:
+    def test_replay_routes_by_form_type(self, store: StreamStore):
+        reg = HandlerRegistry()
+
+        def tf(event):
+            return Effect(
+                op="update_or_create",
+                model_label="x.TF",
+                lookup={"id": event["id"]},
+                defaults={},
+            )
+
+        def sf(event):
+            return Effect(
+                op="update_or_create",
+                model_label="x.SF",
+                lookup={"id": event["id"]},
+                defaults={},
+            )
+
+        # Both handlers live on the same stream; routing is by payload field.
+        reg.register("tf", "tf_*", tf, 0, None, match_field="form_type")
+        reg.register("sf", "sf_*", sf, 0, None, match_field="form_type")
+
+        _seed_stream(
+            store,
+            "submissions",
+            [
+                {"id": 1, "form_type": "tf_611"},
+                {"id": 2, "form_type": "sf_12"},
+                {"id": 3, "form_type": "tf_611"},
+            ],
+        )
+        ex = CaptureExecutor()
+        replay(store, "submissions", ex, handler_registry=reg)
+
+        models = [(e.model_label, e.lookup["id"]) for e in ex.all_effects]
+        assert ("x.TF", 1) in models
+        assert ("x.SF", 2) in models
+        assert ("x.TF", 3) in models
+        assert ("x.SF", 1) not in models
+        assert ("x.TF", 2) not in models

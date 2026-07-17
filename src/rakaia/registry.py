@@ -84,6 +84,10 @@ class HandlerVersion:
     source_hash: str
     """SHA-256 of fn's source body — for drift detection in Step 6."""
 
+    match_field: str | None = None
+    """When set, `event_match` is matched against `event[match_field]` (e.g.
+    'form_type') instead of the stream path. None = match the stream path."""
+
 
 # =============================================================================
 # Registry
@@ -115,7 +119,9 @@ class HandlerRegistry:
         self._store = store
         self._stream_path = stream_path
         # Identity tuples already persisted to the stream — used for dedup.
-        self._persisted_ids: set[tuple[str, str, int, int | None, str, str]] = set()
+        self._persisted_ids: set[
+            tuple[str, str, int, int | None, str, str, str | None]
+        ] = set()
         if store is not None:
             self._ensure_stream()
             self._load_persisted_ids()
@@ -127,13 +133,18 @@ class HandlerRegistry:
         fn: Callable[..., Any],
         effective_from: int,
         effective_to: int | None = None,
+        *,
+        match_field: str | None = None,
     ) -> HandlerVersion:
         """
         Register a handler version. Raises HandlerOverlapError on overlap.
 
         Re-registering with identical (name, event_match, from, to,
-        dotted_path, source_hash) is a no-op that returns the existing
-        version without re-appending to the meta-stream.
+        dotted_path, source_hash, match_field) is a no-op that returns the
+        existing version without re-appending to the meta-stream.
+
+        When `match_field` is set, `event_match` is matched against
+        `event[match_field]` (e.g. 'form_type') instead of the stream path.
         """
         if effective_from < 0:
             raise ValueError(
@@ -153,6 +164,7 @@ class HandlerRegistry:
             fn=fn,
             dotted_path=f"{fn.__module__}.{fn.__qualname__}",
             source_hash=hash_function_source(fn),
+            match_field=match_field,
         )
 
         key = (name, event_match)
@@ -172,20 +184,29 @@ class HandlerRegistry:
         series.sort(key=lambda v: v.effective_from)
         return version
 
-    def resolve(self, event_match: str, seq: int) -> list[HandlerVersion]:
+    def resolve(
+        self,
+        event_match: str,
+        seq: int,
+        event: dict[str, Any] | None = None,
+    ) -> list[HandlerVersion]:
         """
-        Return all handler versions whose event_match pattern matches the given
-        event_match string AND whose [from, to) range covers seq.
+        Return all handler versions whose pattern matches AND whose [from, to)
+        range covers seq. By default the pattern is matched against the
+        `event_match` string (the stream path); a series registered with a
+        `match_field` is instead matched against `event[match_field]`, so pass
+        the decoded `event` when any content-routed handlers exist.
 
-        Raises HandlerGapError if any registered handler series matches the
-        event_match but has no version covering seq (a gap, not "no handlers").
+        Raises HandlerGapError if any matching handler series has no version
+        covering seq (a gap, not "no handlers").
         """
         if seq < 0:
             raise ValueError(f"seq must be non-negative, got {seq}")
 
         resolved: list[HandlerVersion] = []
         for (name, pattern), versions in self._versions.items():
-            if not fnmatch.fnmatchcase(event_match, pattern):
+            subject = self._match_subject(name, versions, event_match, event)
+            if not fnmatch.fnmatchcase(subject, pattern):
                 continue
             covering = [
                 v
@@ -203,6 +224,30 @@ class HandlerRegistry:
             # Overlap is rejected at registration, so at most one matches.
             resolved.append(covering[0])
         return resolved
+
+    @staticmethod
+    def _match_subject(
+        name: str,
+        versions: list[HandlerVersion],
+        event_match: str,
+        event: dict[str, Any] | None,
+    ) -> str:
+        """The string a series' pattern is tested against.
+
+        Stream-path routing (the default) returns `event_match`. Content
+        routing (a `match_field` on the series) returns `event[match_field]`.
+        match_field is consistent within a (name, pattern) series, so the first
+        version decides.
+        """
+        match_field = versions[0].match_field
+        if match_field is None:
+            return event_match
+        if event is None:
+            raise ValueError(
+                f"Handler {name!r} routes on match_field={match_field!r} but "
+                f"resolve() was called without an event."
+            )
+        return str(event.get(match_field, ""))
 
     def all_versions(self) -> list[HandlerVersion]:
         """Return every registered version (test/debug helper)."""
@@ -262,6 +307,7 @@ class HandlerRegistry:
             "effective_to": version.effective_to,
             "dotted_path": version.dotted_path,
             "source_hash": version.source_hash,
+            "match_field": version.match_field,
         }
         self._store.append(
             self._stream_path,
@@ -432,6 +478,24 @@ class UpcasterRegistry:
             event = {**event, "schema_version": current}
         return event
 
+    def upcast_to_current(
+        self,
+        event: dict[str, Any],
+        event_match_str: str,
+        *,
+        drift_callback: Callable[[UpcasterVersion, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Upcast `event` all the way to the current schema for its match.
+
+        Convenience over `current_version` + `apply_chain`: the normalise-on-read
+        step every consumer outside `replay()` needs. Returns the event unchanged
+        when no upcasters apply or it is already current.
+        """
+        target = self.current_version(event_match_str)
+        return self.apply_chain(
+            event, event_match_str, target, drift_callback=drift_callback
+        )
+
     def all_upcasters(self) -> list[UpcasterVersion]:
         return list(self._upcasters.values())
 
@@ -487,7 +551,8 @@ class UpcasterRegistry:
 
 def _identity(
     v: HandlerVersion,
-) -> tuple[str, str, int, int | None, str, str]:
+) -> tuple[str, str, int, int | None, str, str, str | None]:
+    # match_field is appended LAST so dotted_path stays at index 4 (rehydrate()).
     return (
         v.name,
         v.event_match,
@@ -495,12 +560,13 @@ def _identity(
         v.effective_to,
         v.dotted_path,
         v.source_hash,
+        v.match_field,
     )
 
 
 def _identity_from_payload(
     p: dict[str, Any],
-) -> tuple[str, str, int, int | None, str, str]:
+) -> tuple[str, str, int, int | None, str, str, str | None]:
     return (
         p["name"],
         p["event_match"],
@@ -508,6 +574,7 @@ def _identity_from_payload(
         p["effective_to"] if p["effective_to"] is None else int(p["effective_to"]),
         p["dotted_path"],
         p["source_hash"],
+        p.get("match_field"),  # tolerate pre-match_field persisted payloads
     )
 
 
@@ -543,16 +610,39 @@ def get_default_upcaster_registry() -> UpcasterRegistry:
     return _default_upcaster_registry
 
 
+def upcast(
+    event: dict[str, Any],
+    event_match: str,
+    *,
+    registry: UpcasterRegistry | None = None,
+) -> dict[str, Any]:
+    """Normalise `event` to the current schema for `event_match`.
+
+    The discoverable one-liner over the upcaster chain::
+
+        from rakaia import upcast
+        normalised = upcast(raw_event, "submissions")
+
+    Uses the process-wide default registry unless `registry` is given.
+    """
+    target = registry if registry is not None else _default_upcaster_registry
+    return target.upcast_to_current(event, event_match)
+
+
 def register_handler(
     name: str,
     event_match: str,
     effective_from: int,
     effective_to: int | None = None,
     *,
+    match_field: str | None = None,
     registry: HandlerRegistry | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that registers a handler version with the default registry.
+
+    Pass `match_field` to route on a payload field (e.g. 'form_type') instead
+    of the stream path.
 
     Example:
         @register_handler(
@@ -578,6 +668,7 @@ def register_handler(
             fn=fn,
             effective_from=effective_from,
             effective_to=effective_to,
+            match_field=match_field,
         )
         return fn
 

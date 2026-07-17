@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FormKit submissions — materialized projection</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    p.note { color: #555; max-width: 44rem; }
+    table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+    th { background: #f4f4f4; }
+    .COMPLETE { color: #15803d; font-weight: 600; }
+    .IN_PROGRESS { color: #b45309; }
+    ul.activities { margin: 0; padding-left: 1.1rem; }
+  </style>
+</head>
+<body>
+  <h1>FormKit submissions — materialized projection</h1>
+  <p class="note">
+    These rows are <em>derived</em> by replaying the <code>submissions</code>
+    stream through versioned handlers. The completion policy changed at
+    sequence {{ policy_change_seq }}: visits before it are COMPLETE only at
+    100%, later ones at 90%. Replay keeps that history time-correct.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Submission</th><th>Project</th><th>Suku</th>
+        <th>Total budget</th><th>Progress</th><th>Status</th><th>Activities</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for visit, activities in rows %}
+      <tr>
+        <td><code>{{ visit.submission_id|slice:":8" }}…</code></td>
+        <td>{{ visit.project_code }}</td>
+        <td>{{ visit.suku }}</td>
+        <td>{{ visit.total_budget }}</td>
+        <td>{{ visit.overall_progress }}%</td>
+        <td class="{{ visit.status }}">{{ visit.status }}</td>
+        <td>
+          <ul class="activities">
+            {% for a in activities %}<li>{{ a.name }} — {{ a.progress_pct }}%</li>{% endfor %}
+          </ul>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">No rows yet. Run <code>manage.py demo_submissions</code>.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

@@ -70,6 +70,25 @@ class TestReplayCommand:
         assert "DRY RUN" in out.getvalue()
         assert "events=1" in out.getvalue()
 
+    def test_dry_run_lists_effects(self):
+        _seed("test_autodiscover_stream", [{"name": "Delta"}, {"name": "Epsilon"}])
+
+        out = io.StringIO()
+        call_command(
+            "replay",
+            "test_autodiscover_stream",
+            "--dry-run",
+            stdout=out,
+        )
+
+        text = out.getvalue()
+        # Nothing applied ...
+        assert not Area.objects.filter(name__in=["Delta", "Epsilon"]).exists()
+        # ... but the effects that WOULD be applied are listed.
+        assert "DRY RUN" in text
+        assert "update_or_create" in text
+        assert "test_django_rakaia.Area" in text
+
     def test_range_bounds(self):
         _seed(
             "test_autodiscover_stream",
