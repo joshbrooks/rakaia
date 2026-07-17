@@ -23,6 +23,7 @@ from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.store import get_store
 from orders.models import OrderSummary
 from orders.seed import SAMPLE_ORDERS, TAX_CHANGE_SEQ
+from rakaia import CollectingExecutor
 from rakaia.replay import replay
 
 STREAM = "orders"
@@ -62,6 +63,21 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Seeded {len(SAMPLE_ORDERS)} order events "
             f"(tax rule changes at seq {TAX_CHANGE_SEQ}).\n"
+        )
+
+        # Dry run first: a CollectingExecutor records the effects replay would
+        # apply, writing nothing. The count matches effects_applied below.
+        preview = CollectingExecutor()
+        replay(
+            store=store,
+            stream_path=STREAM,
+            executor=preview,
+            include_external=opts["include_external"],
+            on_drift="raise" if opts["strict_drift"] else "warn",
+        )
+        self.stdout.write(
+            f"Dry run: replay would apply {len(preview.effects)} effects "
+            f"(no writes yet).\n"
         )
 
         result = replay(
