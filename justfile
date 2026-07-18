@@ -31,6 +31,7 @@ HISTORY_DIR     := "examples/partisipa_history"
 PARTISIPA_DIR   := "examples/partisipa_staged"
 CLOSE_DIR       := "examples/partisipa_close"
 MERGE_DIR       := "examples/partisipa_merge"
+REPEATERS_DIR   := "examples/partisipa_repeaters"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -237,6 +238,15 @@ partisipa-close-demo:
 partisipa-merge-demo:
     cd {{MERGE_DIR}} && uv run python manage.py migrate
     cd {{MERGE_DIR}} && uv run python manage.py demo_merge
+
+# ---------------------------------------------------------------------------
+# Tree-reconcile spike (unbounded nested repeaters, no orphans — issue #7)
+# ---------------------------------------------------------------------------
+
+# Resubmit a pruned repeater tree; assert no deep orphans, no double-count
+partisipa-tree-demo:
+    cd {{REPEATERS_DIR}} && uv run python manage.py migrate
+    cd {{REPEATERS_DIR}} && uv run python manage.py demo_repeaters
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
