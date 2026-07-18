@@ -40,10 +40,24 @@ from history.seed import SAVES, TRUNCATED_KEY
 STREAM = "submission-history"
 NAIVE_STREAM = "submission-history-naive"
 
+# An independent oracle for the /history diff marker, written out by hand on
+# purpose. Do NOT replace this with envelope.OP_TO_LABEL: the parity check exists
+# to prove that mapping is correct, so importing it would make the check circular
+# (it would pass even if OP_TO_LABEL were wrong, as long as it were wrong here too).
+EXPECTED_MARKER = {"create": "+", "update": "~", "delete": "-"}
+
 
 def _reset_projections() -> None:
     SubmissionHistoryEntry.objects.all().delete()
     SubmissionRecord.objects.all().delete()
+
+
+def _history_snapshot() -> list[tuple]:
+    """Full content of the audit log, for a teeth-having idempotency compare."""
+    return [
+        (h.submission_id, h.seq, h.label, h.actor, h.ts, canonical(h.fields))
+        for h in SubmissionHistoryEntry.objects.order_by("submission_id", "seq")
+    ]
 
 
 class Command(BaseCommand):
@@ -83,23 +97,34 @@ class Command(BaseCommand):
 
     def _check_parity(self) -> None:
         golden = list(PghEventGolden.objects.all())
-        derived = list(SubmissionHistoryEntry.objects.order_by("ts", "submission_id"))
+        # Order derived rows by `seq` (the global stream position), so they
+        # align with the golden table's insertion order *structurally* — not by
+        # relying on timestamps being monotonic and distinct (they need not be:
+        # a backdated correction would break a ts sort while seq stays correct).
+        derived = list(SubmissionHistoryEntry.objects.order_by("seq"))
+        # Ground-truth labels come from the seed's `op` via a hand-written oracle
+        # (EXPECTED_MARKER), so the +/~/- mapping is checked against an
+        # independent expectation — not against the code's own OP_TO_LABEL.
+        expected_labels = [EXPECTED_MARKER[s["op"]] for s in SAVES]
 
         self.stdout.write("[1] PARITY — stream-derived audit vs golden pghistory:")
         self.stdout.write(
             f"    {'submission':<14} {'lbl':<3} {'actor':<18} {'snapshot'}"
         )
-        if len(golden) != len(derived):
+        if not len(golden) == len(derived) == len(expected_labels):
             raise CommandError(
-                f"row count differs: pghistory={len(golden)} stream={len(derived)}"
+                f"row count differs: pghistory={len(golden)} "
+                f"stream={len(derived)} seed={len(expected_labels)}"
             )
-        for g, d in zip(golden, derived, strict=True):
+        for i, (g, d) in enumerate(zip(golden, derived, strict=True)):
             row = (
                 f"    {d.submission_id:<14} {d.label:<3} {d.actor:<18} "
                 f"{canonical(d.fields)}"
             )
             match = (
-                g.submission_id == d.submission_id
+                d.seq == i  # contiguous stream order — no gap / reorder
+                and g.submission_id == d.submission_id
+                and d.label == expected_labels[i]  # label vs seed op (not self)
                 and PGH_TO_LABEL[g.pgh_label] == d.label
                 and g.pgh_context_user == d.actor
                 and g.pgh_created_at == d.ts
@@ -112,9 +137,13 @@ class Command(BaseCommand):
                     f"{d.submission_id}#{d.seq}"
                 )
             self.stdout.write(row)
+        # Both sides are seeded from the same saves, so this proves the stream
+        # losslessly carries + reconstructs the pgh_event *shape* (order, label,
+        # actor, ts, snapshot) — not fidelity to a live pghistory instance.
         self.stdout.write(
             self.style.SUCCESS(
-                f"    → {len(derived)} rows reproduce pgh_event byte-for-byte ✓"
+                f"    → {len(derived)} rows match the pgh_event-shaped golden "
+                f"byte-for-byte ✓"
             )
         )
 
@@ -184,18 +213,19 @@ class Command(BaseCommand):
     # -- [4] idempotency ----------------------------------------------------
 
     def _check_idempotent(self, store: Any) -> None:
-        before = (
-            SubmissionHistoryEntry.objects.count(),
-            SubmissionRecord.objects.count(),
-        )
+        # Snapshot the *content* of every audit row, not just the count — a
+        # re-replay that mutated a field (actor, label, snapshot) would keep the
+        # count identical, so a count-only check has no teeth.
+        before = _history_snapshot()
         stream_history.replay_history(store, STREAM)
-        after = (
-            SubmissionHistoryEntry.objects.count(),
-            SubmissionRecord.objects.count(),
-        )
+        after = _history_snapshot()
+
         deleted_gone = not SubmissionRecord.objects.filter(
             submission_id="sub-road-02"
         ).exists()
+        # The invariant is "one audit row per event for that key", derived from
+        # the seed — not a hard-coded 2.
+        deleted_events = len([s for s in SAVES if s["key"] == "sub-road-02"])
         deleted_history = SubmissionHistoryEntry.objects.filter(
             submission_id="sub-road-02"
         ).count()
@@ -205,17 +235,17 @@ class Command(BaseCommand):
         style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(
             style(
-                f"    rows {before} -> {after} — "
-                f"{'idempotent ✓' if ok else 'NOT idempotent ✗'}"
+                f"    {len(before)} audit rows, re-replayed — "
+                f"{'byte-identical ✓' if ok else 'MUTATED ✗'}"
             )
         )
         self.stdout.write(
             self.style.SUCCESS(
-                f"    deleted submission row gone={deleted_gone}, but "
-                f"{deleted_history} history rows retained (create + delete)."
+                f"    deleted submission row gone={deleted_gone}, but all "
+                f"{deleted_history}/{deleted_events} of its history rows retained."
             )
         )
         if not ok:
-            raise CommandError("re-replay changed the projections")
-        if not deleted_gone or deleted_history != 2:
-            raise CommandError("delete did not preserve history / drop the row")
+            raise CommandError("re-replay mutated the audit log")
+        if not deleted_gone or deleted_history != deleted_events:
+            raise CommandError("delete did not preserve full history / drop the row")

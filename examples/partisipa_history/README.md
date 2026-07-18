@@ -102,7 +102,12 @@ in #6), so nothing about the audit log is bespoke — it is just another project
 ## Caveats
 
 - `PghEventGolden` is a *faithful model* of `django-pghistory`'s `pgh_event`, not a
-  live pghistory instance — enough to prove the columns and snapshots match.
+  live pghistory instance, and it is seeded from the same `SAVES` as the stream. So
+  the PARITY check proves the stream **losslessly carries and reconstructs the audit
+  shape** (order, label, actor, ts, snapshot) — not fidelity to a real pghistory
+  install. The `+`/`~`/`-` labels are additionally checked against the seed's `op`
+  directly, so that mapping isn't merely self-consistent. A production port would
+  validate against a live `pgh_event` table.
 - The envelope is a JSON convention here. Making it first-class means extending the
   append surface and the durable `StreamEvent` model (issue #11).
 - `pgtrigger` (change_id sync sequences, soft-delete, protect, ordering) is a

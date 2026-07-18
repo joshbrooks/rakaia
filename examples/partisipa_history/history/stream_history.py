@@ -118,6 +118,13 @@ def recover_peak_snapshot(submission_id: str) -> dict[str, Any]:
 
     The pre-truncation snapshot is still an audit row, so recovery is a query
     for the historical snapshot with the most fields.
+
+    Caveat: "most fields" is the same proxy the real ``repair_blank_save_dataloss``
+    uses for "peak", and it inherits the same limitation — it misfires for a
+    submission that legitimately *shrinks* over time, or a partial save that
+    leaves several junk keys. It is a recovery heuristic, not a correctness
+    guarantee; a production port would prefer an explicit "last known good"
+    marker on the envelope over a key-count argmax.
     """
     rows = SubmissionHistoryEntry.objects.filter(submission_id=submission_id)
     return max((r.fields for r in rows), key=len, default={})
