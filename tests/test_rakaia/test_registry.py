@@ -146,6 +146,39 @@ class TestResolve:
             reg.resolve("e", -1)
 
 
+class TestMatchField:
+    def test_register_with_match_field(self, reg: HandlerRegistry):
+        v = reg.register("m", "tf_*", _fn("v1"), 0, None, match_field="form_type")
+        assert v.match_field == "form_type"
+
+    def test_resolve_matches_on_payload_field(self, reg: HandlerRegistry):
+        v = reg.register("m", "tf_*", _fn("v1"), 0, None, match_field="form_type")
+        # The stream path is irrelevant; matching is against event["form_type"].
+        assert reg.resolve("submissions", 0, event={"form_type": "tf_611"}) == [v]
+        assert reg.resolve("submissions", 0, event={"form_type": "sf_12"}) == []
+
+    def test_resolve_falls_back_to_stream_path(self, reg: HandlerRegistry):
+        # No match_field -> current behaviour: match the event_match string,
+        # event argument ignored.
+        v = reg.register("m", "room:*", _fn("v1"), 0, None)
+        assert reg.resolve("room:5", 0) == [v]
+        assert reg.resolve("room:5", 0, event={"form_type": "x"}) == [v]
+
+    def test_resolve_match_field_requires_event(self, reg: HandlerRegistry):
+        reg.register("m", "tf_*", _fn("v1"), 0, None, match_field="form_type")
+        with pytest.raises(ValueError, match="match_field"):
+            reg.resolve("submissions", 0)  # no event provided
+
+    def test_resolve_tolerates_empty_series(self, reg: HandlerRegistry):
+        # A registration that failed after setdefault() (e.g. a persist error)
+        # can leave a (name, pattern) -> [] entry. resolve() must fall back to
+        # stream-path routing, not IndexError on versions[0].
+        reg._versions[("ghost", "room:*")] = []  # type: ignore[attr-defined]
+        assert reg.resolve("chat:5", 0) == []  # non-matching pattern: skipped
+        with pytest.raises(HandlerGapError):  # matching, no covering version
+            reg.resolve("room:5", 0)
+
+
 class TestDecorator:
     def test_decorator_registers_with_explicit_registry(self):
         reg = HandlerRegistry()

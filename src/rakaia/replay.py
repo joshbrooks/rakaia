@@ -5,7 +5,7 @@ versioned handlers and an effect executor.
 Pipeline per event:
     1. Load the raw event bytes from the stream
     2. Decode as JSON, upcast to current schema via UpcasterRegistry
-    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq)
+    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq, event)
     4. Call each handler -> collect Effects
     5. Filter out op="external" effects unless include_external=True
     6. executor.apply(effects)
@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .effects import Effect, Executor
+from .protocols import ReadableStore
 from .registry import (
     HandlerDriftError,
     HandlerRegistry,
@@ -33,7 +34,6 @@ from .registry import (
     get_default_upcaster_registry,
 )
 from .source_hash import hash_function_source
-from .store import StreamStore
 
 _log = logging.getLogger("rakaia.replay")
 
@@ -52,7 +52,7 @@ class ReplayResult:
 
 
 def replay(
-    store: StreamStore,
+    store: ReadableStore,
     stream_path: str,
     executor: Executor,
     *,
@@ -70,7 +70,7 @@ def replay(
     via `executor`.
 
     Args:
-        store: The StreamStore holding the events.
+        store: The store holding the events (in-memory or durable).
         stream_path: Path of the event stream to replay.
         executor: Effect executor (e.g. DjangoExecutor).
         handler_registry: HandlerRegistry to dispatch through; defaults to the
@@ -120,7 +120,7 @@ def replay(
             drift_callback=_upcaster_drift,
         )
 
-        versions = handlers.resolve(match_str, seq)
+        versions = handlers.resolve(match_str, seq, event=upcasted)
         all_effects: list[Effect] = []
         for version in versions:
             _check_handler_drift(version, on_drift, result)

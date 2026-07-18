@@ -36,6 +36,22 @@ class TestEffect:
         assert eff.kind == "email"
         assert eff.payload == {"to": "x@y.z", "subject": "hi"}
 
+    def test_delete_effect_fields(self):
+        eff = Effect(
+            op="delete",
+            model_label="myapp.Child",
+            lookup={"parent_id": 7},
+            exclude={"idx__in": [0, 1]},
+        )
+        assert eff.op == "delete"
+        assert eff.model_label == "myapp.Child"
+        assert eff.lookup == {"parent_id": 7}
+        assert eff.exclude == {"idx__in": [0, 1]}
+
+    def test_delete_effect_exclude_defaults_to_none(self):
+        eff = Effect(op="delete", model_label="myapp.Child", lookup={"parent_id": 7})
+        assert eff.exclude is None
+
     def test_equality(self):
         a = Effect(
             op="update_or_create",
@@ -173,6 +189,22 @@ class TestCheckDisjointDefaults:
             [
                 Effect(op="external", kind="email", payload={"to": "x"}),
                 Effect(op="external", kind="email", payload={"to": "x"}),
+            ]
+        )
+
+    def test_delete_effects_ignored(self):
+        # Delete effects carry no `defaults`; they must never trip collision
+        # detection, even when a sibling upsert targets the same row.
+        check_disjoint_defaults(
+            [
+                Effect(op="delete", model_label="m.M", lookup={"parent": 1}),
+                Effect(op="delete", model_label="m.M", lookup={"parent": 1}),
+                Effect(
+                    op="update_or_create",
+                    model_label="m.M",
+                    lookup={"parent": 1},
+                    defaults={"x": 1},
+                ),
             ]
         )
 

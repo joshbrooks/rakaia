@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-EffectOp = Literal["update_or_create", "external"]
+EffectOp = Literal["update_or_create", "delete", "external"]
 
 
 # =============================================================================
@@ -27,18 +27,25 @@ class Effect:
     """A pure data description of one side-effect."""
 
     op: EffectOp
-    """The kind of effect. 'update_or_create' is replay-safe; 'external'
-    (email, third-party call) is skipped by default on replay."""
+    """The kind of effect. 'update_or_create' and 'delete' are replay-safe;
+    'external' (email, third-party call) is skipped by default on replay."""
 
-    # Fields for op="update_or_create"
+    # Fields for op="update_or_create" and op="delete"
     model_label: str | None = None
     """'app_label.ModelName', e.g. 'myapp.Room'."""
 
     lookup: dict[str, Any] | None = None
-    """Lookup kwargs passed as **kwargs to update_or_create."""
+    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'delete',
+    the `filter()` scope. An empty dict on a delete scopes the whole model."""
 
     defaults: dict[str, Any] | None = None
     """Default field values passed as `defaults=` to update_or_create."""
+
+    # Field for op="delete"
+    exclude: dict[str, Any] | None = None
+    """Rows to spare from a delete: `filter(**lookup).exclude(**exclude)`. This
+    is the reconcile-children primitive — delete a child scope except the keys
+    still present (e.g. `{"idx__in": [0, 1]}`). Ignored for other ops."""
 
     # Fields for op="external"
     kind: str | None = None

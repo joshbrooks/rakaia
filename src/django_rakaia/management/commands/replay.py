@@ -11,17 +11,8 @@ from django.core.management.base import BaseCommand, CommandParser
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.store import get_store
+from rakaia.executors import CollectingExecutor
 from rakaia.replay import replay
-
-
-class _DryRunExecutor:
-    """Executor that records effect counts but applies nothing."""
-
-    def __init__(self) -> None:
-        self.applied = 0
-
-    def apply(self, effects):
-        self.applied += sum(1 for _ in effects)
 
 
 class Command(BaseCommand):
@@ -62,7 +53,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:  # noqa: ARG002
-        executor: Any = _DryRunExecutor() if options["dry_run"] else DjangoExecutor()
+        dry_run = options["dry_run"]
+        # On a dry run, collect the effects instead of applying them so we can
+        # both report the count and list exactly what *would* be written.
+        executor: Any = CollectingExecutor() if dry_run else DjangoExecutor()
         result = replay(
             store=get_store(),
             stream_path=options["stream"],
@@ -73,7 +67,7 @@ class Command(BaseCommand):
             on_drift="raise" if options["strict_drift"] else "warn",
         )
 
-        mode = "DRY RUN" if options["dry_run"] else "APPLIED"
+        mode = "DRY RUN" if dry_run else "APPLIED"
         self.stdout.write(
             self.style.SUCCESS(
                 f"[{mode}] stream={options['stream']!r} "
@@ -82,6 +76,11 @@ class Command(BaseCommand):
                 f"external_skipped={result.external_effects_skipped}"
             )
         )
+        if dry_run:
+            for eff in executor.effects:
+                target = eff.model_label or eff.kind or ""
+                detail = eff.lookup if eff.op != "external" else eff.payload
+                self.stdout.write(f"  {eff.op} {target} {detail}")
         if result.warnings:
             for w in result.warnings:
                 self.stdout.write(self.style.WARNING(w))

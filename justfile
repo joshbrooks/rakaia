@@ -26,6 +26,7 @@ REDIS_URL       := env_var_or_default("REDIS_URL", "redis://localhost:" + REDIS_
 CHAT_DIR        := "examples/chat"
 POLYGLOT_DIR    := "examples/polyglot"
 ORDERS_DIR      := "examples/orders"
+FORMKIT_DIR     := "examples/formkit_submissions"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -184,6 +185,20 @@ orders-demo:
 orders-dev:
     cd {{ORDERS_DIR}} && uv run python manage.py migrate
     cd {{ORDERS_DIR}} && uv run python manage.py runserver 0.0.0.0:8002
+
+# ---------------------------------------------------------------------------
+# FormKit-submissions prototype (adoption spike for formkit-ninja)
+# ---------------------------------------------------------------------------
+
+# Seed submissions, replay, and assert replay == direct to_model()
+formkit-demo:
+    cd {{FORMKIT_DIR}} && uv run python manage.py migrate
+    cd {{FORMKIT_DIR}} && uv run python manage.py demo_submissions --twice
+
+# Dev server showing the materialized submission projection
+formkit-dev:
+    cd {{FORMKIT_DIR}} && uv run python manage.py migrate
+    cd {{FORMKIT_DIR}} && uv run python manage.py runserver 0.0.0.0:8003
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)

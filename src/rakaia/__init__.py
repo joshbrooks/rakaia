@@ -25,7 +25,9 @@ from .effects import (
     Executor,
     check_disjoint_defaults,
 )
+from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
+from .projections import reconcile_children
 from .registry import (
     HANDLERS_META_STREAM,
     UPCASTERS_META_STREAM,
@@ -42,6 +44,7 @@ from .registry import (
     get_default_upcaster_registry,
     register_handler,
     register_upcaster,
+    upcast,
 )
 from .replay import ReplayResult, replay
 from .store import StreamStore
@@ -101,6 +104,9 @@ __all__ = [
     "Executor",
     "EffectCollisionError",
     "check_disjoint_defaults",
+    "CollectingExecutor",
+    # Versioned handlers — projections
+    "reconcile_children",
     # Versioned handlers — registry
     "register_handler",
     "register_upcaster",
@@ -115,6 +121,7 @@ __all__ = [
     "UpcasterChainError",
     "get_default_registry",
     "get_default_upcaster_registry",
+    "upcast",
     "HANDLERS_META_STREAM",
     "UPCASTERS_META_STREAM",
     # Versioned handlers — replay

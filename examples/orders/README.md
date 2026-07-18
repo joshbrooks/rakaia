@@ -26,6 +26,7 @@ Expected output (abridged):
 
 ```
 Seeded 6 order events (tax rule changes at seq 3).
+Dry run: replay would apply 10 effects (no writes yet).
 [replay] events=6 effects_applied=10 external_skipped=4
 
 order     status       subtotal   rate      tax     total  points
@@ -49,6 +50,7 @@ Replayed again: 6 -> 6 rows — idempotent ✓
 | **Sibling handler** | `handlers.py` — `order_loyalty` | Writes a *disjoint* `defaults` key (`loyalty_points`) on the same row as `order_totals` — no `EffectCollisionError`. Only PAID orders earn points. |
 | **External effect** | `handlers.py` — `order_receipt` | A receipt email tagged `op="external"`. Replay **skips** it (`external_skipped=4`), so re-deriving state never re-sends mail. Pass `--include-external` to count them differently. |
 | **Idempotency** | `--twice` | `update_or_create` converges: replaying again produces identical rows. |
+| **Dry-run preview** | `demo_orders.py` — `CollectingExecutor` | Records the effects replay *would* apply without writing them. The dry-run count matches `effects_applied` — the same primitive you'd use to verify a migration before committing it. |
 
 ## How it fits together
 

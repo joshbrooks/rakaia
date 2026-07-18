@@ -187,3 +187,54 @@ class TestDecorator:
             return {**event, "tag": "x"}
 
         assert my_upcaster({"a": 1}) == {"a": 1, "tag": "x"}
+
+
+class TestUpcastToCurrent:
+    def test_applies_full_chain(self, reg: UpcasterRegistry):
+        reg.register("orders", 1, _up_v1_to_v2)
+        reg.register("orders", 2, _up_v2_to_v3)
+        event = {"id": 1, "schema_version": 1}
+
+        out = reg.upcast_to_current(event, "orders")
+
+        assert out["schema_version"] == 3
+        assert out["currency_code"] == "USD"
+        assert "currency" not in out
+
+    def test_noop_when_no_upcasters(self, reg: UpcasterRegistry):
+        event = {"id": 1}
+        out = reg.upcast_to_current(event, "orders")
+        assert out == {"id": 1}
+
+    def test_when_already_current(self, reg: UpcasterRegistry):
+        reg.register("orders", 1, _up_v1_to_v2)
+        event = {"id": 1, "schema_version": 2}  # already at current
+        out = reg.upcast_to_current(event, "orders")
+        assert out == {"id": 1, "schema_version": 2}
+
+
+class TestModuleLevelUpcast:
+    def test_uses_default_registry(self):
+        from rakaia import upcast
+        from rakaia.registry import get_default_upcaster_registry
+
+        reg = get_default_upcaster_registry()
+
+        def _u(event: dict) -> dict:
+            return {**event, "normalised": True}
+
+        reg.register("module_upcast_stream", 1, _u)
+        try:
+            out = upcast({"id": 1, "schema_version": 1}, "module_upcast_stream")
+            assert out["normalised"] is True
+            assert out["schema_version"] == 2
+        finally:
+            reg._upcasters.pop(("module_upcast_stream", 1), None)
+
+    def test_explicit_registry(self, reg: UpcasterRegistry):
+        from rakaia import upcast
+
+        reg.register("orders", 1, _up_v1_to_v2)
+        out = upcast({"id": 1, "schema_version": 1}, "orders", registry=reg)
+        assert out["currency"] == "USD"
+        assert out["schema_version"] == 2

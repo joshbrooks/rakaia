@@ -68,6 +68,28 @@ class TestPersistence:
         # No store - no exception, no stream created elsewhere
         assert reg.all_versions()
 
+    def test_match_field_persisted_and_rehydrated(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("m", "tf_*", _fn("v1"), 0, None, match_field="form_type")
+
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        payload = json.loads(messages[0].data)
+        assert payload["match_field"] == "form_type"
+
+        # A fresh registry over the same store dedups the identical
+        # registration (match_field included in the identity) — no re-append.
+        reg2 = HandlerRegistry(store=store)
+        reg2.register("m", "tf_*", _fn("v1"), 0, None, match_field="form_type")
+        messages2, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages2) == 1
+
+    def test_missing_match_field_defaults_to_none(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("m", "e", _fn("v1"), 0, None)
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        payload = json.loads(messages[0].data)
+        assert payload["match_field"] is None
+
 
 class TestIdempotency:
     def test_same_registration_twice_in_one_process_is_noop(self, store: StreamStore):
