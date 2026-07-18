@@ -30,6 +30,7 @@ FORMKIT_DIR     := "examples/formkit_submissions"
 HISTORY_DIR     := "examples/partisipa_history"
 PARTISIPA_DIR   := "examples/partisipa_staged"
 CLOSE_DIR       := "examples/partisipa_close"
+MERGE_DIR       := "examples/partisipa_merge"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -227,6 +228,15 @@ partisipa-demo:
 partisipa-close-demo:
     cd {{CLOSE_DIR}} && uv run python manage.py migrate
     cd {{CLOSE_DIR}} && uv run python manage.py demo_close
+
+# ---------------------------------------------------------------------------
+# Multi-stream merge spike (replay N form pipelines as one — issue #7)
+# ---------------------------------------------------------------------------
+
+# Merge three form streams into one deterministic replay; assert parity + ties
+partisipa-merge-demo:
+    cd {{MERGE_DIR}} && uv run python manage.py migrate
+    cd {{MERGE_DIR}} && uv run python manage.py demo_merge
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
