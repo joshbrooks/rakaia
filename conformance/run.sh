@@ -14,6 +14,7 @@ PORT="${1:-4437}"
 BASE_URL="http://127.0.0.1:${PORT}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
+SERVER_LOG="${ROOT}/conformance-server.log"
 
 # Install the JS conformance dependencies if needed.
 if [ ! -d "${HERE}/node_modules" ]; then
@@ -21,12 +22,14 @@ if [ ! -d "${HERE}/node_modules" ]; then
   (cd "${HERE}" && npm ci)
 fi
 
-# Start the standalone rakaia server in the background.
-echo "==> Starting rakaia on ${BASE_URL}"
+# Start the standalone rakaia server in the background. Its stdout/stderr go to
+# a log file (NOT this script's stdout) so the server never holds a pipe open —
+# otherwise a `| tee` on the caller side would block waiting for EOF at teardown.
+echo "==> Starting rakaia on ${BASE_URL} (server log: ${SERVER_LOG})"
 (
   cd "${ROOT}" &&
     exec uv run uvicorn rakaia:app --host 127.0.0.1 --port "${PORT}" --log-level warning
-) &
+) >"${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
@@ -51,6 +54,8 @@ for _ in $(seq 1 60); do
 done
 if [ -z "${ready}" ]; then
   echo "!! Server did not become ready on ${BASE_URL}" >&2
+  echo "---- server log ----" >&2
+  cat "${SERVER_LOG}" >&2 || true
   exit 1
 fi
 

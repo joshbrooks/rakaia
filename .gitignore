@@ -52,3 +52,4 @@ examples/chat/staticfiles/
 # Conformance harness (JS deps + run logs)
 conformance/node_modules/
 conformance-results.log
+conformance-server.log
