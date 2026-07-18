@@ -29,6 +29,7 @@ ORDERS_DIR      := "examples/orders"
 FORMKIT_DIR     := "examples/formkit_submissions"
 HISTORY_DIR     := "examples/partisipa_history"
 PARTISIPA_DIR   := "examples/partisipa_staged"
+CLOSE_DIR       := "examples/partisipa_close"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -217,6 +218,15 @@ partisipa-history-demo:
 partisipa-demo:
     cd {{PARTISIPA_DIR}} && uv run python manage.py migrate
     cd {{PARTISIPA_DIR}} && uv run python manage.py demo_staged
+
+# ---------------------------------------------------------------------------
+# Close-precondition state machine spike (guarded transition — issue #7)
+# ---------------------------------------------------------------------------
+
+# Decide a POM_1 cycle close from cross-form preconditions; reject then self-heal
+partisipa-close-demo:
+    cd {{CLOSE_DIR}} && uv run python manage.py migrate
+    cd {{CLOSE_DIR}} && uv run python manage.py demo_close
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)

@@ -23,6 +23,7 @@ nav = [
     { "Projections & fan-out" = "projections-and-fan-out.md" },
     { "pghistory retirement (spike)" = "pghistory-retirement.md" },
     { "Staged replay (spike)" = "staged-replay.md" },
+    { "Close preconditions (spike)" = "close-preconditions.md" },
     { "Translations" = "translations.md" },
     { "Deployment" = "deployment.md" },
     { Reference = [
