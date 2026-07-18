@@ -37,6 +37,16 @@ def _reset_projections() -> None:
     Project.objects.all().delete()
 
 
+def _link_state() -> tuple[list, list]:
+    """The link state that idempotency must preserve — the actual project_id and
+    link_reason of every form, plus the project registry, not just row counts."""
+    links = sorted(
+        (s.submission_id, s.project_id, s.link_reason) for s in Sf12.objects.all()
+    )
+    projects = sorted((p.suku, p.output, p.name) for p in Project.objects.all())
+    return links, projects
+
+
 def _append(store: Any, event: dict) -> None:
     store.append(STREAM, json.dumps(event).encode("utf-8"))
 
@@ -85,17 +95,25 @@ class Command(BaseCommand):
         sr.staged_replay(store, STREAM, STAGED)
         unlinked = Sf12.objects.filter(project__isnull=True).count()
         linked = Sf12.objects.filter(project__isnull=False).count()
-        style = self.style.SUCCESS if unlinked == 0 else self.style.ERROR
+        # Assert a positive expected count, not just "unlinked == 0" — the latter
+        # passes vacuously if stage 1 produces no rows at all (a broken dispatch
+        # or empty STAGE_1). Expected = every SF_1_2 in the seed.
+        expected = len([e for e in SAMPLE_SUBMISSIONS if e["form_type"] == "SF_1_2"])
+        ok = unlinked == 0 and linked == expected
+        style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(
             style(
                 f"\n[2] STAGED: {linked} linked, {unlinked} unlinked "
-                f"— stage 0 builds every Project before stage 1 links, so "
-                f"arrival order no longer matters."
+                f"(expected {expected} linked) — stage 0 builds every Project "
+                f"before stage 1 links, so arrival order no longer matters."
             )
         )
         self._print_links()
-        if unlinked != 0:
-            raise CommandError("staged replay left forms unlinked")
+        if not ok:
+            raise CommandError(
+                f"staged replay: expected {expected} linked / 0 unlinked, "
+                f"got {linked} linked / {unlinked} unlinked"
+            )
 
     def _check_self_heal(self, store: Any) -> None:
         # A new SF whose TF has NOT been submitted yet.
@@ -127,20 +145,23 @@ class Command(BaseCommand):
             )
         )
 
-        # Idempotency: replaying again changes nothing.
-        before = (Project.objects.count(), Sf12.objects.count())
+        # Idempotency: replaying again must not change the link *state*, not
+        # merely the row counts. update_or_create on stable lookups can never
+        # change a count, so a count check has no teeth — a re-derivation that
+        # flipped project_id back to NULL (or NM->NPO) would still pass it.
+        before = _link_state()
         sr.staged_replay(store, STREAM, STAGED)
-        after = (Project.objects.count(), Sf12.objects.count())
+        after = _link_state()
         ok = before == after
         style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(
             style(
-                f"    replayed again: {before} -> {after} rows — "
-                f"{'idempotent ✓' if ok else 'NOT idempotent ✗'}"
+                f"    replayed again: {len(after[0])} links / {len(after[1])} "
+                f"projects — {'link state unchanged ✓' if ok else 'CHANGED ✗'}"
             )
         )
         if not ok:
-            raise CommandError("staged replay is not idempotent")
+            raise CommandError("staged replay is not idempotent (link state changed)")
 
     # -- output -------------------------------------------------------------
 
