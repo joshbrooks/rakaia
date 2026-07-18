@@ -8,8 +8,9 @@ timestamps stably, and self-healing when a fix lands on one pipeline?*
 Four checks, each asserted hard (a failure raises CommandError):
 
   [1] PARITY      — the projection built by merging three streams equals the one
-                    built from a single combined stream, byte-for-byte; and the
-                    merged order reconstructs the authored canonical order.
+                    built from a single combined stream, field-for-field
+                    (including the order-sensitive Claim row); and the merged
+                    order reconstructs the authored canonical order.
   [2] DETERMINISM — merging is a pure function of the streams: passing the paths
                     in a different order yields the identical merged sequence.
   [3] TIE-BREAK   — two events sharing a timestamp across streams resolve by the
@@ -30,6 +31,7 @@ from subproject import merge_replay as mr
 from subproject.handlers import STAGES
 from subproject.models import (
     Balance,
+    Claim,
     FinanceLine,
     Meeting,
     Project,
@@ -47,7 +49,7 @@ from subproject.seed import (
 
 
 def _reset() -> None:
-    for model in (Readiness, Balance, FinanceLine, Meeting, Project):
+    for model in (Readiness, Balance, Claim, FinanceLine, Meeting, Project):
         model.objects.all().delete()
 
 
@@ -69,6 +71,9 @@ def _snapshot() -> dict[str, Any]:
         "meeting": {
             (m.suku, m.meeting_id): m.verified for m in Meeting.objects.all()
         },
+        # Order-sensitive across streams: the tied FINANCE/MEETING pair both
+        # write this, so its value depends on the merged order between them.
+        "claim": {c.slot: c.claimed_by for c in Claim.objects.all()},
     }
 
 
@@ -174,21 +179,32 @@ class Command(BaseCommand):
         keys = [e["key"] for e in mr.merge_streams(store, THREE_STREAMS)]
         first, second = TIE_KEYS  # ("f-mb-1", "m-mb-1") — same ts, finance first
         i_first, i_second = keys.index(first), keys.index(second)
+        # Materialize the projection so the tie's effect on state is observable.
+        _replay_merged(store)
+        claimed_by = Claim.objects.get(slot="mb-claim").claimed_by
 
         self.stdout.write("\n[3] TIE-BREAK — two events share a timestamp:")
         self.stdout.write(
             f"    {first} (forms/finance) and {second} (forms/meetings) both at "
-            f"12:30 -> merged positions {i_first}, {i_second}."
+            f"12:30 -> merged positions {i_first}, {i_second}; "
+            f"Claim.claimed_by={claimed_by}."
         )
-        # finance sorts before meetings (path tiebreak), and they stay adjacent.
+        # finance sorts before meetings (path tiebreak), and they stay adjacent;
+        # the LATER one ({second}) therefore wins the shared Claim row.
         if not (i_first + 1 == i_second):
             raise CommandError(
                 f"tied events not resolved by the stable tiebreak: "
                 f"{first}@{i_first}, {second}@{i_second}"
             )
+        if claimed_by != second:
+            raise CommandError(
+                f"tie resolved wrong in the projection: Claim won by "
+                f"{claimed_by}, expected {second} (the later event in merged order)"
+            )
         self.stdout.write(
             self.style.SUCCESS(
-                "    → equal timestamps break by (stream_path, offset), stably ✓"
+                "    → equal timestamps break by (stream_path, offset), stably, "
+                "and the projection reflects it ✓"
             )
         )
 

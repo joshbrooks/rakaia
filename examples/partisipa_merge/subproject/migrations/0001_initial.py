@@ -19,6 +19,16 @@ class Migration(migrations.Migration):
             options={"ordering": ["suku"]},
         ),
         migrations.CreateModel(
+            name="Claim",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("slot", models.CharField(max_length=64, unique=True)),
+                ("claimed_by", models.CharField(default="", max_length=64)),
+                ("ts", models.CharField(default="", max_length=32)),
+            ],
+            options={"ordering": ["slot"]},
+        ),
+        migrations.CreateModel(
             name="FinanceLine",
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),

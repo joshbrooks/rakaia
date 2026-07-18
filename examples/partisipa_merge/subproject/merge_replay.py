@@ -84,7 +84,9 @@ def staged_replay_events(
         for event in events:
             for form_type, fn in spec.get("events", []):
                 if event.get("form_type") == form_type:
-                    executor.apply([fn(event, refs)])
+                    effect = fn(event, refs)
+                    if effect is not None:  # handlers may opt out per event
+                        executor.apply([effect])
         reduce_batch = []
         for reduce_fn in spec.get("reduce", []):
             reduce_batch.extend(reduce_fn(refs))

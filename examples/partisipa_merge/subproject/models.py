@@ -55,6 +55,24 @@ class Balance(models.Model):
         ordering = ["suku"]
 
 
+class Claim(models.Model):
+    """A cross-stream last-write-wins witness.
+
+    Two events from *different* streams — a FINANCE and a MEETING sharing a
+    timestamp — both claim the same slot, so the final ``claimed_by`` is only
+    correct if the merge resolves their order correctly. This is what makes
+    cross-stream ordering *observable in the projection*, so the parity and
+    tie-break checks test the merge order, not just the event key sequence.
+    """
+
+    slot = models.CharField(max_length=64, unique=True)
+    claimed_by = models.CharField(max_length=64, default="")
+    ts = models.CharField(max_length=32, default="")
+
+    class Meta:
+        ordering = ["slot"]
+
+
 class Readiness(models.Model):
     """The cross-stream subproject verdict — ready to close + failing reasons."""
 

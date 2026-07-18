@@ -50,8 +50,8 @@ Seeded 11 events into 1 combined stream and across 3 form pipelines (forms/progr
     → merge is a pure function of the streams ✓
 
 [3] TIE-BREAK — two events share a timestamp:
-    f-mb-1 (forms/finance) and m-mb-1 (forms/meetings) both at 12:30 -> merged positions 7, 8.
-    → equal timestamps break by (stream_path, offset), stably ✓
+    f-mb-1 (forms/finance) and m-mb-1 (forms/meetings) both at 12:30 -> merged positions 7, 8; Claim.claimed_by=m-mb-1.
+    → equal timestamps break by (stream_path, offset), stably, and the projection reflects it ✓
 
 [4] SELF-HEAL — fixes arrive on separate pipelines:
     Maubara      READY      —
@@ -71,15 +71,27 @@ Each check is asserted hard — a regression raises `CommandError` and exits non
   timestamp across streams always resolve the same way, **independent of the order
   the streams are passed in**. The seed includes exactly such a tie at `12:30`.
 
+## Making cross-stream order observable in state
+
+Most of this projection is deliberately order-*insensitive* — aggregates recompute,
+`Readiness` is derived, and each last-write-wins field's collisions are intra-stream.
+That's a feature (staged replay + idempotent recompute), but it means the merge order
+between streams wouldn't show up in the materialized state on its own. So the tied
+`FINANCE`/`MEETING` pair both write a shared `Claim` row: the one that lands **later**
+in the merged order wins, so `Claim.claimed_by` is only correct if the cross-stream
+tie is resolved correctly. That makes the `[1] PARITY` projection-equality and the
+`[3] TIE-BREAK` checks test the merge *order*, not just the event key sequence.
+
 ## The checks have teeth
 
 Each assertion was verified to fail on an injected regression:
 
-- **removing the sort** (concatenate by stream) fails `[1] PARITY` — the merged
-  order no longer matches the canonical sequence;
+- **removing the sort** (concatenate by stream) fails `[1] PARITY` — both the merged
+  order (vs the canonical sequence) *and* the materialized projection differ, because
+  the tie's `Claim` winner flips;
 - **sorting by `ts` alone** (dropping the `(stream_path, offset)` tiebreak) fails
-  `[2] DETERMINISM` — passing the paths forwards vs reversed produces different
-  sequences.
+  `[2] DETERMINISM` (paths forwards vs reversed differ) and `[3] TIE-BREAK` (the
+  `Claim` is won by the wrong event).
 
 ## How it composes
 
@@ -99,7 +111,7 @@ variable the parity check measures is where the events came from.
 * **`seed.py`** — events with a `ts` order key, authored in canonical order, split across three pipelines, with a deliberate cross-stream tie.
 * **`merge_replay.py`** — `merge_streams` (the k-way merge + order key) and `staged_replay_events` (the source-agnostic staged orchestrator).
 * **`handlers.py`** — stage 0 facts, stage 1 balance aggregate, stage 2 readiness rollup.
-* **`models.py`** — the five projections incl. the derived `Readiness` view.
+* **`models.py`** — the projections incl. the derived `Readiness` view and the cross-stream `Claim` witness.
 * **`management/commands/demo_merge.py`** — builds both stream layouts and runs all four asserted checks.
 
 ## Caveats

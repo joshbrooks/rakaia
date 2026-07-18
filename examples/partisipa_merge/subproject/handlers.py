@@ -24,6 +24,7 @@ MEETING = "subproject.Meeting"
 FINANCE_LINE = "subproject.FinanceLine"
 BALANCE = "subproject.Balance"
 READINESS = "subproject.Readiness"
+CLAIM = "subproject.Claim"
 
 REQUIRED_VERIFIED_MEETINGS = 2
 
@@ -59,6 +60,23 @@ def finance_line(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
             "account": event["account"],
             "delta": event["delta"],
         },
+    )
+
+
+def claim(event: dict[str, Any], refs: Any) -> Effect | None:  # noqa: ARG001
+    """Fires only for events carrying a ``slot`` — the cross-stream LWW witness.
+
+    Registered for both MEETING and FINANCE, but only the tied pair in the seed
+    carries a slot, so exactly those two write the row; the one that comes later
+    in the merged order wins. Returns None (skipped) for every other event.
+    """
+    if "slot" not in event:
+        return None
+    return Effect(
+        op="update_or_create",
+        model_label=CLAIM,
+        lookup={"slot": event["slot"]},
+        defaults={"claimed_by": event["key"], "ts": event["ts"]},
     )
 
 
@@ -132,7 +150,9 @@ STAGES: dict[int, dict[str, Any]] = {
         "events": [
             ("PROGRESS", progress),
             ("MEETING", meeting),
+            ("MEETING", claim),
             ("FINANCE", finance_line),
+            ("FINANCE", claim),
         ]
     },
     1: {"reduce": [balance_rollup]},

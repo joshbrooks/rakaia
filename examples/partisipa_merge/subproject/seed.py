@@ -38,10 +38,14 @@ INITIAL_EVENTS: list[dict] = [
     {"form_type": "PROGRESS", "key": "p-mb-road", "ts": "2026-03-01T12:00:00Z",
      "suku": "Maubara", "output": "ROAD", "percent": 60},
     # ---- cross-stream tie at 12:30: finance (f-mb-1) sorts before meeting ----
+    # Both carry the same `slot`, so whichever is LATER in the merged order wins
+    # the Claim row — making the tie's resolution observable in the projection.
     {"form_type": "FINANCE", "key": "f-mb-1", "ts": "2026-03-01T12:30:00Z",
-     "suku": "Maubara", "account": "operational", "delta": "100.00"},
+     "suku": "Maubara", "account": "operational", "delta": "100.00",
+     "slot": "mb-claim"},
     {"form_type": "MEETING", "key": "m-mb-1", "ts": "2026-03-01T12:30:00Z",
-     "suku": "Maubara", "meeting_id": "M1", "verified": True},
+     "suku": "Maubara", "meeting_id": "M1", "verified": True,
+     "slot": "mb-claim"},
     {"form_type": "FINANCE", "key": "f-mb-2", "ts": "2026-03-01T13:00:00Z",
      "suku": "Maubara", "account": "operational", "delta": "-150.00"},
     {"form_type": "FINANCE", "key": "f-mb-3", "ts": "2026-03-01T13:30:00Z",
