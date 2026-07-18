@@ -144,6 +144,20 @@ uv run ruff check src/
 uv run pyright src/
 ```
 
+### Protocol conformance
+
+Beyond the pytest suite, rakaia is checked against the upstream, language-agnostic
+[`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests)
+compliance suite:
+
+```bash
+just conformance   # starts rakaia, runs the suite against it, tears it down (needs node/npm)
+```
+
+This runs in CI as a non-blocking check (`.github/workflows/conformance.yml`).
+rakaia passes the full protocol surface today except the stream **forking**
+family, which is not yet implemented. See [`conformance/README.md`](conformance/README.md).
+
 ## License
 
 MIT.

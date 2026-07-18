@@ -56,12 +56,17 @@ class StreamStore:
     # =========================================================================
 
     def _is_expired(self, stream: Stream) -> bool:
-        """Check if a stream is expired based on TTL or Expires-At."""
+        """Check if a stream is expired based on TTL or Expires-At.
+
+        Stream-TTL is a sliding window anchored on ``last_activity_at`` (reset
+        on read/write/close). Stream-Expires-At is an absolute deadline that
+        does not slide.
+        """
         now = time.time()
 
         if (
             stream.ttl_seconds is not None
-            and now - stream.created_at > stream.ttl_seconds
+            and now - stream.last_activity_at > stream.ttl_seconds
         ):
             return True
 
@@ -86,6 +91,21 @@ class StreamStore:
             self.delete(path)
             return None
         return stream
+
+    def _touch(self, stream: Stream) -> None:
+        """Extend the sliding TTL window for a stream (no-op without a TTL)."""
+        if stream.ttl_seconds is not None:
+            stream.last_activity_at = time.time()
+
+    def touch(self, path: str) -> None:
+        """Reset the TTL sliding window for a stream if it exists.
+
+        Called for TTL-extending activity that does not otherwise mutate the
+        stream (e.g. a ``GET ?offset=now`` catch-up read).
+        """
+        stream = self._get_if_not_expired(path)
+        if stream is not None:
+            self._touch(stream)
 
     def create(
         self,
@@ -121,13 +141,15 @@ class StreamStore:
                 f"Stream already exists with different configuration: {path}"
             )
 
+        now = time.time()
         stream = Stream(
             path=path,
             content_type=content_type,
             current_offset=INITIAL_OFFSET,
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
-            created_at=time.time(),
+            created_at=now,
+            last_activity_at=now,
             closed=closed,
         )
 
@@ -243,6 +265,9 @@ class StreamStore:
 
         # === STATE MUTATION (only after successful append) ===
 
+        # A write extends the sliding TTL window.
+        self._touch(stream)
+
         if producer_result is not None:
             self._commit_producer_state(stream, producer_result)
 
@@ -301,6 +326,9 @@ class StreamStore:
         already_closed = stream.closed
         stream.closed = True
 
+        # A close extends the sliding TTL window.
+        self._touch(stream)
+
         self._notify_closed(path)
 
         return CloseResult(
@@ -356,6 +384,10 @@ class StreamStore:
             # Commit and close
             self._commit_producer_state(stream, producer_result)
             stream.closed = True
+
+            # A close extends the sliding TTL window.
+            self._touch(stream)
+
             from .types import ClosedBy
 
             stream.closed_by = ClosedBy(
@@ -388,6 +420,9 @@ class StreamStore:
         stream = self._get_if_not_expired(path)
         if stream is None:
             raise KeyError(f"Stream not found: {path}")
+
+        # A read extends the sliding TTL window.
+        self._touch(stream)
 
         if not offset or offset == "-1":
             return list(stream.messages), True

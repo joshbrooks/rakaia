@@ -95,8 +95,13 @@ class InjectedFault:
 class ServerOptions:
     """Configuration for the ASGI handler."""
 
-    long_poll_timeout: float = float(os.environ.get("LONG_POLL_TIMEOUT", "30.0"))
-    """Default long-poll timeout in seconds."""
+    long_poll_timeout: float = float(os.environ.get("LONG_POLL_TIMEOUT", "3.0"))
+    """Default long-poll hold window in seconds.
+
+    Kept short so a caught-up long-poll (e.g. ``?offset=now&live=long-poll``)
+    returns a ``204`` promptly rather than blocking a client for tens of
+    seconds. Override with the ``LONG_POLL_TIMEOUT`` environment variable.
+    """
 
     cursor_options: CursorOptions = field(default_factory=CursorOptions)
     """Cursor calculation options."""
@@ -131,8 +136,8 @@ def create_app(
             "access-control-allow-origin": "*",
             "access-control-allow-methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS",
             "access-control-allow-headers": (
-                "content-type, authorization, Stream-Seq, Stream-TTL, "
-                "Stream-Expires-At, Stream-Closed, Producer-Id, "
+                "content-type, authorization, If-None-Match, Stream-Seq, "
+                "Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, "
                 "Producer-Epoch, Producer-Seq"
             ),
             "access-control-expose-headers": (
@@ -390,6 +395,12 @@ async def _handle_head(
     if stream.closed:
         headers[STREAM_CLOSED_HEADER_RESP] = "true"
 
+    # Surface configured expiry metadata (HEAD must not extend the TTL window).
+    if stream.ttl_seconds is not None:
+        headers["Stream-TTL"] = str(stream.ttl_seconds)
+    if stream.expires_at:
+        headers["Stream-Expires-At"] = stream.expires_at
+
     # ETag: {path_b64}:-1:{offset}[:c]
     path_b64 = base64.b64encode(path.encode()).decode()
     closed_suffix = ":c" if stream.closed else ""
@@ -499,6 +510,8 @@ async def _handle_read(
     # Catch-up mode with offset=now: return empty with tail offset
     # For regular GET, return 200 with empty body. For long-poll, fall through to wait.
     if offset == "now" and live != "long-poll":
+        # A catch-up read extends the sliding TTL window.
+        store.touch(path)
         headers: dict[str, str] = {
             **cors,
             STREAM_OFFSET_HEADER_RESP: stream.current_offset,
@@ -655,6 +668,33 @@ def _encode_sse_data(payload: str) -> str:
     return result
 
 
+def _build_sse_control(
+    control_offset: str,
+    tail_offset: str,
+    stream_is_closed: bool,
+    up_to_date: bool,
+    cursor: str | None,
+    cursor_options: CursorOptions,
+) -> bytes:
+    """Build an SSE ``control`` event frame for a given offset.
+
+    Emitted immediately after each ``data`` event during catch-up so consumers
+    can rely on strict data -> control pairing. Signals closure at the tail and
+    otherwise carries the collapse cursor and (at the tail) the up-to-date flag.
+    """
+    at_tail = control_offset == tail_offset
+    control_data: dict[str, str | bool] = {SSE_OFFSET_FIELD: control_offset}
+    if stream_is_closed and at_tail:
+        control_data[SSE_CLOSED_FIELD] = True
+    else:
+        control_data[SSE_CURSOR_FIELD] = generate_response_cursor(
+            cursor, cursor_options
+        )
+        if at_tail and up_to_date:
+            control_data[SSE_UP_TO_DATE_FIELD] = True
+    return f"event: control\n{_encode_sse_data(json.dumps(control_data))}".encode()
+
+
 async def _handle_sse(
     path: str,
     stream: Any,
@@ -694,52 +734,56 @@ async def _handle_sse(
         except KeyError:
             break
 
-        buffer = b""
-
-        # Send data events
-        for message in messages:
-            if use_base64:
-                data_payload = base64.b64encode(message.data).decode()
-            elif is_json_stream:
-                json_bytes = store.format_response(path, [message])
-                data_payload = json_bytes.decode("utf-8")
-            else:
-                data_payload = message.data.decode("utf-8")
-
-            sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
-            buffer += sse_data.encode("utf-8")
-            current_offset = message.offset
-
-        # Build control event
         current_stream = store.get(path)
         if current_stream is None:
-            if buffer:
-                await send_body_chunk(send, buffer)
             break
 
-        control_offset = (
-            messages[-1].offset if messages else current_stream.current_offset
-        )
+        tail_offset = current_stream.current_offset
         stream_is_closed = current_stream.closed
-        client_at_tail = control_offset == current_stream.current_offset
+        cursor_opts = opts.cursor_options
 
-        control_data: dict[str, str | bool] = {
-            SSE_OFFSET_FIELD: control_offset,
-        }
+        buffer = b""
 
-        if stream_is_closed and client_at_tail:
-            control_data[SSE_CLOSED_FIELD] = True
+        if messages:
+            # Pair every data event with its own control event so consumers can
+            # rely on a strict data -> control framing during catch-up.
+            for message in messages:
+                if use_base64:
+                    data_payload = base64.b64encode(message.data).decode()
+                elif is_json_stream:
+                    json_bytes = store.format_response(path, [message])
+                    data_payload = json_bytes.decode("utf-8")
+                else:
+                    data_payload = message.data.decode("utf-8")
+
+                sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
+                buffer += sse_data.encode("utf-8")
+                buffer += _build_sse_control(
+                    message.offset,
+                    tail_offset,
+                    stream_is_closed,
+                    up_to_date,
+                    cursor,
+                    cursor_opts,
+                )
+                current_offset = message.offset
+
+            control_offset = messages[-1].offset
         else:
-            resp_cursor = generate_response_cursor(cursor, opts.cursor_options)
-            control_data[SSE_CURSOR_FIELD] = resp_cursor
-            if up_to_date:
-                control_data[SSE_UP_TO_DATE_FIELD] = True
-
-        control_json = json.dumps(control_data)
-        sse_control = f"event: control\n{_encode_sse_data(control_json)}"
-        buffer += sse_control.encode("utf-8")
+            # Caught up with nothing new: emit a single control event.
+            control_offset = tail_offset
+            buffer += _build_sse_control(
+                control_offset,
+                tail_offset,
+                stream_is_closed,
+                up_to_date,
+                cursor,
+                cursor_opts,
+            )  # noqa: B023
 
         await send_body_chunk(send, buffer)
+
+        client_at_tail = control_offset == tail_offset
 
         # If closed and at tail, end connection
         if stream_is_closed and client_at_tail:

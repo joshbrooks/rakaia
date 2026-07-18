@@ -144,6 +144,55 @@ class TestExpiry:
         # Should not raise; malformed expires_at is treated as not expired
         assert store.get("foo") is not None
 
+    def test_ttl_slides_on_read(self, store: StreamStore):
+        """A read resets the TTL sliding window."""
+        with patch("rakaia.store.time.time") as mock_time:
+            mock_time.return_value = 1000.0
+            store.create("foo", ttl_seconds=10)
+
+            mock_time.return_value = 1005.0  # read within window -> extends
+            store.read("foo")
+
+            mock_time.return_value = 1012.0  # 12s after create, 7s after read
+            assert store.get("foo") is not None  # would be expired without sliding
+
+    def test_ttl_slides_on_append(self, store: StreamStore):
+        """A write resets the TTL sliding window."""
+        with patch("rakaia.store.time.time") as mock_time:
+            mock_time.return_value = 1000.0
+            store.create("foo", content_type="text/plain", ttl_seconds=10)
+
+            mock_time.return_value = 1005.0
+            store.append("foo", b"x", AppendOptions(content_type="text/plain"))
+
+            mock_time.return_value = 1012.0
+            assert store.get("foo") is not None
+
+    def test_ttl_does_not_slide_on_get(self, store: StreamStore):
+        """A metadata lookup (HEAD path) must not extend the TTL window."""
+        with patch("rakaia.store.time.time") as mock_time:
+            mock_time.return_value = 1000.0
+            store.create("foo", ttl_seconds=10)
+
+            mock_time.return_value = 1005.0
+            store.get("foo")  # HEAD-style lookup, no extension
+
+            mock_time.return_value = 1012.0
+            assert store.get("foo") is None
+
+    def test_expires_at_does_not_slide_on_read(self, store: StreamStore):
+        """Absolute Stream-Expires-At is not affected by activity."""
+        with patch("rakaia.store.time.time") as mock_time:
+            mock_time.return_value = 1000.0
+            store.create("foo", expires_at="2024-01-01T00:00:00Z")
+
+            # A read at a still-valid time must not push the absolute deadline out.
+            mock_time.return_value = 1000.0
+            store.read("foo")
+
+            mock_time.return_value = 1893456000.0  # 2030
+            assert store.get("foo") is None
+
 
 # =============================================================================
 # Append
