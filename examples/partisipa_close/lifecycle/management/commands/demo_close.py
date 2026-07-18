@@ -164,18 +164,25 @@ class Command(BaseCommand):
         before = _close_state()
         sr.staged_replay(store, STREAM, STAGES)  # onto existing state, no reset
         after = _close_state()
+        # Assert a positive expected count too (one decision per distinct POM_1
+        # suku), so this check can't pass vacuously on empty state if a
+        # regression stopped stage 2 from writing any CycleClose rows.
+        expected = len({e["suku"] for e in SAMPLE_EVENTS if e["form_type"] == "POM_1"})
 
         self.stdout.write("\n[4] DETERMINISTIC — re-replay the whole stream:")
-        ok = before == after
+        ok = before == after and len(after) == expected
         style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(
             style(
-                f"    {len(after)} cycle-close decisions — "
+                f"    {len(after)}/{expected} cycle-close decisions — "
                 f"{'unchanged ✓' if ok else 'CHANGED ✗'}"
             )
         )
         if not ok:
-            raise CommandError("re-replay changed a close decision")
+            raise CommandError(
+                f"re-replay changed a close decision or count "
+                f"({len(before)} -> {len(after)}, expected {expected})"
+            )
 
     # -- output -------------------------------------------------------------
 
