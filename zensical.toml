@@ -22,6 +22,7 @@ nav = [
     { "Versioned handlers" = "versioned-handlers.md" },
     { "Projections & fan-out" = "projections-and-fan-out.md" },
     { "pghistory retirement (spike)" = "pghistory-retirement.md" },
+    { "Staged replay (spike)" = "staged-replay.md" },
     { "Translations" = "translations.md" },
     { "Deployment" = "deployment.md" },
     { Reference = [
