@@ -8,18 +8,11 @@ import pytest
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.models import Stream, StreamEntry
+from rakaia import CollectingExecutor
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.store import StreamStore
-
-
-class _Capture:
-    def __init__(self) -> None:
-        self.effects: list[Effect] = []
-
-    def apply(self, effects) -> None:
-        self.effects.extend(effects)
 
 
 @pytest.mark.django_db
@@ -140,14 +133,14 @@ class TestDjangoStreamStoreReplay:
         mem.create("s")
         for ev in events:
             mem.append("s", json.dumps(ev).encode("utf-8"))
-        mem_ex = _Capture()
+        mem_ex = CollectingExecutor()
         replay(mem, "s", mem_ex, handler_registry=reg)
 
         dj = DjangoStreamStore()
         dj.create("s")
         for ev in events:
             dj.append("s", json.dumps(ev).encode("utf-8"))
-        dj_ex = _Capture()
+        dj_ex = CollectingExecutor()
         replay(dj, "s", dj_ex, handler_registry=reg)
 
         assert [(e.lookup, e.defaults) for e in dj_ex.effects] == [

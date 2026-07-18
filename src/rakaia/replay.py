@@ -5,7 +5,7 @@ versioned handlers and an effect executor.
 Pipeline per event:
     1. Load the raw event bytes from the stream
     2. Decode as JSON, upcast to current schema via UpcasterRegistry
-    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq)
+    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq, event)
     4. Call each handler -> collect Effects
     5. Filter out op="external" effects unless include_external=True
     6. executor.apply(effects)

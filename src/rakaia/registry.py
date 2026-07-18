@@ -239,6 +239,11 @@ class HandlerRegistry:
         match_field is consistent within a (name, pattern) series, so the first
         version decides.
         """
+        if not versions:
+            # A registration that failed after setdefault() can leave an empty
+            # series behind; fall back to stream-path routing rather than
+            # IndexError on versions[0].
+            return event_match
         match_field = versions[0].match_field
         if match_field is None:
             return event_match

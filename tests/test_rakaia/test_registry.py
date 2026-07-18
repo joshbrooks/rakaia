@@ -169,6 +169,15 @@ class TestMatchField:
         with pytest.raises(ValueError, match="match_field"):
             reg.resolve("submissions", 0)  # no event provided
 
+    def test_resolve_tolerates_empty_series(self, reg: HandlerRegistry):
+        # A registration that failed after setdefault() (e.g. a persist error)
+        # can leave a (name, pattern) -> [] entry. resolve() must fall back to
+        # stream-path routing, not IndexError on versions[0].
+        reg._versions[("ghost", "room:*")] = []  # type: ignore[attr-defined]
+        assert reg.resolve("chat:5", 0) == []  # non-matching pattern: skipped
+        with pytest.raises(HandlerGapError):  # matching, no covering version
+            reg.resolve("room:5", 0)
+
 
 class TestDecorator:
     def test_decorator_registers_with_explicit_registry(self):
