@@ -27,6 +27,7 @@ CHAT_DIR        := "examples/chat"
 POLYGLOT_DIR    := "examples/polyglot"
 ORDERS_DIR      := "examples/orders"
 FORMKIT_DIR     := "examples/formkit_submissions"
+HISTORY_DIR     := "examples/partisipa_history"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -199,6 +200,15 @@ formkit-demo:
 formkit-dev:
     cd {{FORMKIT_DIR}} && uv run python manage.py migrate
     cd {{FORMKIT_DIR}} && uv run python manage.py runserver 0.0.0.0:8003
+
+# ---------------------------------------------------------------------------
+# pghistory-retirement spike (reproduce audit + recovery from a stream)
+# ---------------------------------------------------------------------------
+
+# Assert a stream w/ event envelope reproduces pghistory's audit + recovery
+partisipa-history-demo:
+    cd {{HISTORY_DIR}} && uv run python manage.py migrate
+    cd {{HISTORY_DIR}} && uv run python manage.py demo_history
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
