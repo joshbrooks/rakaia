@@ -1,0 +1,14 @@
+{
+  "name": "rakaia-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs the upstream @durable-streams/server-conformance-tests suite against a running rakaia server.",
+  "scripts": {
+    "test": "vitest run --no-coverage --reporter=default"
+  },
+  "devDependencies": {
+    "@durable-streams/server-conformance-tests": "0.3.6",
+    "vitest": "^4.0.0"
+  }
+}

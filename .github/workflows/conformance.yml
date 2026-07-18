@@ -1,0 +1,68 @@
+name: Conformance
+
+# Runs the upstream Durable Streams server-conformance-tests suite against a
+# live rakaia server. It is currently INFORMATIONAL (non-blocking): the suite
+# step uses `continue-on-error` so failures are reported without blocking
+# merges while rakaia's protocol coverage matures (stream forking is not yet
+# implemented). Flip `continue-on-error` off to make it a required check once
+# rakaia passes the full suite.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: conformance/package-lock.json
+
+      - name: Install conformance suite
+        working-directory: conformance
+        run: npm ci
+
+      - name: Run Durable Streams conformance suite (informational)
+        id: conformance
+        continue-on-error: true
+        run: ./conformance/run.sh 4437 2>&1 | tee conformance-results.log
+
+      - name: Summarize results
+        if: always()
+        run: |
+          {
+            echo "### Durable Streams conformance results"
+            echo ""
+            echo '```'
+            grep -E "Test Files|Tests " conformance-results.log | tail -5 \
+              || echo "(no summary captured — see the uploaded log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-log
+          path: conformance-results.log
+          if-no-files-found: warn

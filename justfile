@@ -209,6 +209,15 @@ rakaia port="4437":
     uv run uvicorn rakaia:app --host 0.0.0.0 --port {{port}}
 
 # ---------------------------------------------------------------------------
+# Durable Streams conformance suite
+# ---------------------------------------------------------------------------
+
+# Start rakaia, run the upstream conformance suite against it, tear it down.
+# Requires node/npm. See conformance/README.md.
+conformance port="4437":
+    ./conformance/run.sh {{port}}
+
+# ---------------------------------------------------------------------------
 # Quality gates
 # ---------------------------------------------------------------------------
 

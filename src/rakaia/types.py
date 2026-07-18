@@ -125,6 +125,13 @@ class Stream:
     created_at: float = 0.0
     """Timestamp when the stream was created."""
 
+    last_activity_at: float = 0.0
+    """Timestamp of the last TTL-extending activity (sliding-window anchor).
+
+    Reset to now on read/write/close so that Stream-TTL behaves as a sliding
+    expiry window. Absolute Stream-Expires-At streams ignore this field.
+    """
+
     producers: dict[str, ProducerState] = field(default_factory=dict)
     """Producer states for idempotent writes. Maps producer ID to state."""
 
