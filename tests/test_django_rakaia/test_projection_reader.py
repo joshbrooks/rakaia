@@ -85,3 +85,69 @@ class TestStagedReplayOverOrm:
         # dependent — despite arriving first in the stream — resolves FOUND.
         assert Area.objects.filter(name="dep-1->FOUND").exists()
         assert not Area.objects.filter(name="dep-1->MISSING").exists()
+
+
+def _finance_line_handler(event):
+    return Effect(
+        op="update_or_create",
+        model_label="test_django_rakaia.FinanceLine",
+        lookup={"submission_id": event["key"]},
+        defaults={"suku": event["suku"], "delta": event["delta"]},
+    )
+
+
+def _balance_reducer(reader):
+    from rakaia.projections import reconcile_aggregate
+
+    groups: dict[str, int] = {}
+    for line in reader.query("test_django_rakaia.FinanceLine"):
+        groups[line.suku] = groups.get(line.suku, 0) + line.delta
+    return reconcile_aggregate(
+        "test_django_rakaia.Balance",
+        {},
+        "suku",
+        {s: {"total": t} for s, t in groups.items()},
+    )
+
+
+_FINANCE_EVENTS = [
+    {"schema_version": 1, "kind": "FINANCE", "key": "f1", "suku": "A", "delta": 100},
+    {"schema_version": 1, "kind": "FINANCE", "key": "f2", "suku": "A", "delta": -30},
+    {"schema_version": 1, "kind": "FINANCE", "key": "f3", "suku": "B", "delta": 50},
+]
+
+
+@pytest.mark.django_db
+class TestReducerOverOrm:
+    def test_reducer_recomputes_aggregate_via_reconcile_aggregate(self):
+        from .models import Balance
+
+        store = get_store()
+        store.delete("s")
+        store.create("s")
+        for event in _FINANCE_EVENTS:
+            store.append("s", json.dumps(event).encode("utf-8"))
+
+        reg = HandlerRegistry()
+        reg.register(
+            "finance",
+            "FINANCE",
+            _finance_line_handler,
+            0,
+            None,
+            match_field="kind",
+            stage=0,
+        )
+        reg.register_reducer("balance", 1, _balance_reducer)
+
+        replay(
+            store,
+            "s",
+            DjangoExecutor(),
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=DjangoProjectionReader(),
+        )
+
+        assert Balance.objects.get(suku="A").total == 70  # 100 - 30
+        assert Balance.objects.get(suku="B").total == 50

@@ -9,6 +9,7 @@ import pytest
 
 from rakaia.registry import (
     HANDLERS_META_STREAM,
+    REDUCERS_META_STREAM,
     HandlerRegistry,
     HandlerVersion,
 )
@@ -180,6 +181,38 @@ class TestIdempotency:
 
         messages, _ = store.read(HANDLERS_META_STREAM)
         assert len(messages) == 2
+
+
+class TestReducerPersistence:
+    def test_reducer_appended_to_reducer_stream(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register_reducer("balance", 1, _fn("b"))
+        messages, _ = store.read(REDUCERS_META_STREAM)
+        assert len(messages) == 1
+        payload = json.loads(messages[0].data)
+        assert payload["name"] == "balance"
+        assert payload["stage"] == 1
+        assert payload["dotted_path"]
+        assert payload["source_hash"]
+
+    def test_reducer_dedups_across_instances(self, store: StreamStore):
+        reg1 = HandlerRegistry(store=store)
+        fn = _fn("b")
+        reg1.register_reducer("balance", 1, fn)
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
+
+        # Simulated restart: same reducer re-registers without a duplicate.
+        reg2 = HandlerRegistry(store=store)
+        reg2.register_reducer("balance", 1, fn)
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
+        assert reg2.all_reducers()[0].name == "balance"
+
+    def test_reducer_and_handler_streams_are_separate(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("h", "e", _fn("h"), 0, None)
+        reg.register_reducer("agg", 1, _fn("a"))
+        assert len(store.read(HANDLERS_META_STREAM)[0]) == 1
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
 
 
 class TestRehydrate:

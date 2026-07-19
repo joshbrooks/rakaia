@@ -752,3 +752,146 @@ class TestStagedReplay:
             store, "s", proj, handler_registry=reg, upcaster_registry=UpcasterRegistry()
         )  # no reader needed
         assert proj.get("app.Project", suku="Fatuberliu", output="WATER") is not None
+
+
+# ---------------------------------------------------------------------------
+# Reducers (per-stage recompute steps)
+# ---------------------------------------------------------------------------
+
+
+def _finance_line(event):
+    return Effect(
+        op="update_or_create",
+        model_label="app.FinanceLine",
+        lookup={"submission_id": event["key"]},
+        defaults={"suku": event["suku"], "delta": event["delta"]},
+    )
+
+
+def _balance_reducer(reader):
+    from rakaia.projections import reconcile_aggregate
+
+    groups: dict[str, int] = {}
+    for line in reader.query("app.FinanceLine"):
+        groups[line.suku] = groups.get(line.suku, 0) + line.delta
+    return reconcile_aggregate(
+        "app.Balance", {}, "suku", {s: {"total": t} for s, t in groups.items()}
+    )
+
+
+_FINANCE_EVENTS = [
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f1",
+        "suku": "A",
+        "delta": 100,
+    },
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f2",
+        "suku": "A",
+        "delta": -30,
+    },
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f3",
+        "suku": "B",
+        "delta": 50,
+    },
+]
+
+
+def _finance_registry(reducer=_balance_reducer):
+    reg = HandlerRegistry()
+    reg.register(
+        "finance", "FINANCE", _finance_line, 0, None, match_field="form_type", stage=0
+    )
+    reg.register_reducer("balance", 1, reducer)
+    return reg
+
+
+class TestReducers:
+    def test_reducer_recomputes_aggregate(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70  # 100 - 30
+        assert proj.get("app.Balance", suku="B").total == 50
+
+    def test_reducer_runs_once_per_stage_not_per_event(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)  # 3 events
+        calls: list[int] = []
+
+        def counting(reader):  # noqa: ARG001
+            calls.append(1)
+            return []
+
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(counting),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert len(calls) == 1  # once for stage 1, not 3x (per event)
+
+    def test_reducer_requires_reader(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        with pytest.raises(ValueError, match="reader"):
+            replay(
+                store,
+                "s",
+                DictProjections(),
+                handler_registry=_finance_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )  # no reader=
+
+    def test_reducer_recompute_is_replay_safe(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        reg = _finance_registry()
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        # Re-replay onto existing state: recompute, not increment -> stable.
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70  # not 140
+
+    def test_reducer_sees_only_committed_stage0_rows(self, store: StreamStore):
+        # A reducer at stage 1 reads FinanceLine rows all built in stage 0.
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert len(proj.query("app.FinanceLine")) == 3
+        assert {b.suku for b in proj.query("app.Balance")} == {"A", "B"}

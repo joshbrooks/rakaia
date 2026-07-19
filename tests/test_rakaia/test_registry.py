@@ -222,6 +222,55 @@ class TestStage:
             reg.resolve("e", 15, stage=1)
 
 
+class TestReducers:
+    def test_register_reducer(self, reg: HandlerRegistry):
+        r = reg.register_reducer("balance", 1, _fn("b"))
+        assert r.name == "balance"
+        assert r.stage == 1
+        assert r.source_hash
+        assert r.dotted_path
+
+    def test_negative_stage_raises(self, reg: HandlerRegistry):
+        with pytest.raises(ValueError, match="stage must be non-negative"):
+            reg.register_reducer("b", -1, _fn("b"))
+
+    def test_reducers_for_stage_sorted_by_name(self, reg: HandlerRegistry):
+        reg.register_reducer("zeta", 1, _fn("z"))
+        reg.register_reducer("alpha", 1, _fn("a"))
+        reg.register_reducer("other", 2, _fn("o"))
+        assert [r.name for r in reg.reducers_for_stage(1)] == ["alpha", "zeta"]
+        assert [r.name for r in reg.reducers_for_stage(2)] == ["other"]
+        assert reg.reducers_for_stage(3) == []
+
+    def test_stages_includes_reducer_stages(self, reg: HandlerRegistry):
+        reg.register("h", "e", _fn("h"), 0, None, stage=0)
+        reg.register_reducer("agg", 2, _fn("a"))
+        assert reg.stages() == [0, 2]
+
+    def test_has_reducers(self, reg: HandlerRegistry):
+        assert reg.has_reducers() is False
+        reg.register_reducer("agg", 1, _fn("a"))
+        assert reg.has_reducers() is True
+
+    def test_identical_reducer_is_noop(self, reg: HandlerRegistry):
+        fn = _fn("b")
+        r1 = reg.register_reducer("balance", 1, fn)
+        r2 = reg.register_reducer("balance", 1, fn)
+        assert r1 is r2
+        assert len(reg.all_reducers()) == 1
+
+    def test_reregister_replaces_definition(self, reg: HandlerRegistry):
+        reg.register_reducer("balance", 1, _fn("v1"))
+
+        def v2(reader):  # noqa: ARG001
+            return "v2"
+
+        v2.__qualname__ = "reducer.<v2>"
+        reg.register_reducer("balance", 2, v2)  # same name, new fn + stage
+        assert len(reg.all_reducers()) == 1
+        assert reg.all_reducers()[0].stage == 2
+
+
 class TestDecorator:
     def test_decorator_registers_with_explicit_registry(self):
         reg = HandlerRegistry()
