@@ -65,6 +65,20 @@ def append_if_changed(
 
     Returns:
         True if the event was appended, False if it was suppressed as a no-op.
+
+    Caveats (all silent — a mismatch over-appends rather than errors):
+        - ``None`` — not ``{}`` — means "no prior state, always append". A
+          genuine empty current state (``current={}``) *can* suppress an equally
+          empty new snapshot, so don't pass ``{}`` to mean "new".
+        - ``current`` must already be in the shape ``snapshot_of`` produces
+          (typically the stored snapshot from the current-state projection). If
+          you pass a full record but a field-extracting ``snapshot_of``, the two
+          never compare equal and nothing is ever suppressed.
+        - Comparison is Python ``==`` on JSON-native values, so both sides should
+          come from the same JSON round-trip. ``Decimal``/``datetime`` in
+          ``current`` never equal a parsed payload (suppression disabled), and
+          ``2 == 2.0`` / ``True == 1`` compare equal — keep types consistent.
+        - ``data`` must be JSON-encodable event bytes; a non-JSON payload raises.
     """
     new_snapshot = json.loads(data)
     if snapshot_of is not None:
