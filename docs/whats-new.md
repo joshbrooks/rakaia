@@ -33,6 +33,12 @@ SSE demos. To jump straight to one, use its command from the table.
 | [`chat`](../examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` → http://localhost:8000 |
 | [`polyglot`](../examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` → http://localhost:8001 |
 
+Going deeper? Several **design spikes** exercise the advanced replay features on
+a real (Partisipa) form pipeline — staged replay (`just partisipa-demo`),
+multi-stream merge (`just partisipa-merge-demo`), and nested-repeater
+tree-reconcile (`just partisipa-tree-demo`). They're linked from the sections
+below.
+
 ---
 
 ## 1. Versioned handlers & replay
@@ -110,24 +116,58 @@ def activity_rows(event):
     )
 ```
 
-→ Deep dive: [Projections & fan-out](projections-and-fan-out.md) · Demo: `just formkit-demo`
+For **unbounded nesting** (repeaters inside repeaters), `reconcile_tree` prunes
+orphans anywhere in a submission's subtree; for **rollups**, `reconcile_aggregate`
+materialises grouped summaries. Both are orphan-safe siblings of
+`reconcile_children`.
 
-## 4. Dry-run any replay
+→ Deep dive: [Projections & fan-out](projections-and-fan-out.md) ·
+[Tree-reconcile](tree-reconcile.md) · Demos: `just formkit-demo`, `just partisipa-tree-demo`
 
-**The problem.** Before you cut a projection over to event-sourcing — or run a
-big backfill — you want to know exactly what it will write.
+## 4. Dry-run — and skip no-op writes
+
+**The problem.** Two problems, really: (a) before a backfill you want to know
+what a replay *will* write, and (b) re-materialising a large collection where one
+row changed shouldn't rewrite *every* row — churning `auto_now` columns,
+`post_save` signals, and replication.
 
 **What rakaia does.** Handlers return effect *descriptions*, so a
-`CollectingExecutor` records what a replay *would* do with zero side effects.
-The dry-run count matches the real write count exactly.
+`CollectingExecutor` records what a replay *would* do with zero side effects (the
+dry-run count matches the real write count exactly). And `DjangoExecutor(skip_unchanged=True)`
+compares each effect's `defaults` to the stored row and writes only what actually
+changed.
 
 ```bash
-python manage.py replay orders --dry-run
+python manage.py replay orders --dry-run     # preview, zero writes
 ```
 
 → Deep dive: [Dry-run & executors](dry-run-and-executors.md) · Shown in both demos
 
-## 5. A durable, database-backed store
+## 5. Staged replay — cross-form references
+
+**The problem.** One form's projection often needs a *reference* another form
+produced (a submission that links to a project created by a different form,
+possibly arriving out of order). A single pass can't resolve a link whose target
+hasn't been projected yet.
+
+**What rakaia does.** Handlers declare a `stage=`; replay runs stages in
+ascending order, and a later stage is handed a read-only projection reader to
+resolve references built by earlier stages — deterministic and self-healing, no
+backfills.
+
+```python
+@register_handler(name="sf12", event_match="SF_1_2", match_field="form_type", stage=1)
+def sf12(event, refs):                       # stage 1 gets a projection reader
+    project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
+    return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
+                  lookup={"submission_id": event["key"]},
+                  defaults={"project_id": project.pk if project else None})
+```
+
+→ Deep dive: [Staged replay](staged-replay.md) ·
+[Multi-stream merge](multi-stream-merge.md) · Demos: `just partisipa-demo`, `just partisipa-merge-demo`
+
+## 6. A durable, database-backed store
 
 **The problem.** The default in-memory store is process-local — great for a
 demo, but the event log vanishes on restart, so you can't emit from a request
@@ -139,7 +179,7 @@ database via the normalized `Stream` / `StreamEvent` / `StreamEntry` models. Now
 
 → Deep dive: [Adopting the durable store](django-integration.md#adopting-the-durable-store) · Used by `just formkit-demo`
 
-## 6. Live SSE with `@stream_model`
+## 7. Live SSE with `@stream_model`
 
 **The problem.** You want real-time fan-out to browsers without hand-rolling a
 pub/sub layer.
@@ -158,7 +198,7 @@ class ChatRoom(models.Model):
 
 → Deep dive: [Django integration](django-integration.md) · Demos: `just dev`, `just polyglot-dev`
 
-## 7. Protocol conformance
+## 8. Protocol conformance
 
 Rakaia is checked against the upstream, language-agnostic
 [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams)

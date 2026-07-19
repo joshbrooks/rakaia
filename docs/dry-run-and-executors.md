@@ -26,6 +26,24 @@ ships two implementations:
 You can write your own — anything that satisfies the protocol works (e.g. an
 executor that streams effects to a log, or applies them to a non-Django store).
 
+### Skipping no-op writes
+
+By default `DjangoExecutor` mirrors Django's `update_or_create` — every upsert
+issues an `UPDATE`, so re-materialising a large collection where one row changed
+rewrites *every* row, churning `auto_now` columns, `post_save` signals, and
+replication. Pass `skip_unchanged=True` to fetch the row, compare the effect's
+`defaults` to the stored values, and write only the changed columns (or nothing
+when nothing changed):
+
+```python
+from django_rakaia.effect_executor import DjangoExecutor
+
+replay(store, "orders", DjangoExecutor(skip_unchanged=True))
+```
+
+It trades one `UPDATE` per row for one `SELECT` per row, so it pays off when
+re-materialising wide or large collections that mostly haven't changed.
+
 ## Dry-run replay with `CollectingExecutor`
 
 To preview a replay without side effects, run it with a `CollectingExecutor` and

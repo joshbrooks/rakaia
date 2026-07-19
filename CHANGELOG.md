@@ -43,6 +43,24 @@ is not yet tagged in a release.
   long-poll, SSE data→control pairing, CORS `If-None-Match`).
   → [`conformance/README.md`](conformance/README.md).
 
+- **`reconcile_tree` & `reconcile_aggregate` in core** (#17). Orphan-safe
+  siblings of `reconcile_children` for unbounded nested repeaters and for grouped
+  rollup summaries.
+  → [`docs/projections-and-fan-out.md`](docs/projections-and-fan-out.md),
+  [`docs/tree-reconcile.md`](docs/tree-reconcile.md).
+
+- **Opt-in `skip_unchanged` executor** (#18). `DjangoExecutor(skip_unchanged=True)`
+  writes only changed columns, avoiding no-op `UPDATE`s that churn `auto_now`
+  fields, `post_save` signals, and replication when re-materialising large
+  collections.
+  → [`docs/dry-run-and-executors.md`](docs/dry-run-and-executors.md).
+
+- **Staged replay in core** (#19). Handlers declare a `stage=`; replay runs
+  stages in order and hands later stages a read-only projection reader, so a
+  form can resolve references produced by another form — deterministic and
+  self-healing, no backfills.
+  → [`docs/staged-replay.md`](docs/staged-replay.md).
+
 - **Adoption spike: `formkit-ninja`** (#6). A worked example proving a rakaia
   replay reproduces `formkit-ninja`'s direct `to_model()` rows byte-identically,
   while adding time-correct history.
@@ -62,6 +80,10 @@ Exploratory examples validating specific adoption stories (not production APIs):
   [`examples/partisipa_staged`](examples/partisipa_staged/) (`just partisipa-demo`).
 - Close-precondition state machine / guarded transition (#13) —
   [`examples/partisipa_close`](examples/partisipa_close/) (`just partisipa-close-demo`).
+- Multi-stream merge replay across SF/TF/FF pipelines (#14) —
+  [`examples/partisipa_merge`](examples/partisipa_merge/) (`just partisipa-merge-demo`).
+- Tree-reconcile for unbounded nested repeaters (#16) —
+  [`examples/partisipa_repeaters`](examples/partisipa_repeaters/) (`just partisipa-tree-demo`).
 
 ## [0.1.0]
 
