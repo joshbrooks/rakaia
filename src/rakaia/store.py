@@ -261,7 +261,9 @@ class StreamStore:
             raise ValueError(f"Sequence conflict: {opts.seq} <= {stream.last_seq}")
 
         # Append the data (may raise for invalid JSON)
-        message = self._append_to_stream(stream, data)
+        message = self._append_to_stream(
+            stream, data, label=opts.label, metadata=opts.metadata
+        )
 
         # === STATE MUTATION (only after successful append) ===
 
@@ -601,6 +603,9 @@ class StreamStore:
         stream: Stream,
         data: bytes,
         is_initial_create: bool = False,
+        *,
+        label: str = "",
+        metadata: dict | None = None,
     ) -> StreamMessage | None:
         """Append data to a stream, handling JSON mode processing."""
         processed_data = data
@@ -621,6 +626,8 @@ class StreamStore:
             data=processed_data,
             offset=new_offset,
             timestamp=time.time(),
+            label=label,
+            metadata=metadata,
         )
 
         stream.messages.append(message)
