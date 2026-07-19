@@ -2,13 +2,20 @@
 Replay orchestrator: re-derive materialized state from a stream by running
 versioned handlers and an effect executor.
 
-Pipeline per event:
+Per event the pipeline is:
     1. Load the raw event bytes from the stream
     2. Decode as JSON, upcast to current schema via UpcasterRegistry
-    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq, event)
+    3. Resolve handlers via HandlerRegistry.resolve(event_match, seq, event, stage)
     4. Call each handler -> collect Effects
     5. Filter out op="external" effects unless include_external=True
     6. executor.apply(effects)
+
+When every handler is stage 0 (the default), replay is a single streaming pass
+over the range — one event decoded and applied at a time. When handlers span
+more than one stage, replay decodes the range once and runs the pipeline as one
+pass per stage in ascending order: the whole range through stage 0, then stage
+1, and so on, so a stage > 0 handler (called `fn(event, reader)`) can read the
+projections earlier stages committed. See `register_handler(stage=...)`.
 
 Re-running the same range twice produces identical materialized state because
 all Effects use update_or_create (idempotent).
@@ -118,53 +125,67 @@ def replay(
             result=result,
         )
 
-    # Decode + upcast each in-range event once; the stage passes below replay
-    # over this shared list rather than re-reading the stream per stage.
-    decoded: list[tuple[int, dict]] = []
-    for seq, msg in enumerate(messages):
-        if seq < start_seq:
-            continue
-        if end_seq is not None and seq >= end_seq:
-            break
-        event_dict = _decode_event(msg.data, stream_path, seq)
-        upcasted = upcasters.apply_chain(
-            event_dict,
+    def _decode_upcast(seq: int, data: bytes) -> dict:
+        return upcasters.apply_chain(
+            _decode_event(data, stream_path, seq),
             match_str,
             target_version,
             drift_callback=_upcaster_drift,
         )
-        decoded.append((seq, upcasted))
+
+    def _dispatch(seq: int, upcasted: dict, stage: int | None) -> None:
+        versions = handlers.resolve(match_str, seq, event=upcasted, stage=stage)
+        all_effects: list[Effect] = []
+        for version in versions:
+            _check_handler_drift(version, on_drift, result)
+            all_effects.extend(_call_handler(version, upcasted, reader))
+
+        external_count = sum(1 for e in all_effects if e.op == "external")
+        if not include_external:
+            result.external_effects_skipped += external_count
+        to_apply = (
+            all_effects
+            if include_external
+            else [e for e in all_effects if e.op != "external"]
+        )
+        if to_apply:
+            executor.apply(to_apply)
+            result.effects_applied += len(to_apply)
+
+    def _in_range(seq: int) -> bool:
+        return seq >= start_seq and (end_seq is None or seq < end_seq)
 
     stage_numbers = handlers.stages()
     staged = any(s > 0 for s in stage_numbers)
-    if staged and reader is None:
+
+    if not staged:
+        # Single stage: stream one event at a time (bounded memory, and drift /
+        # partial-progress semantics identical to pre-staged replay).
+        for seq, msg in enumerate(messages):
+            if end_seq is not None and seq >= end_seq:
+                break
+            if not _in_range(seq):
+                continue
+            _dispatch(seq, _decode_upcast(seq, msg.data), stage=None)
+            result.events_processed += 1
+        return result
+
+    if reader is None:
         raise ValueError(
             "Replay has stage > 0 handlers but no reader was provided; pass "
             "reader= so staged handlers can read earlier stages' projections."
         )
-    # One pass per stage in ascending order; a single unfiltered pass otherwise.
-    passes: list[int | None] = list(stage_numbers) if staged else [None]
-
-    for stage in passes:
+    # Staged: decode + upcast each in-range event once, then run one pass per
+    # stage in ascending order over that shared list.
+    decoded: list[tuple[int, dict]] = []
+    for seq, msg in enumerate(messages):
+        if end_seq is not None and seq >= end_seq:
+            break
+        if _in_range(seq):
+            decoded.append((seq, _decode_upcast(seq, msg.data)))
+    for stage in stage_numbers:
         for seq, upcasted in decoded:
-            versions = handlers.resolve(match_str, seq, event=upcasted, stage=stage)
-            all_effects: list[Effect] = []
-            for version in versions:
-                _check_handler_drift(version, on_drift, result)
-                all_effects.extend(_call_handler(version, upcasted, reader))
-
-            external_count = sum(1 for e in all_effects if e.op == "external")
-            if not include_external:
-                result.external_effects_skipped += external_count
-            to_apply = (
-                all_effects
-                if include_external
-                else [e for e in all_effects if e.op != "external"]
-            )
-            if to_apply:
-                executor.apply(to_apply)
-                result.effects_applied += len(to_apply)
-
+            _dispatch(seq, upcasted, stage=stage)
     result.events_processed = len(decoded)
     return result
 
