@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from rakaia.context import merge_provenance
 from rakaia.types import StreamMessage
 
 from .models import Stream, StreamEntry, StreamEvent
@@ -41,16 +42,24 @@ class DjangoStreamStore:
         stream, _ = Stream.objects.get_or_create(stream_id=path)
         return stream
 
-    def append(self, path: str, data: bytes, options: Any = None) -> StreamEntry:  # noqa: ARG002
-        """Append one JSON event, assigning the next monotonic offset."""
+    def append(self, path: str, data: bytes, options: Any = None) -> StreamEntry:
+        """Append one JSON event, assigning the next monotonic offset.
+
+        The event-sourcing envelope on `options` (an ``AppendOptions``) is
+        persisted: ``label`` maps to ``event_type`` (a raw append keeps the
+        stable ``"append"`` label) and ``metadata`` to the JSON column.
+        """
         try:
             stream = Stream.objects.get(stream_id=path)
         except Stream.DoesNotExist as exc:
             raise KeyError(f"Stream not found: {path}") from exc
 
+        label = getattr(options, "label", "") or ""
+        metadata = merge_provenance(getattr(options, "metadata", None))
         event = StreamEvent.objects.create(
             data=json.loads(data),
-            event_type=_APPEND_EVENT_TYPE,
+            event_type=label or _APPEND_EVENT_TYPE,
+            metadata=metadata or {},
         )
         return StreamEntry.objects.create(
             stream=stream,
@@ -80,6 +89,12 @@ class DjangoStreamStore:
                 data=json.dumps(entry.event.data).encode("utf-8"),
                 offset=str(entry.offset),
                 timestamp=entry.created_at.timestamp(),
+                # `"append"` is the raw-append sentinel → no envelope label;
+                # an empty metadata dict → None, matching the in-memory store.
+                label=""
+                if entry.event.event_type == _APPEND_EVENT_TYPE
+                else entry.event.event_type,
+                metadata=entry.event.metadata or None,
             )
             for entry in entries
         ]

@@ -12,6 +12,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+from .context import merge_provenance
 from .json_mode import (
     format_json_response,
     is_json_content_type,
@@ -627,7 +628,7 @@ class StreamStore:
             offset=new_offset,
             timestamp=time.time(),
             label=label,
-            metadata=metadata,
+            metadata=merge_provenance(metadata),
         )
 
         stream.messages.append(message)
