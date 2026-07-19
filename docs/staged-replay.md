@@ -35,10 +35,37 @@ def sf12(event, refs):                      # stage 1: resolve via the reader
 replay(store, "submissions", DjangoExecutor(), reader=DjangoProjectionReader())
 ```
 
-`replay()` requires `reader=` whenever any handler declares stage > 0; with only
-stage 0 handlers it is a single pass and no reader is needed (backward
-compatible). The reader is any `rakaia.protocols.ProjectionReader`
-(`get` / `filter` / `query`); the Django one reads `apps.get_model(...).objects`.
+`replay()` requires `reader=` whenever any handler declares stage > 0 (or any
+reducer is registered, see below); with only stage 0 handlers it is a single pass
+and no reader is needed (backward compatible). The reader is any
+`rakaia.protocols.ProjectionReader` (`get` / `filter` / `query`); the Django one
+reads `apps.get_model(...).objects`.
+
+## Per-stage aggregates: reducers
+
+Some projections aren't per-event — a rollup depends on the *whole set* of
+contributing rows, and an increment isn't replay-safe. A **reducer** runs once
+per stage, after that stage's per-event handlers commit, reading the accumulated
+projections and returning idempotent Effects (typically via
+[`reconcile_aggregate`](projections-and-fan-out.md)):
+
+```python
+from rakaia.registry import register_reducer
+from rakaia import reconcile_aggregate
+
+@register_reducer(name="balance", stage=1)
+def balance(reader):                         # runs once, after stage-1 handlers
+    totals = {}
+    for line in reader.query("ida.FinanceLine"):
+        totals[line.suku] = totals.get(line.suku, 0) + line.amount
+    return reconcile_aggregate("ida.Balance", {}, "suku",
+                               {s: {"total": t} for s, t in totals.items()})
+```
+
+Because it **recomputes** from the current rows on every replay, re-running is a
+no-op on the totals — the double-count bug is gone. `reconcile_aggregate` builds
+the effects; the reducer is the replay-time hook that runs it. A registry with
+any reducer replays in staged mode and requires `reader=`.
 
 ## The problem: late-arriving cross-form links
 

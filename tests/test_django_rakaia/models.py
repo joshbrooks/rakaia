@@ -196,5 +196,26 @@ class Project(models.Model):
         return self.created_by_id
 
 
+class FinanceLine(models.Model):
+    """Plain contributing-rows model for the reducer/aggregate tests."""
+
+    submission_id = models.CharField(max_length=64, unique=True)
+    suku = models.CharField(max_length=64)
+    delta = models.IntegerField(default=0)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+class Balance(models.Model):
+    """Plain aggregate model for the reducer/aggregate tests."""
+
+    suku = models.CharField(max_length=64, unique=True)
+    total = models.IntegerField(default=0)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 # Register the admin interface for AppStreamEvent
 register_stream_event_admin(AppStreamEvent)

@@ -50,6 +50,39 @@ class Migration(migrations.Migration):
             ],
         ),
         migrations.CreateModel(
+            name="FinanceLine",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("submission_id", models.CharField(max_length=64, unique=True)),
+                ("suku", models.CharField(max_length=64)),
+                ("delta", models.IntegerField(default=0)),
+            ],
+        ),
+        migrations.CreateModel(
+            name="Balance",
+            fields=[
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("suku", models.CharField(max_length=64, unique=True)),
+                ("total", models.IntegerField(default=0)),
+            ],
+        ),
+        migrations.CreateModel(
             name="Project",
             fields=[
                 (

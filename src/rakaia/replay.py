@@ -15,7 +15,10 @@ over the range — one event decoded and applied at a time. When handlers span
 more than one stage, replay decodes the range once and runs the pipeline as one
 pass per stage in ascending order: the whole range through stage 0, then stage
 1, and so on, so a stage > 0 handler (called `fn(event, reader)`) can read the
-projections earlier stages committed. See `register_handler(stage=...)`.
+projections earlier stages committed. A stage may also declare **reducers**
+(`register_reducer(name, stage, fn)`) that run once, after that stage's per-event
+handlers, to recompute an aggregate from the committed projections via the
+reader. See `register_handler(stage=...)` and `register_reducer(...)`.
 
 Re-running the same range twice produces identical materialized state because
 all Effects use update_or_create (idempotent).
@@ -35,6 +38,7 @@ from .registry import (
     HandlerDriftError,
     HandlerRegistry,
     HandlerVersion,
+    ReducerVersion,
     UpcasterRegistry,
     UpcasterVersion,
     get_default_registry,
@@ -95,16 +99,19 @@ def replay(
             handler's source has changed since registration; 'raise' raises
             HandlerDriftError. (Drift detection itself lands in Step 6.)
         reader: A read-only projection reader forwarded to every stage > 0
-            handler as its second argument. Required when any registered
-            handler declares stage > 0; unused for single-stage replay.
+            handler (as its second argument) and to every reducer. Required when
+            any handler declares stage > 0 or any reducer is registered; unused
+            for single-stage replay.
 
     Staged replay: when handlers span more than one stage (see
     `register_handler(stage=...)`), replay runs the whole event range through
     stage 0, then stage 1, and so on. Stage 0 handlers are called `fn(event)`;
     stage > 0 handlers are called `fn(event, reader)` so they can resolve facts
     earlier stages materialised (a form linking to a reference entity another
-    form created, regardless of arrival order). With only stage 0 handlers,
-    replay is a single pass, exactly as before.
+    form created, regardless of arrival order). After a stage's per-event
+    handlers, its reducers (`register_reducer`) run once as `fn(reader)` to
+    recompute aggregates. With only stage 0 handlers and no reducers, replay is a
+    single pass, exactly as before.
     """
     handlers = handler_registry or get_default_registry()
     upcasters = upcaster_registry or get_default_upcaster_registry()
@@ -133,30 +140,37 @@ def replay(
             drift_callback=_upcaster_drift,
         )
 
+    def _apply(effects: list[Effect]) -> None:
+        external_count = sum(1 for e in effects if e.op == "external")
+        if not include_external:
+            result.external_effects_skipped += external_count
+        to_apply = (
+            effects if include_external else [e for e in effects if e.op != "external"]
+        )
+        if to_apply:
+            executor.apply(to_apply)
+            result.effects_applied += len(to_apply)
+
     def _dispatch(seq: int, upcasted: dict, stage: int | None) -> None:
         versions = handlers.resolve(match_str, seq, event=upcasted, stage=stage)
         all_effects: list[Effect] = []
         for version in versions:
             _check_handler_drift(version, on_drift, result)
             all_effects.extend(_call_handler(version, upcasted, reader))
+        _apply(all_effects)
 
-        external_count = sum(1 for e in all_effects if e.op == "external")
-        if not include_external:
-            result.external_effects_skipped += external_count
-        to_apply = (
-            all_effects
-            if include_external
-            else [e for e in all_effects if e.op != "external"]
-        )
-        if to_apply:
-            executor.apply(to_apply)
-            result.effects_applied += len(to_apply)
+    def _run_reducers(stage: int) -> None:
+        # Reducers run once per stage, after that stage's per-event handlers
+        # have committed, reading the accumulated projections via `reader`.
+        for reducer in handlers.reducers_for_stage(stage):
+            _check_reducer_drift(reducer, on_drift, result)
+            _apply(_normalize_effects(reducer.fn(reader)))
 
     def _in_range(seq: int) -> bool:
         return seq >= start_seq and (end_seq is None or seq < end_seq)
 
     stage_numbers = handlers.stages()
-    staged = any(s > 0 for s in stage_numbers)
+    staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
 
     if not staged:
         # Single stage: stream one event at a time (bounded memory, and drift /
@@ -172,11 +186,12 @@ def replay(
 
     if reader is None:
         raise ValueError(
-            "Replay has stage > 0 handlers but no reader was provided; pass "
-            "reader= so staged handlers can read earlier stages' projections."
+            "Replay has stage > 0 handlers or reducers but no reader was "
+            "provided; pass reader= so they can read earlier stages' projections."
         )
     # Staged: decode + upcast each in-range event once, then run one pass per
-    # stage in ascending order over that shared list.
+    # stage in ascending order — that stage's per-event handlers, then its
+    # reducers once — over the shared list.
     decoded: list[tuple[int, dict]] = []
     for seq, msg in enumerate(messages):
         if end_seq is not None and seq >= end_seq:
@@ -186,6 +201,7 @@ def replay(
     for stage in stage_numbers:
         for seq, upcasted in decoded:
             _dispatch(seq, upcasted, stage=stage)
+        _run_reducers(stage)
     result.events_processed = len(decoded)
     return result
 
@@ -202,6 +218,24 @@ def _check_handler_drift(
         kind="handler",
         name=version.name,
         stored_hash=version.source_hash,
+        live_hash=live_hash,
+        on_drift=on_drift,
+        result=result,
+    )
+
+
+def _check_reducer_drift(
+    reducer: ReducerVersion,
+    on_drift: OnDriftPolicy,
+    result: ReplayResult,
+) -> None:
+    live_hash = hash_function_source(reducer.fn)
+    if live_hash == reducer.source_hash:
+        return
+    _record_drift(
+        kind="reducer",
+        name=reducer.name,
+        stored_hash=reducer.source_hash,
         live_hash=live_hash,
         on_drift=on_drift,
         result=result,
@@ -246,8 +280,13 @@ def _call_handler(
     # Stage > 0 handlers take (event, reader); stage 0 keeps the (event)
     # signature so existing single-stage handlers are unchanged.
     result = version.fn(event, reader) if version.stage > 0 else version.fn(event)
+    return _normalize_effects(result)
+
+
+def _normalize_effects(result: object) -> list[Effect]:
+    """Coerce a handler/reducer return (None | Effect | iterable) to a list."""
     if result is None:
         return []
     if isinstance(result, Effect):
         return [result]
-    return list(result)
+    return list(result)  # type: ignore[arg-type]

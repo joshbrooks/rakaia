@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 HANDLERS_META_STREAM = "__rakaia__:handlers"
 UPCASTERS_META_STREAM = "__rakaia__:upcasters"
+REDUCERS_META_STREAM = "__rakaia__:reducers"
 
 
 # =============================================================================
@@ -96,6 +97,31 @@ class HandlerVersion:
     called with just the event (backward compatible)."""
 
 
+@dataclass(frozen=True)
+class ReducerVersion:
+    """A per-stage reduce step: recompute an aggregate once from the projections.
+
+    Unlike a handler, a reducer is not matched or called per event. During
+    staged replay it runs **once** per its stage, after that stage's per-event
+    handlers have committed, and is invoked as `fn(reader)` — reading the
+    accumulated projections (e.g. all contributing rows for a group) and
+    returning the idempotent Effects that materialise the aggregate. It is the
+    replay-time hook that `reconcile_aggregate` is designed to fill.
+    """
+
+    name: str
+    """Reducer name, unique within a registry."""
+
+    stage: int
+    """The stage this reducer runs in (after that stage's event handlers)."""
+
+    fn: Callable[..., Any]
+    """The reducer callable. reader -> Effect | list[Effect] | None."""
+
+    dotted_path: str
+    source_hash: str
+
+
 # =============================================================================
 # Registry
 # =============================================================================
@@ -123,15 +149,21 @@ class HandlerRegistry:
     ) -> None:
         # (name, event_match) -> sorted list of HandlerVersion by effective_from
         self._versions: dict[tuple[str, str], list[HandlerVersion]] = {}
+        # reducer name -> ReducerVersion
+        self._reducers: dict[str, ReducerVersion] = {}
         self._store = store
         self._stream_path = stream_path
+        self._reducer_stream_path = REDUCERS_META_STREAM
         # Identity tuples already persisted to the stream — used for dedup.
         self._persisted_ids: set[
             tuple[str, str, int, int | None, str, str, str | None, int]
         ] = set()
+        self._reducer_persisted_ids: set[tuple[str, int, str, str]] = set()
         if store is not None:
             self._ensure_stream()
             self._load_persisted_ids()
+            self._ensure_reducer_stream()
+            self._load_reducer_ids()
 
     def register(
         self,
@@ -199,6 +231,53 @@ class HandlerRegistry:
         series.sort(key=lambda v: v.effective_from)
         return version
 
+    def register_reducer(
+        self,
+        name: str,
+        stage: int,
+        fn: Callable[..., Any],
+    ) -> ReducerVersion:
+        """Register a per-stage reduce step (runs once at `stage`, `fn(reader)`).
+
+        Re-registering with identical (name, stage, dotted_path, source_hash) is
+        a no-op. Registering a *different* function under an existing name
+        replaces it (a reducer is a single current definition, not a version
+        series) and appends a new audit event.
+        """
+        if stage < 0:
+            raise ValueError(f"stage must be non-negative, got {stage}")
+
+        reducer = ReducerVersion(
+            name=name,
+            stage=stage,
+            fn=fn,
+            dotted_path=f"{fn.__module__}.{fn.__qualname__}",
+            source_hash=hash_function_source(fn),
+        )
+
+        existing = self._reducers.get(name)
+        if existing is not None and _reducer_identity(existing) == _reducer_identity(
+            reducer
+        ):
+            return existing
+
+        if self._store is not None:
+            self._persist_reducer_if_new(reducer)
+
+        self._reducers[name] = reducer
+        return reducer
+
+    def reducers_for_stage(self, stage: int) -> list[ReducerVersion]:
+        """Reducers registered for `stage`, in deterministic (name) order."""
+        return sorted(
+            (r for r in self._reducers.values() if r.stage == stage),
+            key=lambda r: r.name,
+        )
+
+    def all_reducers(self) -> list[ReducerVersion]:
+        """Every registered reducer (test/debug helper)."""
+        return list(self._reducers.values())
+
     def resolve(
         self,
         event_match: str,
@@ -248,12 +327,19 @@ class HandlerRegistry:
         return resolved
 
     def stages(self) -> list[int]:
-        """Sorted list of the distinct stages any registered version declares.
+        """Sorted list of the distinct stages any handler or reducer declares.
 
         `[0]` (or `[]` when empty) means single-stage replay; more than one
-        entry drives staged replay in ascending order.
+        entry — or any reducer — drives staged replay in ascending order.
         """
-        return sorted({v.stage for v in self.all_versions()})
+        return sorted(
+            {v.stage for v in self.all_versions()}
+            | {r.stage for r in self._reducers.values()}
+        )
+
+    def has_reducers(self) -> bool:
+        """Whether any reducer is registered (reducers require staged replay)."""
+        return bool(self._reducers)
 
     @staticmethod
     def _match_subject(
@@ -306,6 +392,9 @@ class HandlerRegistry:
             dotted_path = ident[4]
             module_name = dotted_path.rsplit(".", 1)[0]
             importlib.import_module(module_name)
+        for r_ident in self._reducer_persisted_ids:
+            module_name = r_ident[2].rsplit(".", 1)[0]  # index 2 = dotted_path
+            importlib.import_module(module_name)
 
     # ------------------------------------------------------------------
     # Internal — persistence
@@ -350,6 +439,42 @@ class HandlerRegistry:
             json.dumps(payload).encode("utf-8"),
         )
         self._persisted_ids.add(ident)
+
+    # ------------------------------------------------------------------
+    # Internal — reducer persistence (parallels the handler helpers)
+    # ------------------------------------------------------------------
+
+    def _ensure_reducer_stream(self) -> None:
+        assert self._store is not None
+        if not self._store.has(self._reducer_stream_path):
+            self._store.create(self._reducer_stream_path)
+
+    def _load_reducer_ids(self) -> None:
+        assert self._store is not None
+        messages, _ = self._store.read(self._reducer_stream_path)
+        for msg in messages:
+            try:
+                payload = json.loads(msg.data)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            self._reducer_persisted_ids.add(_reducer_identity_from_payload(payload))
+
+    def _persist_reducer_if_new(self, reducer: ReducerVersion) -> None:
+        assert self._store is not None
+        ident = _reducer_identity(reducer)
+        if ident in self._reducer_persisted_ids:
+            return
+        payload = {
+            "name": reducer.name,
+            "stage": reducer.stage,
+            "dotted_path": reducer.dotted_path,
+            "source_hash": reducer.source_hash,
+        }
+        self._store.append(
+            self._reducer_stream_path,
+            json.dumps(payload).encode("utf-8"),
+        )
+        self._reducer_persisted_ids.add(ident)
 
     # ------------------------------------------------------------------
     # Internal — overlap check
@@ -617,6 +742,14 @@ def _identity_from_payload(
     )
 
 
+def _reducer_identity(r: ReducerVersion) -> tuple[str, int, str, str]:
+    return (r.name, r.stage, r.dotted_path, r.source_hash)
+
+
+def _reducer_identity_from_payload(p: dict[str, Any]) -> tuple[str, int, str, str]:
+    return (p["name"], int(p["stage"]), p["dotted_path"], p["source_hash"])
+
+
 def _u_identity(v: UpcasterVersion) -> tuple[str, int, str, str]:
     return (v.event_match, v.from_version, v.dotted_path, v.source_hash)
 
@@ -712,6 +845,34 @@ def register_handler(
             match_field=match_field,
             stage=stage,
         )
+        return fn
+
+    return decorator
+
+
+def register_reducer(
+    name: str,
+    stage: int,
+    *,
+    registry: HandlerRegistry | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """
+    Decorator that registers a per-stage reduce step with the default registry.
+
+    The decorated function is called `fn(reader)` once during staged replay,
+    after `stage`'s per-event handlers commit, and returns the Effects that
+    materialise the aggregate (typically via `reconcile_aggregate`).
+
+    Example:
+        @register_reducer(name="balance", stage=1)
+        def balance(reader):
+            groups = _recompute_totals(reader)
+            return reconcile_aggregate("ida.Balance", {}, "suku", groups)
+    """
+    target = registry if registry is not None else _default_registry
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        target.register_reducer(name=name, stage=stage, fn=fn)
         return fn
 
     return decorator

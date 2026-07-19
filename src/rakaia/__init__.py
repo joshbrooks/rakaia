@@ -34,12 +34,14 @@ from .projections import (
 )
 from .registry import (
     HANDLERS_META_STREAM,
+    REDUCERS_META_STREAM,
     UPCASTERS_META_STREAM,
     HandlerDriftError,
     HandlerGapError,
     HandlerOverlapError,
     HandlerRegistry,
     HandlerVersion,
+    ReducerVersion,
     UpcasterChainError,
     UpcasterConflictError,
     UpcasterRegistry,
@@ -47,6 +49,7 @@ from .registry import (
     get_default_registry,
     get_default_upcaster_registry,
     register_handler,
+    register_reducer,
     register_upcaster,
     upcast,
 )
@@ -115,10 +118,13 @@ __all__ = [
     "reconcile_aggregate",
     # Versioned handlers — registry
     "register_handler",
+    "register_reducer",
     "register_upcaster",
     "HandlerRegistry",
     "UpcasterRegistry",
     "HandlerVersion",
+    "ReducerVersion",
+    "REDUCERS_META_STREAM",
     "UpcasterVersion",
     "HandlerOverlapError",
     "HandlerGapError",
