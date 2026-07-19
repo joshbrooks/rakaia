@@ -125,3 +125,24 @@ order-agnostic and identity-agnostic:
 See [ADR 0001](adr/0001-ordering-child-collections-in-projections.md) for the full
 rationale (and why a linked list is the wrong choice for a SQL-backed
 projection).
+
+## Avoiding no-op writes on large collections
+
+A reconcile emits one `update_or_create` per current row, and Django's
+`update_or_create` always issues an UPDATE. So re-materialising a 100-row
+collection where a single value changed rewrites all 100 rows — churning
+`auto_now` columns, `post_save` signals, and replication for 99 no-ops.
+
+`DjangoExecutor(skip_unchanged=True)` closes that: it fetches each row, compares
+the effect's `defaults` to the stored values, and writes **only the changed
+columns** — skipping the UPDATE entirely when nothing changed. A big tree with
+one edit, or a reorder that moves one row, then costs one write instead of N.
+
+```python
+DjangoExecutor(skip_unchanged=True).apply(effects)
+```
+
+It trades one UPDATE per row for one SELECT per row, so reach for it when writes
+are the expensive part. It's opt-in because skipping a no-op write is observably
+different — an unchanged row's `auto_now` fields don't advance and its
+`post_save` signal doesn't fire.
