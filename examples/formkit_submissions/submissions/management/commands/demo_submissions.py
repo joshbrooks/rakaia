@@ -29,13 +29,37 @@ from django.core.management.base import BaseCommand, CommandParser
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.store import get_store
-from rakaia import CollectingExecutor, upcast
+from rakaia import (
+    AppendOptions,
+    CollectingExecutor,
+    envelope_actor,
+    history_effects,
+    label_marker,
+    provenance,
+    upcast,
+)
 from rakaia.replay import replay
 from submissions import reference
-from submissions.models import ActivityProgress, MonitoringVisit
+from submissions.models import ActivityProgress, MonitoringVisit, SubmissionHistory
 from submissions.seed import POLICY_CHANGE_SEQ, SAMPLE_SUBMISSIONS
 
 STREAM = "submissions"
+HISTORY_MODEL = "submissions.SubmissionHistory"
+IR108_ID = "44444444-4444-4444-4444-444444444444"
+
+
+def _append_event(store: Any, event: dict, *, label: str, actor: str) -> None:
+    """Append one *enveloped* event: the raw payload plus a change label and the
+    acting user — exactly what `ProvenanceMiddleware` stamps on a real request.
+    The label drives the `/history` marker; the ambient `provenance(user=…)` is
+    merged into the message metadata so the audit read-model can recover *who*.
+    """
+    with provenance(user=actor):
+        store.append(
+            STREAM,
+            json.dumps(event).encode("utf-8"),
+            AppendOptions(label=label),
+        )
 
 
 def _snapshot() -> dict[str, list[tuple]]:
@@ -80,7 +104,11 @@ class Command(BaseCommand):
         store.delete(STREAM)
         store.create(STREAM)
         for event in SAMPLE_SUBMISSIONS:
-            store.append(STREAM, json.dumps(event).encode("utf-8"))
+            # First recording of each submission -> "create" (a `+` in history),
+            # stamped with the monitor who filed it as the acting user.
+            _append_event(
+                store, event, label="create", actor=event["fields"]["monitor"]
+            )
         self.stdout.write(
             f"Seeded {len(SAMPLE_SUBMISSIONS)} submissions "
             f"(completion policy changes at seq {POLICY_CHANGE_SEQ}).\n"
@@ -129,6 +157,7 @@ class Command(BaseCommand):
         self._report_parity(replay_snap, reference_snap)
         self._report_value_add(replay_snap, naive_snap)
         self._demo_reconcile(store)
+        self._demo_history(store)
 
         if opts["twice"]:
             before = MonitoringVisit.objects.count()
@@ -150,7 +179,7 @@ class Command(BaseCommand):
         corrected = {
             "schema_version": 2,
             "form_type": "monitoring_visit",
-            "submission_id": "44444444-4444-4444-4444-444444444444",
+            "submission_id": IR108_ID,
             "fields": {
                 "project_code": "IR-108",
                 "suku": "Bobonaro",
@@ -161,7 +190,9 @@ class Command(BaseCommand):
                 ],
             },
         }
-        store.append(STREAM, json.dumps(corrected).encode("utf-8"))
+        # A later *correction* by a reviewer (not the original monitor): an
+        # "update" (a `~` in history) whose actor differs from the create.
+        _append_event(store, corrected, label="update", actor="reviewer:tavares")
         _reset()
         replay(store=store, stream_path=STREAM, executor=DjangoExecutor())
 
@@ -176,6 +207,66 @@ class Command(BaseCommand):
                 f"-> {count} row(s) — {'no orphan ✓' if ok else 'ORPHAN ✗'}"
             )
         )
+
+    def _demo_history(self, store: Any) -> None:
+        """Materialise a streams-native `/history` and check it is equivalent to
+        pghistory's output — *plus* the provenance a bulk re-derive would lose.
+
+        The audit read-model is just another fan-out over the same stream: one
+        `SubmissionHistory` row per event, keyed by (submission, version), shaped
+        from the envelope (`label_marker` for the +/~/- diff marker,
+        `envelope_actor` for who). Because the whole stream is read, the default
+        version = message index is stable, so re-materialising is idempotent.
+        """
+        messages, _ = store.read(STREAM)
+        effects = history_effects(
+            messages,
+            HISTORY_MODEL,
+            subject_field="submission_id",
+            subject_of=lambda e: e["submission_id"],
+            defaults_of=lambda msg, event: {
+                "marker": label_marker(msg.label),
+                "actor": envelope_actor(msg, event),
+                "label": msg.label,
+                "ts": msg.timestamp,
+                "snapshot": event,
+            },
+        )
+        SubmissionHistory.objects.all().delete()
+        DjangoExecutor().apply(effects)
+        rows = list(SubmissionHistory.objects.all())
+
+        # [4a] Equivalence: one audit row per recorded change — the same
+        # cardinality pghistory's per-save event table gives.
+        cardinality_ok = len(rows) == len(messages)
+        # [4b] Provenance: every change carries the acting user captured at write
+        # time. pghistory only gets this when a request middleware is in scope;
+        # here it rides the envelope, so it is never silently null.
+        actors_ok = all(r.actor for r in rows)
+        # [4c] The correction is a distinct, time-stamped version of IR-108 with a
+        # *different* actor (reviewer, not the original monitor) — the per-save
+        # attribution a naive reconcile_separated_submissions re-derive destroys.
+        ir108 = [r for r in rows if r.submission_id == IR108_ID]
+        correction_ok = (
+            len(ir108) == 2
+            and ir108[0].marker == "+"
+            and ir108[1].marker == "~"
+            and ir108[0].actor != ir108[1].actor
+        )
+
+        ok = cardinality_ok and actors_ok and correction_ok
+        style = self.style.SUCCESS if ok else self.style.ERROR
+        self.stdout.write(
+            style(
+                f"\n[4] HISTORY: {len(rows)} audit rows from {len(messages)} events "
+                f"— streams-native /history, provenance captured "
+                f"{'✓' if ok else '✗'}"
+            )
+        )
+        for r in ir108:
+            self.stdout.write(
+                f"    {r.submission_id[:8]}…  v{r.version}  {r.marker}  by {r.actor}"
+            )
 
     # -- reporting ----------------------------------------------------------
 
