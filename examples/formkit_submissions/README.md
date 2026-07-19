@@ -64,10 +64,14 @@ submission  project  suku            budget  progress       status
 
 [3] RECONCILE: IR-108 resubmitted with 1 activity (was 2) -> 1 row(s) — no orphan ✓
 
+[4] HISTORY: 5 audit rows from 5 events — streams-native /history, provenance captured ✓
+    44444444…  v3  +  by soares
+    44444444…  v4  ~  by reviewer:tavares
+
 Replayed again: 4 -> 4 visit rows — idempotent ✓
 ```
 
-## What the three assertions mean
+## What the four assertions mean
 
 **[1] Parity — the migration is safe.** The command runs the same submissions
 two ways: through rakaia's `replay()` (stream → versioned handlers →
@@ -92,6 +96,25 @@ delete. When IR-108 is resubmitted with one activity instead of two, replaying
 the stream prunes the dropped child row instead of leaving it orphaned — the
 trap a naive `update_or_create` fan-out falls into.
 
+**[4] History — the pghistory replacement.** Each event is appended *enveloped*:
+a change `label` and, via `provenance(user=…)`, the acting user — exactly what
+`django-pghistory`'s `HistoryMiddleware` stamps on a request, but riding the
+stream instead of a thread-local. `history_effects` then fans the same stream
+out into a `SubmissionHistory` audit table — one row per event, keyed by
+`(submission, version)` (here `version` is the stream position), carrying the
+`+`/`~` marker (`label_marker`), the actor (`envelope_actor`), a timestamp, and
+the payload snapshot. The assertion checks it is **equivalent** to what a
+pghistory `/history` endpoint returns — each change is captured with its diff
+marker and an *intact* snapshot (the snapshots round-trip their source events;
+the markers are four creates + one correction), the property that lets the log
+reconstruct any historical state. And it is **better** in two ways a
+signal-based `reconcile_separated_submissions` re-derive *loses*: IR-108's
+correction is a distinct version attributed to the reviewer, not folded into the
+monitor's original entry; and because materialisation is a keyed
+`update_or_create`, re-running never renumbers or churns the log. (The demo
+records only creates and updates; `label_marker` also maps a `delete` label to
+`-`, but soft-delete/deletion semantics are out of scope here.)
+
 ## How it fits together
 
 * **`seed.py`** — sample submissions. List position = stream `seq` (selects the
@@ -102,18 +125,26 @@ trap a naive `update_or_create` fan-out falls into.
   `ready()`; the `@register_*` decorators populate the process-wide registries.
 * **`reference.py`** — the `formkit-ninja` baseline: direct `update_or_create`,
   no stream. What parity is checked against.
-* **`management/commands/demo_submissions.py`** — seeds the in-memory stream,
-  previews the effects with a `CollectingExecutor`, normalises the input with
-  `upcast()`, replays, and runs the three assertions.
-* **`models.py` / `views.py`** — the materialized projection and a read-only view.
+* **`management/commands/demo_submissions.py`** — seeds the stream with
+  *enveloped* appends (a change label + `provenance(user=…)`), previews the
+  effects with a `CollectingExecutor`, normalises the input with `upcast()`,
+  replays, materialises the audit log with `history_effects`, and runs the four
+  assertions.
+* **`models.py` / `views.py`** — the materialized projections
+  (`MonitoringVisit`, `ActivityProgress`, and the `SubmissionHistory` audit
+  read-model) and a read-only view.
 
 ### rakaia APIs this exercises
 
-This spike drove six additions to rakaia (see the tracking issue). It now uses
-all of them: the **delete `Effect`** op and **`reconcile_children`** (assertion
-[3]), the **`CollectingExecutor`** dry-run, and the **`upcast()`** one-liner.
-The **durable `DjangoStreamStore`** (`RAKAIA_STORE="durable"`) and **`match_field`**
-content routing are available for a next iteration (see caveats).
+This spike drove six additions to rakaia (see the tracking issue) plus the
+event-**envelope** work that followed it. It now uses them all: the delete
+`Effect` op and **`reconcile_children`** (assertion [3]), the
+**`CollectingExecutor`** dry-run, the **`upcast()`** one-liner, and — for
+assertion [4] — the **append envelope** (`AppendOptions(label=…)` +
+**`provenance`**) and the **history read-model** (**`history_effects`**,
+**`label_marker`**, **`envelope_actor`**). The durable `DjangoStreamStore`
+(`RAKAIA_STORE="durable"`) and `match_field` content routing are available for a
+next iteration (see caveats).
 
 ### Why seed + replay live in one command
 

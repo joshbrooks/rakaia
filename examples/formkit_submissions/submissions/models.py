@@ -64,3 +64,34 @@ class ActivityProgress(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.progress_pct}%)"
+
+
+class SubmissionHistory(models.Model):
+    """Streams-native `/history` audit row — the pghistory replacement.
+
+    Unlike `MonitoringVisit`/`ActivityProgress` (which hold only the *latest*
+    derived state), this is one row per recorded change, materialised from the
+    event **envelope** carried on each stream message. It is the same shape a
+    `django-pghistory` `/history` endpoint returns: a per-version marker
+    (``+``/``~``/``-``), the acting user captured at write time, a timestamp, and
+    the full payload snapshot. Written by `rakaia.history_effects` in the
+    `demo_submissions` command, keyed by the stable submission UUID + the
+    stream version so re-materialising is idempotent.
+    """
+
+    submission_id = models.CharField(max_length=64)
+    version = models.IntegerField()
+
+    # Envelope-derived audit columns.
+    marker = models.CharField(max_length=1, default="~")
+    actor = models.CharField(max_length=64, null=True, blank=True)
+    label = models.CharField(max_length=32, default="")
+    ts = models.FloatField(default=0.0)
+    snapshot = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["submission_id", "version"]
+        unique_together = ["submission_id", "version"]
+
+    def __str__(self) -> str:
+        return f"{self.submission_id[:8]} v{self.version} {self.marker} by {self.actor}"
