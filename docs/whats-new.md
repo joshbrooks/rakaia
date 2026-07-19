@@ -262,7 +262,8 @@ Rakaia is checked against the upstream, language-agnostic
 [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams)
 suite in CI. It passes the full protocol surface today except the stream
 **forking** family (not yet implemented). Run it yourself with `just conformance`
-(needs node/npm); details in [`conformance/README.md`](../conformance/README.md).
+(needs node/npm); details in
+[`conformance/README.md`](https://github.com/joshbrooks/rakaia/blob/main/conformance/README.md).
 
 ---
 
