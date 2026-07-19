@@ -30,7 +30,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from .effects import Effect, Executor
 from .protocols import ProjectionReader, ReadableStore
@@ -60,6 +60,51 @@ class ReplayResult:
     external_effects_skipped: int = 0
     warnings: list[str] = field(default_factory=list)
     drift_detected: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ReplayCtx:
+    """Bundle of the invariants the pipeline helpers need, shared by `replay()`
+    (single stream) and `merge_replay()` (several streams merged)."""
+
+    handlers: HandlerRegistry
+    executor: Executor
+    reader: ProjectionReader | None
+    include_external: bool
+    on_drift: OnDriftPolicy
+    result: ReplayResult
+
+
+def _apply_effects(ctx: _ReplayCtx, effects: list[Effect]) -> None:
+    external_count = sum(1 for e in effects if e.op == "external")
+    if not ctx.include_external:
+        ctx.result.external_effects_skipped += external_count
+    to_apply = (
+        effects if ctx.include_external else [e for e in effects if e.op != "external"]
+    )
+    if to_apply:
+        ctx.executor.apply(to_apply)
+        ctx.result.effects_applied += len(to_apply)
+
+
+def _dispatch_event(
+    ctx: _ReplayCtx, seq: int, match_str: str, upcasted: dict, stage: int | None
+) -> None:
+    versions = ctx.handlers.resolve(match_str, seq, event=upcasted, stage=stage)
+    all_effects: list[Effect] = []
+    for version in versions:
+        _check_handler_drift(version, ctx.on_drift, ctx.result)
+        all_effects.extend(_call_handler(version, upcasted, ctx.reader))
+    _apply_effects(ctx, all_effects)
+
+
+def _run_stage_reducers(ctx: _ReplayCtx, stage: int | None) -> None:
+    # Reducers run once per stage, after that stage's per-event handlers have
+    # committed, reading the accumulated projections via the reader. A None
+    # stage (single, non-staged pass) has no reducers.
+    for reducer in ctx.handlers.reducers_for_stage(stage):
+        _check_reducer_drift(reducer, ctx.on_drift, ctx.result)
+        _apply_effects(ctx, _normalize_effects(reducer.fn(ctx.reader)))
 
 
 def replay(
@@ -140,35 +185,17 @@ def replay(
             drift_callback=_upcaster_drift,
         )
 
-    def _apply(effects: list[Effect]) -> None:
-        external_count = sum(1 for e in effects if e.op == "external")
-        if not include_external:
-            result.external_effects_skipped += external_count
-        to_apply = (
-            effects if include_external else [e for e in effects if e.op != "external"]
-        )
-        if to_apply:
-            executor.apply(to_apply)
-            result.effects_applied += len(to_apply)
-
-    def _dispatch(seq: int, upcasted: dict, stage: int | None) -> None:
-        versions = handlers.resolve(match_str, seq, event=upcasted, stage=stage)
-        all_effects: list[Effect] = []
-        for version in versions:
-            _check_handler_drift(version, on_drift, result)
-            all_effects.extend(_call_handler(version, upcasted, reader))
-        _apply(all_effects)
-
-    def _run_reducers(stage: int) -> None:
-        # Reducers run once per stage, after that stage's per-event handlers
-        # have committed, reading the accumulated projections via `reader`.
-        for reducer in handlers.reducers_for_stage(stage):
-            _check_reducer_drift(reducer, on_drift, result)
-            _apply(_normalize_effects(reducer.fn(reader)))
-
     def _in_range(seq: int) -> bool:
         return seq >= start_seq and (end_seq is None or seq < end_seq)
 
+    ctx = _ReplayCtx(
+        handlers=handlers,
+        executor=executor,
+        reader=reader,
+        include_external=include_external,
+        on_drift=on_drift,
+        result=result,
+    )
     stage_numbers = handlers.stages()
     staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
 
@@ -180,7 +207,7 @@ def replay(
                 break
             if not _in_range(seq):
                 continue
-            _dispatch(seq, _decode_upcast(seq, msg.data), stage=None)
+            _dispatch_event(ctx, seq, match_str, _decode_upcast(seq, msg.data), None)
             result.events_processed += 1
         return result
 
@@ -200,9 +227,131 @@ def replay(
             decoded.append((seq, _decode_upcast(seq, msg.data)))
     for stage in stage_numbers:
         for seq, upcasted in decoded:
-            _dispatch(seq, upcasted, stage=stage)
-        _run_reducers(stage)
+            _dispatch_event(ctx, seq, match_str, upcasted, stage)
+        _run_stage_reducers(ctx, stage)
     result.events_processed = len(decoded)
+    return result
+
+
+def merge_replay(
+    store: ReadableStore,
+    stream_paths: list[str],
+    executor: Executor,
+    *,
+    order_key: str = "ts",
+    handler_registry: HandlerRegistry | None = None,
+    upcaster_registry: UpcasterRegistry | None = None,
+    event_match: str | None = None,
+    include_external: bool = False,
+    on_drift: OnDriftPolicy = "warn",
+    reader: ProjectionReader | None = None,
+) -> ReplayResult:
+    """
+    Replay several streams merged into one deterministic total order.
+
+    Each stream is already ordered, so this is a k-way merge; the design point is
+    the **order key**. Every event is decoded, upcast, and tagged with
+    ``(event[order_key], stream_path, offset)``, then the merged sequence is that
+    tuple sorted — so equal order-key values across streams break by stream path
+    then offset, giving an order that is a pure function of the streams and is
+    **independent of the order `stream_paths` is passed**. The merged events then
+    run through exactly the same staged handler + reducer pipeline as `replay()`.
+
+    Args:
+        store: The store holding the events.
+        stream_paths: The streams to merge, each read in full.
+        executor: Effect executor.
+        order_key: The event field to merge on (default ``"ts"`` — the envelope
+            timestamp). Raises KeyError-derived ValueError if an event lacks it.
+        handler_registry / upcaster_registry: default to the process-wide ones.
+        event_match: Match string for handler routing + upcasting. Default None
+            uses each event's **source stream path** as its match string, so
+            content-routed handlers (`match_field`) and per-stream upcasters both
+            work; pass a value to route every merged event by one match string.
+        include_external / on_drift / reader: as for `replay()`. A reader is
+            required when any handler declares stage > 0 or any reducer exists.
+
+    Note: merged `seq` is the event's position in the *merged* order (0-based),
+    not a per-stream one, so handlers routed by content (`match_field`) or
+    versioned over open ranges (`effective_to=None`) are unaffected, but a
+    handler with a **closed** seq range sized to a single stream will raise
+    `HandlerGapError` under merge (the merged range is longer). Version merged
+    handlers by content or open ranges.
+
+    Raises `ValueError` on duplicate `stream_paths`, or when an event lacks
+    `order_key` / carries `order_key` values that aren't mutually comparable.
+    """
+    if len(set(stream_paths)) != len(stream_paths):
+        raise ValueError(
+            f"merge_replay received duplicate stream paths ({stream_paths}); "
+            f"each stream would be processed twice."
+        )
+    handlers = handler_registry or get_default_registry()
+    upcasters = upcaster_registry or get_default_upcaster_registry()
+    result = ReplayResult()
+
+    def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
+        _record_drift(
+            kind="upcaster",
+            name=uv.dotted_path,
+            stored_hash=uv.source_hash,
+            live_hash=live_hash,
+            on_drift=on_drift,
+            result=result,
+        )
+
+    # Decode + upcast every event of every stream, tag with the sort key.
+    tagged: list[tuple[tuple[Any, str, int], str, dict]] = []
+    for path in stream_paths:
+        match_str = event_match if event_match is not None else path
+        target_version = upcasters.current_version(match_str)
+        messages, _ = store.read(path)
+        for offset, msg in enumerate(messages):
+            upcasted = upcasters.apply_chain(
+                _decode_event(msg.data, path, offset),
+                match_str,
+                target_version,
+                drift_callback=_upcaster_drift,
+            )
+            if order_key not in upcasted:
+                raise ValueError(
+                    f"Event at offset={offset} in stream={path!r} has no "
+                    f"order_key={order_key!r}; cannot merge deterministically."
+                )
+            tagged.append(((upcasted[order_key], path, offset), match_str, upcasted))
+
+    try:
+        tagged.sort(key=lambda item: item[0])
+    except TypeError as exc:
+        raise ValueError(
+            f"Cannot merge deterministically: order_key={order_key!r} values are "
+            f"not mutually comparable across events (mixed types or None?): {exc}"
+        ) from exc
+
+    ctx = _ReplayCtx(
+        handlers=handlers,
+        executor=executor,
+        reader=reader,
+        include_external=include_external,
+        on_drift=on_drift,
+        result=result,
+    )
+    stage_numbers = handlers.stages()
+    staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
+    if staged and reader is None:
+        raise ValueError(
+            "merge_replay has stage > 0 handlers or reducers but no reader was "
+            "provided; pass reader= so they can read earlier stages' projections."
+        )
+
+    # seq is the event's position in the merged order.
+    merged = [(seq, m, ev) for seq, (_, m, ev) in enumerate(tagged)]
+    passes: list[int | None] = list(stage_numbers) if staged else [None]
+    for stage in passes:
+        for seq, match_str, upcasted in merged:
+            _dispatch_event(ctx, seq, match_str, upcasted, stage)
+        _run_stage_reducers(ctx, stage)
+    result.events_processed = len(merged)
     return result
 
 
