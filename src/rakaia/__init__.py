@@ -17,6 +17,7 @@ Usage:
     # Run with: uvicorn rakaia:app
 """
 
+from .append import append_if_changed, snapshots_equal
 from .context import get_provenance, provenance
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
 from .effects import (
@@ -92,6 +93,8 @@ __all__ = [
     "StreamStore",
     "provenance",
     "get_provenance",
+    "append_if_changed",
+    "snapshots_equal",
     "history_effects",
     "recover_peak_snapshot",
     "label_marker",
