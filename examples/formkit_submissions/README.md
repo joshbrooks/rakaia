@@ -101,13 +101,19 @@ a change `label` and, via `provenance(user=…)`, the acting user — exactly wh
 `django-pghistory`'s `HistoryMiddleware` stamps on a request, but riding the
 stream instead of a thread-local. `history_effects` then fans the same stream
 out into a `SubmissionHistory` audit table — one row per event, keyed by
-`(submission, version)`, carrying the `+`/`~`/`-` marker (`label_marker`), the
-actor (`envelope_actor`), a timestamp, and the snapshot. This is the same shape
-a pghistory `/history` endpoint returns (**equivalent**), plus two things a
-signal-based `reconcile_separated_submissions` re-derive *loses* (**better**):
-IR-108's correction is a distinct version `v4` attributed to the reviewer, not
-folded into the monitor's original `v3`; and because materialisation is a keyed
-`update_or_create`, re-running never renumbers or churns the log.
+`(submission, version)` (here `version` is the stream position), carrying the
+`+`/`~` marker (`label_marker`), the actor (`envelope_actor`), a timestamp, and
+the payload snapshot. The assertion checks it is **equivalent** to what a
+pghistory `/history` endpoint returns — each change is captured with its diff
+marker and an *intact* snapshot (the snapshots round-trip their source events;
+the markers are four creates + one correction), the property that lets the log
+reconstruct any historical state. And it is **better** in two ways a
+signal-based `reconcile_separated_submissions` re-derive *loses*: IR-108's
+correction is a distinct version attributed to the reviewer, not folded into the
+monitor's original entry; and because materialisation is a keyed
+`update_or_create`, re-running never renumbers or churns the log. (The demo
+records only creates and updates; `label_marker` also maps a `delete` label to
+`-`, but soft-delete/deletion semantics are out of scope here.)
 
 ## How it fits together
 

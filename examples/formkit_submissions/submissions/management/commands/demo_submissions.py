@@ -236,9 +236,18 @@ class Command(BaseCommand):
         DjangoExecutor().apply(effects)
         rows = list(SubmissionHistory.objects.all())
 
-        # [4a] Equivalence: one audit row per recorded change — the same
-        # cardinality pghistory's per-save event table gives.
-        cardinality_ok = len(rows) == len(messages)
+        # [4a] Faithful capture: every recorded change is stored with its source
+        # snapshot intact and the correct diff marker — the property that lets
+        # the audit log reconstruct any historical state (pghistory's core
+        # guarantee). Snapshots must round-trip the source event byte-for-byte,
+        # and the markers must reflect the labels: four creates (+) and the one
+        # correction (~). (Unlike a bare count, this fails if the projection
+        # drops a field, mis-keys a row, or maps a label to the wrong marker.)
+        events_by_version = {i: json.loads(m.data) for i, m in enumerate(messages)}
+        snapshots_faithful = all(
+            r.snapshot == events_by_version[r.version] for r in rows
+        )
+        markers_ok = sorted(r.marker for r in rows) == ["+", "+", "+", "+", "~"]
         # [4b] Provenance: every change carries the acting user captured at write
         # time. pghistory only gets this when a request middleware is in scope;
         # here it rides the envelope, so it is never silently null.
@@ -254,7 +263,7 @@ class Command(BaseCommand):
             and ir108[0].actor != ir108[1].actor
         )
 
-        ok = cardinality_ok and actors_ok and correction_ok
+        ok = snapshots_faithful and markers_ok and actors_ok and correction_ok
         style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(
             style(
