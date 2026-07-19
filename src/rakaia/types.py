@@ -70,6 +70,14 @@ class StreamMessage:
     timestamp: float
     """Timestamp when the message was appended (time.time())."""
 
+    label: str = ""
+    """Optional event-sourcing envelope: the change label (e.g. create/update/
+    delete → +/~/-). Empty for pure-protocol messages; ignored by the transport."""
+
+    metadata: dict | None = None
+    """Optional event-sourcing envelope: an open metadata dict (actor, url,
+    causation, …). None for pure-protocol messages; ignored by the transport."""
+
 
 @dataclass
 class ProducerState:
@@ -221,6 +229,10 @@ class AppendOptions:
     producer_epoch: int | None = None
     producer_seq: int | None = None
     close: bool = False
+    label: str = ""
+    """Event-sourcing envelope label to record on the appended message."""
+    metadata: dict | None = None
+    """Event-sourcing envelope metadata to record on the appended message."""
 
 
 @dataclass

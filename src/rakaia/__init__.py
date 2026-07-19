@@ -17,6 +17,7 @@ Usage:
     # Run with: uvicorn rakaia:app
 """
 
+from .context import get_provenance, provenance
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
 from .effects import (
     Effect,
@@ -83,6 +84,8 @@ __all__ = [
     "app",
     # Store
     "StreamStore",
+    "provenance",
+    "get_provenance",
     # Options
     "ServerOptions",
     "CursorOptions",

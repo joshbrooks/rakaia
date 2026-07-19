@@ -12,6 +12,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+from .context import merge_provenance
 from .json_mode import (
     format_json_response,
     is_json_content_type,
@@ -260,8 +261,12 @@ class StreamStore:
         ):
             raise ValueError(f"Sequence conflict: {opts.seq} <= {stream.last_seq}")
 
-        # Append the data (may raise for invalid JSON)
-        message = self._append_to_stream(stream, data)
+        # Append the data (may raise for invalid JSON). Provenance is merged
+        # here at the public-append boundary — not in _append_to_stream — so a
+        # stream's initial-create message is never stamped.
+        message = self._append_to_stream(
+            stream, data, label=opts.label, metadata=merge_provenance(opts.metadata)
+        )
 
         # === STATE MUTATION (only after successful append) ===
 
@@ -601,6 +606,9 @@ class StreamStore:
         stream: Stream,
         data: bytes,
         is_initial_create: bool = False,
+        *,
+        label: str = "",
+        metadata: dict | None = None,
     ) -> StreamMessage | None:
         """Append data to a stream, handling JSON mode processing."""
         processed_data = data
@@ -621,6 +629,8 @@ class StreamStore:
             data=processed_data,
             offset=new_offset,
             timestamp=time.time(),
+            label=label,
+            metadata=metadata,
         )
 
         stream.messages.append(message)

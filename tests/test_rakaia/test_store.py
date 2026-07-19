@@ -228,6 +228,28 @@ class TestAppend:
         with pytest.raises(ValueError, match="Invalid JSON"):
             store.append("foo", b"not-json")
 
+    def test_append_carries_envelope(self, store: StreamStore):
+        store.create("foo", content_type="application/octet-stream")
+        result = store.append(
+            "foo",
+            b"hello",
+            AppendOptions(label="update", metadata={"user": 5, "url": "/x"}),
+        )
+        assert result.message is not None
+        assert result.message.label == "update"
+        assert result.message.metadata == {"user": 5, "url": "/x"}
+        # and it round-trips through read
+        messages, _ = store.read("foo")
+        assert messages[-1].label == "update"
+        assert messages[-1].metadata == {"user": 5, "url": "/x"}
+
+    def test_append_envelope_defaults_empty(self, store: StreamStore):
+        store.create("foo", content_type="application/octet-stream")
+        result = store.append("foo", b"hello")  # no envelope
+        assert result.message is not None
+        assert result.message.label == ""
+        assert result.message.metadata is None
+
     def test_append_content_type_mismatch_raises(self, store: StreamStore):
         store.create("foo", content_type="application/json")
         with pytest.raises(ValueError, match="Content-type mismatch"):

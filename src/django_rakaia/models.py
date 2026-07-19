@@ -71,6 +71,9 @@ class StreamEvent(models.Model):
     data = models.JSONField()  # type: ignore[assignment]
     event_type = models.CharField(max_length=50, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    """Event-sourcing envelope metadata (actor, url, causation, …). Empty for
+    raw/pure-protocol appends. `event_type` doubles as the envelope label."""
 
     class Meta:
         db_table = "rakaia_streamevent"
