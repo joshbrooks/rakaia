@@ -61,9 +61,7 @@ class DjangoExecutor:
         self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
     @staticmethod
-    def _upsert_skip_unchanged(
-        model: type, lookup: dict, defaults: dict
-    ) -> None:
+    def _upsert_skip_unchanged(model: type, lookup: dict, defaults: dict) -> None:
         try:
             row = model.objects.get(**lookup)
         except model.DoesNotExist:

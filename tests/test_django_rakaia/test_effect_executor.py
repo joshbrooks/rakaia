@@ -15,7 +15,9 @@ from .models import Area, Project
 
 def _updates(ctx: CaptureQueriesContext) -> list[str]:
     return [
-        q["sql"] for q in ctx.captured_queries if q["sql"].lstrip().upper().startswith("UPDATE")
+        q["sql"]
+        for q in ctx.captured_queries
+        if q["sql"].lstrip().upper().startswith("UPDATE")
     ]
 
 
