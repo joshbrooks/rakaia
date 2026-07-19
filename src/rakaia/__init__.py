@@ -28,6 +28,12 @@ from .effects import (
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
+from .history import (
+    envelope_actor,
+    history_effects,
+    label_marker,
+    recover_peak_snapshot,
+)
 from .projections import (
     reconcile_aggregate,
     reconcile_children,
@@ -86,6 +92,10 @@ __all__ = [
     "StreamStore",
     "provenance",
     "get_provenance",
+    "history_effects",
+    "recover_peak_snapshot",
+    "label_marker",
+    "envelope_actor",
     # Options
     "ServerOptions",
     "CursorOptions",
