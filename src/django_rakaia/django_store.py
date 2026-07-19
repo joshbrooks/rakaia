@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from django.db import transaction
+
 from rakaia.context import merge_provenance
 from rakaia.types import StreamMessage
 
@@ -48,24 +50,30 @@ class DjangoStreamStore:
         The event-sourcing envelope on `options` (an ``AppendOptions``) is
         persisted: ``label`` maps to ``event_type`` (a raw append keeps the
         stable ``"append"`` label) and ``metadata`` to the JSON column.
-        """
-        try:
-            stream = Stream.objects.get(stream_id=path)
-        except Stream.DoesNotExist as exc:
-            raise KeyError(f"Stream not found: {path}") from exc
 
-        label = getattr(options, "label", "") or ""
-        metadata = merge_provenance(getattr(options, "metadata", None))
-        event = StreamEvent.objects.create(
-            data=json.loads(data),
-            event_type=label or _APPEND_EVENT_TYPE,
-            metadata=metadata or {},
-        )
-        return StreamEntry.objects.create(
-            stream=stream,
-            event=event,
-            offset=stream.get_next_offset(),
-        )
+        Runs in a transaction so ``get_next_offset()`` can lock the stream row:
+        concurrent appends serialize on offset allocation instead of racing to
+        the same value and failing the ``unique_together(stream, offset)``
+        constraint.
+        """
+        with transaction.atomic():
+            try:
+                stream = Stream.objects.get(stream_id=path)
+            except Stream.DoesNotExist as exc:
+                raise KeyError(f"Stream not found: {path}") from exc
+
+            label = getattr(options, "label", "") or ""
+            metadata = merge_provenance(getattr(options, "metadata", None))
+            event = StreamEvent.objects.create(
+                data=json.loads(data),
+                event_type=label or _APPEND_EVENT_TYPE,
+                metadata=metadata or {},
+            )
+            return StreamEntry.objects.create(
+                stream=stream,
+                event=event,
+                offset=stream.get_next_offset(),
+            )
 
     def read(
         self, path: str, offset: str | None = None

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
+from django.db.models.query import QuerySet
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.models import Stream, StreamEntry
@@ -66,6 +68,28 @@ class TestDjangoStreamStore:
         messages, _ = store.read("s")
         assert messages[-1].label == ""
         assert messages[-1].metadata is None
+
+    def test_append_locks_stream_row_for_offset_allocation(self):
+        # Regression guard for the concurrency bug: offset allocation must go
+        # through select_for_update() so concurrent appends serialize on the
+        # stream row instead of racing to the same offset and failing the
+        # unique_together(stream, offset) constraint. SQLite (the CI backend)
+        # can't reproduce the race across connections, so assert the lock is
+        # acquired rather than trying to trigger the collision.
+        store = DjangoStreamStore()
+        store.create("s")
+
+        original = QuerySet.select_for_update
+        locked = []
+
+        def spy(qs, *args, **kwargs):
+            locked.append(True)
+            return original(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "select_for_update", spy):
+            store.append("s", b'{"id": 1}')
+
+        assert locked, "append must lock the stream row via select_for_update()"
 
     def test_read_returns_events_in_order(self):
         store = DjangoStreamStore()

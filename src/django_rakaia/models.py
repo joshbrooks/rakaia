@@ -45,8 +45,16 @@ class Stream(models.Model):
         return self.stream_id
 
     def get_next_offset(self) -> int:
-        """Calculate the next monotonic offset for this stream."""
+        """Calculate the next monotonic offset for this stream.
 
+        Must be called inside a transaction: locks this stream row with
+        select_for_update() so concurrent writers serialize on offset
+        allocation instead of colliding on unique_together(stream, offset).
+        This is the single offset-allocation path shared by every write
+        surface (durable store, ``@stream_model`` signals, protocol views).
+        """
+        # Lock the stream row for the duration of the enclosing transaction.
+        Stream.objects.select_for_update().get(pk=self.pk)
         agg = self.entries.aggregate(max_offset=Max("offset"))
         max_offset = agg["max_offset"]
         if max_offset is None:
