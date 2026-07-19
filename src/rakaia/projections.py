@@ -35,6 +35,12 @@ def reconcile_children(
 ) -> list[Effect]:
     """Return Effects that materialise `items` as child rows without orphans.
 
+    Keys each row by its positional index, so this fits **fixed-order or
+    append-only** collections. For **reorderable** collections prefer
+    `reconcile_tree`, keyed by a stable id with order as a fractional-index
+    field — index keying renumbers (and rewrites) the tail on every reorder and
+    breaks external references to a row. See ADR 0001.
+
     Args:
         model_label: 'app_label.ModelName' of the child row model.
         parent_lookup: lookup identifying the parent scope, e.g.
