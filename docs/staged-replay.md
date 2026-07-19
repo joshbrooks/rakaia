@@ -67,6 +67,22 @@ no-op on the totals — the double-count bug is gone. `reconcile_aggregate` buil
 the effects; the reducer is the replay-time hook that runs it. A registry with
 any reducer replays in staged mode and requires `reader=`.
 
+Replay makes one pass per stage; a later stage reads what earlier stages wrote:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as replay
+  participant H0 as Stage 0 handlers
+  participant P as Projection
+  participant H1 as Stage 1 handlers
+  R->>H0: pass 1 — over every event
+  H0->>P: write referenced rows (e.g. Projects)
+  R->>H1: pass 2 — over every event, with a reader
+  H1->>P: resolve refs via read-only reader
+  H1->>P: write the linked rows
+```
+
 ## The problem: late-arriving cross-form links
 
 A projection often depends on a fact that lives in a *different* event — and

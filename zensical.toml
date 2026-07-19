@@ -19,6 +19,7 @@ Copyright &copy; 2026 Josh Brooks
 nav = [
     { "Overview" = "index.md" },
     { "What's new" = "whats-new.md" },
+    { "Glossary" = "glossary.md" },
     { "Django integration" = "django-integration.md" },
     { "Versioned handlers" = "versioned-handlers.md" },
     { "Projections & fan-out" = "projections-and-fan-out.md" },

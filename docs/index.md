@@ -19,7 +19,22 @@ The project ships two installable packages:
 
 !!! tip "New here?"
     Start with the **[guided tour of what's new](whats-new.md)** — every recent
-    feature with a one-command demo you can run to prove it.
+    feature with a one-command demo you can run to prove it. New to the
+    vocabulary (*projection*, *handler*, *upcaster*, *replay*)? See the
+    **[glossary](glossary.md)**.
+
+Beyond the raw protocol server, `django_rakaia` derives your database tables from
+an append-only log of events — so you can replay history and rebuild them:
+
+```mermaid
+flowchart LR
+  W["Your model<br/>.save()"] -->|emit| S[("Stream<br/>append-only log")]
+  S -->|replay| U["Upcasters<br/>normalise old events"]
+  U --> H["Versioned handlers<br/>pure: event → Effect"]
+  H --> X{Executor}
+  X -->|"update_or_create / delete"| P[("Projection<br/>your tables")]
+  X -.->|dry-run| C["CollectingExecutor<br/>records, zero writes"]
+```
 
 ## Installation
 
@@ -98,6 +113,7 @@ the channel layer.
 ## Documentation index
 
 - [What's new — a guided tour](whats-new.md) — recent features, each with a demo.
+- [Glossary](glossary.md) — plain-language definitions of the event-sourcing terms.
 - [Django integration](django-integration.md) — Models, decorator, admin, SSE,
   and adopting the durable store.
 - [Versioned handlers](versioned-handlers.md) — Time-correct replay, handler

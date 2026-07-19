@@ -15,6 +15,16 @@ class Executor(Protocol):
     def apply(self, effects: Iterable[Effect]) -> None: ...
 ```
 
+The same replay produces the same effects either way — the executor is the only
+thing that differs, so a dry run is a faithful preview of the real write:
+
+```mermaid
+flowchart LR
+  S[("Stream")] -->|replay| H["Handlers"] --> E["Effects<br/>(descriptions)"]
+  E --> DE["DjangoExecutor"] -->|writes| DB[("Database")]
+  E --> CE["CollectingExecutor"] -->|records| L["ex.effects list<br/>(no writes)"]
+```
+
 `replay()` calls `apply()` with each batch of effects a handler produces. Rakaia
 ships two implementations:
 

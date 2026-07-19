@@ -71,6 +71,7 @@ Pages live in [`docs/`](docs/) and the site config is in
 
 - [Overview & quick start](docs/index.md)
 - [**What's new — a guided tour**](docs/whats-new.md) — start here to see the recent features, each with a one-command demo
+- [Glossary](docs/glossary.md) — plain-language definitions of the event-sourcing terms
 - [Django integration](docs/django-integration.md)
 - [Versioned handlers](docs/versioned-handlers.md)
 - [Projections & fan-out](docs/projections-and-fan-out.md)

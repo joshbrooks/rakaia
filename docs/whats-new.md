@@ -11,10 +11,26 @@ snippet, and a **one-command demo you can run to prove it** — no setup beyond
 
 Rakaia is a [Durable Streams protocol](protocol.md) server plus a Django
 integration. On top of the raw stream it adds an **event-sourcing layer**: your
-projections (database rows) are *derived* from an append-only event log by pure,
-versioned handlers, so you can replay history and get time-correct results
-instead of whatever today's code would compute. The features below are what make
-that practical to adopt.
+[projections](glossary.md#projection) (database rows) are *derived* from an
+append-only [event log](glossary.md#stream) by pure,
+[versioned handlers](glossary.md#versioned-handler), so you can
+[replay](glossary.md#replay) history and get time-correct results instead of
+whatever today's code would compute. The features below are what make that
+practical to adopt. Linked terms above (and any that trip you up) are defined in
+the [glossary](glossary.md).
+
+The whole system is this one loop — every feature below is a refinement of a
+piece of it (unfamiliar words are in the [glossary](glossary.md)):
+
+```mermaid
+flowchart LR
+  W["Your model<br/>.save()"] -->|emit| S[("Stream<br/>append-only log")]
+  S -->|replay| U["Upcasters<br/>normalise old events"]
+  U --> H["Versioned handlers<br/>pure: event → Effect"]
+  H --> X{Executor}
+  X -->|"update_or_create / delete"| P[("Projection<br/>your tables")]
+  X -.->|dry-run| C["CollectingExecutor<br/>records, zero writes"]
+```
 
 ## Run the whole tour at once
 
@@ -68,6 +84,18 @@ def order_totals_v2(event):
     ...
 ```
 
+Each event flows to the handler version whose range covers its sequence number,
+so the past keeps its old answer while new events get the new rule:
+
+```mermaid
+flowchart LR
+  e0["seq 0"] --> v1["order_totals **v1**<br/>0% tax<br/>effective [0, 3)"]
+  e1["seq 1"] --> v1
+  e2["seq 2"] --> v1
+  e3["seq 3"] --> v2["order_totals **v2**<br/>10% tax<br/>effective [3, ∞)"]
+  e4["seq 4"] --> v2
+```
+
 Replay is idempotent (`update_or_create`), so you can re-run it safely, and it
 detects **drift** — a "frozen" historical handler whose source was edited after
 old events already ran through it (`--strict-drift`).
@@ -79,9 +107,9 @@ old events already ran through it (`--strict-drift`).
 **The problem.** Producers rename fields (`qty` → `quantity`). You don't want
 every handler to special-case old payloads forever.
 
-**What rakaia does.** An **upcaster** is a pure function that migrates an event
-from one schema version to the next, applied on read *before* handlers see it.
-Handlers only ever deal with the latest shape.
+**What rakaia does.** An [**upcaster**](glossary.md#upcaster) is a pure function
+that migrates an event from one schema version to the next, applied on read
+*before* handlers see it. Handlers only ever deal with the latest shape.
 
 ```python
 from rakaia import register_upcaster
@@ -99,9 +127,9 @@ def rename_qty(event):
 order's line items). When a later event has fewer children, a naive
 `update_or_create` fan-out leaves the dropped rows orphaned.
 
-**What rakaia does.** `reconcile_children` emits the per-child upserts **and** a
-reconcile delete in one transaction, so the projection always converges to
-exactly the children the event describes.
+**What rakaia does.** [`reconcile_children`](glossary.md#reconcile) emits the
+per-child upserts **and** a reconcile delete in one transaction, so the
+projection always converges to exactly the children the event describes.
 
 ```python
 from rakaia import reconcile_children
@@ -114,6 +142,20 @@ def activity_rows(event):
         items=event["activities"],
         defaults_fn=lambda a: {"progress": a["pct"]},
     )
+```
+
+One event, three writes — two upserts and a delete that sweeps whatever is no
+longer in the list, so a resubmission with fewer children can't leave orphans:
+
+```mermaid
+flowchart LR
+  E["Event<br/>activities: A, B"] --> RC["reconcile_children"]
+  RC --> U1["upsert A"]
+  RC --> U2["upsert B"]
+  RC --> D["delete children<br/>NOT in {A, B}"]
+  U1 --> P[("Projection")]
+  U2 --> P
+  D --> P
 ```
 
 For **unbounded nesting** (repeaters inside repeaters), `reconcile_tree` prunes
@@ -150,10 +192,10 @@ produced (a submission that links to a project created by a different form,
 possibly arriving out of order). A single pass can't resolve a link whose target
 hasn't been projected yet.
 
-**What rakaia does.** Handlers declare a `stage=`; replay runs stages in
-ascending order, and a later stage is handed a read-only projection reader to
-resolve references built by earlier stages — deterministic and self-healing, no
-backfills.
+**What rakaia does.** Handlers declare a [`stage=`](glossary.md#stage-staged-replay);
+replay runs stages in ascending order, and a later stage is handed a read-only
+[projection reader](glossary.md#projection-reader) to resolve references built by
+earlier stages — deterministic and self-healing, no backfills.
 
 ```python
 @register_handler(name="sf12", event_match="SF_1_2", match_field="form_type", stage=1)
@@ -162,6 +204,22 @@ def sf12(event, refs):                       # stage 1 gets a projection reader
     return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
                   lookup={"submission_id": event["key"]},
                   defaults={"project_id": project.pk if project else None})
+```
+
+Replay makes two passes; the second reads what the first built:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as replay
+  participant H0 as Stage 0 handlers
+  participant P as Projection
+  participant H1 as Stage 1 handlers
+  R->>H0: pass 1 — over every event
+  H0->>P: write the referenced rows (e.g. Projects)
+  R->>H1: pass 2 — over every event, with a reader
+  H1->>P: look up refs via the read-only reader
+  H1->>P: write the linked rows
 ```
 
 → Deep dive: [Staged replay](staged-replay.md) ·
