@@ -1008,6 +1008,55 @@ class TestMergeReplay:
                 upcaster_registry=UpcasterRegistry(),
             )
 
+    def test_duplicate_stream_paths_raise(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        with pytest.raises(ValueError, match="duplicate"):
+            merge_replay(
+                store,
+                ["forms/a", "forms/a"],  # same stream twice
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_incomparable_order_key_raises_clearly(self, store: StreamStore):
+        # One stream's ts is an int, the other's a str -> sort would TypeError;
+        # merge_replay should surface a clear ValueError, not the bare crash.
+        _seed_stream(
+            store,
+            "forms/a",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "TOUCH",
+                    "key": "a",
+                    "slot": "S",
+                    "ts": 1,
+                }
+            ],
+        )
+        _seed_stream(
+            store,
+            "forms/b",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "TOUCH",
+                    "key": "b",
+                    "slot": "S",
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+        with pytest.raises(ValueError, match="not mutually comparable"):
+            merge_replay(
+                store,
+                ["forms/a", "forms/b"],
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
     def test_requires_reader_when_staged(self, store: StreamStore):
         _seed_stream(store, "forms/a", _A)
         reg = _touch_registry()

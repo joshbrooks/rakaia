@@ -271,10 +271,21 @@ def merge_replay(
         include_external / on_drift / reader: as for `replay()`. A reader is
             required when any handler declares stage > 0 or any reducer exists.
 
-    Note: merged `seq` is the event's position in the merged order (0-based), so
-    handlers versioned by sequence range see that global position, not a
-    per-stream one; content-routed handlers with open ranges are unaffected.
+    Note: merged `seq` is the event's position in the *merged* order (0-based),
+    not a per-stream one, so handlers routed by content (`match_field`) or
+    versioned over open ranges (`effective_to=None`) are unaffected, but a
+    handler with a **closed** seq range sized to a single stream will raise
+    `HandlerGapError` under merge (the merged range is longer). Version merged
+    handlers by content or open ranges.
+
+    Raises `ValueError` on duplicate `stream_paths`, or when an event lacks
+    `order_key` / carries `order_key` values that aren't mutually comparable.
     """
+    if len(set(stream_paths)) != len(stream_paths):
+        raise ValueError(
+            f"merge_replay received duplicate stream paths ({stream_paths}); "
+            f"each stream would be processed twice."
+        )
     handlers = handler_registry or get_default_registry()
     upcasters = upcaster_registry or get_default_upcaster_registry()
     result = ReplayResult()
@@ -309,7 +320,13 @@ def merge_replay(
                 )
             tagged.append(((upcasted[order_key], path, offset), match_str, upcasted))
 
-    tagged.sort(key=lambda item: item[0])
+    try:
+        tagged.sort(key=lambda item: item[0])
+    except TypeError as exc:
+        raise ValueError(
+            f"Cannot merge deterministically: order_key={order_key!r} values are "
+            f"not mutually comparable across events (mixed types or None?): {exc}"
+        ) from exc
 
     ctx = _ReplayCtx(
         handlers=handlers,
