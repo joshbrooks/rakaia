@@ -88,6 +88,13 @@ class HandlerVersion:
     """When set, `event_match` is matched against `event[match_field]` (e.g.
     'form_type') instead of the stream path. None = match the stream path."""
 
+    stage: int = 0
+    """Replay stage. Handlers run in ascending stage order; every event is fed
+    through stage 0 in full before stage 1 begins, and a stage > 0 handler is
+    called with a read-only projection reader as its second argument so it can
+    resolve facts materialised by earlier stages. Default 0 = single-stage,
+    called with just the event (backward compatible)."""
+
 
 # =============================================================================
 # Registry
@@ -120,7 +127,7 @@ class HandlerRegistry:
         self._stream_path = stream_path
         # Identity tuples already persisted to the stream — used for dedup.
         self._persisted_ids: set[
-            tuple[str, str, int, int | None, str, str, str | None]
+            tuple[str, str, int, int | None, str, str, str | None, int]
         ] = set()
         if store is not None:
             self._ensure_stream()
@@ -135,16 +142,21 @@ class HandlerRegistry:
         effective_to: int | None = None,
         *,
         match_field: str | None = None,
+        stage: int = 0,
     ) -> HandlerVersion:
         """
         Register a handler version. Raises HandlerOverlapError on overlap.
 
         Re-registering with identical (name, event_match, from, to,
-        dotted_path, source_hash, match_field) is a no-op that returns the
-        existing version without re-appending to the meta-stream.
+        dotted_path, source_hash, match_field, stage) is a no-op that returns
+        the existing version without re-appending to the meta-stream.
 
         When `match_field` is set, `event_match` is matched against
         `event[match_field]` (e.g. 'form_type') instead of the stream path.
+
+        `stage` (default 0) controls replay ordering: replay runs stages in
+        ascending order, and a stage > 0 handler is invoked as `fn(event,
+        reader)` so it can read earlier stages' projections.
         """
         if effective_from < 0:
             raise ValueError(
@@ -155,6 +167,8 @@ class HandlerRegistry:
                 f"effective_to ({effective_to}) must be > effective_from "
                 f"({effective_from})"
             )
+        if stage < 0:
+            raise ValueError(f"stage must be non-negative, got {stage}")
 
         version = HandlerVersion(
             name=name,
@@ -165,6 +179,7 @@ class HandlerRegistry:
             dotted_path=f"{fn.__module__}.{fn.__qualname__}",
             source_hash=hash_function_source(fn),
             match_field=match_field,
+            stage=stage,
         )
 
         key = (name, event_match)
@@ -189,6 +204,8 @@ class HandlerRegistry:
         event_match: str,
         seq: int,
         event: dict[str, Any] | None = None,
+        *,
+        stage: int | None = None,
     ) -> list[HandlerVersion]:
         """
         Return all handler versions whose pattern matches AND whose [from, to)
@@ -196,6 +213,10 @@ class HandlerRegistry:
         `event_match` string (the stream path); a series registered with a
         `match_field` is instead matched against `event[match_field]`, so pass
         the decoded `event` when any content-routed handlers exist.
+
+        When `stage` is given, only versions in that stage are returned; the
+        coverage check still runs across every matching series, so a genuine
+        gap surfaces regardless of which stage is being resolved.
 
         Raises HandlerGapError if any matching handler series has no version
         covering seq (a gap, not "no handlers").
@@ -222,8 +243,17 @@ class HandlerRegistry:
                     f"{[(v.effective_from, v.effective_to) for v in versions]}"
                 )
             # Overlap is rejected at registration, so at most one matches.
-            resolved.append(covering[0])
+            if stage is None or covering[0].stage == stage:
+                resolved.append(covering[0])
         return resolved
+
+    def stages(self) -> list[int]:
+        """Sorted list of the distinct stages any registered version declares.
+
+        `[0]` (or `[]` when empty) means single-stage replay; more than one
+        entry drives staged replay in ascending order.
+        """
+        return sorted({v.stage for v in self.all_versions()})
 
     @staticmethod
     def _match_subject(
@@ -313,6 +343,7 @@ class HandlerRegistry:
             "dotted_path": version.dotted_path,
             "source_hash": version.source_hash,
             "match_field": version.match_field,
+            "stage": version.stage,
         }
         self._store.append(
             self._stream_path,
@@ -556,8 +587,9 @@ class UpcasterRegistry:
 
 def _identity(
     v: HandlerVersion,
-) -> tuple[str, str, int, int | None, str, str, str | None]:
-    # match_field is appended LAST so dotted_path stays at index 4 (rehydrate()).
+) -> tuple[str, str, int, int | None, str, str, str | None, int]:
+    # match_field / stage are appended after dotted_path (index 4) and
+    # source_hash (index 5) so rehydrate()'s ident[4] lookup stays valid.
     return (
         v.name,
         v.event_match,
@@ -566,12 +598,13 @@ def _identity(
         v.dotted_path,
         v.source_hash,
         v.match_field,
+        v.stage,
     )
 
 
 def _identity_from_payload(
     p: dict[str, Any],
-) -> tuple[str, str, int, int | None, str, str, str | None]:
+) -> tuple[str, str, int, int | None, str, str, str | None, int]:
     return (
         p["name"],
         p["event_match"],
@@ -580,6 +613,7 @@ def _identity_from_payload(
         p["dotted_path"],
         p["source_hash"],
         p.get("match_field"),  # tolerate pre-match_field persisted payloads
+        int(p.get("stage", 0)),  # tolerate pre-stage persisted payloads
     )
 
 
@@ -641,13 +675,15 @@ def register_handler(
     effective_to: int | None = None,
     *,
     match_field: str | None = None,
+    stage: int = 0,
     registry: HandlerRegistry | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that registers a handler version with the default registry.
 
     Pass `match_field` to route on a payload field (e.g. 'form_type') instead
-    of the stream path.
+    of the stream path. Pass `stage` (default 0) to place the handler in a
+    replay stage; stage > 0 handlers are called `fn(event, reader)`.
 
     Example:
         @register_handler(
@@ -674,6 +710,7 @@ def register_handler(
             effective_from=effective_from,
             effective_to=effective_to,
             match_field=match_field,
+            stage=stage,
         )
         return fn
 

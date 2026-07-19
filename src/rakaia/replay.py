@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .effects import Effect, Executor
-from .protocols import ReadableStore
+from .protocols import ProjectionReader, ReadableStore
 from .registry import (
     HandlerDriftError,
     HandlerRegistry,
@@ -63,6 +63,7 @@ def replay(
     event_match: str | None = None,
     include_external: bool = False,
     on_drift: OnDriftPolicy = "warn",
+    reader: ProjectionReader | None = None,
 ) -> ReplayResult:
     """
     Replay events in `stream_path` from `start_seq` (inclusive) to `end_seq`
@@ -86,6 +87,17 @@ def replay(
         on_drift: 'warn' (default) emits a warning and continues if a
             handler's source has changed since registration; 'raise' raises
             HandlerDriftError. (Drift detection itself lands in Step 6.)
+        reader: A read-only projection reader forwarded to every stage > 0
+            handler as its second argument. Required when any registered
+            handler declares stage > 0; unused for single-stage replay.
+
+    Staged replay: when handlers span more than one stage (see
+    `register_handler(stage=...)`), replay runs the whole event range through
+    stage 0, then stage 1, and so on. Stage 0 handlers are called `fn(event)`;
+    stage > 0 handlers are called `fn(event, reader)` so they can resolve facts
+    earlier stages materialised (a form linking to a reference entity another
+    form created, regardless of arrival order). With only stage 0 handlers,
+    replay is a single pass, exactly as before.
     """
     handlers = handler_registry or get_default_registry()
     upcasters = upcaster_registry or get_default_upcaster_registry()
@@ -106,12 +118,14 @@ def replay(
             result=result,
         )
 
+    # Decode + upcast each in-range event once; the stage passes below replay
+    # over this shared list rather than re-reading the stream per stage.
+    decoded: list[tuple[int, dict]] = []
     for seq, msg in enumerate(messages):
         if seq < start_seq:
             continue
         if end_seq is not None and seq >= end_seq:
             break
-
         event_dict = _decode_event(msg.data, stream_path, seq)
         upcasted = upcasters.apply_chain(
             event_dict,
@@ -119,27 +133,39 @@ def replay(
             target_version,
             drift_callback=_upcaster_drift,
         )
+        decoded.append((seq, upcasted))
 
-        versions = handlers.resolve(match_str, seq, event=upcasted)
-        all_effects: list[Effect] = []
-        for version in versions:
-            _check_handler_drift(version, on_drift, result)
-            effects = _call_handler(version, upcasted)
-            all_effects.extend(effects)
-
-        external_count = sum(1 for e in all_effects if e.op == "external")
-        result.external_effects_skipped += external_count if not include_external else 0
-        to_apply = (
-            all_effects
-            if include_external
-            else [e for e in all_effects if e.op != "external"]
+    stage_numbers = handlers.stages()
+    staged = any(s > 0 for s in stage_numbers)
+    if staged and reader is None:
+        raise ValueError(
+            "Replay has stage > 0 handlers but no reader was provided; pass "
+            "reader= so staged handlers can read earlier stages' projections."
         )
-        if to_apply:
-            executor.apply(to_apply)
-            result.effects_applied += len(to_apply)
+    # One pass per stage in ascending order; a single unfiltered pass otherwise.
+    passes: list[int | None] = list(stage_numbers) if staged else [None]
 
-        result.events_processed += 1
+    for stage in passes:
+        for seq, upcasted in decoded:
+            versions = handlers.resolve(match_str, seq, event=upcasted, stage=stage)
+            all_effects: list[Effect] = []
+            for version in versions:
+                _check_handler_drift(version, on_drift, result)
+                all_effects.extend(_call_handler(version, upcasted, reader))
 
+            external_count = sum(1 for e in all_effects if e.op == "external")
+            if not include_external:
+                result.external_effects_skipped += external_count
+            to_apply = (
+                all_effects
+                if include_external
+                else [e for e in all_effects if e.op != "external"]
+            )
+            if to_apply:
+                executor.apply(to_apply)
+                result.effects_applied += len(to_apply)
+
+    result.events_processed = len(decoded)
     return result
 
 
@@ -191,8 +217,14 @@ def _decode_event(data: bytes, stream_path: str, seq: int) -> dict:
         ) from exc
 
 
-def _call_handler(version: HandlerVersion, event: dict) -> Iterable[Effect]:
-    result = version.fn(event)
+def _call_handler(
+    version: HandlerVersion,
+    event: dict,
+    reader: ProjectionReader | None,
+) -> Iterable[Effect]:
+    # Stage > 0 handlers take (event, reader); stage 0 keeps the (event)
+    # signature so existing single-stage handlers are unchanged.
+    result = version.fn(event, reader) if version.stage > 0 else version.fn(event)
     if result is None:
         return []
     if isinstance(result, Effect):
