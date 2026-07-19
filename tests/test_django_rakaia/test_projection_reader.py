@@ -11,7 +11,7 @@ from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.store import get_store
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import replay
+from rakaia.replay import merge_replay, replay
 
 from .models import Area
 
@@ -150,4 +150,78 @@ class TestReducerOverOrm:
         )
 
         assert Balance.objects.get(suku="A").total == 70  # 100 - 30
+        assert Balance.objects.get(suku="B").total == 50
+
+
+@pytest.mark.django_db
+class TestMergeReplayOverOrm:
+    def test_merge_two_finance_streams_then_reduce(self):
+        from .models import Balance
+
+        store = get_store()
+        for path in ("fin/a", "fin/b"):
+            store.delete(path)
+            store.create(path)
+        store.append(
+            "fin/a",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "FINANCE",
+                    "key": "f1",
+                    "suku": "A",
+                    "delta": 100,
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ).encode("utf-8"),
+        )
+        store.append(
+            "fin/b",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "FINANCE",
+                    "key": "f2",
+                    "suku": "A",
+                    "delta": -30,
+                    "ts": "2026-01-01T01:00:00Z",
+                }
+            ).encode("utf-8"),
+        )
+        store.append(
+            "fin/b",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "FINANCE",
+                    "key": "f3",
+                    "suku": "B",
+                    "delta": 50,
+                    "ts": "2026-01-01T02:00:00Z",
+                }
+            ).encode("utf-8"),
+        )
+
+        reg = HandlerRegistry()
+        reg.register(
+            "finance",
+            "FINANCE",
+            _finance_line_handler,
+            0,
+            None,
+            match_field="kind",
+            stage=0,
+        )
+        reg.register_reducer("balance", 1, _balance_reducer)
+
+        merge_replay(
+            store,
+            ["fin/a", "fin/b"],
+            DjangoExecutor(),
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=DjangoProjectionReader(),
+        )
+
+        assert Balance.objects.get(suku="A").total == 70  # 100 - 30 across streams
         assert Balance.objects.get(suku="B").total == 50

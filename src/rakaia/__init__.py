@@ -53,7 +53,7 @@ from .registry import (
     register_upcaster,
     upcast,
 )
-from .replay import ReplayResult, replay
+from .replay import ReplayResult, merge_replay, replay
 from .store import StreamStore
 from .types import (
     AppendOptions,
@@ -138,6 +138,7 @@ __all__ = [
     "UPCASTERS_META_STREAM",
     # Versioned handlers — replay
     "replay",
+    "merge_replay",
     "ReplayResult",
     # Version
     "__version__",

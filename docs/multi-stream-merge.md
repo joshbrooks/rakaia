@@ -1,8 +1,35 @@
-# Multi-stream merge replay (design spike)
+# Multi-stream merge replay
 
-> Status: **design spike** for [issue #7](https://github.com/joshbrooks/rakaia/issues/7)
-> feature #2. Prototyped in [`examples/partisipa_merge`](../examples/partisipa_merge);
-> not yet part of rakaia core. This page is the design; the example is the proof.
+> Status: **in core** ([issue #7](https://github.com/joshbrooks/rakaia/issues/7)
+> feature #2). Prototyped in [`examples/partisipa_merge`](../examples/partisipa_merge);
+> now shipped as `rakaia.merge_replay`. This page is the design; the section below
+> shows the real API.
+
+## Using it
+
+```python
+from rakaia.replay import merge_replay
+from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.projection_reader import DjangoProjectionReader
+
+merge_replay(
+    store,
+    ["forms/sf", "forms/tf", "forms/ff"],   # several streams
+    DjangoExecutor(),
+    order_key="ts",                         # merge key (the envelope timestamp)
+    reader=DjangoProjectionReader(),        # required iff staged / reducers
+)
+```
+
+`merge_replay` decodes and upcasts every event of every stream, tags each with
+`(event[order_key], stream_path, offset)`, sorts, and feeds the merged sequence
+through the **same staged handler + reducer pipeline as `replay()`**. The
+`(stream_path, offset)` tiebreak makes the order a pure function of the streams'
+contents and **independent of the order `stream_paths` is passed**. `order_key`
+defaults to `"ts"`; a missing key raises. By default each event routes by its
+**source stream path** (so per-stream upcasters and `match_field` content routing
+both work); pass `event_match` to route every merged event by one string. Merged
+`seq` is the event's position in the merged order.
 
 ## The problem: one projection, many streams
 

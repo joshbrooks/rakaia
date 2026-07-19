@@ -13,7 +13,7 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import replay
+from rakaia.replay import merge_replay, replay
 from rakaia.store import StreamStore
 
 
@@ -895,3 +895,179 @@ class TestReducers:
         )
         assert len(proj.query("app.FinanceLine")) == 3
         assert {b.suku for b in proj.query("app.Balance")} == {"A", "B"}
+
+
+# ---------------------------------------------------------------------------
+# merge_replay (several streams merged by an order key)
+# ---------------------------------------------------------------------------
+
+
+def _touch(event):
+    return Effect(
+        op="update_or_create",
+        model_label="app.Claim",
+        lookup={"slot": event["slot"]},
+        defaults={"claimed_by": event["key"]},
+    )
+
+
+def _touch_registry():
+    reg = HandlerRegistry()
+    reg.register("touch", "TOUCH", _touch, 0, None, match_field="form_type", stage=0)
+    return reg
+
+
+def _ev(key, ts):
+    return {
+        "schema_version": 1,
+        "form_type": "TOUCH",
+        "key": key,
+        "slot": "S",
+        "ts": ts,
+    }
+
+
+# a1 and b1 share a timestamp across streams (the cross-stream tie); they are
+# also the two latest events, so the tie's winner is the final claimant.
+_A = [_ev("a0", "2026-01-01T00:00:00Z"), _ev("a1", "2026-01-01T02:00:00Z")]
+_B = [_ev("b0", "2026-01-01T01:00:00Z"), _ev("b1", "2026-01-01T02:00:00Z")]
+# Canonical merged order by (ts, path, offset): a0, b0, a1, b1  (forms/a < forms/b)
+_CANONICAL = [_A[0], _B[0], _A[1], _B[1]]
+
+
+class TestMergeReplay:
+    def _seed_two(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        _seed_stream(store, "forms/b", _B)
+
+    def test_tie_resolved_by_stream_path(self, store: StreamStore):
+        self._seed_two(store)
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["forms/a", "forms/b"],
+            proj,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+        # a1 (forms/a) sorts before b1 (forms/b) at the same ts, so b1 is later
+        # in the merged order and wins the shared slot.
+        assert proj.get("app.Claim", slot="S").claimed_by == "b1"
+
+    def test_deterministic_regardless_of_path_order(self, store: StreamStore):
+        self._seed_two(store)
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["forms/b", "forms/a"],
+            proj,  # reversed
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+        assert proj.get("app.Claim", slot="S").claimed_by == "b1"  # unchanged
+
+    def test_parity_with_single_combined_stream(self, store: StreamStore):
+        self._seed_two(store)
+        merged = DictProjections()
+        merge_replay(
+            store,
+            ["forms/a", "forms/b"],
+            merged,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+
+        _seed_stream(store, "combined", _CANONICAL)
+        single = DictProjections()
+        replay(
+            store,
+            "combined",
+            single,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+
+        assert (
+            merged.get("app.Claim", slot="S").claimed_by
+            == single.get("app.Claim", slot="S").claimed_by
+            == "b1"
+        )
+
+    def test_missing_order_key_raises(self, store: StreamStore):
+        _seed_stream(
+            store,
+            "forms/a",
+            [{"schema_version": 1, "form_type": "TOUCH", "key": "x", "slot": "S"}],
+        )  # no ts
+        with pytest.raises(ValueError, match="order_key"):
+            merge_replay(
+                store,
+                ["forms/a"],
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_requires_reader_when_staged(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        reg = _touch_registry()
+        reg.register(
+            "dep", "TOUCH", lambda *_: None, 0, None, match_field="form_type", stage=1
+        )
+        with pytest.raises(ValueError, match="reader"):
+            merge_replay(
+                store,
+                ["forms/a"],
+                DictProjections(),
+                handler_registry=reg,
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_reducer_runs_over_merged_streams(self, store: StreamStore):
+        _seed_stream(
+            store,
+            "fin/a",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f1",
+                    "suku": "A",
+                    "delta": 100,
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+        _seed_stream(
+            store,
+            "fin/b",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f2",
+                    "suku": "A",
+                    "delta": -30,
+                    "ts": "2026-01-01T01:00:00Z",
+                },
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f3",
+                    "suku": "B",
+                    "delta": 50,
+                    "ts": "2026-01-01T02:00:00Z",
+                },
+            ],
+        )
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["fin/a", "fin/b"],
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70
+        assert proj.get("app.Balance", suku="B").total == 50
