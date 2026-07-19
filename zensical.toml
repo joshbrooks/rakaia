@@ -25,6 +25,7 @@ nav = [
     { "Staged replay (spike)" = "staged-replay.md" },
     { "Close preconditions (spike)" = "close-preconditions.md" },
     { "Multi-stream merge (spike)" = "multi-stream-merge.md" },
+    { "Tree-reconcile (spike)" = "tree-reconcile.md" },
     { "Translations" = "translations.md" },
     { "Deployment" = "deployment.md" },
     { Reference = [
