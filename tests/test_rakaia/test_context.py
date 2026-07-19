@@ -45,3 +45,12 @@ class TestAppendPicksUpProvenance:
         result = store.append("s", b"x", AppendOptions(label="update"))
         assert result.message is not None
         assert result.message.metadata is None
+
+    def test_initial_create_is_not_stamped(self):
+        # Provenance is merged at the public-append boundary only, so a stream's
+        # initial-create message stays envelope-free even inside a block.
+        store = StreamStore()
+        with provenance(user=7):
+            store.create("s", content_type="application/json", initial_data=b'{"a": 1}')
+        messages, _ = store.read("s")
+        assert messages[0].metadata is None

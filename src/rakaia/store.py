@@ -261,9 +261,11 @@ class StreamStore:
         ):
             raise ValueError(f"Sequence conflict: {opts.seq} <= {stream.last_seq}")
 
-        # Append the data (may raise for invalid JSON)
+        # Append the data (may raise for invalid JSON). Provenance is merged
+        # here at the public-append boundary — not in _append_to_stream — so a
+        # stream's initial-create message is never stamped.
         message = self._append_to_stream(
-            stream, data, label=opts.label, metadata=opts.metadata
+            stream, data, label=opts.label, metadata=merge_provenance(opts.metadata)
         )
 
         # === STATE MUTATION (only after successful append) ===
@@ -628,7 +630,7 @@ class StreamStore:
             offset=new_offset,
             timestamp=time.time(),
             label=label,
-            metadata=merge_provenance(metadata),
+            metadata=metadata,
         )
 
         stream.messages.append(message)
