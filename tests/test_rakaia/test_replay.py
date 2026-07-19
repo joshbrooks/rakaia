@@ -551,3 +551,204 @@ class TestMatchFieldRouting:
         assert ("x.TF", 3) in models
         assert ("x.SF", 1) not in models
         assert ("x.TF", 2) not in models
+
+
+# ---------------------------------------------------------------------------
+# Staged replay (stage= handlers + a projection reader)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+
+class DictProjections:
+    """In-memory materialiser: an Executor that applies update_or_create/delete
+    effects, and a ProjectionReader over the same rows. Enough to exercise
+    staged replay without Django — stage 1 reads what stage 0 committed."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict]] = {}
+
+    # -- Executor side --
+    def apply(self, effects) -> None:
+        for e in effects:
+            table = self.rows.setdefault(e.model_label, [])
+            if e.op == "update_or_create":
+                row = self._find(table, e.lookup)
+                if row is None:
+                    row = dict(e.lookup)
+                    table.append(row)
+                row.update(e.defaults or {})
+            elif e.op == "delete":
+                self.rows[e.model_label] = [
+                    r
+                    for r in table
+                    if not (
+                        self._match(r, e.lookup or {})
+                        and not self._excluded(r, e.exclude or {})
+                    )
+                ]
+
+    @staticmethod
+    def _find(table, lookup):
+        return next((r for r in table if DictProjections._match(r, lookup)), None)
+
+    @staticmethod
+    def _match(row, lookup):
+        return all(row.get(k) == v for k, v in lookup.items())
+
+    @staticmethod
+    def _excluded(row, exclude):
+        for key, val in exclude.items():
+            if key.endswith("__in") and row.get(key[:-4]) in val:
+                return True
+        return False
+
+    # -- ProjectionReader side --
+    def get(self, model_label, **lookup):
+        row = self._find(self.rows.get(model_label, []), lookup)
+        return SimpleNamespace(**row) if row is not None else None
+
+    def filter(self, model_label, **lookup):
+        return [
+            SimpleNamespace(**r)
+            for r in self.rows.get(model_label, [])
+            if self._match(r, lookup)
+        ]
+
+    def query(self, model_label):
+        return [SimpleNamespace(**r) for r in self.rows.get(model_label, [])]
+
+
+def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see call)
+    return Effect(
+        op="update_or_create",
+        model_label="app.Project",
+        lookup={"suku": event["suku"], "output": event["output"]},
+        defaults={"name": event["project_name"]},
+    )
+
+
+def _sf12(event, reader):
+    project = reader.get("app.Project", suku=event["suku"], output=event["output"])
+    return Effect(
+        op="update_or_create",
+        model_label="app.Sf12",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_id": project.name if project else None},
+    )
+
+
+# TF (defines the project) deliberately arrives AFTER the SF that needs it.
+_STAGED_EVENTS = [
+    {
+        "schema_version": 1,
+        "form_type": "SF_1_2",
+        "key": "sf-1",
+        "suku": "Fatuberliu",
+        "output": "WATER",
+    },
+    {
+        "schema_version": 1,
+        "form_type": "TF_6_1_1",
+        "key": "tf-1",
+        "suku": "Fatuberliu",
+        "output": "WATER",
+        "project_name": "WS-014",
+    },
+]
+
+
+def _staged_registry():
+    reg = HandlerRegistry()
+    # stage 0 is defined with a reader param but registered at stage 0, so it is
+    # called `fn(event)`; that must not error even though the fn accepts reader.
+    reg.register(
+        "project",
+        "TF_6_1_1",
+        lambda event: _project(event, None),
+        0,
+        None,
+        match_field="form_type",
+        stage=0,
+    )
+    reg.register("sf12", "SF_1_2", _sf12, 0, None, match_field="form_type", stage=1)
+    return reg
+
+
+class TestStagedReplay:
+    def test_late_reference_still_links(self, store: StreamStore):
+        _seed_stream(store, "s", _STAGED_EVENTS)
+        reg = _staged_registry()
+        proj = DictProjections()
+        result = replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        # The SF arrived before its TF, yet stage 0 built every Project before
+        # stage 1 linked, so the link resolves.
+        sf = proj.get("app.Sf12", submission_id="sf-1")
+        assert sf.project_id == "WS-014"
+        assert result.events_processed == 2  # counted once, not per stage
+
+    def test_missing_reader_raises(self, store: StreamStore):
+        _seed_stream(store, "s", _STAGED_EVENTS)
+        reg = _staged_registry()
+        with pytest.raises(ValueError, match="reader"):
+            replay(
+                store,
+                "s",
+                DictProjections(),
+                handler_registry=reg,
+                upcaster_registry=UpcasterRegistry(),
+            )  # no reader=
+
+    def test_self_heals_on_re_replay(self, store: StreamStore):
+        # Only the SF exists: its project is unresolved.
+        _seed_stream(store, "s", [_STAGED_EVENTS[0]])
+        reg = _staged_registry()
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Sf12", submission_id="sf-1").project_id is None
+
+        # The TF finally arrives; re-replaying links it — no backfill.
+        store.append("s", json.dumps(_STAGED_EVENTS[1]).encode("utf-8"))
+        proj2 = DictProjections()
+        replay(
+            store,
+            "s",
+            proj2,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj2,
+        )
+        assert proj2.get("app.Sf12", submission_id="sf-1").project_id == "WS-014"
+
+    def test_stage_zero_only_is_single_pass_without_reader(self, store: StreamStore):
+        # A registry with only stage-0 handlers needs no reader (backward compat).
+        _seed_stream(store, "s", [_STAGED_EVENTS[1]])
+        reg = HandlerRegistry()
+        reg.register(
+            "project",
+            "TF_6_1_1",
+            lambda event: _project(event, None),
+            0,
+            None,
+            match_field="form_type",
+            stage=0,
+        )
+        proj = DictProjections()
+        replay(
+            store, "s", proj, handler_registry=reg, upcaster_registry=UpcasterRegistry()
+        )  # no reader needed
+        assert proj.get("app.Project", suku="Fatuberliu", output="WATER") is not None

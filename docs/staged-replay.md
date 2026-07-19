@@ -1,8 +1,44 @@
-# Staged replay (design spike)
+# Staged replay
 
-> Status: **design spike** for [issue #7](https://github.com/joshbrooks/rakaia/issues/7)
-> feature #1. Prototyped in [`examples/partisipa_staged`](../examples/partisipa_staged);
-> not yet part of rakaia core. This page is the design; the example is the proof.
+> Status: **in core** ([issue #7](https://github.com/joshbrooks/rakaia/issues/7)
+> feature #1). Prototyped in
+> [`examples/partisipa_staged`](../examples/partisipa_staged); the spike's
+> `stage=` / `refs` shape now ships in `register_handler` and `replay()`. This
+> page is the design; the sections below show the real API.
+
+## Using it
+
+Declare a handler's stage; replay runs stages in ascending order, and a stage > 0
+handler is called `fn(event, reader)` with a read-only projection reader:
+
+```python
+from rakaia.registry import register_handler
+from rakaia.replay import replay
+from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.projection_reader import DjangoProjectionReader
+
+@register_handler(name="project", event_match="TF_6_1_1",
+                  match_field="form_type", stage=0)
+def project(event):                         # stage 0: build the reference
+    return Effect(op="update_or_create", model_label="ida.Project",
+                  lookup={"suku": event["suku"], "output": event["output"]},
+                  defaults={"name": event["project_name"]})
+
+@register_handler(name="sf12", event_match="SF_1_2",
+                  match_field="form_type", stage=1)
+def sf12(event, refs):                      # stage 1: resolve via the reader
+    project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
+    return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
+                  lookup={"submission_id": event["key"]},
+                  defaults={"project_id": project.pk if project else None})
+
+replay(store, "submissions", DjangoExecutor(), reader=DjangoProjectionReader())
+```
+
+`replay()` requires `reader=` whenever any handler declares stage > 0; with only
+stage 0 handlers it is a single pass and no reader is needed (backward
+compatible). The reader is any `rakaia.protocols.ProjectionReader`
+(`get` / `filter` / `query`); the Django one reads `apps.get_model(...).objects`.
 
 ## The problem: late-arriving cross-form links
 

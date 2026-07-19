@@ -179,6 +179,49 @@ class TestMatchField:
             reg.resolve("room:5", 0)
 
 
+class TestStage:
+    def test_register_with_stage(self, reg: HandlerRegistry):
+        v = reg.register("m", "e", _fn("v1"), 0, None, stage=1)
+        assert v.stage == 1
+
+    def test_default_stage_is_zero(self, reg: HandlerRegistry):
+        v = reg.register("m", "e", _fn("v1"), 0, None)
+        assert v.stage == 0
+
+    def test_negative_stage_raises(self, reg: HandlerRegistry):
+        with pytest.raises(ValueError, match="stage must be non-negative"):
+            reg.register("m", "e", _fn("v1"), 0, None, stage=-1)
+
+    def test_stages_returns_sorted_distinct(self, reg: HandlerRegistry):
+        reg.register("a", "e", _fn("a"), 0, None, stage=2)
+        reg.register("b", "e", _fn("b"), 0, None, stage=0)
+        reg.register("c", "e", _fn("c"), 0, None, stage=2)
+        assert reg.stages() == [0, 2]
+
+    def test_stages_empty_registry(self, reg: HandlerRegistry):
+        assert reg.stages() == []
+
+    def test_resolve_filters_by_stage(self, reg: HandlerRegistry):
+        v0 = reg.register("ref", "room:*", _fn("ref"), 0, None, stage=0)
+        v1 = reg.register("dep", "room:*", _fn("dep"), 0, None, stage=1)
+        assert reg.resolve("room:5", 0, stage=0) == [v0]
+        assert reg.resolve("room:5", 0, stage=1) == [v1]
+        assert reg.resolve("room:5", 0, stage=2) == []
+
+    def test_resolve_without_stage_returns_all_stages(self, reg: HandlerRegistry):
+        v0 = reg.register("ref", "room:*", _fn("ref"), 0, None, stage=0)
+        v1 = reg.register("dep", "room:*", _fn("dep"), 0, None, stage=1)
+        assert set(reg.resolve("room:5", 0)) == {v0, v1}
+
+    def test_resolve_stage_filter_still_detects_gap(self, reg: HandlerRegistry):
+        # A coverage gap in ANY matching series is an error, even while
+        # resolving a different stage — a gap is a misconfiguration.
+        reg.register("m", "e", _fn("v1"), 0, 10, stage=0)
+        reg.register("m", "e", _fn("v2"), 20, None, stage=0)
+        with pytest.raises(HandlerGapError):
+            reg.resolve("e", 15, stage=1)
+
+
 class TestDecorator:
     def test_decorator_registers_with_explicit_registry(self):
         reg = HandlerRegistry()
