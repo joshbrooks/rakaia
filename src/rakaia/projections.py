@@ -95,6 +95,14 @@ def reconcile_tree(
     id regardless of depth, pruning an entire subtree — whose intermediate
     parent is gone — leaves no deep orphans, which a per-parent reconcile would.
 
+    This helper is **order-agnostic**: it neither sorts ``nodes`` nor imposes an
+    order field. To make a reorderable collection read back in order, compute an
+    order value yourself (a fractional index is recommended — see ADR 0001) and
+    return it from ``defaults_fn``, then read with ``ORDER BY``. Likewise the
+    identity stability it enables is only as stable as ``id_fn``: the ids must be
+    **unique within ``nodes``** and persistent across submissions (a business key
+    or one assigned at ingestion). Duplicate ids emit colliding upserts.
+
     Args:
         model_label: 'app_label.ModelName' of the node model.
         scope_lookup: lookup identifying the whole tree, e.g.
@@ -147,6 +155,13 @@ def reconcile_aggregate(
     ``{group_value: defaults}``. This emits one idempotent ``update_or_create``
     per group plus a reconcile ``delete`` that removes aggregate rows for groups
     which no longer have any contributors.
+
+    .. warning::
+        The reconcile delete is scoped to ``scope_lookup``. With a global scope
+        (``scope_lookup={}``) **and** empty ``groups``, the delete matches every
+        row in the model and clears the whole table. Pass a non-empty
+        ``scope_lookup`` whenever the aggregate model holds more than this one
+        rollup, so an empty recompute clears only that scope.
 
     Args:
         model_label: 'app_label.ModelName' of the aggregate model.

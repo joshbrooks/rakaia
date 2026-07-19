@@ -46,6 +46,14 @@ fundamentally a **set** operation.
 4. **Reject** positional-index-as-identity and **reject** linked-list ordering
    (`next`/`prev`) for relational projections.
 
+`reconcile_tree` is what makes (1)–(3) ergonomic, but it is **order-agnostic and
+identity-agnostic**: it keys rows by whatever `id_fn` returns and passes the
+row's fields through `defaults_fn`. The **stable id** and the **fractional order
+value** are modeling choices the caller supplies — from source data or assigned
+at ingestion — not something the helper computes or enforces. The helper's
+contribution is the id-keyed, subtree-scoped, orphan-free reconcile; the decision
+above is what you must model *around* it.
+
 ## Alternatives considered
 
 | Model | Reorder writes | Ordered SQL read | Corruption blast radius | Composes with reconcile-delete |
