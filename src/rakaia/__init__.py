@@ -27,7 +27,11 @@ from .effects import (
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
-from .projections import reconcile_children
+from .projections import (
+    reconcile_aggregate,
+    reconcile_children,
+    reconcile_tree,
+)
 from .registry import (
     HANDLERS_META_STREAM,
     UPCASTERS_META_STREAM,
@@ -107,6 +111,8 @@ __all__ = [
     "CollectingExecutor",
     # Versioned handlers — projections
     "reconcile_children",
+    "reconcile_tree",
+    "reconcile_aggregate",
     # Versioned handlers — registry
     "register_handler",
     "register_upcaster",

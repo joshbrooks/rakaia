@@ -101,3 +101,27 @@ You can build the same thing by hand with an `op="delete"` Effect — that's all
 the orphan handling for free instead of re-deriving it (and forgetting the
 `exclude`, which is the whole point). Reach for the raw delete only when the
 scope isn't "children of a parent keyed by index".
+
+## Reorderable collections: key by id, not index
+
+`reconcile_children` keys rows by **positional index**, which makes it right for
+fixed-order or append-only collections but wrong for **reorderable** ones: a
+reorder renumbers every subsequent index, so replay rewrites O(N) rows *and* any
+foreign key to a child now points at a different logical item.
+
+For reorderable data, key rows by a **stable id** and store order as a
+**fractional index** field. `reconcile_tree` is built for this: it keys each row
+by whatever `id_fn` returns and passes your fields straight through
+`defaults_fn`. Two things stay *your* responsibility, though — the helper is
+order-agnostic and identity-agnostic:
+
+- **the stable id** must come from your data (a business key, or one assigned at
+  ingestion). `reconcile_tree` does not make ids stable; if `id_fn` returns
+  something position-derived, you're back to the index problem.
+- **the order field** is yours to compute (a fractional index is recommended) and
+  return from `defaults_fn`; then read with `ORDER BY`. `reconcile_tree` neither
+  sorts nodes nor adds an order column.
+
+See [ADR 0001](adr/0001-ordering-child-collections-in-projections.md) for the full
+rationale (and why a linked list is the wrong choice for a SQL-backed
+projection).
