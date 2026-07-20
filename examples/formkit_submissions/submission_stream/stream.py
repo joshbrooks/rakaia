@@ -87,6 +87,11 @@ def reproject_all(store: DjangoStreamStore) -> None:
     latest = _latest_by_key(store)
     Submission.objects.all().delete()
     for key, (version, event, msg) in latest.items():
+        # A tombstone (latest event is a delete, Decision #2) means the
+        # submission has no live row — the event stays in the log/history, but
+        # the projection omits it.
+        if label_marker(msg.label) == "-":
+            continue
         Submission.objects.create(
             key=key,
             fields=event["fields"],

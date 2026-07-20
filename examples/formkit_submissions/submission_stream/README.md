@@ -48,9 +48,20 @@ uv run --extra django python manage.py demo_submission_stream --reproject-only
 * **[4] MODE B.** A context-less write (an import, no request) still logs a
   *full* event; only `actor`/`url` are null — graceful, and exactly what
   pghistory does on non-request writes.
-* **[5] DURABILITY** (`--reproject-only`). A second process rebuilds `Submission`
-  from the persisted `SubmissionEvent` log — state survives, because the log is a
-  real durable table, not in-memory.
+* **[5] TOMBSTONE.** A `delete` event (Decision #2) removes the submission's
+  projection row, but the log keeps the full `create`/`verify`/`delete` trail
+  (`+`/`~`/`-`) — you can still audit a deleted submission.
+* **[6] DURABILITY** (`--reproject-only`). A second process rebuilds `Submission`
+  from the persisted `SubmissionEvent` log — surviving rows and tombstones alike
+  reconstruct, because the log is a real durable table, not in-memory.
+
+## Tests
+
+`uv run --extra django python manage.py test submission_stream` — seven tests
+covering latest-wins, **append+project atomicity** (Decision #11 rollback),
+tombstone projection, reproject/history idempotency, and mode-B/provenance. The
+Postgres coverage guard (Decision #10) is out of scope on sqlite and is tested
+with the guard itself.
 
 ## Scope / caveats
 

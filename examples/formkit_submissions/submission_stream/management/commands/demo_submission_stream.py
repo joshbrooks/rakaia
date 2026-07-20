@@ -45,12 +45,15 @@ class Command(BaseCommand):
             Submission.objects.all().delete()
             stream.reproject_all(store)
             self._print_current()
-            a = Submission.objects.filter(key=A).first()
-            ok = a is not None and a.fields.get("budget") == "150" and a.status == 1
+            # After a full seed run A is tombstoned (deleted) and B survives as
+            # the latest import — both facts must be reconstructable from the log.
+            a_gone = not Submission.objects.filter(key=A).exists()
+            b = Submission.objects.filter(key=B).first()
+            ok = a_gone and b is not None and b.status == 2
             self._say(
                 ok,
-                "[5] DURABILITY: rebuilt Submission from the persisted "
-                "SubmissionEvent log in a fresh process — state survived",
+                "[6] DURABILITY: rebuilt from the persisted SubmissionEvent log in "
+                "a fresh process — B survived, A stayed tombstoned",
             )
             return
 
@@ -147,6 +150,25 @@ class Command(BaseCommand):
             modeb_ok,
             "[4] MODE B: a context-less import still logs a full event; actor is "
             "null (graceful), snapshot intact — the pghistory-equivalent case",
+        )
+
+        # [5] TOMBSTONE: a delete event removes the row but stays in history
+        stream.record_submission(
+            store, A, fields={"title": "Well A", "budget": "150"}, status=1,
+            actor="reviewer:tavares", url="/delete/A", label="delete",
+        )
+        stream.materialize_history(store)
+        gone = not Submission.objects.filter(key=A).exists()
+        a_markers = list(
+            SubmissionHistory.objects.filter(key=A)
+            .order_by("version")
+            .values_list("marker", flat=True)
+        )
+        tomb_ok = gone and a_markers == ["+", "~", "-"]
+        self._say(
+            tomb_ok,
+            "[5] TOMBSTONE: a delete removes A's projection row, but the log keeps "
+            f"the full create/verify/delete trail {a_markers}",
         )
 
     # -- helpers ------------------------------------------------------------
