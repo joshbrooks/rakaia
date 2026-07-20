@@ -54,6 +54,30 @@ install:
     uv sync --extra dev --extra django --extra docs --extra prod
 
 # ---------------------------------------------------------------------------
+# Guided feature tour
+# ---------------------------------------------------------------------------
+
+# Run the scripted feature demos end-to-end with narration (see docs/whats-new.md)
+demo:
+    @echo "==========================================================="
+    @echo "  Rakaia feature tour  —  docs/whats-new.md"
+    @echo "==========================================================="
+    @echo ""
+    @echo ">> 1/2  Versioned handlers, upcasters, replay & dry-run   (examples/orders)"
+    @echo ""
+    @just orders-demo
+    @echo ""
+    @echo ">> 2/2  Projections, fan-out & migration parity   (examples/formkit_submissions)"
+    @echo ""
+    @just formkit-demo
+    @echo ""
+    @echo "==========================================================="
+    @echo "  Live SSE demos (web) — run either in a separate terminal:"
+    @echo "    just dev           # chat      -> http://localhost:8000"
+    @echo "    just polyglot-dev  # polyglot  -> http://localhost:8001"
+    @echo "==========================================================="
+
+# ---------------------------------------------------------------------------
 # Redis (podman)
 # ---------------------------------------------------------------------------
 

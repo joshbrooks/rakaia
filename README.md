@@ -70,10 +70,15 @@ Pages live in [`docs/`](docs/) and the site config is in
 [`zensical.toml`](zensical.toml):
 
 - [Overview & quick start](docs/index.md)
+- [**What's new — a guided tour**](docs/whats-new.md) — start here to see the recent features, each with a one-command demo
+- [Glossary](docs/glossary.md) — plain-language definitions of the event-sourcing terms
 - [Django integration](docs/django-integration.md)
+- [Versioned handlers](docs/versioned-handlers.md)
+- [Projections & fan-out](docs/projections-and-fan-out.md)
+- [Dry-run & executors](docs/dry-run-and-executors.md)
 - [Translations](docs/translations.md)
 - [Deployment](docs/deployment.md)
-- [Protocol specification](docs/protocol.md)
+- [Protocol specification](docs/protocol.md) · [Backend storage](docs/streams-backend-storage.md)
 
 ## Versioned handlers (event replay with history)
 
@@ -110,10 +115,21 @@ See [`docs/versioned-handlers.md`](docs/versioned-handlers.md) for the
 full story, including a worked example based on Partisipa's submissions
 pipeline.
 
-## Sample application
+## Sample applications
 
-A standalone Django chat app demonstrating the library lives in
-[`examples/chat/`](examples/chat/).
+Each example is a standalone Django project that demonstrates one feature area
+end-to-end. The two headless demos print their results; the two web demos are
+live in the browser. Run them all with `just demo`, or individually:
+
+| Example | Demonstrates | Run |
+|---|---|---|
+| [`examples/orders/`](examples/orders/) | Versioned handlers, upcasters, replay, dry-run | `just orders-demo` |
+| [`examples/formkit_submissions/`](examples/formkit_submissions/) | Projections/fan-out, `reconcile_children`, migration parity | `just formkit-demo` |
+| [`examples/chat/`](examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` |
+| [`examples/polyglot/`](examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` |
+
+For a narrated walkthrough of what each proves, see
+[`docs/whats-new.md`](docs/whats-new.md).
 
 ## Running it
 

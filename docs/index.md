@@ -17,6 +17,25 @@ The project ships two installable packages:
   changes over Django Channels, and provides a `@stream_model` decorator for
   emitting events from your own Django models.
 
+!!! tip "New here?"
+    Start with the **[guided tour of what's new](whats-new.md)** — every recent
+    feature with a one-command demo you can run to prove it. New to the
+    vocabulary (*projection*, *handler*, *upcaster*, *replay*)? See the
+    **[glossary](glossary.md)**.
+
+Beyond the raw protocol server, `django_rakaia` derives your database tables from
+an append-only log of events — so you can replay history and rebuild them:
+
+```mermaid
+flowchart LR
+  W["Your model<br/>.save()"] -->|emit| S[("Stream<br/>append-only log")]
+  S -->|replay| U["Upcasters<br/>normalise old events"]
+  U --> H["Versioned handlers<br/>pure: event → Effect"]
+  H --> X{Executor}
+  X -->|"update_or_create / delete"| P[("Projection<br/>your tables")]
+  X -.->|dry-run| C["CollectingExecutor<br/>records, zero writes"]
+```
+
 ## Installation
 
 ```bash
@@ -93,14 +112,38 @@ the channel layer.
 
 ## Documentation index
 
-- [Protocol specification](protocol.md) — Wire format, headers, semantics.
-- [Django integration](django-integration.md) — Models, decorator, admin, SSE.
+- [What's new — a guided tour](whats-new.md) — recent features, each with a demo.
+- [Glossary](glossary.md) — plain-language definitions of the event-sourcing terms.
+- [Django integration](django-integration.md) — Models, decorator, admin, SSE,
+  and adopting the durable store.
+- [Versioned handlers](versioned-handlers.md) — Time-correct replay, handler
+  versions, upcasters, drift detection.
+- [Projections & fan-out](projections-and-fan-out.md) — One event into many
+  rows, orphan-free with `reconcile_children`.
+- [The event envelope & provenance](event-envelope.md) — Attach the actor,
+  label, and no-op suppression on append.
+- [History read-model](history-read-model.md) — Latest-state vs a queryable
+  audit trail, both derived from one log.
+- [Alerts projection](alerts-projection.md) — Human judgment and machine rules
+  in one projection, without clobber.
+- [Dry-run & executors](dry-run-and-executors.md) — Preview a replay's writes
+  with zero side effects.
 - [Translations](translations.md) — Optional `Translatable` model and UI.
 - [Deployment](deployment.md) — Production setup, ASGI servers, Redis channel
   layer, scaling.
+- [Protocol specification](protocol.md) — Wire format, headers, semantics.
+- [Backend storage](streams-backend-storage.md) — Browser-side stream persistence.
 
-## Sample application
+## Sample applications
 
-A minimal standalone Django chat app demonstrating the library lives in
-[`examples/chat/`](../examples/chat/). It shows multi-stream events, SSE
-consumption, and the `@stream_model` decorator end-to-end.
+Four standalone Django projects each demonstrate one feature area. Run them all
+with `just demo`, or individually:
+
+| Example | Demonstrates | Run |
+|---|---|---|
+| [`orders`](../examples/orders/) | Versioned handlers, upcasters, replay, dry-run | `just orders-demo` |
+| [`formkit_submissions`](../examples/formkit_submissions/) | Projections/fan-out, `reconcile_children`, migration parity | `just formkit-demo` |
+| [`chat`](../examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` |
+| [`polyglot`](../examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` |
+
+The [guided tour](whats-new.md) narrates what each one proves.

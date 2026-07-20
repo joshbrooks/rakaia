@@ -18,9 +18,15 @@ Copyright &copy; 2026 Josh Brooks
 # Explicit navigation. Order matters; nested tables become sections.
 nav = [
     { "Overview" = "index.md" },
+    { "What's new" = "whats-new.md" },
+    { "Glossary" = "glossary.md" },
     { "Django integration" = "django-integration.md" },
     { "Versioned handlers" = "versioned-handlers.md" },
     { "Projections & fan-out" = "projections-and-fan-out.md" },
+    { "Event envelope & provenance" = "event-envelope.md" },
+    { "History read-model" = "history-read-model.md" },
+    { "Alerts projection" = "alerts-projection.md" },
+    { "Dry-run & executors" = "dry-run-and-executors.md" },
     { "pghistory retirement (spike)" = "pghistory-retirement.md" },
     { "Staged replay (spike)" = "staged-replay.md" },
     { "Close preconditions (spike)" = "close-preconditions.md" },

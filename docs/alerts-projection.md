@@ -1,4 +1,39 @@
+---
+icon: lucide/triangle-alert
+---
+
 # Alerts as a rakaia projection
+
+**The concept in one picture.** An alert can be raised two ways — a *person*
+flags something, or a *rule* fails — and resolved two ways to match. The hard
+part is that a re-derivation (replaying the rules) must never clobber a human's
+judgment, and a human's dismissal must not be silently re-raised while its rule
+still fails. Rakaia handles this by giving each **layer** a different owner and a
+different mechanism, scoped so they never touch each other's rows:
+
+```mermaid
+flowchart TD
+  subgraph L1["Layer 1 · authored"]
+    A1["actor raises / dismisses"] -->|update_or_create<br/>+ external transition| AR[("Alert rows<br/>type ∈ authored")]
+  end
+  subgraph L2["Layer 2 · machine-reconciled"]
+    A2["validator run"] -->|reconcile_by_key<br/>retire scoped by retire_filter| MR[("Alert rows<br/>type ∈ machine")]
+  end
+  subgraph L3["Layer 3 · dismissable warnings"]
+    A3["rule ⊖ standing dismissal"] -->|staged replay:<br/>stage-1 reads stage-0 dismissals| DR[("Alert rows<br/>user-resolvable")]
+  end
+  classDef note fill:#fff,stroke:#bbb,color:#555;
+  N["retire_filter / RULE_TYPES keep each<br/>layer's scope disjoint → zero clobber"]:::note
+  MR -.-> N
+  AR -.-> N
+```
+
+The three primitives that make this expressible —
+[`reconcile_by_key`](glossary.md#reconcile), `op="retire"` (soft-delete by
+`UPDATE` instead of `DELETE`), and `spare_keys` — are introduced in Phase 2
+below. The rest of this page is the design and the correctness argument.
+
+---
 
 An **alert** (partisipa's quality `Flag`) is a soft-delete row on an entity:
 `(stream_key, alert_type, field_key)` natural key, `severity`/`message`, and a

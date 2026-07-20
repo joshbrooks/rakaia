@@ -31,6 +31,9 @@ Versioned handlers replace that ad-hoc pattern with a first-class one:
 
 ## Concepts
 
+New to these words? Each is defined in plain language in the
+[glossary](glossary.md).
+
 | Term            | Meaning                                                                                       |
 |-----------------|-----------------------------------------------------------------------------------------------|
 | **Handler**     | Pure function `event -> Effect | list[Effect]`. No I/O.                                       |
@@ -51,6 +54,18 @@ Key invariants:
   `EffectCollisionError`.
 - **External effects** (emails, third-party calls) are tagged `op="external"`
   and **skipped on replay** unless `include_external=True`.
+
+An event is dispatched to the handler version whose `[from, to)` range covers its
+sequence number — so old events keep the logic that was correct at the time:
+
+```mermaid
+flowchart LR
+  e0["seq 0"] --> v1["handler **v1**<br/>effective [0, 5000)"]
+  e1["seq 1"] --> v1
+  e2["…"] --> v1
+  e3["seq 5000"] --> v2["handler **v2**<br/>effective [5000, ∞)"]
+  e4["seq 5001"] --> v2
+```
 
 ## Example: Partisipa SF_1_2 import
 

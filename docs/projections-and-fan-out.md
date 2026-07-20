@@ -60,6 +60,17 @@ collection projection that can shrink hits this.
 reconcile `delete` that removes every child under the parent *except* the
 indices still present.
 
+```mermaid
+flowchart LR
+  E["Event<br/>children: A, B"] --> RC["reconcile_children"]
+  RC --> U1["upsert A"]
+  RC --> U2["upsert B"]
+  RC --> D["delete children<br/>NOT in {A, B}"]
+  U1 --> P[("Projection")]
+  U2 --> P
+  D --> P
+```
+
 ```python
 from rakaia import register_handler, reconcile_children
 

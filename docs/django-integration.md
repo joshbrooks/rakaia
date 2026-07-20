@@ -60,6 +60,62 @@ rows — useful when one logical change is interesting to several subscribers
 (e.g. a project event belongs to both `user:42:projects` and
 `area:7:projects`).
 
+## Adopting the durable store
+
+Rakaia's default store is the in-memory `StreamStore` — fast and dependency-free,
+but **process-local**: the event log lives in memory and vanishes on restart.
+That's fine for the protocol server and for demos, but event sourcing needs the
+log to survive. If you emit an event from a web request and want to *replay* that
+stream later — in a worker, a management command, another process — the events
+have to be persisted.
+
+`DjangoStreamStore` is that durable backend. It implements the same read/emit
+surface on top of the `Stream` / `StreamEvent` / `StreamEntry` models above, so
+everything downstream (replay, handlers, `manage.py replay`) works identically —
+only now the stream is in your database.
+
+### Selecting the store
+
+The store is chosen by the `RAKAIA_STORE` Django setting via
+`django_rakaia.store.get_store()`:
+
+```python
+# settings.py
+RAKAIA_STORE = "durable"   # DjangoStreamStore (persisted in the DB)
+# RAKAIA_STORE = "memory"  # StreamStore (default — in-memory, process-local)
+```
+
+Both `manage.py replay` and the mounted protocol app resolve their store through
+`get_store()`, so flipping this one setting switches the whole integration over.
+The chosen store is cached one-per-backend for the process.
+
+| | `"memory"` (default) | `"durable"` |
+|---|---|---|
+| Backend | `rakaia.StreamStore` | `DjangoStreamStore` |
+| Persistence | In memory, lost on restart | In your database |
+| Survives across processes | No | Yes |
+| `manage.py replay <stream>` | Only within the emitting process | Yes, any process |
+| Live-protocol extras (long-poll, producer epochs, stream close) | Yes | Not implemented — event-sourcing read/emit path only |
+
+### Migration path (in-memory → durable)
+
+1. **Set `RAKAIA_STORE = "durable"`** and run `python manage.py migrate
+   django_rakaia` so the stream tables exist.
+2. **Emit into the stream** from your model writes — e.g. from
+   `Submission.save()` — so the event log accumulates durably rather than only
+   in the process that produced it. The [`@stream_model` decorator](#the-stream_model-decorator)
+   and [`create_stream_event`](#manual-event-creation) both write through the
+   configured store.
+3. **Verify before cutting over.** Replay the durable stream with a
+   `CollectingExecutor` and diff the recorded effects against your existing rows
+   to confirm they reproduce current state — see [Dry-run & executors](dry-run-and-executors.md).
+4. **Replay for real** with `python manage.py replay <stream>`, now that the log
+   persists across processes.
+
+The [`formkit_submissions`](../examples/formkit_submissions/) example walks this
+exact adoption story — driving a `formkit-ninja` pipeline from a durable stream
+and proving the projected rows are identical to the current direct write.
+
 ## The `@stream_model` decorator
 
 The decorator is the easiest way to make your models emit events. Wrap any
