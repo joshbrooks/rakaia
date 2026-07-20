@@ -121,9 +121,14 @@ def reconcile_by_key(
         retire: ``"delete"`` (hard delete stale rows) or a *patch* dict for a
             soft-delete, e.g. ``{"resolved_at": event_ts}``. A patch retires via
             UPDATE and, to stay idempotent and fire one transition per real
-            change, is guarded to rows whose patch fields are currently NULL
-            (i.e. not already retired). The patch value must be the triggering
-            event's timestamp, never ``timezone.now()``.
+            change, is guarded to rows that are still **live** — those whose
+            *liveness sentinel* (the **first** patch field, e.g. ``resolved_at``)
+            is currently NULL. Only the sentinel is guarded, not every patch
+            field, so "live" is defined by one column (matching the model's own
+            open predicate); a row reopened without resetting a secondary patch
+            field (e.g. a stale ``resolved_by``) is still retired correctly. The
+            patch value must be the triggering event's timestamp, never
+            ``timezone.now()``.
 
     Returns:
         One ``update_or_create`` Effect per item, followed by one retire Effect
@@ -160,9 +165,17 @@ def reconcile_by_key(
             )
         )
     else:
-        # Soft-delete: retire only rows not already carrying the patch fields,
-        # so a re-run neither re-stamps a resolution nor re-fires a transition.
-        open_guard = {f"{field}__isnull": True for field in retire}
+        if not retire:
+            raise ValueError("retire patch must be a non-empty dict or 'delete'")
+        # Soft-delete: retire only rows still live — those whose liveness
+        # sentinel (the first patch field, e.g. resolved_at) is NULL — so a
+        # re-run neither re-stamps a resolution nor re-fires a transition.
+        # Guarding on the sentinel alone (not every patch field) keeps "live"
+        # a one-column predicate, matching the model's own open check, so a
+        # reopen that leaves a stale secondary field (e.g. resolved_by) set is
+        # still retired correctly.
+        sentinel = next(iter(retire))
+        open_guard = {f"{sentinel}__isnull": True}
         effects.append(
             Effect(
                 op="retire",

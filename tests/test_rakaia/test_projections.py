@@ -134,12 +134,12 @@ class TestReconcileByKey:
         assert len(retires) == 1
         r = retires[0]
         # G1: retire is scoped by retire_filter distinct from the upsert key.
-        # Open-guard: only rows whose patch fields are currently NULL are retired.
+        # Open-guard: only rows whose liveness sentinel (the FIRST patch field,
+        # resolved_at) is NULL are retired — not every patch field.
         assert r.lookup == {
             "stream_key": "sub-1",
             "alert_type__in": ["ff4", "sf11"],
             "resolved_at__isnull": True,
-            "resolved_by__isnull": True,
         }
         assert r.patch == {"resolved_at": "t1", "resolved_by": "system"}
         assert r.spare_keys == [{"alert_type": "ff4", "field_key": "a"}]

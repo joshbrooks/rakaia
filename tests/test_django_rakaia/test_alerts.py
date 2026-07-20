@@ -205,6 +205,7 @@ def _machine_reconcile(
             "message": v.get("message", ""),
             "created_at": ts,
             "resolved_at": None,
+            "resolved_by": None,
         },
         retire_filter={"alert_type__in": MACHINE_TYPES},
         retire={"resolved_at": ts, "resolved_by": "system"},
@@ -283,6 +284,23 @@ class TestMachineReconciledAlerts:
             _machine_reconcile("sub-1", [], ts="2026-07-20T09:00:00Z")
         )
         assert Alert.objects.get(stream_key="sub-2").is_open
+
+    def test_retire_reopen_retire_cycle(self):
+        # Regression: a flag retired, then re-violating (reopened), then no
+        # longer violating must retire again. The open-guard keys off resolved_at
+        # alone, so a stale resolved_by left on the reopened row does not wedge it
+        # permanently open.
+        viol = [{"alert_type": "sf11_smt_exceeds_cap"}]
+        ex = DjangoExecutor()
+        ex.apply(_machine_reconcile("sub-1", viol, ts="t1"))  # open
+        ex.apply(_machine_reconcile("sub-1", [], ts="t2"))  # retire
+        ex.apply(_machine_reconcile("sub-1", viol, ts="t3"))  # reopen
+        assert Alert.objects.get(stream_key="sub-1").is_open
+
+        ex.apply(_machine_reconcile("sub-1", [], ts="t4"))  # retire again
+        row = Alert.objects.get(stream_key="sub-1")
+        assert not row.is_open  # correctly retired despite the reopen cycle
+        assert row.resolved_at == "t4"
 
 
 # ===========================================================================
