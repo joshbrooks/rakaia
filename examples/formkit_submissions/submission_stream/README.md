@@ -31,15 +31,17 @@ uv run --extra django python manage.py demo_submission_stream --reproject-only
 ## What each assertion proves
 
 * **[1] APPEND→PROJECT + REPLAY.** A "save" is `record_submission`, which appends
-  one `SubmissionEvent` and reprojects `Submission` in a single
-  `transaction.atomic()`. `Submission` resolves to the *latest* event, and
-  rebuilding from scratch reproduces it — `Submission` is a pure function of the
-  log (trivial because every event is a full snapshot, Decision #5).
+  one `SubmissionEvent` and reprojects `Submission` (via the shipped
+  `rakaia.project_latest`) in a single `transaction.atomic()`. `Submission`
+  resolves to the *latest* event, and rebuilding from scratch reproduces it —
+  `Submission` is a pure function of the log (trivial because every event is a
+  full snapshot, Decision #5).
 * **[2] HISTORY == the log.** `/history` is the ordered `SubmissionEvent` rows,
-  fanned into `SubmissionHistory` by the shipped `history_effects`. Marker
-  (`label_marker`), actor and **url** (`envelope_actor` / envelope metadata) are
-  recovered from the envelope — provenance rides `append()`, not a `post_save`
-  signal (which would miss bulk writes; Decision #13).
+  materialised into `SubmissionHistory` by the shipped
+  `django_rakaia.materialize_history`. Marker (`label_marker`), actor and **url**
+  (`envelope_actor` / envelope metadata) are recovered from the envelope —
+  provenance rides `append()`, not a `post_save` signal (which would miss bulk
+  writes; Decision #13).
 * **[3] SELF-HEALING.** A *direct* write to the `Submission` projection is
   overwritten by the next reprojection. Durable state **is** the event log, not
   the row — so a bypassing write is ephemeral, not a durable unaudited change.
@@ -68,8 +70,11 @@ with the guard itself.
 * Runs on **sqlite**, so the Postgres coverage guard (Decision #10 — the
   immediate trigger + appended-set) is **out of scope**; this spike deliberately
   exercises the topology where that guard is *not* load-bearing.
-* `reproject_all` does a full rebuild for clarity; real code would project
-  incrementally via replay handlers.
+* The read side is thin adapters over core: `reproject_all` calls
+  `rakaia.project_latest` and `materialize_history` calls
+  `django_rakaia.materialize_history` — the example carries no hand-rolled fold.
+  For clarity it reads the whole stream each time; `project_latest` also accepts
+  an incremental tail read (`store.read(path, offset=…)`) for real use.
 * `version` is the global stream position (never renumbered, Decision #7), so a
   submission's history versions are its positions in the whole log, not a
   per-submission 1..N sequence.

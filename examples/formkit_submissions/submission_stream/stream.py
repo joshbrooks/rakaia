@@ -3,8 +3,14 @@
 `record_submission` is the single sanctioned write path — a "save" that
 **appends a `SubmissionEvent` and reprojects `Submission` in one transaction**.
 `Submission` is never written directly; it is a projection of the event log,
-rebuilt by `reproject_all`. `/history` is the ordered event log, fanned into an
-audit table by the shipped `rakaia.history_effects`.
+rebuilt by `reproject_all`. `/history` is the ordered event log, materialised
+into an audit table.
+
+Both read-side steps are thin adapters over the shipped core helpers —
+`rakaia.project_latest` (latest-snapshot-per-subject projection) and
+`django_rakaia.materialize_history` (the `/history` materialiser) — so the
+example carries no hand-rolled fold of its own; it exercises the real library
+API an adopter would use.
 
 The event log itself is rakaia's durable `StreamEvent`/`StreamEntry`
 (`DjangoStreamStore`), so append participates in the ambient transaction —
@@ -21,17 +27,17 @@ from django.db import transaction
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.history import materialize_history as _materialize_history
 from rakaia import (
     AppendOptions,
     envelope_actor,
-    history_effects,
     label_marker,
+    project_latest,
     provenance,
 )
 
-from .models import Submission, SubmissionHistory
-
 STREAM = "submissions"
+SUBMISSION_MODEL = "submission_stream.Submission"
 HISTORY_MODEL = "submission_stream.SubmissionHistory"
 
 
@@ -69,47 +75,36 @@ def record_submission(
         reproject_all(store)
 
 
-def _latest_by_key(store: DjangoStreamStore) -> dict[str, tuple[int, dict, Any]]:
-    """Fold the log to the newest event per key. Oldest-first read + last-wins =
-    latest snapshot; ``version`` is the durable stream offset (monotonic,
-    never renumbered — Decision #7), so it agrees with a history keyed by
-    ``version_of=lambda m: int(m.offset)`` and survives incremental reads."""
-    messages, _ = store.read(STREAM)
-    latest: dict[str, tuple[int, dict, Any]] = {}
-    for msg in messages:
-        event = json.loads(msg.data)
-        latest[event["key"]] = (int(msg.offset), event, msg)
-    return latest
-
-
 def reproject_all(store: DjangoStreamStore) -> None:
-    """Rebuild every `Submission` row from the event log — `Submission` is a pure
-    function of `SubmissionEvent`. (Spike: full rebuild for clarity; real code
-    would project incrementally via replay handlers.)"""
-    latest = _latest_by_key(store)
-    Submission.objects.all().delete()
-    for key, (version, event, msg) in latest.items():
-        # A tombstone (latest event is a delete, Decision #2) means the
-        # submission has no live row — the event stays in the log/history, but
-        # the projection omits it.
-        if label_marker(msg.label) == "-":
-            continue
-        Submission.objects.create(
-            key=key,
-            fields=event["fields"],
-            status=event["status"],
-            user=envelope_actor(msg, event),
-            version=version,
-        )
+    """Rebuild `Submission` from the event log via `rakaia.project_latest`: one
+    idempotent upsert per live key's latest snapshot, plus a delete per
+    tombstoned key (Decision #2 — a `delete` event). `Submission` is a pure
+    function of `SubmissionEvent`; ``version`` is the durable offset, so this
+    reprojection agrees with a history keyed by ``int(m.offset)``.
+    """
+    messages, _ = store.read(STREAM)
+    effects = project_latest(
+        messages,
+        SUBMISSION_MODEL,
+        subject_field="key",
+        subject_of=lambda e: e["key"],
+        defaults_of=lambda msg, event: {
+            "fields": event["fields"],
+            "status": event["status"],
+            "user": envelope_actor(msg, event),
+            "version": int(msg.offset),
+        },
+    )
+    DjangoExecutor().apply(effects)
 
 
 def materialize_history(store: DjangoStreamStore) -> None:
-    """`/history` = the ordered event log, fanned into an audit table by the
-    shipped `history_effects` helper (one row per event, keyed by (key,
-    version))."""
-    messages, _ = store.read(STREAM)
-    effects = history_effects(
-        messages,
+    """`/history` = the ordered event log, materialised by the shipped
+    `django_rakaia.materialize_history` (one row per event, keyed by
+    ``(key, offset)`` so re-running is a no-op)."""
+    _materialize_history(
+        store,
+        STREAM,
         HISTORY_MODEL,
         subject_field="key",
         subject_of=lambda e: e["key"],
@@ -123,5 +118,3 @@ def materialize_history(store: DjangoStreamStore) -> None:
             "ts": msg.timestamp,
         },
     )
-    SubmissionHistory.objects.all().delete()
-    DjangoExecutor().apply(effects)
