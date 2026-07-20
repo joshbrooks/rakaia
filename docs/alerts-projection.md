@@ -11,7 +11,7 @@ re-derivation must never clobber a human's judgment, and vice-versa.
 |---|---|---|---|
 | **1. Authored / informational** (`alert`, `backfilled`, …) | an actor | appended `alert_raised` / `alert_dismissed` events → natural-key `update_or_create` (+ `external` transition) | **shipped (Phase 1)** |
 | **2. Machine-reconciled** (validator violations) | the rules | `reconcile_by_key(..., retire={"resolved_at": ts})`, scoped by `retire_filter` to machine types | **shipped (Phase 2)** |
-| **3. Dismissable warnings** (derived ⊕ authored) | rules *and* actor | reconcile **composed with** a standing `alert_dismissed` — authored wins for user-resolvable types | **planned (Phase 3, needs refs / #19)** |
+| **3. Dismissable warnings** (derived ⊕ authored) | rules *and* actor | staged replay: stage-1 reconcile reads stage-0 `alert_dismissed` via the `reader` — authored wins for user-resolvable types | **shipped (Phase 3)** |
 
 ## Phase 1 — authored alerts (shipped, zero core changes)
 
@@ -58,58 +58,55 @@ two is a safe future cleanup, not required.
 `reconcile_by_key` emits **no** `external` transition. One retire Effect covers N
 rows, and a pure handler cannot see which rows actually flipped, so it cannot
 emit "one transition per real machine resolution" without either (a) an
-executor-level diff (return the rows a retire actually updated) or (b) the refs
-capability below. Until then, machine resolutions are silent; only authored
-transitions notify. **Decision needed in Phase 3.**
+executor-level diff (return the rows a retire actually updated) or (b) the
+reader. Until then, machine resolutions are silent; only authored transitions
+notify. Phase 3 deferred this to a follow-up (see its "Remaining core gap").
 
-## Phase 3 — composition (derived ⊕ authored), needs refs / #19
+## Phase 3 — composition (derived ⊕ authored), shipped
 
-**Goal.** Open alerts = `reconcile(machine violations)` **⊖** standing
-dismissals (user-resolvable only) **⊕** authored raises. A validator warning a
-human dismissed must **not** be re-raised while its rule still fails (oracle
-criterion 3: 27 re-raises → 0), yet a *machine* (non-user-resolvable) type must
-ignore dismissals.
+**Goal.** Open alerts = `reconcile(rule violations)` **⊖** standing dismissals
+(user-resolvable only) **⊕** authored raises. A validator warning a human
+dismissed must **not** be re-raised while its rule still fails (oracle criterion
+3: 27 re-raises → 0), yet a *machine* (non-user-resolvable) type must ignore
+dismissals.
 
-**The blocker.** A handler is a pure function of a **single event**
-(`version.fn(event)`); there is no way to read "the latest authored
-`alert_dismissed` for this key" while reconciling. rakaia has **no cross-stream
-/ refs capability today** — this is issue #19, and alerts is its first real
-consumer. Phase 3 cannot land without it.
+**The substrate — already shipped.** The Phase-3 plan originally listed a
+cross-stream **refs** capability (#19) as the blocker. That substrate landed on
+`main` with the staged-replay work: `ProjectionReader` (`get`/`filter`/`query`),
+`register_handler(stage=...)`, and `register_reducer`. A stage > 0 handler is
+invoked `fn(event, reader)` and reads projections earlier stages committed;
+because the reader only reads committed projections (a pure function of the log),
+replay stays deterministic. So **Phase 3 needs no new core primitive** — it is a
+staged-handler composition (see `examples/partisipa_staged`).
 
-### Work breakdown
+### How it composes (two stages on the submission stream)
 
-1. **refs primitive (#19) — prerequisite, the bulk of the work.**
-   A replay-time, deterministic read of *derived state from another projection
-   (or an earlier fold of the same stream)*, exposed to handlers. Minimum viable
-   shape for alerts: "latest authored `alert_dismissed` per `(stream_key,
-   alert_type, field_key)`, with its event version/seq." Design decisions:
-   - **Source**: fold the authored events of the same submission stream into a
-     `standing_dismissals` map, vs. read a materialized `Alert`/dismissal table.
-     Folding the stream keeps replay self-contained and deterministic; reading a
-     table introduces read-ordering hazards during a rebuild. *Recommend the
-     stream-fold.*
-   - **Handler surface**: extend the handler signature to `fn(event, refs)` (or
-     inject a context) without breaking the existing `fn(event)` handlers —
-     resolve via `inspect`/opt-in, mirroring how `match_field` was added.
-   - **Determinism**: refs must be a function of events at seq ≤ current only;
-     never "current DB state." Add a replay test that a mid-stream replay sees
-     only dismissals up to that seq.
+- **Stage 0** — authored `alert_raised` / `alert_dismissed` project `Alert`
+  rows. A dismissal records `dismissed_version` (the data version it was made
+  against).
+- **Stage 1** — the rule reconcile (`reconcile_by_key`) reads the committed
+  dismissals via the `reader`. For a **user-resolvable** violating key whose
+  standing dismissal holds at `dismissed_version >= the current violation's
+  version`, the violation is **omitted from the reconcile `items`** — so it is
+  neither re-opened (the row stays resolved) nor retired (`reconcile_by_key`'s
+  open-guard protects an already-resolved row). **Machine types ignore
+  dismissals** (machine wins). A newer edit (`version > dismissed_version`)
+  supersedes the dismissal and re-raises.
 
-2. **`MACHINE_ALERT_TYPES` split.** Port partisipa's
-   `NON_USER_RESOLVABLE_FLAG_TYPES`; user-resolvable = everything else. Machine
-   types ignore dismissals; user-resolvable types honor a standing dismissal at
-   `version ≥ the current violation's version`.
+`MACHINE_TYPES` = partisipa's `NON_USER_RESOLVABLE_FLAG_TYPES`; user-resolvable
+= everything else; `RULE_TYPES` (the reconcile domain / `retire_filter`) is their
+union. Authored-only types (`alert`) sit outside `RULE_TYPES`, so the reconcile
+never touches them — zero clobber, preserved. Reference + tests:
+`tests/test_django_rakaia/test_alerts.py::TestComposedAlerts`.
 
-3. **Composition in the reconcile.** For a user-resolvable violation whose key
-   has a standing dismissal ≥ its version, emit the row **resolved** (or skip the
-   upsert and let the retire stand) instead of open. Encode as a filter on
-   `items`/`defaults_fn` fed by refs — keep it inside `reconcile_by_key`'s
-   contract rather than a new op if possible.
+### Remaining core gap (follow-up, optional)
 
-4. **Machine-transition notifications** (resolve the Phase-2 limitation). Pick
-   (a) executor returns retired-row keys → orchestrator emits transitions, or (b)
-   derive transitions from refs (prev open-set vs new). *Lean (a):* it keeps
-   handlers pure and needs no cross-stream read.
+`reconcile_by_key` emits **no** `external` transition — one retire Effect covers
+N rows and a pure handler cannot see which rows actually flipped. Accurate "one
+transition per real machine resolution" needs the executor to **return the rows a
+retire actually updated** so the orchestrator can emit transitions. Authored
+transitions already fire correctly (Phase 1). Tracked separately; not required
+for composition correctness.
 
 ### Acceptance — the spike oracle
 
@@ -120,11 +117,12 @@ a rakaia projection must hit:
    reconcile (baseline 93.6% in_sync; the delta is point-in-time drift the
    projection *removes*).
 2. **Zero clobber** — authored alerts untouched (baseline 2027 at risk → 0).
-   *Already provable at Phase 2.*
+   *Provable from Phase 2; preserved by Phase 3's `RULE_TYPES` retire scope.*
 3. **Dismissals honored** — dismissed user-warnings not re-raised while failing
-   (baseline 27 → 0). *Phase 3.*
+   (baseline 27 → 0). *Phase 3 (`TestComposedAlerts`).*
 4. **External discipline** — one `alert_transition` per real state change, none
-   on replay. *Authored: Phase 1. Machine: Phase 3 item 4.*
+   on replay. *Authored: Phases 1 & 3. Machine resolutions: the follow-up gap
+   above.*
 
 ### Open questions
 

@@ -12,21 +12,37 @@ never touches authored alerts.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia.effects import Effect
 from rakaia.projections import reconcile_by_key
+from rakaia.registry import HandlerRegistry
+from rakaia.replay import replay
+from rakaia.store import StreamStore
 
 from .models import Alert
 
 ALERT = "test_django_rakaia.Alert"
 
-# The machine-owned alert types (partisipa's NON_USER_RESOLVABLE_FLAG_TYPES).
-# Everything else — notably "alert" — is authored / user-resolvable.
+# The machine-owned alert types (partisipa's NON_USER_RESOLVABLE_FLAG_TYPES) —
+# non-user-resolvable, so they ignore dismissals (machine wins).
 MACHINE_TYPES = ["ff4_operational_exceeds_ksp", "sf11_smt_exceeds_cap"]
+
+# Rule warnings a human may dismiss (partisipa's user-resolvable flag types).
+USER_RESOLVABLE_TYPES = [
+    "tf1321_monotonic",
+    "tf1321_duplicate_month",
+    "aldeia_mismatch",
+]
+
+# The reconcile domain = every rule-derived type. Authored-only types (e.g.
+# "alert") are outside it, so the reconcile never touches them (zero clobber).
+RULE_TYPES = MACHINE_TYPES + USER_RESOLVABLE_TYPES
 
 
 def _key(ev: dict[str, Any]) -> dict[str, Any]:
@@ -267,3 +283,257 @@ class TestMachineReconciledAlerts:
             _machine_reconcile("sub-1", [], ts="2026-07-20T09:00:00Z")
         )
         assert Alert.objects.get(stream_key="sub-2").is_open
+
+
+# ===========================================================================
+# Phase 3 — composition (derived ⊕ authored) via staged replay + reader
+# ===========================================================================
+#
+# Two stages on the submission stream:
+#   * stage 0 — authored `alert_raised` / `alert_dismissed` project Alert rows;
+#     a dismissal records the data `version` it was made against.
+#   * stage 1 — the rule reconcile reads the committed dismissals via the reader.
+#     A user-resolvable violation with a standing dismissal (dismissed_version ≥
+#     the current violation's version) is omitted from the reconcile items, so it
+#     is neither re-opened (stays resolved) nor retired (the open-guard protects
+#     an already-resolved row). Machine types ignore dismissals.
+
+
+def _sev(alert_type: str) -> str:
+    return "error" if alert_type in MACHINE_TYPES else "warning"
+
+
+def authored_raise_h(event: dict[str, Any]) -> Effect:
+    """stage 0: `alert_raised` -> open the natural-key row."""
+    return Effect(
+        op="update_or_create",
+        model_label=ALERT,
+        lookup=_key(event),
+        defaults={
+            "severity": event.get("severity", "info"),
+            "message": event.get("message", ""),
+            "created_at": event["ts"],
+            "resolved_at": None,
+            "resolved_by": None,
+            "dismissed_version": None,
+        },
+    )
+
+
+def authored_dismiss_h(event: dict[str, Any]) -> Effect:
+    """stage 0: `alert_dismissed` -> soft-resolve + record dismissed_version."""
+    return Effect(
+        op="update_or_create",
+        model_label=ALERT,
+        lookup=_key(event),
+        defaults={
+            "resolved_at": event["ts"],
+            "resolved_by": event.get("actor"),
+            "dismissed_version": event["against_version"],
+        },
+    )
+
+
+def rule_reconcile_h(event: dict[str, Any], reader: Any) -> list[Effect]:
+    """stage 1: reconcile the current rule violations, honoring standing
+    dismissals for user-resolvable types (authored wins) and ignoring them for
+    machine types (machine wins)."""
+    sk = event["stream_key"]
+    version = event["version"]
+    ts = event["ts"]
+
+    # Standing dismissals for this entity, from committed stage-0 projections.
+    dismissed = {
+        (row.alert_type, row.field_key): row.dismissed_version
+        for row in reader.filter(ALERT, stream_key=sk)
+        if row.dismissed_version is not None
+    }
+
+    def stands(v: dict[str, Any]) -> bool:
+        at = v["alert_type"]
+        fk = v.get("field_key", "")
+        return at in USER_RESOLVABLE_TYPES and dismissed.get((at, fk), -1) >= version
+
+    # Omit still-dismissed violations: not re-opened, and not retired (the
+    # already-resolved row is protected by reconcile_by_key's open-guard).
+    items = [v for v in event["violations"] if not stands(v)]
+    return reconcile_by_key(
+        model_label=ALERT,
+        scope={"stream_key": sk},
+        key_fields=("alert_type", "field_key"),
+        items=items,
+        key_fn=lambda v: {
+            "alert_type": v["alert_type"],
+            "field_key": v.get("field_key", ""),
+        },
+        defaults_fn=lambda v: {
+            "severity": _sev(v["alert_type"]),
+            "message": v.get("message", ""),
+            "created_at": ts,
+            "resolved_at": None,
+            "resolved_by": None,
+            "dismissed_version": None,
+        },
+        retire_filter={"alert_type__in": RULE_TYPES},
+        retire={"resolved_at": ts, "resolved_by": "system"},
+    )
+
+
+def _staged_registry() -> HandlerRegistry:
+    reg = HandlerRegistry()
+    reg.register(
+        "authored_raise",
+        "alert_raised",
+        authored_raise_h,
+        0,
+        None,
+        match_field="type",
+        stage=0,
+    )
+    reg.register(
+        "authored_dismiss",
+        "alert_dismissed",
+        authored_dismiss_h,
+        0,
+        None,
+        match_field="type",
+        stage=0,
+    )
+    reg.register(
+        "rule_reconcile",
+        "submission",
+        rule_reconcile_h,
+        0,
+        None,
+        match_field="type",
+        stage=1,
+    )
+    return reg
+
+
+def _run(events: list[dict], **kw: Any):
+    store = StreamStore()
+    store.create("sub:1")
+    for e in events:
+        store.append("sub:1", json.dumps(e).encode("utf-8"))
+    return replay(
+        store,
+        "sub:1",
+        DjangoExecutor(),
+        handler_registry=_staged_registry(),
+        reader=DjangoProjectionReader(),
+        **kw,
+    )
+
+
+def _submission(version: int, violations: list[dict], ts: str) -> dict:
+    return {
+        "type": "submission",
+        "stream_key": "sub-1",
+        "version": version,
+        "violations": violations,
+        "ts": ts,
+    }
+
+
+def _dismiss(
+    alert_type: str, against_version: int, ts: str, field_key: str = ""
+) -> dict:
+    return {
+        "type": "alert_dismissed",
+        "stream_key": "sub-1",
+        "alert_type": alert_type,
+        "field_key": field_key,
+        "against_version": against_version,
+        "actor": "amy",
+        "ts": ts,
+    }
+
+
+def _authored(alert_type: str, ts: str, field_key: str = "") -> dict:
+    return {
+        "type": "alert_raised",
+        "stream_key": "sub-1",
+        "alert_type": alert_type,
+        "field_key": field_key,
+        "severity": "warning",
+        "ts": ts,
+    }
+
+
+_VIOL = [{"alert_type": "tf1321_monotonic", "field_key": "m1"}]
+
+
+@pytest.mark.django_db
+class TestComposedAlerts:
+    def test_dismissed_warning_not_reraised(self):
+        # Oracle criterion 3: a dismissed user-resolvable warning whose rule
+        # still fails must NOT be re-raised.
+        _run(
+            [
+                _submission(1, _VIOL, ts="t1"),
+                _dismiss(
+                    "tf1321_monotonic", against_version=1, ts="t2", field_key="m1"
+                ),
+            ]
+        )
+        row = Alert.objects.get(stream_key="sub-1", alert_type="tf1321_monotonic")
+        assert not row.is_open  # dismissal honored
+        assert row.resolved_by == "amy"
+
+    def test_machine_type_ignores_dismissal(self):
+        _run(
+            [
+                _submission(1, [{"alert_type": "sf11_smt_exceeds_cap"}], ts="t1"),
+                _dismiss("sf11_smt_exceeds_cap", against_version=1, ts="t2"),
+            ]
+        )
+        row = Alert.objects.get(stream_key="sub-1", alert_type="sf11_smt_exceeds_cap")
+        assert row.is_open  # machine wins — dismissal ignored
+
+    def test_newer_violation_supersedes_dismissal(self):
+        _run(
+            [
+                _submission(1, _VIOL, ts="t1"),
+                _dismiss(
+                    "tf1321_monotonic", against_version=1, ts="t2", field_key="m1"
+                ),
+                _submission(2, _VIOL, ts="t3"),  # newer data, rule still fails
+            ]
+        )
+        row = Alert.objects.get(stream_key="sub-1", alert_type="tf1321_monotonic")
+        assert row.is_open  # v2 > dismissed v1 -> re-raised
+
+    def test_zero_clobber_authored_untouched(self):
+        _run(
+            [
+                _authored("alert", ts="t1"),  # authored informational, open
+                _submission(1, [], ts="t2"),  # no rule violations
+            ]
+        )
+        assert Alert.objects.get(stream_key="sub-1", alert_type="alert").is_open
+
+    def test_full_replay_honors_dismissal(self):
+        _run(
+            [
+                _submission(1, _VIOL, ts="t1"),
+                _dismiss(
+                    "tf1321_monotonic", against_version=1, ts="t2", field_key="m1"
+                ),
+            ]
+        )
+        assert not Alert.objects.get(alert_type="tf1321_monotonic").is_open
+
+    def test_partial_replay_before_dismissal_leaves_open(self):
+        # Determinism: refs is a function of events in range only. Replaying just
+        # the submission (end_seq=1 excludes the dismissal) leaves the flag open.
+        _run(
+            [
+                _submission(1, _VIOL, ts="t1"),
+                _dismiss(
+                    "tf1321_monotonic", against_version=1, ts="t2", field_key="m1"
+                ),
+            ],
+            end_seq=1,
+        )
+        assert Alert.objects.get(alert_type="tf1321_monotonic").is_open

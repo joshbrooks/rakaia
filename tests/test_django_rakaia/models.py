@@ -236,6 +236,12 @@ class Alert(models.Model):
 
     resolved_by = models.CharField(max_length=64, null=True, default=None)
 
+    dismissed_version = models.IntegerField(null=True, default=None)
+    """Data version an authored dismissal was made against (Phase 3). A standing
+    dismissal suppresses a user-resolvable violation while
+    ``dismissed_version >= the current violation's version``; a newer edit
+    supersedes it. ``NULL`` = no standing dismissal."""
+
     created_at = models.CharField(max_length=32, default="")
 
     class Meta:
