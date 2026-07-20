@@ -107,19 +107,16 @@ def get_next_offset(stream: Stream) -> int:
     select_for_update() so concurrent appends serialize on offset
     allocation instead of colliding on unique_together(stream, offset).
 
+    Thin wrapper over the canonical ``Stream.get_next_offset`` so every write
+    path shares one row-locking implementation.
+
     Args:
         stream: The stream to calculate offset for.
 
     Returns:
         Next offset value (1-indexed).
     """
-    # Lock the stream row for the duration of the enclosing transaction.
-    Stream.objects.select_for_update().get(pk=stream.pk)
-    agg = stream.entries.aggregate(max_offset=Max("offset"))
-    max_offset = agg["max_offset"]
-    if max_offset is None:
-        return 1
-    return max_offset + 1
+    return stream.get_next_offset()
 
 
 def create_stream_record(stream_id: str, content_type: str) -> Stream:  # noqa: ARG001

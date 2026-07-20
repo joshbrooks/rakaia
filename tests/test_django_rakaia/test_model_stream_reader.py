@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from django.db import transaction
 
 from django_rakaia.decorators import create_stream_event
 from django_rakaia.effect_executor import DjangoExecutor
@@ -161,10 +162,11 @@ class TestReplayAgainstModelStream:
 
 def _append_event(stream_id: str, data: dict) -> None:
     """Helper: write one event to a Django-backed stream."""
-    stream, _ = Stream.objects.get_or_create(stream_id=stream_id)
-    event = StreamEvent.objects.create(data=data, event_type="test")
-    next_offset = stream.get_next_offset()
-    StreamEntry.objects.create(stream=stream, event=event, offset=next_offset)
+    with transaction.atomic():
+        stream, _ = Stream.objects.get_or_create(stream_id=stream_id)
+        event = StreamEvent.objects.create(data=data, event_type="test")
+        next_offset = stream.get_next_offset()
+        StreamEntry.objects.create(stream=stream, event=event, offset=next_offset)
 
 
 @pytest.mark.django_db

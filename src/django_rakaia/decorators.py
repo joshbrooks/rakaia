@@ -10,7 +10,6 @@ from collections.abc import Callable
 from typing import Any
 
 from django.db import models, transaction
-from django.db.models import Max
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
@@ -32,20 +31,12 @@ def _get_or_create_stream(stream_id: str) -> Stream:
 
 
 def _get_next_offset(stream: Stream) -> int:
-    """
-    Calculate the next monotonic offset for a stream.
+    """Locking offset allocation — see ``Stream.get_next_offset``.
 
-    Must be called inside a transaction: locks the stream row with
-    select_for_update() so concurrent writers serialize on offset
-    allocation instead of colliding on unique_together(stream, offset).
+    Thin wrapper kept for backwards compatibility; the canonical, row-locking
+    implementation now lives on the model so every write path shares it.
     """
-    # Lock the stream row for the duration of the enclosing transaction.
-    Stream.objects.select_for_update().get(pk=stream.pk)
-    agg = stream.entries.aggregate(max_offset=Max("offset"))
-    max_offset = agg["max_offset"]
-    if max_offset is None:
-        return 1
-    return max_offset + 1
+    return stream.get_next_offset()
 
 
 def create_stream_event(
