@@ -65,16 +65,31 @@ class Command(BaseCommand):
 
         # -- write path: each save = append event + reproject, one transaction --
         stream.record_submission(
-            store, A, fields={"title": "Well A", "budget": "100"}, status=0,
-            actor="amaral", url="/submit/A", label="create",
+            store,
+            A,
+            fields={"title": "Well A", "budget": "100"},
+            status=0,
+            actor="amaral",
+            url="/submit/A",
+            label="create",
         )
         stream.record_submission(
-            store, B, fields={"title": "Road B"}, status=0,
-            actor="guterres", url="/submit/B", label="create",
+            store,
+            B,
+            fields={"title": "Road B"},
+            status=0,
+            actor="guterres",
+            url="/submit/B",
+            label="create",
         )
         stream.record_submission(
-            store, A, fields={"title": "Well A", "budget": "150"}, status=1,
-            actor="reviewer:tavares", url="/verify/A", label="verify",
+            store,
+            A,
+            fields={"title": "Well A", "budget": "150"},
+            status=1,
+            actor="reviewer:tavares",
+            url="/verify/A",
+            label="verify",
         )
         self.stdout.write(
             "Recorded 3 events across 2 submissions (A created+verified, B created).\n"
@@ -154,8 +169,13 @@ class Command(BaseCommand):
 
         # [5] TOMBSTONE: a delete event removes the row but stays in history
         stream.record_submission(
-            store, A, fields={"title": "Well A", "budget": "150"}, status=1,
-            actor="reviewer:tavares", url="/delete/A", label="delete",
+            store,
+            A,
+            fields={"title": "Well A", "budget": "150"},
+            status=1,
+            actor="reviewer:tavares",
+            url="/delete/A",
+            label="delete",
         )
         stream.materialize_history(store)
         gone = not Submission.objects.filter(key=A).exists()

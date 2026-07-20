@@ -4,44 +4,58 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='Submission',
+            name="Submission",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('key', models.CharField(max_length=64, unique=True)),
-                ('fields', models.JSONField(default=dict)),
-                ('status', models.IntegerField(default=0)),
-                ('user', models.CharField(blank=True, max_length=64, null=True)),
-                ('version', models.IntegerField(default=0)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("key", models.CharField(max_length=64, unique=True)),
+                ("fields", models.JSONField(default=dict)),
+                ("status", models.IntegerField(default=0)),
+                ("user", models.CharField(blank=True, max_length=64, null=True)),
+                ("version", models.IntegerField(default=0)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
             ],
             options={
-                'ordering': ['key'],
+                "ordering": ["key"],
             },
         ),
         migrations.CreateModel(
-            name='SubmissionHistory',
+            name="SubmissionHistory",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('key', models.CharField(max_length=64)),
-                ('version', models.IntegerField()),
-                ('marker', models.CharField(default='~', max_length=1)),
-                ('actor', models.CharField(blank=True, max_length=64, null=True)),
-                ('url', models.CharField(blank=True, max_length=200, null=True)),
-                ('status', models.IntegerField(default=0)),
-                ('snapshot', models.JSONField(default=dict)),
-                ('ts', models.FloatField(default=0.0)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("key", models.CharField(max_length=64)),
+                ("version", models.IntegerField()),
+                ("marker", models.CharField(default="~", max_length=1)),
+                ("actor", models.CharField(blank=True, max_length=64, null=True)),
+                ("url", models.CharField(blank=True, max_length=200, null=True)),
+                ("status", models.IntegerField(default=0)),
+                ("snapshot", models.JSONField(default=dict)),
+                ("ts", models.FloatField(default=0.0)),
             ],
             options={
-                'ordering': ['key', 'version'],
-                'unique_together': {('key', 'version')},
+                "ordering": ["key", "version"],
+                "unique_together": {("key", "version")},
             },
         ),
     ]
