@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import json
+
 from rakaia.projections import (
+    project_latest,
     reconcile_aggregate,
     reconcile_children,
     reconcile_tree,
 )
+from rakaia.types import StreamMessage
+
+
+def _msg(payload: dict, *, label: str = "update", offset: str = "1") -> StreamMessage:
+    return StreamMessage(
+        data=json.dumps(payload).encode("utf-8"),
+        offset=offset,
+        timestamp=1.0,
+        label=label,
+    )
 
 
 def _reconcile(items: list[dict]):
@@ -195,3 +208,88 @@ class TestReconcileAggregate:
         scope = {"report_id": 42}
         _agg({"a": {"total": 1}}, scope=scope)
         assert scope == {"report_id": 42}
+
+
+class TestProjectLatest:
+    def _project(self, messages):
+        return project_latest(
+            messages,
+            "app.Submission",
+            subject_field="key",
+            subject_of=lambda e: e["key"],
+            defaults_of=lambda _msg, e: {"fields": e["fields"], "status": e["status"]},
+        )
+
+    def test_one_upsert_per_subject(self):
+        effects = self._project(
+            [
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="create"),
+                _msg({"key": "b", "fields": {"v": 1}, "status": 0}, label="create"),
+            ]
+        )
+        upserts = [e for e in effects if e.op == "update_or_create"]
+        assert len(upserts) == 2
+        assert {tuple(e.lookup.items()) for e in upserts} == {
+            (("key", "a"),),
+            (("key", "b"),),
+        }
+        assert all(e.model_label == "app.Submission" for e in upserts)
+
+    def test_last_event_wins(self):
+        effects = self._project(
+            [
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="create"),
+                _msg({"key": "a", "fields": {"v": 2}, "status": 1}, label="update"),
+            ]
+        )
+        assert len(effects) == 1
+        assert effects[0].op == "update_or_create"
+        assert effects[0].lookup == {"key": "a"}
+        assert effects[0].defaults == {"fields": {"v": 2}, "status": 1}
+
+    def test_tombstone_emits_delete(self):
+        effects = self._project(
+            [
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="create"),
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="delete"),
+            ]
+        )
+        assert len(effects) == 1
+        assert effects[0].op == "delete"
+        assert effects[0].lookup == {"key": "a"}
+
+    def test_recreate_after_tombstone_upserts(self):
+        # create -> delete -> create: the latest event is live, so the row
+        # reappears with the newest snapshot.
+        effects = self._project(
+            [
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="create"),
+                _msg({"key": "a", "fields": {"v": 1}, "status": 0}, label="delete"),
+                _msg({"key": "a", "fields": {"v": 3}, "status": 2}, label="create"),
+            ]
+        )
+        assert len(effects) == 1
+        assert effects[0].op == "update_or_create"
+        assert effects[0].defaults == {"fields": {"v": 3}, "status": 2}
+
+    def test_custom_tombstone_labels(self):
+        effects = project_latest(
+            [_msg({"key": "a", "fields": {}, "status": 0}, label="archived")],
+            "app.Submission",
+            subject_field="key",
+            subject_of=lambda e: e["key"],
+            defaults_of=lambda _msg, e: {"status": e["status"]},
+            tombstone_labels=("archived",),
+        )
+        assert len(effects) == 1
+        assert effects[0].op == "delete"
+
+    def test_only_subjects_present_get_effects(self):
+        # Incremental: a tail read with only 'a' touches only 'a' — an absent
+        # subject is not deleted (only an explicit tombstone is).
+        effects = self._project(
+            [_msg({"key": "a", "fields": {}, "status": 0}, label="update")]
+        )
+        assert len(effects) == 1
+        assert effects[0].lookup == {"key": "a"}
+        assert effects[0].op == "update_or_create"

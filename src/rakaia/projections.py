@@ -20,10 +20,12 @@ reconcile `delete` scoped to spare exactly the rows still present:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .effects import Effect
+from .types import StreamMessage
 
 
 def reconcile_children(
@@ -197,4 +199,64 @@ def reconcile_aggregate(
             exclude={f"{group_key}__in": group_values},
         )
     )
+    return effects
+
+
+def project_latest(
+    messages: Sequence[StreamMessage],
+    model_label: str,
+    *,
+    subject_of: Callable[[dict[str, Any]], Any],
+    defaults_of: Callable[[StreamMessage, dict[str, Any]], dict[str, Any]],
+    subject_field: str = "subject",
+    tombstone_labels: Sequence[str] = ("delete",),
+) -> list[Effect]:
+    """Project each subject's **latest** snapshot into one row — the current-state
+    read model behind an event log.
+
+    Folds `messages` to the newest event per subject (oldest-first, last wins)
+    and returns one ``update_or_create`` per live subject, plus a ``delete`` for
+    any subject whose latest event is a **tombstone** (``label in
+    tombstone_labels`` — e.g. a delete, Decision #2). Because every event is a
+    full snapshot, "latest" needs no reducer.
+
+    Unlike `reconcile_children` (parent → child fan-out), this is subject →
+    latest-row, keyed on the aggregate identity (`subject_field`). It only
+    touches subjects **present in** `messages`, so it serves a full-stream
+    rebuild *and* an incremental tail read (``store.read(path, offset=…)``): a
+    subject's absence is never a delete — only an explicit tombstone is.
+
+    Args:
+        messages: the stream's messages (from ``store.read``), oldest-first.
+        model_label: 'app_label.ModelName' of the projection table.
+        subject_of: maps a decoded event to its subject (the aggregate id).
+        defaults_of: maps ``(message, decoded event)`` to the row's ``defaults=``.
+        subject_field: the projection's key column.
+        tombstone_labels: envelope labels that mean "no live row" for the subject.
+    """
+    latest: dict[Any, tuple[StreamMessage, dict[str, Any]]] = {}
+    for msg in messages:
+        event = json.loads(msg.data)
+        latest[subject_of(event)] = (msg, event)
+
+    tombstones = set(tombstone_labels)
+    effects: list[Effect] = []
+    for subject, (msg, event) in latest.items():
+        if msg.label in tombstones:
+            effects.append(
+                Effect(
+                    op="delete",
+                    model_label=model_label,
+                    lookup={subject_field: subject},
+                )
+            )
+        else:
+            effects.append(
+                Effect(
+                    op="update_or_create",
+                    model_label=model_label,
+                    lookup={subject_field: subject},
+                    defaults=defaults_of(msg, event),
+                )
+            )
     return effects

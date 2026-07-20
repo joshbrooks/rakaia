@@ -36,6 +36,7 @@ from .history import (
     recover_peak_snapshot,
 )
 from .projections import (
+    project_latest,
     reconcile_aggregate,
     reconcile_children,
     reconcile_tree,
@@ -132,6 +133,7 @@ __all__ = [
     "reconcile_children",
     "reconcile_tree",
     "reconcile_aggregate",
+    "project_latest",
     # Versioned handlers — registry
     "register_handler",
     "register_reducer",
