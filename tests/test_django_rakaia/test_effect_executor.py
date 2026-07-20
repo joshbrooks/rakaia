@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import pytest
+from django.contrib.auth.models import User
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import Effect, EffectCollisionError
 
-from .models import Area
+from .models import Area, Project
+
+
+def _updates(ctx: CaptureQueriesContext) -> list[str]:
+    return [
+        q["sql"]
+        for q in ctx.captured_queries
+        if q["sql"].lstrip().upper().startswith("UPDATE")
+    ]
 
 
 @pytest.mark.django_db
@@ -218,3 +229,86 @@ class TestDjangoExecutorDelete:
                 ]
             )
         assert Area.objects.filter(name="keep").exists()
+
+
+@pytest.mark.django_db
+class TestSkipUnchanged:
+    """The opt-in `skip_unchanged` executor avoids no-op writes on replay."""
+
+    def _area_upsert(self, area_id: int, name: str) -> Effect:
+        return Effect(
+            op="update_or_create",
+            model_label="test_django_rakaia.Area",
+            lookup={"id": area_id},
+            defaults={"name": name},
+        )
+
+    def test_unchanged_upsert_issues_no_update(self):
+        area = Area.objects.create(name="X")
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply([self._area_upsert(area.id, "X")])
+        assert _updates(ctx) == []
+        assert Area.objects.get(id=area.id).name == "X"
+
+    def test_changed_upsert_issues_one_update(self):
+        area = Area.objects.create(name="X")
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply([self._area_upsert(area.id, "Y")])
+        assert len(_updates(ctx)) == 1
+        assert Area.objects.get(id=area.id).name == "Y"
+
+    def test_creates_missing_row(self):
+        executor = DjangoExecutor(skip_unchanged=True)
+        executor.apply(
+            [
+                Effect(
+                    op="update_or_create",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"name": "New"},
+                    defaults={},
+                )
+            ]
+        )
+        assert Area.objects.filter(name="New").count() == 1
+
+    def test_second_apply_is_a_noop(self):
+        area = Area.objects.create(name="X")
+        executor = DjangoExecutor(skip_unchanged=True)
+        executor.apply([self._area_upsert(area.id, "Y")])  # first: writes
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply([self._area_upsert(area.id, "Y")])  # now unchanged
+        assert _updates(ctx) == []
+
+    def test_only_changed_column_is_written(self):
+        user = User.objects.create(username="u")
+        area = Area.objects.create(name="A")
+        project = Project.objects.create(name="old", area=area, created_by=user)
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply(
+                [
+                    Effect(
+                        op="update_or_create",
+                        model_label="test_django_rakaia.Project",
+                        lookup={"id": project.id},
+                        defaults={"name": "new"},  # only the name changes
+                    )
+                ]
+            )
+        updates = _updates(ctx)
+        assert len(updates) == 1
+        sql = updates[0].lower()
+        # update_fields limits the UPDATE to the changed column
+        assert "name" in sql
+        assert "area_id" not in sql and "created_by_id" not in sql
+
+    def test_default_executor_writes_even_when_unchanged(self):
+        # Backward compatibility: the default path uses update_or_create, which
+        # always issues an UPDATE — the skip is strictly opt-in.
+        area = Area.objects.create(name="X")
+        executor = DjangoExecutor()
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply([self._area_upsert(area.id, "X")])
+        assert len(_updates(ctx)) == 1

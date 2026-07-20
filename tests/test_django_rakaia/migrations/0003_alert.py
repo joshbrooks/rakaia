@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("test_django_rakaia", "0001_initial"),
+        ("test_django_rakaia", "0002_history"),
     ]
 
     operations = [

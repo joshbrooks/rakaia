@@ -21,11 +21,19 @@ nav = [
     { "Django integration" = "django-integration.md" },
     { "Versioned handlers" = "versioned-handlers.md" },
     { "Projections & fan-out" = "projections-and-fan-out.md" },
+    { "pghistory retirement (spike)" = "pghistory-retirement.md" },
+    { "Staged replay (spike)" = "staged-replay.md" },
+    { "Close preconditions (spike)" = "close-preconditions.md" },
+    { "Multi-stream merge (spike)" = "multi-stream-merge.md" },
+    { "Tree-reconcile (spike)" = "tree-reconcile.md" },
     { "Translations" = "translations.md" },
     { "Deployment" = "deployment.md" },
     { Reference = [
         { "Protocol specification" = "protocol.md" },
         { "Backend storage" = "streams-backend-storage.md" },
+    ] },
+    { "Decision records" = [
+        { "ADR 0001 — Ordering child collections" = "adr/0001-ordering-child-collections-in-projections.md" },
     ] },
 ]
 

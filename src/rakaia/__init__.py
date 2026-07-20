@@ -17,6 +17,8 @@ Usage:
     # Run with: uvicorn rakaia:app
 """
 
+from .append import append_if_changed, snapshots_equal
+from .context import get_provenance, provenance
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
 from .effects import (
     Effect,
@@ -27,15 +29,29 @@ from .effects import (
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
-from .projections import reconcile_by_key, reconcile_children
+from .history import (
+    envelope_actor,
+    history_effects,
+    label_marker,
+    recover_peak_snapshot,
+)
+from .projections import (
+    project_latest,
+    reconcile_aggregate,
+    reconcile_by_key,
+    reconcile_children,
+    reconcile_tree,
+)
 from .registry import (
     HANDLERS_META_STREAM,
+    REDUCERS_META_STREAM,
     UPCASTERS_META_STREAM,
     HandlerDriftError,
     HandlerGapError,
     HandlerOverlapError,
     HandlerRegistry,
     HandlerVersion,
+    ReducerVersion,
     UpcasterChainError,
     UpcasterConflictError,
     UpcasterRegistry,
@@ -43,10 +59,11 @@ from .registry import (
     get_default_registry,
     get_default_upcaster_registry,
     register_handler,
+    register_reducer,
     register_upcaster,
     upcast,
 )
-from .replay import ReplayResult, replay
+from .replay import ReplayResult, merge_replay, replay
 from .store import StreamStore
 from .types import (
     AppendOptions,
@@ -76,6 +93,14 @@ __all__ = [
     "app",
     # Store
     "StreamStore",
+    "provenance",
+    "get_provenance",
+    "append_if_changed",
+    "snapshots_equal",
+    "history_effects",
+    "recover_peak_snapshot",
+    "label_marker",
+    "envelope_actor",
     # Options
     "ServerOptions",
     "CursorOptions",
@@ -108,12 +133,18 @@ __all__ = [
     # Versioned handlers — projections
     "reconcile_by_key",
     "reconcile_children",
+    "reconcile_tree",
+    "reconcile_aggregate",
+    "project_latest",
     # Versioned handlers — registry
     "register_handler",
+    "register_reducer",
     "register_upcaster",
     "HandlerRegistry",
     "UpcasterRegistry",
     "HandlerVersion",
+    "ReducerVersion",
+    "REDUCERS_META_STREAM",
     "UpcasterVersion",
     "HandlerOverlapError",
     "HandlerGapError",
@@ -127,6 +158,7 @@ __all__ = [
     "UPCASTERS_META_STREAM",
     # Versioned handlers — replay
     "replay",
+    "merge_replay",
     "ReplayResult",
     # Version
     "__version__",

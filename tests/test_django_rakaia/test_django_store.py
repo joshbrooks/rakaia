@@ -43,6 +43,30 @@ class TestDjangoStreamStore:
         with pytest.raises(KeyError):
             DjangoStreamStore().append("missing", b"{}")
 
+    def test_append_persists_and_reads_envelope(self):
+        from rakaia.types import AppendOptions
+
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append(
+            "s",
+            b'{"id": 1}',
+            AppendOptions(label="update", metadata={"user": 7, "url": "/x"}),
+        )
+        messages, _ = store.read("s")
+        assert messages[-1].label == "update"
+        assert messages[-1].metadata == {"user": 7, "url": "/x"}
+
+    def test_raw_append_reads_empty_envelope(self):
+        # A raw append (no options) reads back label="" / metadata=None, matching
+        # the in-memory store — even though event_type is stored as "append".
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        messages, _ = store.read("s")
+        assert messages[-1].label == ""
+        assert messages[-1].metadata is None
+
     def test_read_returns_events_in_order(self):
         store = DjangoStreamStore()
         store.create("s")

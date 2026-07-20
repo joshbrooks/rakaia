@@ -13,7 +13,7 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import replay
+from rakaia.replay import merge_replay, replay
 from rakaia.store import StreamStore
 
 
@@ -551,3 +551,572 @@ class TestMatchFieldRouting:
         assert ("x.TF", 3) in models
         assert ("x.SF", 1) not in models
         assert ("x.TF", 2) not in models
+
+
+# ---------------------------------------------------------------------------
+# Staged replay (stage= handlers + a projection reader)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+
+class DictProjections:
+    """In-memory materialiser: an Executor that applies update_or_create/delete
+    effects, and a ProjectionReader over the same rows. Enough to exercise
+    staged replay without Django — stage 1 reads what stage 0 committed."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict]] = {}
+
+    # -- Executor side --
+    def apply(self, effects) -> None:
+        for e in effects:
+            table = self.rows.setdefault(e.model_label, [])
+            if e.op == "update_or_create":
+                row = self._find(table, e.lookup)
+                if row is None:
+                    row = dict(e.lookup)
+                    table.append(row)
+                row.update(e.defaults or {})
+            elif e.op == "delete":
+                self.rows[e.model_label] = [
+                    r
+                    for r in table
+                    if not (
+                        self._match(r, e.lookup or {})
+                        and not self._excluded(r, e.exclude or {})
+                    )
+                ]
+
+    @staticmethod
+    def _find(table, lookup):
+        return next((r for r in table if DictProjections._match(r, lookup)), None)
+
+    @staticmethod
+    def _match(row, lookup):
+        return all(row.get(k) == v for k, v in lookup.items())
+
+    @staticmethod
+    def _excluded(row, exclude):
+        for key, val in exclude.items():
+            if key.endswith("__in") and row.get(key[:-4]) in val:
+                return True
+        return False
+
+    # -- ProjectionReader side --
+    def get(self, model_label, **lookup):
+        row = self._find(self.rows.get(model_label, []), lookup)
+        return SimpleNamespace(**row) if row is not None else None
+
+    def filter(self, model_label, **lookup):
+        return [
+            SimpleNamespace(**r)
+            for r in self.rows.get(model_label, [])
+            if self._match(r, lookup)
+        ]
+
+    def query(self, model_label):
+        return [SimpleNamespace(**r) for r in self.rows.get(model_label, [])]
+
+
+def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see call)
+    return Effect(
+        op="update_or_create",
+        model_label="app.Project",
+        lookup={"suku": event["suku"], "output": event["output"]},
+        defaults={"name": event["project_name"]},
+    )
+
+
+def _sf12(event, reader):
+    project = reader.get("app.Project", suku=event["suku"], output=event["output"])
+    return Effect(
+        op="update_or_create",
+        model_label="app.Sf12",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_id": project.name if project else None},
+    )
+
+
+# TF (defines the project) deliberately arrives AFTER the SF that needs it.
+_STAGED_EVENTS = [
+    {
+        "schema_version": 1,
+        "form_type": "SF_1_2",
+        "key": "sf-1",
+        "suku": "Fatuberliu",
+        "output": "WATER",
+    },
+    {
+        "schema_version": 1,
+        "form_type": "TF_6_1_1",
+        "key": "tf-1",
+        "suku": "Fatuberliu",
+        "output": "WATER",
+        "project_name": "WS-014",
+    },
+]
+
+
+def _staged_registry():
+    reg = HandlerRegistry()
+    # stage 0 is defined with a reader param but registered at stage 0, so it is
+    # called `fn(event)`; that must not error even though the fn accepts reader.
+    reg.register(
+        "project",
+        "TF_6_1_1",
+        lambda event: _project(event, None),
+        0,
+        None,
+        match_field="form_type",
+        stage=0,
+    )
+    reg.register("sf12", "SF_1_2", _sf12, 0, None, match_field="form_type", stage=1)
+    return reg
+
+
+class TestStagedReplay:
+    def test_late_reference_still_links(self, store: StreamStore):
+        _seed_stream(store, "s", _STAGED_EVENTS)
+        reg = _staged_registry()
+        proj = DictProjections()
+        result = replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        # The SF arrived before its TF, yet stage 0 built every Project before
+        # stage 1 linked, so the link resolves.
+        sf = proj.get("app.Sf12", submission_id="sf-1")
+        assert sf.project_id == "WS-014"
+        assert result.events_processed == 2  # counted once, not per stage
+
+    def test_missing_reader_raises(self, store: StreamStore):
+        _seed_stream(store, "s", _STAGED_EVENTS)
+        reg = _staged_registry()
+        with pytest.raises(ValueError, match="reader"):
+            replay(
+                store,
+                "s",
+                DictProjections(),
+                handler_registry=reg,
+                upcaster_registry=UpcasterRegistry(),
+            )  # no reader=
+
+    def test_self_heals_on_re_replay(self, store: StreamStore):
+        # Only the SF exists: its project is unresolved.
+        _seed_stream(store, "s", [_STAGED_EVENTS[0]])
+        reg = _staged_registry()
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Sf12", submission_id="sf-1").project_id is None
+
+        # The TF finally arrives; re-replaying links it — no backfill.
+        store.append("s", json.dumps(_STAGED_EVENTS[1]).encode("utf-8"))
+        proj2 = DictProjections()
+        replay(
+            store,
+            "s",
+            proj2,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj2,
+        )
+        assert proj2.get("app.Sf12", submission_id="sf-1").project_id == "WS-014"
+
+    def test_stage_zero_only_is_single_pass_without_reader(self, store: StreamStore):
+        # A registry with only stage-0 handlers needs no reader (backward compat).
+        _seed_stream(store, "s", [_STAGED_EVENTS[1]])
+        reg = HandlerRegistry()
+        reg.register(
+            "project",
+            "TF_6_1_1",
+            lambda event: _project(event, None),
+            0,
+            None,
+            match_field="form_type",
+            stage=0,
+        )
+        proj = DictProjections()
+        replay(
+            store, "s", proj, handler_registry=reg, upcaster_registry=UpcasterRegistry()
+        )  # no reader needed
+        assert proj.get("app.Project", suku="Fatuberliu", output="WATER") is not None
+
+
+# ---------------------------------------------------------------------------
+# Reducers (per-stage recompute steps)
+# ---------------------------------------------------------------------------
+
+
+def _finance_line(event):
+    return Effect(
+        op="update_or_create",
+        model_label="app.FinanceLine",
+        lookup={"submission_id": event["key"]},
+        defaults={"suku": event["suku"], "delta": event["delta"]},
+    )
+
+
+def _balance_reducer(reader):
+    from rakaia.projections import reconcile_aggregate
+
+    groups: dict[str, int] = {}
+    for line in reader.query("app.FinanceLine"):
+        groups[line.suku] = groups.get(line.suku, 0) + line.delta
+    return reconcile_aggregate(
+        "app.Balance", {}, "suku", {s: {"total": t} for s, t in groups.items()}
+    )
+
+
+_FINANCE_EVENTS = [
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f1",
+        "suku": "A",
+        "delta": 100,
+    },
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f2",
+        "suku": "A",
+        "delta": -30,
+    },
+    {
+        "schema_version": 1,
+        "form_type": "FINANCE",
+        "key": "f3",
+        "suku": "B",
+        "delta": 50,
+    },
+]
+
+
+def _finance_registry(reducer=_balance_reducer):
+    reg = HandlerRegistry()
+    reg.register(
+        "finance", "FINANCE", _finance_line, 0, None, match_field="form_type", stage=0
+    )
+    reg.register_reducer("balance", 1, reducer)
+    return reg
+
+
+class TestReducers:
+    def test_reducer_recomputes_aggregate(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70  # 100 - 30
+        assert proj.get("app.Balance", suku="B").total == 50
+
+    def test_reducer_runs_once_per_stage_not_per_event(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)  # 3 events
+        calls: list[int] = []
+
+        def counting(reader):  # noqa: ARG001
+            calls.append(1)
+            return []
+
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(counting),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert len(calls) == 1  # once for stage 1, not 3x (per event)
+
+    def test_reducer_requires_reader(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        with pytest.raises(ValueError, match="reader"):
+            replay(
+                store,
+                "s",
+                DictProjections(),
+                handler_registry=_finance_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )  # no reader=
+
+    def test_reducer_recompute_is_replay_safe(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        reg = _finance_registry()
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        # Re-replay onto existing state: recompute, not increment -> stable.
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70  # not 140
+
+    def test_reducer_sees_only_committed_stage0_rows(self, store: StreamStore):
+        # A reducer at stage 1 reads FinanceLine rows all built in stage 0.
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert len(proj.query("app.FinanceLine")) == 3
+        assert {b.suku for b in proj.query("app.Balance")} == {"A", "B"}
+
+
+# ---------------------------------------------------------------------------
+# merge_replay (several streams merged by an order key)
+# ---------------------------------------------------------------------------
+
+
+def _touch(event):
+    return Effect(
+        op="update_or_create",
+        model_label="app.Claim",
+        lookup={"slot": event["slot"]},
+        defaults={"claimed_by": event["key"]},
+    )
+
+
+def _touch_registry():
+    reg = HandlerRegistry()
+    reg.register("touch", "TOUCH", _touch, 0, None, match_field="form_type", stage=0)
+    return reg
+
+
+def _ev(key, ts):
+    return {
+        "schema_version": 1,
+        "form_type": "TOUCH",
+        "key": key,
+        "slot": "S",
+        "ts": ts,
+    }
+
+
+# a1 and b1 share a timestamp across streams (the cross-stream tie); they are
+# also the two latest events, so the tie's winner is the final claimant.
+_A = [_ev("a0", "2026-01-01T00:00:00Z"), _ev("a1", "2026-01-01T02:00:00Z")]
+_B = [_ev("b0", "2026-01-01T01:00:00Z"), _ev("b1", "2026-01-01T02:00:00Z")]
+# Canonical merged order by (ts, path, offset): a0, b0, a1, b1  (forms/a < forms/b)
+_CANONICAL = [_A[0], _B[0], _A[1], _B[1]]
+
+
+class TestMergeReplay:
+    def _seed_two(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        _seed_stream(store, "forms/b", _B)
+
+    def test_tie_resolved_by_stream_path(self, store: StreamStore):
+        self._seed_two(store)
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["forms/a", "forms/b"],
+            proj,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+        # a1 (forms/a) sorts before b1 (forms/b) at the same ts, so b1 is later
+        # in the merged order and wins the shared slot.
+        assert proj.get("app.Claim", slot="S").claimed_by == "b1"
+
+    def test_deterministic_regardless_of_path_order(self, store: StreamStore):
+        self._seed_two(store)
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["forms/b", "forms/a"],
+            proj,  # reversed
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+        assert proj.get("app.Claim", slot="S").claimed_by == "b1"  # unchanged
+
+    def test_parity_with_single_combined_stream(self, store: StreamStore):
+        self._seed_two(store)
+        merged = DictProjections()
+        merge_replay(
+            store,
+            ["forms/a", "forms/b"],
+            merged,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+
+        _seed_stream(store, "combined", _CANONICAL)
+        single = DictProjections()
+        replay(
+            store,
+            "combined",
+            single,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+
+        assert (
+            merged.get("app.Claim", slot="S").claimed_by
+            == single.get("app.Claim", slot="S").claimed_by
+            == "b1"
+        )
+
+    def test_missing_order_key_raises(self, store: StreamStore):
+        _seed_stream(
+            store,
+            "forms/a",
+            [{"schema_version": 1, "form_type": "TOUCH", "key": "x", "slot": "S"}],
+        )  # no ts
+        with pytest.raises(ValueError, match="order_key"):
+            merge_replay(
+                store,
+                ["forms/a"],
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_duplicate_stream_paths_raise(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        with pytest.raises(ValueError, match="duplicate"):
+            merge_replay(
+                store,
+                ["forms/a", "forms/a"],  # same stream twice
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_incomparable_order_key_raises_clearly(self, store: StreamStore):
+        # One stream's ts is an int, the other's a str -> sort would TypeError;
+        # merge_replay should surface a clear ValueError, not the bare crash.
+        _seed_stream(
+            store,
+            "forms/a",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "TOUCH",
+                    "key": "a",
+                    "slot": "S",
+                    "ts": 1,
+                }
+            ],
+        )
+        _seed_stream(
+            store,
+            "forms/b",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "TOUCH",
+                    "key": "b",
+                    "slot": "S",
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+        with pytest.raises(ValueError, match="not mutually comparable"):
+            merge_replay(
+                store,
+                ["forms/a", "forms/b"],
+                DictProjections(),
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_requires_reader_when_staged(self, store: StreamStore):
+        _seed_stream(store, "forms/a", _A)
+        reg = _touch_registry()
+        reg.register(
+            "dep", "TOUCH", lambda *_: None, 0, None, match_field="form_type", stage=1
+        )
+        with pytest.raises(ValueError, match="reader"):
+            merge_replay(
+                store,
+                ["forms/a"],
+                DictProjections(),
+                handler_registry=reg,
+                upcaster_registry=UpcasterRegistry(),
+            )
+
+    def test_reducer_runs_over_merged_streams(self, store: StreamStore):
+        _seed_stream(
+            store,
+            "fin/a",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f1",
+                    "suku": "A",
+                    "delta": 100,
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+        _seed_stream(
+            store,
+            "fin/b",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f2",
+                    "suku": "A",
+                    "delta": -30,
+                    "ts": "2026-01-01T01:00:00Z",
+                },
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f3",
+                    "suku": "B",
+                    "delta": 50,
+                    "ts": "2026-01-01T02:00:00Z",
+                },
+            ],
+        )
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["fin/a", "fin/b"],
+            proj,
+            handler_registry=_finance_registry(),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70
+        assert proj.get("app.Balance", suku="B").total == 50

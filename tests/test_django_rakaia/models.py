@@ -252,5 +252,41 @@ class Alert(models.Model):
         return f"{self.alert_type}[{self.field_key or '*'}] ({self.severity}, {state})"
 
 
+class FinanceLine(models.Model):
+    """Plain contributing-rows model for the reducer/aggregate tests."""
+
+    submission_id = models.CharField(max_length=64, unique=True)
+    suku = models.CharField(max_length=64)
+    delta = models.IntegerField(default=0)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+class Balance(models.Model):
+    """Plain aggregate model for the reducer/aggregate tests."""
+
+    suku = models.CharField(max_length=64, unique=True)
+    total = models.IntegerField(default=0)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+class History(models.Model):
+    """Audit-log read-model for the history materializer tests."""
+
+    submission_id = models.CharField(max_length=64)
+    version = models.IntegerField()
+    marker = models.CharField(max_length=1)
+    actor = models.IntegerField(null=True, blank=True)
+    ts = models.FloatField(default=0)
+    snapshot = models.JSONField(default=dict)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+        unique_together = ["submission_id", "version"]
+
+
 # Register the admin interface for AppStreamEvent
 register_stream_event_admin(AppStreamEvent)

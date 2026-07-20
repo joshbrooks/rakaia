@@ -101,3 +101,48 @@ You can build the same thing by hand with an `op="delete"` Effect — that's all
 the orphan handling for free instead of re-deriving it (and forgetting the
 `exclude`, which is the whole point). Reach for the raw delete only when the
 scope isn't "children of a parent keyed by index".
+
+## Reorderable collections: key by id, not index
+
+`reconcile_children` keys rows by **positional index**, which makes it right for
+fixed-order or append-only collections but wrong for **reorderable** ones: a
+reorder renumbers every subsequent index, so replay rewrites O(N) rows *and* any
+foreign key to a child now points at a different logical item.
+
+For reorderable data, key rows by a **stable id** and store order as a
+**fractional index** field. `reconcile_tree` is built for this: it keys each row
+by whatever `id_fn` returns and passes your fields straight through
+`defaults_fn`. Two things stay *your* responsibility, though — the helper is
+order-agnostic and identity-agnostic:
+
+- **the stable id** must come from your data (a business key, or one assigned at
+  ingestion). `reconcile_tree` does not make ids stable; if `id_fn` returns
+  something position-derived, you're back to the index problem.
+- **the order field** is yours to compute (a fractional index is recommended) and
+  return from `defaults_fn`; then read with `ORDER BY`. `reconcile_tree` neither
+  sorts nodes nor adds an order column.
+
+See [ADR 0001](adr/0001-ordering-child-collections-in-projections.md) for the full
+rationale (and why a linked list is the wrong choice for a SQL-backed
+projection).
+
+## Avoiding no-op writes on large collections
+
+A reconcile emits one `update_or_create` per current row, and Django's
+`update_or_create` always issues an UPDATE. So re-materialising a 100-row
+collection where a single value changed rewrites all 100 rows — churning
+`auto_now` columns, `post_save` signals, and replication for 99 no-ops.
+
+`DjangoExecutor(skip_unchanged=True)` closes that: it fetches each row, compares
+the effect's `defaults` to the stored values, and writes **only the changed
+columns** — skipping the UPDATE entirely when nothing changed. A big tree with
+one edit, or a reorder that moves one row, then costs one write instead of N.
+
+```python
+DjangoExecutor(skip_unchanged=True).apply(effects)
+```
+
+It trades one UPDATE per row for one SELECT per row, so reach for it when writes
+are the expensive part. It's opt-in because skipping a no-op write is observably
+different — an unchanged row's `auto_now` fields don't advance and its
+`post_save` signal doesn't fire.

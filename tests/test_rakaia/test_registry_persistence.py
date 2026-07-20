@@ -9,6 +9,7 @@ import pytest
 
 from rakaia.registry import (
     HANDLERS_META_STREAM,
+    REDUCERS_META_STREAM,
     HandlerRegistry,
     HandlerVersion,
 )
@@ -90,6 +91,46 @@ class TestPersistence:
         payload = json.loads(messages[0].data)
         assert payload["match_field"] is None
 
+    def test_stage_persisted_and_dedups(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("m", "e", _fn("v1"), 0, None, stage=2)
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert json.loads(messages[0].data)["stage"] == 2
+
+        # A fresh registry over the same store dedups the identical
+        # registration (stage included in the identity) — no re-append.
+        reg2 = HandlerRegistry(store=store)
+        reg2.register("m", "e", _fn("v1"), 0, None, stage=2)
+        messages2, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages2) == 1
+
+    def test_stage_change_appends_new_event(self, store: StreamStore):
+        # Moving a handler to a different stage is a real change -> new event.
+        reg = HandlerRegistry(store=store)
+        fn = _fn("v1")
+        reg.register("m", "e", fn, 0, 10, stage=0)
+        reg.register("m", "e", fn, 10, 20, stage=1)  # different range + stage
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages) == 2
+        assert {json.loads(m.data)["stage"] for m in messages} == {0, 1}
+
+    def test_missing_stage_defaults_to_zero(self, store: StreamStore):
+        # A payload persisted before `stage` existed rehydrates as stage 0.
+        store.create(HANDLERS_META_STREAM)
+        payload = {
+            "name": "ghost",
+            "event_match": "x",
+            "effective_from": 0,
+            "effective_to": 5,
+            "dotted_path": "some.module.ghost",
+            "source_hash": "deadbeef" * 8,
+            # no "stage" key
+        }
+        store.append(HANDLERS_META_STREAM, json.dumps(payload).encode("utf-8"))
+        reg = HandlerRegistry(store=store)
+        ident = next(iter(reg._persisted_ids))  # type: ignore[attr-defined]
+        assert ident[-1] == 0  # stage defaulted to 0
+
 
 class TestIdempotency:
     def test_same_registration_twice_in_one_process_is_noop(self, store: StreamStore):
@@ -140,6 +181,38 @@ class TestIdempotency:
 
         messages, _ = store.read(HANDLERS_META_STREAM)
         assert len(messages) == 2
+
+
+class TestReducerPersistence:
+    def test_reducer_appended_to_reducer_stream(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register_reducer("balance", 1, _fn("b"))
+        messages, _ = store.read(REDUCERS_META_STREAM)
+        assert len(messages) == 1
+        payload = json.loads(messages[0].data)
+        assert payload["name"] == "balance"
+        assert payload["stage"] == 1
+        assert payload["dotted_path"]
+        assert payload["source_hash"]
+
+    def test_reducer_dedups_across_instances(self, store: StreamStore):
+        reg1 = HandlerRegistry(store=store)
+        fn = _fn("b")
+        reg1.register_reducer("balance", 1, fn)
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
+
+        # Simulated restart: same reducer re-registers without a duplicate.
+        reg2 = HandlerRegistry(store=store)
+        reg2.register_reducer("balance", 1, fn)
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
+        assert reg2.all_reducers()[0].name == "balance"
+
+    def test_reducer_and_handler_streams_are_separate(self, store: StreamStore):
+        reg = HandlerRegistry(store=store)
+        reg.register("h", "e", _fn("h"), 0, None)
+        reg.register_reducer("agg", 1, _fn("a"))
+        assert len(store.read(HANDLERS_META_STREAM)[0]) == 1
+        assert len(store.read(REDUCERS_META_STREAM)[0]) == 1
 
 
 class TestRehydrate:
