@@ -52,16 +52,26 @@ already is).
 
 ## Rewind detection
 
-If the stored cursor sorts *after* the current head, the log shrank beneath it —
-a truncation, or a delete-and-recreate — so the consumer must reset and re-read
-from the start. Offsets are compared **numerically** (parsing the `_`-joined
-integer parts), so detection is correct even for the Django store's
-non-zero-padded offsets, where `"10"` is later than `"2"` despite sorting before
-it as a string.
+If the stored cursor sorts *after* the current head, the log shrank beneath it,
+so the consumer resets and re-reads from the start. Offsets are compared
+**numerically** (parsing the `_`-joined integer parts), so detection is correct
+even for the Django store's non-zero-padded offsets, where `"10"` is later than
+`"2"` despite sorting before it as a string.
 
-**One blind spot:** a stream deleted and then re-grown *past* the old cursor
-before the next poll reads as a normal `advanced`. Offsets alone cannot see that;
-a stream-generation token would close it, and is a deliberate future extension.
+This is **exact for an append-only log** — the intended use. An event stream is
+only appended to, so its offsets are monotonic for its whole lifetime and every
+rewind is a genuine shrink.
+
+**Limitation — stream recreation is not detected by offsets alone.** A stream
+deleted and recreated re-issues offsets from the low end. If it re-grows *past*
+the old cursor, the next poll reads as a benign `advanced` (the new events are
+still delivered). But if it lands on the **exact** offset the consumer last
+committed, the poll reads as `caught_up` and the new content is **silently
+skipped** — a real gap, but only across a delete+recreate, never on an
+append-only stream. Closing it needs a **stream-generation token** (a per-stream
+identity that changes on recreate — e.g. the Django `Stream` row's pk) threaded
+through the cursor; that is the tracked follow-up (issue #11 / PR #33) before
+this is relied on across stream recreation.
 
 ## Durable cursors (Django)
 

@@ -8,6 +8,8 @@ it is store-agnostic (works over any `ReadableStore` that also exposes
 
 from __future__ import annotations
 
+import pytest
+
 from rakaia.store import StreamStore
 from rakaia.subscription import poll
 
@@ -89,3 +91,24 @@ class TestPoll:
         assert result.status == "absent"
         assert result.messages == []
         assert result.cursor is None
+
+    @pytest.mark.xfail(
+        reason="offset-only rewind detection can't see a delete+recreate that "
+        "reuses the committed offset; needs a stream-generation token "
+        "(issue #11 / PR #33). Append-only streams are unaffected.",
+        strict=True,
+    )
+    def test_recreate_reusing_offset_should_rewind_not_silently_skip(self):
+        # Adversarial-review finding: a stream deleted and recreated so that its
+        # new head lands on the exact offset the consumer last committed reads as
+        # `caught_up`, silently dropping the new content. This pins the DESIRED
+        # behavior (rewound + redeliver); it flips green when the generation
+        # token lands, and strict xfail then flags the marker for removal.
+        store = _store_with("s", [b"aa"])  # byte offset -> "..._0000000000000002"
+        cursor = poll(store, "s", cursor=None).cursor
+        store.delete("s")
+        store.create("s")
+        store.append("s", b"XX")  # same length -> same offset, different content
+        result = poll(store, "s", cursor=cursor)
+        assert result.status == "rewound"
+        assert [m.data for m in result.messages] == [b"XX"]

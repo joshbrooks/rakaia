@@ -16,11 +16,25 @@ it (`ConsumerCursor`) plus `load_cursor`/`commit_cursor` helpers, so a consumer
 survives restarts and resumes exactly where it left off.
 
 Rewind detection is offset-based: if the stored cursor sorts *after* the current
-head, the log shrank beneath it (a truncation or a delete+recreate), so the
-consumer must reset and re-read from the start. Its one blind spot: a stream
-deleted and then re-grown *past* the old cursor before the next poll reads as a
-normal advance — offsets alone can't see that. A stream-generation token would
-close it; that is a deliberate future extension, not part of this primitive.
+head, the log shrank beneath it, so the consumer resets and re-reads from the
+start. This is exact for an **append-only** log (the intended use — an event
+stream is only ever appended to), where offsets are monotonic for the stream's
+lifetime.
+
+**Limitation — stream recreation (delete + recreate) is not detected by
+offsets alone.** A recreated stream re-issues offsets from the low end, so:
+
+* if it re-grows *past* the old cursor, the next poll reads as a normal
+  ``advanced`` (benign: the new events are still delivered, just not flagged);
+* if it lands on the *exact* offset the consumer last committed, the poll reads
+  as ``caught_up`` and the new content at that offset is **silently skipped** —
+  a real gap in the at-least-once guarantee, but only across a delete+recreate.
+
+Closing this needs a **stream-generation token** (a per-stream identity that
+changes on recreate — e.g. the Django ``Stream`` row's pk) threaded through the
+cursor, so a generation change forces a resync regardless of offset. That is the
+tracked follow-up before this is relied on across stream recreation; it does not
+affect append-only streams, which are correct as-is. See issue #11 / PR #33.
 """
 
 from __future__ import annotations
