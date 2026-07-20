@@ -52,6 +52,23 @@ class TestEffect:
         eff = Effect(op="delete", model_label="myapp.Child", lookup={"parent_id": 7})
         assert eff.exclude is None
 
+    def test_retire_effect_fields(self):
+        eff = Effect(
+            op="retire",
+            model_label="myapp.Alert",
+            lookup={"stream_key": "s", "resolved_at__isnull": True},
+            spare_keys=[{"alert_type": "ff4", "field_key": "a"}],
+            patch={"resolved_at": "t1", "resolved_by": "system"},
+        )
+        assert eff.op == "retire"
+        assert eff.spare_keys == [{"alert_type": "ff4", "field_key": "a"}]
+        assert eff.patch == {"resolved_at": "t1", "resolved_by": "system"}
+
+    def test_patch_and_spare_keys_default_to_none(self):
+        eff = Effect(op="update_or_create", model_label="m.M", lookup={"id": 1})
+        assert eff.patch is None
+        assert eff.spare_keys is None
+
     def test_equality(self):
         a = Effect(
             op="update_or_create",

@@ -196,6 +196,68 @@ class Project(models.Model):
         return self.created_by_id
 
 
+class Alert(models.Model):
+    """Quality-flag / alert projection row — the rakaia analogue of
+    FormKit-Ninja's ``Flag`` on a ``SeparatedSubmission``.
+
+    **Natural key** = ``(stream_key, alert_type, field_key)`` — never an
+    ordinal. ``field_key`` defaults to ``""`` (not null) so the composite key
+    stays a stable unique constraint for whole-entity alerts.
+
+    **Soft-delete**: open ⟺ ``resolved_at IS NULL``. A resolved row is retained,
+    not deleted, so the audit trail survives. ``resolved_at`` holds the
+    *triggering event's* timestamp (an ISO string), never ``timezone.now()`` —
+    that is what keeps replay deterministic.
+
+    One model serves both alert layers:
+
+    * **authored** (``alert_raised`` / ``alert_dismissed`` events) — plain
+      natural-key ``update_or_create`` upserts; never reconciled.
+    * **machine-reconciled** — written by ``reconcile_by_key`` (upsert current
+      violations, ``retire`` the absent ones), scoped to machine ``alert_type``s.
+    """
+
+    stream_key = models.CharField(max_length=64)
+    """The entity the alert is about (e.g. a submission UUID)."""
+
+    alert_type = models.CharField(max_length=64)
+    """Rule / marker id, e.g. ``ff4_operational_exceeds_ksp`` or ``alert``."""
+
+    field_key = models.CharField(max_length=64, default="")
+    """Which field the alert points at; ``""`` = whole-entity."""
+
+    severity = models.CharField(max_length=16, default="info")
+    """``error`` | ``warning`` | ``info``."""
+
+    message = models.TextField(default="")
+
+    resolved_at = models.CharField(max_length=32, null=True, default=None)
+    """Event-timestamp string when retired; ``NULL`` ⟺ open."""
+
+    resolved_by = models.CharField(max_length=64, null=True, default=None)
+
+    dismissed_version = models.IntegerField(null=True, default=None)
+    """Data version an authored dismissal was made against (Phase 3). A standing
+    dismissal suppresses a user-resolvable violation while
+    ``dismissed_version >= the current violation's version``; a newer edit
+    supersedes it. ``NULL`` = no standing dismissal."""
+
+    created_at = models.CharField(max_length=32, default="")
+
+    class Meta:
+        app_label = "test_django_rakaia"
+        ordering = ["stream_key", "alert_type", "field_key"]
+        unique_together = ["stream_key", "alert_type", "field_key"]
+
+    @property
+    def is_open(self) -> bool:
+        return self.resolved_at is None
+
+    def __str__(self) -> str:
+        state = "open" if self.resolved_at is None else "resolved"
+        return f"{self.alert_type}[{self.field_key or '*'}] ({self.severity}, {state})"
+
+
 class FinanceLine(models.Model):
     """Plain contributing-rows model for the reducer/aggregate tests."""
 

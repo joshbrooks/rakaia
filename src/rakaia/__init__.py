@@ -38,6 +38,7 @@ from .history import (
 from .projections import (
     project_latest,
     reconcile_aggregate,
+    reconcile_by_key,
     reconcile_children,
     reconcile_tree,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "check_disjoint_defaults",
     "CollectingExecutor",
     # Versioned handlers — projections
+    "reconcile_by_key",
     "reconcile_children",
     "reconcile_tree",
     "reconcile_aggregate",

@@ -8,21 +8,27 @@ projection with plain `update_or_create` leaks orphans: if a later version of
 the parent has *fewer* children, the dropped child rows survive forever because
 nothing deletes them.
 
-Three helpers close that gap, each emitting idempotent upserts plus a single
-reconcile `delete` scoped to spare exactly the rows still present:
+Several helpers close that gap, each emitting idempotent upserts plus a single
+reconcile pass scoped to spare exactly the rows still present:
 
 * `reconcile_children` — a flat collection keyed by positional index.
+* `reconcile_by_key` — a collection keyed by an arbitrary *composite natural
+  key*, where the reconcile pass can be scoped by a `retire_filter` distinct
+  from the per-child key and stale rows can be *soft-deleted* (an UPDATE
+  stamping e.g. `resolved_at`) instead of hard-deleted — what a quality-flag /
+  alert projection needs so a re-derivation never clobbers authored rows.
 * `reconcile_tree` — an unbounded nested tree keyed by stable node id, with the
   reconcile scoped to the whole subtree so orphans are pruned at any depth.
 * `reconcile_aggregate` — one recomputed aggregate row per group, with the
   reconcile removing groups that no longer have any contributors.
+* `project_latest` — each subject's latest snapshot folded into one row.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from .effects import Effect
 from .types import StreamMessage
@@ -77,6 +83,108 @@ def reconcile_children(
             exclude={f"{child_key}__in": list(range(len(items)))},
         )
     )
+    return effects
+
+
+def reconcile_by_key(
+    model_label: str,
+    scope: dict[str, Any],
+    key_fields: tuple[str, ...],
+    items: Sequence[Any],
+    key_fn: Callable[[Any], dict[str, Any]],
+    defaults_fn: Callable[[Any], dict[str, Any]],
+    *,
+    retire_filter: dict[str, Any] | None = None,
+    retire: Literal["delete"] | dict[str, Any] = "delete",
+) -> list[Effect]:
+    """Reconcile a set of rows keyed by a *composite natural key*.
+
+    The natural-key generalisation of `reconcile_children` (which is the special
+    case `scope=parent, key=(index,), retire="delete"`). Emits one
+    `update_or_create` per current item plus a single reconcile pass that
+    retires every row in `scope` (further narrowed by `retire_filter`) whose
+    composite key is no longer present.
+
+    Args:
+        model_label: 'app_label.ModelName' of the row model.
+        scope: identity shared by every child lookup *and* the base of the
+            retire filter, e.g. ``{"stream_key": sid}``. Not mutated.
+        key_fields: the composite natural key's field names, e.g.
+            ``("alert_type", "field_key")``. `key_fn` must return exactly these.
+        items: the current collection (e.g. the current rule-violations).
+        key_fn: maps one item to its natural key dict ``{kf: value}``.
+        defaults_fn: maps one item to its ``defaults=`` field values.
+        retire_filter: extra filter scoping **only** the retire pass — distinct
+            from the per-child key. This is what keeps a machine reconcile off
+            authored rows, e.g. ``{"alert_type__in": MACHINE_TYPES}``. Without
+            it the reconcile would reap every row under `scope`.
+        retire: ``"delete"`` (hard delete stale rows) or a *patch* dict for a
+            soft-delete, e.g. ``{"resolved_at": event_ts}``. A patch retires via
+            UPDATE and, to stay idempotent and fire one transition per real
+            change, is guarded to rows that are still **live** — those whose
+            *liveness sentinel* (the **first** patch field, e.g. ``resolved_at``)
+            is currently NULL. Only the sentinel is guarded, not every patch
+            field, so "live" is defined by one column (matching the model's own
+            open predicate); a row reopened without resetting a secondary patch
+            field (e.g. a stale ``resolved_by``) is still retired correctly. The
+            patch value must be the triggering event's timestamp, never
+            ``timezone.now()``.
+
+    Returns:
+        One ``update_or_create`` Effect per item, followed by one retire Effect
+        (``op="delete"`` or ``op="retire"``) sparing the present composite keys.
+    """
+    scope = dict(scope)
+    retire_filter = dict(retire_filter or {})
+    keys = [key_fn(item) for item in items]
+
+    for k in keys:
+        if tuple(k.keys()) != key_fields and set(k) != set(key_fields):
+            raise ValueError(
+                f"key_fn returned {sorted(k)} but key_fields is "
+                f"{sorted(key_fields)}; they must match."
+            )
+
+    effects: list[Effect] = [
+        Effect(
+            op="update_or_create",
+            model_label=model_label,
+            lookup={**scope, **key},
+            defaults=defaults_fn(item),
+        )
+        for item, key in zip(items, keys, strict=True)
+    ]
+
+    if retire == "delete":
+        effects.append(
+            Effect(
+                op="delete",
+                model_label=model_label,
+                lookup={**scope, **retire_filter},
+                spare_keys=keys,
+            )
+        )
+    else:
+        if not retire:
+            raise ValueError("retire patch must be a non-empty dict or 'delete'")
+        # Soft-delete: retire only rows still live — those whose liveness
+        # sentinel (the first patch field, e.g. resolved_at) is NULL — so a
+        # re-run neither re-stamps a resolution nor re-fires a transition.
+        # Guarding on the sentinel alone (not every patch field) keeps "live"
+        # a one-column predicate, matching the model's own open check, so a
+        # reopen that leaves a stale secondary field (e.g. resolved_by) set is
+        # still retired correctly.
+        sentinel = next(iter(retire))
+        open_guard = {f"{sentinel}__isnull": True}
+        effects.append(
+            Effect(
+                op="retire",
+                model_label=model_label,
+                lookup={**scope, **retire_filter, **open_guard},
+                spare_keys=keys,
+                patch=dict(retire),
+            )
+        )
     return effects
 
 
