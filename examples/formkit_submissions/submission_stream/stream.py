@@ -71,12 +71,14 @@ def record_submission(
 
 def _latest_by_key(store: DjangoStreamStore) -> dict[str, tuple[int, dict, Any]]:
     """Fold the log to the newest event per key. Oldest-first read + last-wins =
-    latest snapshot; the index is the (never-renumbered) stream version."""
+    latest snapshot; ``version`` is the durable stream offset (monotonic,
+    never renumbered — Decision #7), so it agrees with a history keyed by
+    ``version_of=lambda m: int(m.offset)`` and survives incremental reads."""
     messages, _ = store.read(STREAM)
     latest: dict[str, tuple[int, dict, Any]] = {}
-    for version, msg in enumerate(messages):
+    for msg in messages:
         event = json.loads(msg.data)
-        latest[event["key"]] = (version, event, msg)
+        latest[event["key"]] = (int(msg.offset), event, msg)
     return latest
 
 
@@ -111,6 +113,7 @@ def materialize_history(store: DjangoStreamStore) -> None:
         HISTORY_MODEL,
         subject_field="key",
         subject_of=lambda e: e["key"],
+        version_of=lambda m: int(m.offset),
         defaults_of=lambda msg, event: {
             "marker": label_marker(msg.label),
             "actor": envelope_actor(msg, event),

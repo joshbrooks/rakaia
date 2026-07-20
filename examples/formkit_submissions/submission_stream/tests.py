@@ -16,6 +16,7 @@ bypass) need a Postgres backend and belong with the guard itself.
 from __future__ import annotations
 
 import contextlib
+import json
 from unittest import mock
 
 from django.test import TransactionTestCase
@@ -36,6 +37,12 @@ class SubmissionStreamTests(TransactionTestCase):
 
     def _record(self, key: str, **kw: object) -> None:
         stream.record_submission(self.store, key, **kw)  # type: ignore[arg-type]
+
+    def _projection(self) -> dict[str, tuple]:
+        return {
+            s.key: (json.dumps(s.fields, sort_keys=True), s.status, s.user, s.version)
+            for s in Submission.objects.all()
+        }
 
     def test_latest_event_wins_across_interleaving(self) -> None:
         self._record(A, fields={"v": 1}, status=0, actor="x")
@@ -75,11 +82,21 @@ class SubmissionStreamTests(TransactionTestCase):
         )
         self.assertEqual(markers, ["+", "-"])
 
-    def test_reproject_is_idempotent(self) -> None:
+    def test_reproject_is_idempotent_and_content_correct(self) -> None:
+        # Multiple keys + a tombstone, then compare the FULL projection (fields,
+        # status, user, version) across a second reproject — not just a row
+        # count, which the unique key makes 0/1 by construction. This catches a
+        # reproject that yields a *wrong* row or forgets the tombstone.
         self._record(A, fields={"v": 1}, status=0, actor="x")
+        self._record(B, fields={"v": 1}, status=0, actor="y")
+        self._record(A, fields={"v": 2}, status=1, actor="z")
+        self._record(B, fields={"v": 1}, status=0, actor="y", label="delete")
+        first = self._projection()
         stream.reproject_all(self.store)
-        stream.reproject_all(self.store)
-        self.assertEqual(Submission.objects.filter(key=A).count(), 1)
+        self.assertEqual(self._projection(), first)  # content stable, not just count
+        # ...and correct: A at its latest event, B tombstoned away.
+        self.assertEqual(first[A][:3], ('{"v": 2}', 1, "z"))
+        self.assertNotIn(B, first)
 
     def test_history_materialize_is_idempotent(self) -> None:
         self._record(A, fields={"v": 1}, status=0, actor="x")
