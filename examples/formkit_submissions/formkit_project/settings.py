@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django_rakaia",
     "submissions",
+    "submission_stream",
 ]
 
 MIDDLEWARE = [
