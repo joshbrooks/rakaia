@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-EffectOp = Literal["update_or_create", "delete", "external"]
+EffectOp = Literal["update_or_create", "delete", "external", "retire"]
 
 
 # =============================================================================
@@ -27,25 +27,43 @@ class Effect:
     """A pure data description of one side-effect."""
 
     op: EffectOp
-    """The kind of effect. 'update_or_create' and 'delete' are replay-safe;
-    'external' (email, third-party call) is skipped by default on replay."""
+    """The kind of effect. 'update_or_create', 'delete' and 'retire' are
+    replay-safe; 'external' (email, third-party call) is skipped by default on
+    replay."""
 
-    # Fields for op="update_or_create" and op="delete"
+    # Fields for op="update_or_create", op="delete" and op="retire"
     model_label: str | None = None
     """'app_label.ModelName', e.g. 'myapp.Room'."""
 
     lookup: dict[str, Any] | None = None
-    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'delete',
-    the `filter()` scope. An empty dict on a delete scopes the whole model."""
+    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'delete'
+    and 'retire', the `filter()` scope. An empty dict on a delete scopes the
+    whole model."""
 
     defaults: dict[str, Any] | None = None
     """Default field values passed as `defaults=` to update_or_create."""
 
     # Field for op="delete"
     exclude: dict[str, Any] | None = None
-    """Rows to spare from a delete: `filter(**lookup).exclude(**exclude)`. This
-    is the reconcile-children primitive — delete a child scope except the keys
-    still present (e.g. `{"idx__in": [0, 1]}`). Ignored for other ops."""
+    """Rows to spare from a delete via a single flat lookup:
+    `filter(**lookup).exclude(**exclude)` — e.g. `{"idx__in": [0, 1]}` (the
+    positional reconcile_children case). For composite natural keys use
+    `spare_keys` instead. Ignored for other ops."""
+
+    # Fields for op="delete" and op="retire"
+    spare_keys: list[dict[str, Any]] | None = None
+    """Composite keys to spare from a delete/retire:
+    `filter(**lookup).exclude(Q(**k0) | Q(**k1) | ...)`. This is the
+    natural-key reconcile primitive — retire every row in scope *except* the
+    composite keys still present (e.g. `[{"alert_type": "ff4", "field_key":
+    "a"}]`). An empty list spares nothing (retires/deletes the whole scope)."""
+
+    # Field for op="retire"
+    patch: dict[str, Any] | None = None
+    """Soft-delete SET values for op="retire": rows in scope (minus
+    `spare_keys`) are UPDATEd with these instead of DELETEd, e.g.
+    `{"resolved_at": <event ts>}`. The value must be the *triggering event's*
+    timestamp, never `timezone.now()`, or replay is not deterministic."""
 
     # Fields for op="external"
     kind: str | None = None

@@ -27,7 +27,7 @@ from .effects import (
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
-from .projections import reconcile_children
+from .projections import reconcile_by_key, reconcile_children
 from .registry import (
     HANDLERS_META_STREAM,
     UPCASTERS_META_STREAM,
@@ -106,6 +106,7 @@ __all__ = [
     "check_disjoint_defaults",
     "CollectingExecutor",
     # Versioned handlers — projections
+    "reconcile_by_key",
     "reconcile_children",
     # Versioned handlers — registry
     "register_handler",
