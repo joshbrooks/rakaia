@@ -41,6 +41,27 @@ process-local — the log is lost on restart. The durable `DjangoStreamStore`
 persists events in your database, so you can emit an event from a web request and
 replay that stream later, in a different process. → *[adopting the durable store](django-integration.md#adopting-the-durable-store)*
 
+### Envelope
+
+The audit metadata a stream message carries *alongside* its payload: a **label**
+(the change type — create/update/delete) and an open **metadata** dict (actor,
+url, causation, …). The payload says *what the thing became*; the envelope says
+*who/when/how*. The transport ignores it; the event-sourcing layer reads it. → *[event envelope](event-envelope.md)*
+
+### Provenance
+
+The "who and from where" of an append — typically the acting user and request
+URL. `provenance()` sets it *ambiently* for a block of code, so every append
+inside (e.g. a whole web request) is attributed without threading the actor
+through every call. → *[event envelope](event-envelope.md#provenance-attaching-the-actor-ambiently)*
+
+### No-op suppression
+
+Recording an event only when something actually changed. `append_if_changed`
+compares a new payload to the subject's *current* snapshot and appends only on a
+difference — the write-side analogue of pghistory's "record on change" and of the
+`skip_unchanged` executor. → *[event envelope](event-envelope.md#append_if_changed-suppress-no-op-appends)*
+
 ## Deriving state
 
 ### Projection
@@ -48,6 +69,21 @@ replay that stream later, in a different process. → *[adopting the durable sto
 A database table *derived* from the log rather than written to directly. You
 don't `UPDATE` it by hand — you replay events and let handlers rebuild it.
 Because it's derived, you can drop it and regenerate it at will. → *[versioned handlers](versioned-handlers.md), [projections & fan-out](projections-and-fan-out.md)*
+
+### Latest-state vs history read-model
+
+Two projections you can derive from one log. A **latest-state** projection
+*folds* the stream — one row per subject, overwritten by each event
+(`project_latest`). A **history read-model** *multiplies* it — one immutable row
+per event, keyed by `(subject, version)` (`materialize_history`) — the queryable
+audit trail that replaces `pgh_event`. → *[history read-model](history-read-model.md)*
+
+### Peak snapshot
+
+The most complete snapshot in a subject's history — the one with the most fields.
+`recover_peak_snapshot` returns it to restore a subject that a legacy
+blank/truncating save corrupted (newest wins on a tie). A legacy-recovery tool,
+not an everyday one. → *[history read-model](history-read-model.md#recovering-the-peak-snapshot)*
 
 ### Handler
 
@@ -109,9 +145,10 @@ order's line items, a submission's activities. → *[projections & fan-out](proj
 
 Materialising a collection so it exactly matches the event — upsert the current
 children **and** delete any that are no longer present, so a shrinking collection
-never leaves orphaned rows behind. Comes in three shapes: `reconcile_children`
-(a flat list), `reconcile_tree` (unbounded nesting), and `reconcile_aggregate`
-(grouped rollups). → *[projections & fan-out](projections-and-fan-out.md), [tree-reconcile](tree-reconcile.md)*
+never leaves orphaned rows behind. Comes in several shapes: `reconcile_children`
+(a flat list keyed by index), `reconcile_tree` (unbounded nesting),
+`reconcile_aggregate` (grouped rollups), and `reconcile_by_key` (a composite
+natural key, with `retire=` for soft-delete instead of hard delete). → *[projections & fan-out](projections-and-fan-out.md), [tree-reconcile](tree-reconcile.md), [alerts projection](alerts-projection.md)*
 
 ## Advanced replay
 
@@ -127,6 +164,14 @@ even out of order. → *[staged replay](staged-replay.md)*
 A read-only view (`get` / `filter` / `query`) of the projections built by earlier
 stages, handed to any stage > 0 handler so it can look up references without
 writing. → *[staged replay](staged-replay.md)*
+
+### Reducer
+
+A per-stage **aggregate** step. Unlike a handler (called once per event), a
+reducer runs *once* per its stage — after that stage's handlers commit — reading
+the accumulated projections via the reader and returning idempotent Effects
+(typically via `reconcile_aggregate`). Because it **recomputes** the rollup from
+current rows every replay, re-running never double-counts. → *[staged replay](staged-replay.md#per-stage-aggregates-reducers)*
 
 ### event_match / match_field
 

@@ -120,6 +120,12 @@ the channel layer.
   versions, upcasters, drift detection.
 - [Projections & fan-out](projections-and-fan-out.md) — One event into many
   rows, orphan-free with `reconcile_children`.
+- [The event envelope & provenance](event-envelope.md) — Attach the actor,
+  label, and no-op suppression on append.
+- [History read-model](history-read-model.md) — Latest-state vs a queryable
+  audit trail, both derived from one log.
+- [Alerts projection](alerts-projection.md) — Human judgment and machine rules
+  in one projection, without clobber.
 - [Dry-run & executors](dry-run-and-executors.md) — Preview a replay's writes
   with zero side effects.
 - [Translations](translations.md) — Optional `Translatable` model and UI.

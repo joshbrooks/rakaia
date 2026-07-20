@@ -237,7 +237,87 @@ database via the normalized `Stream` / `StreamEvent` / `StreamEntry` models. Now
 
 → Deep dive: [Adopting the durable store](django-integration.md#adopting-the-durable-store) · Used by `just formkit-demo`
 
-## 7. Live SSE with `@stream_model`
+## 7. Event envelope — who/when/how, not just what
+
+**The problem.** A plain `append(new_state)` records *what* a row became but
+throws away the three things an audit log needs: **who** changed it, **when**,
+and **what kind** of change it was. A stream can't replace `django-pghistory`
+until it carries that.
+
+**What rakaia does.** Every event can carry an **envelope** alongside its
+payload — a change **label** (create/update/delete → `+`/`~`/`-`) and an open
+**metadata** dict (actor, url, causation). `provenance()` attaches the actor
+*ambiently* for a whole request, so you don't thread it through every call; the
+shipped middleware opens the block for you.
+
+```python
+from rakaia.context import provenance
+
+with provenance(user=request.user.pk, url=request.path):
+    obj.save()          # every append inside is attributed to this user
+```
+
+```mermaid
+flowchart LR
+  P["payload<br/>{fields}"] --> MSG["stream message"]
+  L["label<br/>create/update/delete"] --> MSG
+  M["metadata<br/>{user, url, …}"] --> MSG
+  MSG --> ES["event-sourcing layer<br/>/history, audit"]
+```
+
+Related: `append_if_changed` records an event **only when something changed**
+(comparing to the subject's current snapshot) — the write-side match for
+pghistory's "record on change".
+
+→ Deep dive: [The event envelope & provenance](event-envelope.md)
+
+## 8. History read-model — two tables from one log
+
+**The problem.** You want both "what is this row *now*" *and* "what *changed*,
+when, and by whom" — a queryable audit trail — without a second write path.
+
+**What rakaia does.** From one enveloped stream, derive two projections. A
+**latest-state** projection *folds* the log (one row per subject); a **history**
+read-model *multiplies* it (one immutable row per event, keyed by
+`(subject, version)`) — the streams-native `/history` and the replacement for
+`pgh_event`.
+
+```mermaid
+flowchart LR
+  S[("enveloped stream")] --> F["project_latest<br/>fold → 1 row/subject"]
+  S --> H["materialize_history<br/>multiply → 1 row/event"]
+  F --> FR[("Submission — now")]
+  H --> HR[("SubmissionHistory — audit")]
+```
+
+`recover_peak_snapshot` recovers a subject's most-complete historical snapshot —
+the streams edition of `repair_blank_save_dataloss`.
+
+→ Deep dive: [History read-model](history-read-model.md) · Demo: `just formkit-demo`
+
+## 9. Alerts — human judgment and machine rules, without clobber
+
+**The problem.** An alert can be raised by a *person* or by a failing *rule*, and
+each is resolved differently. Re-running the rules (a replay) must never wipe out
+a human's decision, and a human's dismissal must not be silently re-raised while
+the rule still fails.
+
+**What rakaia does.** Each layer gets a different owner and a scope that keeps
+them disjoint: authored alerts are plain `update_or_create`; machine alerts use
+`reconcile_by_key(..., retire=…)` scoped by a `retire_filter` so a re-derivation
+**cannot** touch authored rows; dismissable warnings compose the two via
+[staged replay](staged-replay.md) (stage 1 reads stage 0's dismissals).
+
+```mermaid
+flowchart LR
+  A["actor<br/>raises / dismisses"] --> AR[("authored alerts")]
+  R["rule<br/>violations"] -->|reconcile_by_key + retire| MR[("machine alerts")]
+  AR -. "disjoint scope → zero clobber" .- MR
+```
+
+→ Deep dive: [Alerts as a rakaia projection](alerts-projection.md)
+
+## 10. Live SSE with `@stream_model`
 
 **The problem.** You want real-time fan-out to browsers without hand-rolling a
 pub/sub layer.
@@ -256,7 +336,7 @@ class ChatRoom(models.Model):
 
 → Deep dive: [Django integration](django-integration.md) · Demos: `just dev`, `just polyglot-dev`
 
-## 8. Protocol conformance
+## 11. Protocol conformance
 
 Rakaia is checked against the upstream, language-agnostic
 [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams)
