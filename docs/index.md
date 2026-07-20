@@ -124,6 +124,8 @@ the channel layer.
   label, and no-op suppression on append.
 - [History read-model](history-read-model.md) — Latest-state vs a queryable
   audit trail, both derived from one log.
+- [Subscriber cursors](subscriber-cursors.md) — Incremental per-consumer reads
+  over a stream's offsets, with rewind detection and durable watermarks.
 - [Alerts projection](alerts-projection.md) — Human judgment and machine rules
   in one projection, without clobber.
 - [Dry-run & executors](dry-run-and-executors.md) — Preview a replay's writes

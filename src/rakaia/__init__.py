@@ -65,6 +65,7 @@ from .registry import (
 )
 from .replay import ReplayResult, merge_replay, replay
 from .store import StreamStore
+from .subscription import Poll, PollStatus, poll
 from .types import (
     AppendOptions,
     AppendResult,
@@ -160,6 +161,10 @@ __all__ = [
     "replay",
     "merge_replay",
     "ReplayResult",
+    # Subscriber cursors
+    "poll",
+    "Poll",
+    "PollStatus",
     # Version
     "__version__",
 ]
