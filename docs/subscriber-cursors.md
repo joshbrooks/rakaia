@@ -58,23 +58,15 @@ so the consumer resets and re-reads from the start. Offsets are compared
 even for the Django store's non-zero-padded offsets, where `"10"` is later than
 `"2"` despite sorting before it as a string.
 
-This is **exact for an append-only log** — the intended use. An event stream is
-only appended to, so its offsets are monotonic for its whole lifetime and every
-rewind is a genuine shrink.
-
-**Limitation — stream recreation is not detected by offsets alone.** A stream
-deleted and recreated re-issues offsets from the low end. If it re-grows *past*
-the old cursor, the next poll reads as a benign `advanced` (the new events are
-still delivered). But if it lands on the **exact** offset the consumer last
-committed, the poll reads as `caught_up` and the new content is **silently
-skipped** — a real gap, but only across a delete+recreate, never on an
-append-only stream. The protocol already discourages the trigger ("if a stream
-is deleted a new stream SHOULD NOT be created at the same URL", §3). The
-root-cause fix lives in the **store**: make offsets globally monotonic (a
-recreated stream issues offsets strictly greater than any prior one — the
-EventStoreDB `$all` / Kinesis model), after which recreated content sorts past
-the cursor and is delivered as a normal `advanced`, with no consumer-side
-change. Tracked in [issue #34](https://github.com/joshbrooks/rakaia/issues/34).
+Store offsets are **globally monotonic** ([#34](https://github.com/joshbrooks/rakaia/issues/34)):
+a stream recreated at a path issues offsets strictly greater than any it issued
+before (the in-memory store bumps the offset's `read_seq` generation; the
+EventStoreDB `$all` / Kinesis model). So a normal delete+recreate can never
+collide with a stale cursor — the recreated content sorts *past* it and is
+delivered as an ordinary `advanced`, with no silent skip. `rewound` is therefore
+a **defensive** status: it fires only for a genuinely truncated log, or a cursor
+carried over from a different stream, where the head really does sort before the
+cursor.
 
 ## Durable cursors (Django)
 

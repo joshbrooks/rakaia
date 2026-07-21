@@ -17,26 +17,13 @@ survives restarts and resumes exactly where it left off.
 
 Rewind detection is offset-based: if the stored cursor sorts *after* the current
 head, the log shrank beneath it, so the consumer resets and re-reads from the
-start. This is exact for an **append-only** log (the intended use — an event
-stream is only ever appended to), where offsets are monotonic for the stream's
-lifetime.
-
-**Limitation — stream recreation (delete + recreate) is not detected by
-offsets alone.** A recreated stream re-issues offsets from the low end, so:
-
-* if it re-grows *past* the old cursor, the next poll reads as a normal
-  ``advanced`` (benign: the new events are still delivered, just not flagged);
-* if it lands on the *exact* offset the consumer last committed, the poll reads
-  as ``caught_up`` and the new content at that offset is **silently skipped** —
-  a real gap in the at-least-once guarantee, but only across a delete+recreate.
-
-The root-cause fix lives in the **store**, not here: make offsets globally
-monotonic so a recreated stream issues offsets strictly greater than any prior
-one (the EventStoreDB ``$all`` / Kinesis model). Then recreated content sorts
-past the cursor and is delivered as a normal ``advanced`` — no consumer-side
-change needed. The protocol already discourages the trigger ("if a stream is
-deleted a new stream SHOULD NOT be created at the same URL"), and append-only
-streams — the intended use — are unaffected. Tracked in issue #34.
+start. Store offsets are **globally monotonic** — a stream recreated at a path
+issues offsets strictly greater than any it issued before (#34, the EventStoreDB
+``$all`` / Kinesis model) — so a normal delete+recreate can never collide with a
+stale cursor: the recreated content sorts *past* it and is delivered as an
+ordinary ``advanced``. ``rewound`` is therefore a **defensive** status: it fires
+only for a genuinely truncated log or a cursor carried over from a different
+stream, where the head really does sort before the cursor.
 """
 
 from __future__ import annotations

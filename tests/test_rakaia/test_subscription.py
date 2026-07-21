@@ -8,8 +8,6 @@ it is store-agnostic (works over any `ReadableStore` that also exposes
 
 from __future__ import annotations
 
-import pytest
-
 from rakaia.store import StreamStore
 from rakaia.subscription import poll
 
@@ -71,18 +69,17 @@ class TestPoll:
         assert poll(store, "s", cursor=first.cursor).status == "caught_up"
 
     def test_rewound_when_cursor_is_beyond_head(self):
-        # Consume a longer stream, then truncate/rebuild it shorter (delete +
-        # recreate). The stored cursor now points past the new head, so the poll
-        # must report a rewind and re-read from the start.
-        store = _store_with("s", [b"a", b"b", b"c"])
-        stale = poll(store, "s", cursor=None).cursor
-        store.delete("s")
-        store.create("s")
-        store.append("s", b"a2")
-        result = poll(store, "s", cursor=stale)
+        # `rewound` is the defensive path: a cursor that sorts past the current
+        # head — a genuinely truncated log, or a cursor carried over from a
+        # different/longer stream. (Globally-monotonic offsets, #34, mean a
+        # normal delete+recreate no longer triggers this — the recreated head
+        # sorts *after* the old cursor and reads as `advanced` instead.)
+        store = _store_with("s", [b"a", b"b"])
+        beyond = "9999999999999999_9999999999999999"  # past any real offset
+        result = poll(store, "s", cursor=beyond)
         assert result.status == "rewound"
         assert result.rewound
-        assert [m.data for m in result.messages] == [b"a2"]  # re-read from start
+        assert [m.data for m in result.messages] == [b"a", b"b"]  # re-read from start
         assert result.cursor == store.get_current_offset("s")
 
     def test_absent_stream_reports_absent(self):
@@ -92,26 +89,18 @@ class TestPoll:
         assert result.messages == []
         assert result.cursor is None
 
-    @pytest.mark.xfail(
-        reason="a delete+recreate that reuses the committed offset reads as "
-        "caught_up and silently skips the new content. The root-cause fix is "
-        "globally-monotonic store offsets (#34), after which recreated content "
-        "sorts past the cursor and is delivered as `advanced`. Append-only "
-        "streams — the intended use — are unaffected.",
-        strict=True,
-    )
     def test_recreate_reusing_offset_is_not_silently_skipped(self):
-        # Adversarial-review finding: a stream deleted and recreated so its new
-        # head lands on the exact offset the consumer last committed reads as
-        # `caught_up`, dropping the new content. This pins "no silent skip"
-        # independent of the fix mechanism (globally-monotonic offsets -> the
-        # content is delivered as `advanced`; a generation token -> `rewound`).
-        # It flips to xpass once #34 lands; strict xfail then flags removal.
-        store = _store_with("s", [b"aa"])  # byte offset -> "..._0000000000000002"
+        # Adversarial-review finding (was a strict-xfail): a stream deleted and
+        # recreated so its byte offset lands on the exact position the consumer
+        # last committed used to read as `caught_up`, silently dropping the new
+        # content. Globally-monotonic store offsets (#34) bump the read_seq
+        # generation on recreate, so the recreated head sorts past the stale
+        # cursor and the content is delivered as a normal `advanced`.
+        store = _store_with("s", [b"aa"])  # gen 0, byte offset "..._...2"
         cursor = poll(store, "s", cursor=None).cursor
         store.delete("s")
-        store.create("s")
-        store.append("s", b"XX")  # same length -> same offset, different content
+        store.create("s")  # gen 1: head "..._1_..._0" > any gen-0 offset
+        store.append("s", b"XX")  # same byte length, but a strictly greater offset
         result = poll(store, "s", cursor=cursor)
-        assert result.messages, "recreated content silently skipped (data loss)"
-        assert result.status != "caught_up"
+        assert result.status == "advanced"
+        assert [m.data for m in result.messages] == [b"XX"]  # delivered, not skipped
