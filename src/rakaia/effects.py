@@ -10,7 +10,7 @@ state) and keeps handlers trivially testable without a database.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -71,6 +71,26 @@ class Effect:
 
     payload: dict[str, Any] | None = None
     """Opaque payload for external effects."""
+
+    def __post_init__(self) -> None:
+        # `exclude` and `spare_keys` are ALTERNATIVE row-sparing mechanisms.
+        # Setting both silently ANDs them in the executor
+        # (`.exclude(**exclude).exclude(Q(...))`), which is never intended —
+        # reject it at construction so the mistake surfaces in the handler.
+        if self.exclude is not None and self.spare_keys is not None:
+            raise ValueError(
+                "Effect sets both `exclude` and `spare_keys`; they are alternative "
+                "row-sparing mechanisms — use one. `exclude` is the flat "
+                "reconcile_children (positional) case; `spare_keys` is the composite "
+                "natural-key case."
+            )
+        # `exclude` only applies to op="delete"; the retire path ignores it, so an
+        # `exclude` on a retire would be silently dropped. Fail loudly instead.
+        if self.exclude is not None and self.op != "delete":
+            raise ValueError(
+                f"Effect sets `exclude` with op={self.op!r}; `exclude` only applies "
+                "to op='delete'. Use `spare_keys` to spare rows from a retire."
+            )
 
 
 # =============================================================================
@@ -137,3 +157,41 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
                     f"{field!r} on {eff.model_label} {eff.lookup!r}"
                 )
             existing[field] = idx
+
+
+# =============================================================================
+# External effect dispatch
+# =============================================================================
+
+
+def dispatch_external(
+    effects: Iterable[Effect],
+    handlers: Mapping[str, Callable[[Effect], Any]],
+    *,
+    on_unknown: Literal["raise", "ignore"] = "raise",
+) -> int:
+    """Route ``op="external"`` effects to per-``kind`` handlers.
+
+    rakaia never applies external effects itself: `replay()` filters them out
+    (unless ``include_external=True``) and executors drop them. This is the seam
+    for the *application* to act on them — email, webhooks, an alert transition —
+    without every consumer re-implementing ``for e in effects: if e.op ==
+    "external" and e.kind == ...``.
+
+    Pass a ``{kind: fn}`` map; each external effect is routed to
+    ``handlers[effect.kind]`` (non-external effects are skipped). Returns the
+    number dispatched. An effect whose ``kind`` has no handler raises ``KeyError``
+    by default, or is skipped with ``on_unknown="ignore"``.
+    """
+    dispatched = 0
+    for eff in effects:
+        if eff.op != "external":
+            continue
+        handler = handlers.get(eff.kind) if eff.kind is not None else None
+        if handler is None:
+            if on_unknown == "ignore":
+                continue
+            raise KeyError(f"No handler for external effect kind={eff.kind!r}")
+        handler(eff)
+        dispatched += 1
+    return dispatched

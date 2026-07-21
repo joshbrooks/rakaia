@@ -10,6 +10,7 @@ from rakaia.effects import (
     Effect,
     EffectCollisionError,
     check_disjoint_defaults,
+    dispatch_external,
 )
 
 
@@ -88,6 +89,85 @@ class TestEffect:
         eff = Effect(op="external", kind="email")
         with pytest.raises(FrozenInstanceError):
             eff.kind = "stripe"  # type: ignore[misc]
+
+
+class TestEffectValidation:
+    def test_exclude_and_spare_keys_together_rejected(self):
+        # they are alternative row-sparing mechanisms; both would silently AND.
+        with pytest.raises(ValueError, match="both `exclude` and `spare_keys`"):
+            Effect(
+                op="delete",
+                model_label="m.M",
+                lookup={"parent": 1},
+                exclude={"idx__in": [0]},
+                spare_keys=[{"k": "v"}],
+            )
+
+    def test_exclude_on_retire_rejected(self):
+        # retire ignores exclude in the executor — fail loudly instead.
+        with pytest.raises(ValueError, match="only applies to op='delete'"):
+            Effect(
+                op="retire",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                exclude={"idx__in": [0]},
+                patch={"resolved_at": "t"},
+            )
+
+    def test_exclude_on_delete_ok(self):
+        Effect(
+            op="delete", model_label="m.M", lookup={"p": 1}, exclude={"idx__in": [0]}
+        )
+
+    def test_spare_keys_on_retire_ok(self):
+        Effect(
+            op="retire",
+            model_label="m.Alert",
+            lookup={"s": 1},
+            spare_keys=[{"k": "v"}],
+            patch={"resolved_at": "t"},
+        )
+
+
+class TestDispatchExternal:
+    def test_routes_by_kind(self):
+        seen = []
+        effects = [
+            Effect(op="update_or_create", model_label="m.M", lookup={"id": 1}),
+            Effect(op="external", kind="email", payload={"to": "a"}),
+            Effect(op="external", kind="webhook", payload={"url": "u"}),
+        ]
+        n = dispatch_external(
+            effects,
+            {
+                "email": lambda e: seen.append(("email", e.payload)),
+                "webhook": lambda e: seen.append(("webhook", e.payload)),
+            },
+        )
+        assert n == 2
+        assert seen == [("email", {"to": "a"}), ("webhook", {"url": "u"})]
+
+    def test_non_external_effects_skipped(self):
+        n = dispatch_external(
+            [Effect(op="delete", model_label="m.M", lookup={"p": 1})],
+            {"email": lambda _e: None},
+        )
+        assert n == 0
+
+    def test_unknown_kind_raises_by_default(self):
+        with pytest.raises(KeyError, match="stripe"):
+            dispatch_external(
+                [Effect(op="external", kind="stripe", payload={})],
+                {"email": lambda _e: None},
+            )
+
+    def test_unknown_kind_ignored_when_configured(self):
+        n = dispatch_external(
+            [Effect(op="external", kind="stripe", payload={})],
+            {"email": lambda _e: None},
+            on_unknown="ignore",
+        )
+        assert n == 0
 
 
 class TestCheckDisjointDefaults:
