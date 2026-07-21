@@ -146,7 +146,8 @@ class TestDjangoStreamStore:
         store.create("s")
         store.append("s", b'{"id": 1}')
         store.append("s", b'{"id": 2}')
-        assert store.get_current_offset("s") == "2"
+        # Offsets are zero-padded for lexicographic sortability (#34).
+        assert store.get_current_offset("s") == "00000000000000000002"
 
     def test_durability_across_instances(self):
         # The property the in-memory store lacks: a fresh instance sees data

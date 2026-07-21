@@ -576,3 +576,44 @@ class TestConcurrentProducer:
         store.create("foo", content_type="application/octet-stream")
         result = await store.append_with_producer("foo", b"data", AppendOptions())
         assert result.message is not None
+
+
+class TestGloballyMonotonicOffsets:
+    """Recreating a stream at the same path must issue offsets strictly greater
+    than any it issued before (#34), so a subscriber's stale cursor can never
+    collide with a recreated stream's head. The offset's leading `read_seq`
+    component carries the per-path generation; appends keep the byte component
+    zero-padded, so offsets stay lexicographically sortable per the protocol."""
+
+    def test_fresh_path_keeps_canonical_initial_offset(self):
+        store = StreamStore()
+        store.create("s")
+        assert store.get_current_offset("s") == INITIAL_OFFSET
+
+    def test_recreate_bumps_generation_above_prior_tail(self):
+        store = StreamStore()
+        store.create("s")
+        store.append("s", b"a")
+        old_tail = store.get_current_offset("s")
+
+        store.delete("s")
+        store.create("s")
+        new_head = store.get_current_offset("s")
+
+        # The recreated stream's head sorts strictly after the deleted stream's
+        # tail — lexicographically, as the protocol requires.
+        assert new_head > old_tail
+        store.append("s", b"b")
+        assert store.get_current_offset("s") > old_tail
+
+    def test_generation_climbs_across_repeated_recreates(self):
+        store = StreamStore()
+        tails = []
+        for _ in range(4):
+            store.create("s")
+            store.append("s", b"x")
+            tails.append(store.get_current_offset("s"))
+            store.delete("s")
+        # Every recreation's tail is strictly greater than the last.
+        assert tails == sorted(tails)
+        assert len(set(tails)) == 4

@@ -51,6 +51,9 @@ class StreamStore:
         self._streams: dict[str, Stream] = {}
         self._notify_events: dict[str, asyncio.Event] = {}
         self._producer_locks: dict[str, asyncio.Lock] = {}
+        # Highest read_seq (offset generation) ever retired at a path, so a
+        # recreate issues offsets strictly greater than any prior one (#34).
+        self._retired_seq: dict[str, int] = {}
 
     # =========================================================================
     # Stream lifecycle
@@ -143,10 +146,18 @@ class StreamStore:
             )
 
         now = time.time()
+        # Recreating a path resumes the read_seq (offset generation) above the
+        # one it last retired, so offsets stay globally monotonic across
+        # delete+recreate (#34). A never-seen path starts at the canonical
+        # INITIAL_OFFSET (generation 0).
+        prior = self._retired_seq.get(path)
+        initial_offset = (
+            INITIAL_OFFSET if prior is None else f"{prior + 1:016d}_{0:016d}"
+        )
         stream = Stream(
             path=path,
             content_type=content_type,
-            current_offset=INITIAL_OFFSET,
+            current_offset=initial_offset,
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             created_at=now,
@@ -173,6 +184,10 @@ class StreamStore:
         """Delete a stream and cancel any pending long-polls."""
         self._cancel_notify(path)
         if path in self._streams:
+            # Remember the retired generation so a recreate at this path
+            # resumes above it (globally monotonic offsets, #34).
+            read_seq = int(self._streams[path].current_offset.split("_")[0])
+            self._retired_seq[path] = max(self._retired_seq.get(path, -1), read_seq)
             del self._streams[path]
             return True
         return False
@@ -623,6 +638,15 @@ class StreamStore:
         byte_offset = int(parts[1])
 
         new_byte_offset = byte_offset + len(processed_data)
+        # Offsets are `{read_seq}_{byte_offset}`, each zero-padded to 16 digits
+        # so they sort byte-wise lexicographically (the protocol's requirement,
+        # and what keeps offsets monotonic across recreate). `:016d` is a minimum
+        # width, not a cap: the ordering guarantee holds only while both fields
+        # stay < 10**16. That bound is unreachable here — the byte offset is
+        # capped by the process's memory (this store holds every message in RAM,
+        # so 10**16 bytes = ~10 PB is impossible) and 10**16 recreations of one
+        # path equally so. A durable backend that could exceed it must widen the
+        # fields (and INITIAL_OFFSET) in lockstep.
         new_offset = f"{read_seq:016d}_{new_byte_offset:016d}"
 
         message = StreamMessage(
