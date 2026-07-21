@@ -13,8 +13,9 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import merge_replay, replay
+from rakaia.replay import ENVELOPE_TS, merge_replay, replay
 from rakaia.store import StreamStore
+from rakaia.types import AppendOptions
 
 
 class CaptureExecutor:
@@ -1120,3 +1121,63 @@ class TestMergeReplay:
         )
         assert proj.get("app.Balance", suku="A").total == 70
         assert proj.get("app.Balance", suku="B").total == 50
+
+    def test_order_by_envelope_ts_ignores_append_order(self, store: StreamStore):
+        # Backfill scenario: events are appended in an order that differs from
+        # their logical event order, and the payloads carry NO "ts" field — so
+        # ordering can only come from the producer-set envelope event_ts.
+        def _seed(path, rows):
+            store.create(path)
+            for key, logical_ts in rows:
+                ev = {
+                    "schema_version": 1,
+                    "form_type": "TOUCH",
+                    "key": key,
+                    "slot": "S",
+                }
+                store.append(
+                    path,
+                    json.dumps(ev).encode("utf-8"),
+                    AppendOptions(event_ts=logical_ts),
+                )
+
+        # Append order (transport) would make b1 the last write; but by logical
+        # envelope ts the last event is a1 (400), so a1 must win the slot.
+        _seed("forms/a", [("a0", 100.0), ("a1", 400.0)])
+        _seed("forms/b", [("b0", 200.0), ("b1", 300.0)])
+
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["forms/a", "forms/b"],
+            proj,
+            order_key=ENVELOPE_TS,
+            handler_registry=_touch_registry(),
+            upcaster_registry=UpcasterRegistry(),
+        )
+        assert proj.get("app.Claim", slot="S").claimed_by == "a1"
+
+    def test_envelope_ts_missing_raises(self):
+        # A hand-built message with event_ts=None under ENVELOPE_TS is a clear error.
+        from rakaia.types import StreamMessage
+
+        class _HandBuilt:
+            def read(self, path, offset=None):  # noqa: ARG002
+                return [
+                    StreamMessage(
+                        data=b'{"form_type":"TOUCH","key":"x","slot":"S"}',
+                        offset="0",
+                        timestamp=1.0,
+                        event_ts=None,
+                    )
+                ], True
+
+        with pytest.raises(ValueError, match="envelope event_ts"):
+            merge_replay(
+                _HandBuilt(),
+                ["forms/a"],
+                DictProjections(),
+                order_key=ENVELOPE_TS,
+                handler_registry=_touch_registry(),
+                upcaster_registry=UpcasterRegistry(),
+            )

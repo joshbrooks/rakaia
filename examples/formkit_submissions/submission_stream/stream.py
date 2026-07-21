@@ -79,10 +79,15 @@ def reproject_all(store: DjangoStreamStore) -> None:
     """Rebuild `Submission` from the event log via `rakaia.project_latest`: one
     idempotent upsert per live key's latest snapshot, plus a delete per
     tombstoned key (Decision #2 — a `delete` event). `Submission` is a pure
-    function of `SubmissionEvent`; ``version`` is the durable offset, so this
-    reprojection agrees with a history keyed by ``int(m.offset)``.
+    function of `SubmissionEvent`; ``version`` is the event's **stream position**,
+    so this reprojection agrees with the `/history` rows.
+
+    The position is derived from the read sequence, not by parsing ``m.offset`` —
+    an offset is opaque per the `ReadableStore` contract (its format differs by
+    store), so ``int(m.offset)`` would only work on the durable store.
     """
     messages, _ = store.read(STREAM)
+    position = {m.offset: i for i, m in enumerate(messages)}
     effects = project_latest(
         messages,
         SUBMISSION_MODEL,
@@ -92,7 +97,7 @@ def reproject_all(store: DjangoStreamStore) -> None:
             "fields": event["fields"],
             "status": event["status"],
             "user": envelope_actor(msg, event),
-            "version": int(msg.offset),
+            "version": position[msg.offset],
         },
     )
     DjangoExecutor().apply(effects)
@@ -101,14 +106,19 @@ def reproject_all(store: DjangoStreamStore) -> None:
 def materialize_history(store: DjangoStreamStore) -> None:
     """`/history` = the ordered event log, materialised by the shipped
     `django_rakaia.materialize_history` (one row per event, keyed by
-    ``(key, offset)`` so re-running is a no-op)."""
+    ``(key, version)`` so re-running is a no-op).
+
+    ``version`` is the event's stream position, taken from the read sequence — not
+    ``int(m.offset)``, which would couple this to the durable store's offset
+    format (offsets are opaque per the `ReadableStore` contract)."""
+    position = {m.offset: i for i, m in enumerate(store.read(STREAM)[0])}
     _materialize_history(
         store,
         STREAM,
         HISTORY_MODEL,
         subject_field="key",
         subject_of=lambda e: e["key"],
-        version_of=lambda m: int(m.offset),
+        version_of=lambda m: position[m.offset],
         defaults_of=lambda msg, event: {
             "marker": label_marker(msg.label),
             "actor": envelope_actor(msg, event),

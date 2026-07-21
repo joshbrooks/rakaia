@@ -185,3 +185,13 @@ If the backend rejects the append, TanStack DB rolls back the optimistic insert 
 5. **Cleanup** – Close a stream and verify both DB data and metadata are removed.
 
 Following these steps implements the full plan: Durable Streams’ TypeScript client keeps the stream connection alive, StreamDB materializes state into TanStack DB collections, and the TanStack IndexedDB persister (plus cursor metadata) ensures tabs restart instantly with the latest durable snapshot.
+
+## Offset contract — treat offsets as opaque
+
+An offset is an **opaque, lexicographically-sortable** resume token (Durable Streams protocol §6, and the `ReadableStore` contract on the Python side). Persist and compare it accordingly:
+
+- **Store it as a string**, verbatim. Its byte format is server/store-specific (a compound `{seq}_{byte}` string on the in-memory store, a zero-padded integer on the durable Django store) and may change — never assume one shape.
+- **Never parse or do arithmetic on it.** No `parseInt(offset)`, no `offset - N`. To prune history, compare stored offsets lexicographically (`offset < keepFrom`) or track your own retained-count/age — do not subtract offsets.
+- **Order by string comparison.** Because offsets sort lexicographically, `a < b` (plain string compare) is a valid "a is earlier than b" *within one stream*.
+
+The same rule holds server-side: for a stable per-event key (e.g. a `/history` row version), use the opaque offset token itself, not `int(offset)`.

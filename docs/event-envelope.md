@@ -5,14 +5,14 @@ icon: lucide/tag
 # The event envelope & provenance
 
 A stream event is not just its payload. Alongside the JSON body, every appended
-message can carry an **envelope**: a change **label** and an open **metadata**
-dict. The envelope is where the *audit* facts live — **who** made the change,
-**when**, from **what** request, and **what kind** of change it was — without
-polluting the payload with them.
+message can carry an **envelope**: a change **label**, an open **metadata** dict,
+and a logical **timestamp**. The envelope is where the *audit* facts live —
+**who** made the change, **when**, from **what** request, and **what kind** of
+change it was — without polluting the payload with them.
 
-This page covers three append-path concepts that build on the envelope:
+This page covers the append-path concepts that build on the envelope:
 
-- the **label + metadata** an event carries,
+- the **label + metadata + timestamp** an event carries,
 - **`provenance()`** — how the acting user (and any context) is attached, and
 - **`append_if_changed`** — recording an event only when something actually
   changed.
@@ -32,6 +32,7 @@ flowchart LR
     subgraph ENV["**envelope**"]
       L["label<br/>create / update / delete"]
       M["metadata<br/>{ user, url, causation, … }"]
+      TS["event_ts<br/>logical event time"]
     end
   end
   P -.->|ignored by transport| T["Durable Streams<br/>wire protocol"]
@@ -51,8 +52,46 @@ store.append(
 ```
 
 On the durable store, the envelope is persisted on the `StreamEvent` row:
-`event_type` doubles as the **label**, and a `metadata` JSON column holds the
-rest. A pure-protocol append (no envelope) simply leaves `metadata` empty.
+`event_type` doubles as the **label**, a `metadata` JSON column holds the rest,
+and an `event_ts` column holds the logical timestamp. A pure-protocol append (no
+envelope) simply leaves `metadata` empty and `event_ts` null.
+
+## The envelope timestamp
+
+There are **two** timestamps on a message, and keeping them straight matters for
+deterministic replay:
+
+| Field | Set by | Means |
+|---|---|---|
+| `StreamMessage.timestamp` | the **store**, at append | *transport* time — when the bytes were written (`time.time()`) |
+| `StreamMessage.event_ts` | the **producer** (or defaults to append time) | *logical* event time — when the change actually happened |
+
+The distinction earns its keep during a **backfill**. Two producers set `event_ts`
+to deliberately different logical times:
+
+```python
+from rakaia import AppendOptions
+
+# live save → event time ≈ append time (leave event_ts unset; it defaults to now)
+store.append("submissions/tf", data, AppendOptions(label="update"))
+
+# one-time backfill → stamp the *original historical* time, not the append time
+store.append(
+    "submissions/tf", data,
+    AppendOptions(label="update", event_ts=original_created_at.timestamp()),
+)
+```
+
+Because the backfill sets `event_ts` to the historical time while its transport
+`timestamp` is ≈`now`, `merge_replay(order_key=ENVELOPE_TS)` replays years of
+history in one pass **in the order events happened**, not the order they were
+loaded. Ordering on the transport `timestamp` would collapse every backfilled
+event to ≈`now` and lose that order — which is why merge never uses it. See
+[multi-stream merge](multi-stream-merge.md#two-order-key-sources-pick-the-envelope-not-the-payload).
+
+The same rule applies to any *logical-time* value a handler writes (a soft-retire
+`resolved_at`, say): derive it from the triggering event's `event_ts`, not
+`now()`, or replay stops being reproducible.
 
 The **label** is the one fact a plain `append(payload)` throws away, and
 everything the audit consumers need is derivable from it:

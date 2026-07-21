@@ -1031,6 +1031,17 @@ def register_upcaster(
                            match_field="form_type")
         def upcast_tf1321_v1_to_v2(event: dict) -> dict:
             return {**event, ...}
+
+    **Upcasters rewrite history — the contract.** An upcaster is keyed by
+    ``(event_match, from_version)``, *not* by a stream sequence range. It is not
+    versioned the way a handler is. So editing the body of a shipped upcaster
+    retroactively changes the effective shape of **every** historical event at
+    that schema step: the next replay upcasts them through the new code, not the
+    code that was live when they were written. Source-hash drift **detects** this
+    (replay warns, or raises under ``on_drift="raise"``) but does **not** prevent
+    it. The rule: once events exist at a schema version, treat that version's
+    upcaster body as append-only history — evolve the schema by adding a **new**
+    ``from_version`` step, never by editing a shipped one in place.
     """
     target = registry if registry is not None else _default_upcaster_registry
 

@@ -68,7 +68,22 @@ class StreamMessage:
     """The offset after this message. Format: '{read_seq}_{byte_offset}'."""
 
     timestamp: float
-    """Timestamp when the message was appended (time.time())."""
+    """Transport timestamp: when the message was appended (``time.time()``).
+
+    This is *append/wall-clock* time, set by the store — not a logical event
+    time. For deterministic merge ordering across a backfill (where append order
+    ≠ event order) use ``event_ts``, which a producer can set to a logical time.
+    """
+
+    event_ts: float | None = None
+    """Envelope timestamp: the event's **logical** time, settable by the producer
+    (via ``AppendOptions.event_ts``) and written once at append. A store populates
+    it with the append time when the producer leaves it unset, so after a store
+    append it is always a float; ``None`` only on a hand-constructed message.
+
+    Distinct from ``timestamp`` (transport time) on purpose: a one-time backfill
+    sets ``event_ts`` to the original historical event time while its transport
+    ``timestamp`` is ≈now. ``merge_replay(order_key=ENVELOPE_TS)`` orders on this."""
 
     label: str = ""
     """Optional event-sourcing envelope: the change label (e.g. create/update/
@@ -233,6 +248,13 @@ class AppendOptions:
     """Event-sourcing envelope label to record on the appended message."""
     metadata: dict | None = None
     """Event-sourcing envelope metadata to record on the appended message."""
+    event_ts: float | None = None
+    """Event-sourcing envelope timestamp: the event's **logical** time (e.g. a
+    live save → ``now()``; a backfill → the original historical event time). The
+    store records it on ``StreamMessage.event_ts`` and defaults it to the append
+    time when unset. This is the deterministic merge key
+    (``merge_replay(order_key=ENVELOPE_TS)``), kept distinct from the transport
+    ``StreamMessage.timestamp``."""
 
 
 @dataclass

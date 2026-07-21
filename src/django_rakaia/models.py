@@ -82,6 +82,11 @@ class StreamEvent(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
     """Event-sourcing envelope metadata (actor, url, causation, …). Empty for
     raw/pure-protocol appends. `event_type` doubles as the envelope label."""
+    event_ts = models.FloatField(null=True, blank=True, db_index=True)
+    """Event-sourcing envelope timestamp: the event's logical time as set by the
+    producer (`AppendOptions.event_ts`). `null` when the producer didn't set one,
+    in which case the store surfaces the append time (`created_at`) instead. This
+    is the deterministic merge key, kept distinct from transport time."""
 
     class Meta:
         db_table = "rakaia_streamevent"

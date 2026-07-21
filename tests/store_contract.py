@@ -29,7 +29,12 @@ Each divergence is pinned in that backend's own suite instead:
 - Django: `tests/test_django_rakaia/test_django_store.py::
   test_create_ignores_conflicting_kwargs_instead_of_raising`,
   `test_append_has_no_closed_stream_concept`.
-Cross-backend offset/format unification is tracked in #39.
+
+The offset **format** stays backend-specific (the compound `{seq}_{byte}` vs
+zero-padded int divergence above) — the protocol mandates opacity, not one
+format (§6). What *is* now contract, asserted here for both stores, is the
+offset **behaviour**: opaque, lexicographically sortable, strictly increasing
+per append, and usable as a resume token. See #39.
 """
 
 from __future__ import annotations
@@ -120,6 +125,48 @@ class StoreContract:
         store.append("s", b'{"id": 1}')
         messages, _ = store.read("s")
         assert isinstance(messages[0].timestamp, float)
+
+    def test_event_ts_defaults_to_append_time_when_unset(self, store):
+        # With no producer-set logical ts, the envelope ts is populated with the
+        # append time — never None after a store append.
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        messages, _ = store.read("s")
+        assert isinstance(messages[0].event_ts, float)
+        assert messages[0].event_ts == pytest.approx(messages[0].timestamp)
+
+    def test_event_ts_roundtrips_producer_logical_time(self, store):
+        # A producer-set logical ts (e.g. a backfilled historical time) is
+        # preserved verbatim and stays distinct from transport time.
+        store.create("s")
+        logical = 1_600_000_000.5  # well in the past vs append time
+        store.append("s", b'{"id": 1}', AppendOptions(event_ts=logical))
+        messages, _ = store.read("s")
+        assert messages[-1].event_ts == logical
+        assert messages[-1].timestamp != logical
+
+    def test_offsets_strictly_increase_lexicographically(self, store):
+        # The offset contract (protocol §6): successive appends yield offsets that
+        # are strictly increasing under plain string (lexicographic) comparison —
+        # on both stores, without parsing the offset. This is what lets a consumer
+        # order/resume portably.
+        store.create("s")
+        for ev in [{"id": 1}, {"id": 2}, {"id": 3}]:
+            store.append("s", json.dumps(ev).encode("utf-8"))
+        offsets = [m.offset for m in store.read("s")[0]]
+        assert offsets == sorted(offsets)
+        assert len(set(offsets)) == len(offsets)  # no duplicates
+        assert all(a < b for a, b in zip(offsets, offsets[1:], strict=False))
+
+    def test_offset_is_an_opaque_resume_token(self, store):
+        # An offset round-trips as a resume token without any numeric parsing:
+        # reading from message[k].offset returns exactly the messages after it.
+        store.create("s")
+        for ev in [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}]:
+            store.append("s", json.dumps(ev).encode("utf-8"))
+        messages, _ = store.read("s")
+        rest, _ = store.read("s", offset=messages[1].offset)
+        assert [json.loads(m.data) for m in rest] == [{"id": 3}, {"id": 4}]
 
     def test_get_current_offset_none_then_advances(self, store):
         assert store.get_current_offset("s") is None
