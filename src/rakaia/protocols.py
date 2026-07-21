@@ -5,9 +5,14 @@ extension seams of the event-sourcing framework (ADR 0002).
 `replay()` only ever *reads* a stream, so it depends on the narrow
 `ReadableStore` protocol rather than the concrete in-memory `StreamStore`.
 Producers and the meta-stream registry additionally *write*, captured by
-`WritableStore`. Staged handlers read committed projections through
+`WritableStore`. Subscribers additionally need the head offset, captured by
+`CursorStore`. Staged handlers read committed projections through
 `ProjectionReader`. Any backend satisfying the relevant protocol — the in-memory
 `StreamStore`, a durable DB-backed store, or a third-party one — plugs in.
+
+All store-facing protocols live here so they read as one coherent seam:
+`ReadableStore` (read), `WritableStore` (+ create/append/has), `CursorStore`
+(+ get_current_offset).
 """
 
 from __future__ import annotations
@@ -54,22 +59,41 @@ class WritableStore(ReadableStore, Protocol):
         """Whether a stream exists at `path`."""
         ...
 
-    def create(self, path: str, **kwargs: Any) -> Any:
+    def create(self, path: str) -> Any:
         """Idempotently create the stream at `path`. `append` requires it to exist.
 
-        Backends may accept extra keyword options (content type, TTL, …) or
-        ignore them; only idempotent creation is part of the contract.
+        Only idempotent creation by `path` is part of the contract. Concrete
+        stores may accept extra keyword-only options (content type, TTL, …) via
+        their own richer signatures — deliberately *not* on this protocol, so a
+        backend that ignores such an option (e.g. `DjangoStreamStore`) can't be
+        called with it through the `WritableStore` type and silently no-op.
         """
         ...
 
     def append(self, path: str, data: bytes, options: Any = None) -> Any:
         """Append one (optionally enveloped) event to `path`.
 
-        Raises `KeyError` if the stream does not exist (create it first). The
-        envelope — `label` and `metadata` on `options` (an `AppendOptions`) — is
-        recorded and read back by `read`; ambient `provenance()` merges under
+        Raises `KeyError` if the stream does not exist (create it first) — the one
+        guaranteed exception. Beyond that, backends may raise for their own
+        validation (the in-memory `StreamStore` raises `ValueError` on a
+        content-type or Stream-Seq conflict) or signal a closed stream without
+        raising; `DjangoStreamStore` has no such concept. Depend only on the
+        `KeyError` here; treat richer errors as backend-specific.
+
+        The envelope — `label` and `metadata` on `options` (an `AppendOptions`) —
+        is recorded and read back by `read`; ambient `provenance()` merges under
         explicit metadata.
         """
+        ...
+
+
+@runtime_checkable
+class CursorStore(ReadableStore, Protocol):
+    """A `ReadableStore` that also exposes its current head offset — what a
+    subscriber (`poll()`) needs to detect new messages and a rewound log."""
+
+    def get_current_offset(self, path: str) -> str | None:
+        """The offset after the last message, or None if the stream is absent."""
         ...
 
 

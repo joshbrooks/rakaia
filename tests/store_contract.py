@@ -8,6 +8,15 @@ and provide a `store` fixture returning a fresh, empty store. See ADR 0002 / #36
 
 This module is intentionally not named `test_*`, so pytest does not collect it
 directly; only the backend subclasses run it.
+
+Out of contract scope (backend-specific, deliberately not asserted here):
+`create()` conflict detection (the in-memory `StreamStore` raises `ValueError`
+on re-create with a different content_type/ttl; `DjangoStreamStore` has no such
+concept and ignores extra kwargs), stream close / Stream-Seq / producer fencing,
+and the exact offset *format* (compound `{seq}_{byte}` vs zero-padded int). Those
+are tested in each backend's own suite; asserting one behaviour for both here
+would contradict the point of a shared contract. Cross-backend offset/format
+unification is tracked in #39.
 """
 
 from __future__ import annotations
@@ -29,11 +38,12 @@ class StoreContract:
             return MyStore()
     """
 
-    def test_satisfies_writable_store_protocol(self, store):
-        from rakaia import ReadableStore, WritableStore
+    def test_satisfies_store_protocols(self, store):
+        from rakaia import CursorStore, ReadableStore, WritableStore
 
         assert isinstance(store, WritableStore)
         assert isinstance(store, ReadableStore)
+        assert isinstance(store, CursorStore)  # get_current_offset (subscribers)
 
     def test_create_is_idempotent(self, store):
         store.create("s")

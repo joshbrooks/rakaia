@@ -42,7 +42,12 @@ from .projections import (
     reconcile_children,
     reconcile_tree,
 )
-from .protocols import ProjectionReader, ReadableStore, WritableStore
+from .protocols import (
+    CursorStore,
+    ProjectionReader,
+    ReadableStore,
+    WritableStore,
+)
 from .registry import (
     HANDLERS_META_STREAM,
     REDUCERS_META_STREAM,
@@ -98,6 +103,7 @@ __all__ = [
     # Extension protocols (storage / projection seams)
     "ReadableStore",
     "WritableStore",
+    "CursorStore",
     "ProjectionReader",
     "provenance",
     "get_provenance",
