@@ -26,6 +26,7 @@ from .effects import (
     EffectOp,
     Executor,
     check_disjoint_defaults,
+    dispatch_external,
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
@@ -130,6 +131,7 @@ __all__ = [
     "Executor",
     "EffectCollisionError",
     "check_disjoint_defaults",
+    "dispatch_external",
     "CollectingExecutor",
     # Versioned handlers — projections
     "reconcile_by_key",
