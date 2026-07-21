@@ -54,9 +54,11 @@ already is).
 
 If the stored cursor sorts *after* the current head, the log shrank beneath it,
 so the consumer resets and re-reads from the start. Offsets are compared
-**numerically** (parsing the `_`-joined integer parts), so detection is correct
-even for the Django store's non-zero-padded offsets, where `"10"` is later than
-`"2"` despite sorting before it as a string.
+**numerically** (parsing the `_`-joined integer parts) as a defensive fallback.
+Both stores emit zero-padded, lexicographically-sortable offsets per the
+protocol ([#34](https://github.com/joshbrooks/rakaia/issues/34)), so plain string
+order already matches; the numeric parse just tolerates any stray non-padded
+offset.
 
 Store offsets are **globally monotonic** ([#34](https://github.com/joshbrooks/rakaia/issues/34)):
 a stream recreated at a path issues offsets strictly greater than any it issued

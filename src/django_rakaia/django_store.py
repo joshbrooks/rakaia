@@ -34,6 +34,16 @@ from .models import Stream, StreamEntry, StreamEvent
 # appends carry no type, so they are recorded under a single stable label.
 _APPEND_EVENT_TYPE = "append"
 
+# Offsets are rendered zero-padded so they sort byte-wise lexicographically, as
+# the Durable Streams protocol requires (§3, §5.2). 20 digits covers a
+# BigAutoField's range (< 2**63). `read` still parses them numerically, so the
+# padding is transparent to filtering.
+_OFFSET_WIDTH = 20
+
+
+def _fmt_offset(value: int) -> str:
+    return f"{value:0{_OFFSET_WIDTH}d}"
+
 
 class DjangoStreamStore:
     """A durable StreamStore backed by the django_rakaia ORM models."""
@@ -95,7 +105,7 @@ class DjangoStreamStore:
         messages = [
             StreamMessage(
                 data=json.dumps(entry.event.data).encode("utf-8"),
-                offset=str(entry.offset),
+                offset=_fmt_offset(entry.offset),
                 timestamp=entry.created_at.timestamp(),
                 # `"append"` is the raw-append sentinel → no envelope label;
                 # an empty metadata dict → None, matching the in-memory store.
@@ -126,7 +136,7 @@ class DjangoStreamStore:
         if stream is None:
             return None
         latest = stream.entries.order_by("-offset").values_list("offset", flat=True)
-        return str(latest[0]) if latest else "0"
+        return _fmt_offset(latest[0]) if latest else _fmt_offset(0)
 
     def list_paths(self) -> list[str]:
         return list(Stream.objects.values_list("stream_id", flat=True))

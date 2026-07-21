@@ -118,10 +118,11 @@ def _tail(messages: list[StreamMessage], fallback: str) -> str:
 def _offset_key(offset: str) -> tuple[int, ...] | None:
     """Parse a rakaia offset into an orderable tuple of ints, or None.
 
-    Both stores build offsets from ``_``-joined integers — the in-memory store's
-    ``{seq}_{bytes}`` and the Django store's bare ``str(int)``. Comparing the
-    parsed ints (not the raw strings) orders them correctly even when the Django
-    store's offsets are not zero-padded (``"9"`` vs ``"10"``)."""
+    Both stores now emit zero-padded, lexicographically-sortable offsets (the
+    in-memory ``{seq}_{bytes}`` and the Django store's padded integer, #34), so
+    plain string order already matches. Comparing the parsed ints is kept as a
+    defensive fallback that also tolerates a non-padded offset (``"9"`` vs
+    ``"10"``) should any store or older cursor produce one."""
     try:
         return tuple(int(part) for part in offset.split("_"))
     except ValueError:
