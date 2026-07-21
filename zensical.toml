@@ -26,6 +26,7 @@ nav = [
     { "Event envelope & provenance" = "event-envelope.md" },
     { "History read-model" = "history-read-model.md" },
     { "Alerts projection" = "alerts-projection.md" },
+    { "Subscriber cursors" = "subscriber-cursors.md" },
     { "Dry-run & executors" = "dry-run-and-executors.md" },
     { "pghistory retirement (spike)" = "pghistory-retirement.md" },
     { "Staged replay (spike)" = "staged-replay.md" },

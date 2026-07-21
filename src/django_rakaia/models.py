@@ -273,3 +273,26 @@ class Translatable(models.Model):
         """Restore a soft-deleted translation."""
         self.deleted = None
         self.save()
+
+
+class ConsumerCursor(models.Model):
+    """A durable per-consumer watermark over a stream.
+
+    One row per ``(consumer_id, stream_path)`` holding the last offset that
+    consumer applied. It is the streams-native replacement for a hand-rolled
+    ``last_change_id`` sync table: a consumer resumes exactly where it left off
+    across restarts. See ``rakaia.subscription.poll`` for the read semantics and
+    ``django_rakaia.subscription`` for the load/commit helpers.
+    """
+
+    consumer_id = models.CharField(max_length=128)
+    stream_path = models.CharField(max_length=255)
+    offset = models.CharField(max_length=64)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "rakaia_consumercursor"
+        unique_together = [["consumer_id", "stream_path"]]
+
+    def __str__(self) -> str:
+        return f"{self.consumer_id}@{self.stream_path}={self.offset}"
