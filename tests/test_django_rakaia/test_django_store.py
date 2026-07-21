@@ -19,6 +19,12 @@ from rakaia.store import StreamStore
 
 @pytest.mark.django_db
 class TestDjangoStreamStore:
+    # The shared read/append/create/has surface (create-idempotence, append-
+    # requires-stream, ordered round-trip, partial read, envelope round-trip,
+    # current-offset) is covered once for every backend by
+    # tests/store_contract.py::StoreContract (see test_store_contract.py). Only
+    # DjangoStreamStore-specific behaviour lives here: ORM persistence, integer
+    # offset format, row locking, durability across instances, delete/list_paths.
     def test_create_persists_stream_row(self):
         DjangoStreamStore().create("submissions")
         assert Stream.objects.filter(stream_id="submissions").exists()
@@ -41,34 +47,6 @@ class TestDjangoStreamStore:
         )
         assert offsets == [1, 2]
 
-    def test_append_requires_existing_stream(self):
-        with pytest.raises(KeyError):
-            DjangoStreamStore().append("missing", b"{}")
-
-    def test_append_persists_and_reads_envelope(self):
-        from rakaia.types import AppendOptions
-
-        store = DjangoStreamStore()
-        store.create("s")
-        store.append(
-            "s",
-            b'{"id": 1}',
-            AppendOptions(label="update", metadata={"user": 7, "url": "/x"}),
-        )
-        messages, _ = store.read("s")
-        assert messages[-1].label == "update"
-        assert messages[-1].metadata == {"user": 7, "url": "/x"}
-
-    def test_raw_append_reads_empty_envelope(self):
-        # A raw append (no options) reads back label="" / metadata=None, matching
-        # the in-memory store — even though event_type is stored as "append".
-        store = DjangoStreamStore()
-        store.create("s")
-        store.append("s", b'{"id": 1}')
-        messages, _ = store.read("s")
-        assert messages[-1].label == ""
-        assert messages[-1].metadata is None
-
     def test_append_locks_stream_row_for_offset_allocation(self):
         # Regression guard for the concurrency bug: offset allocation must go
         # through select_for_update() so concurrent appends serialize on the
@@ -90,35 +68,6 @@ class TestDjangoStreamStore:
             store.append("s", b'{"id": 1}')
 
         assert locked, "append must lock the stream row via select_for_update()"
-
-    def test_read_returns_events_in_order(self):
-        store = DjangoStreamStore()
-        store.create("s")
-        for ev in [{"id": 1}, {"id": 2}, {"id": 3}]:
-            store.append("s", json.dumps(ev).encode("utf-8"))
-
-        messages, up_to_date = store.read("s")
-
-        assert up_to_date is True
-        assert [json.loads(m.data) for m in messages] == [
-            {"id": 1},
-            {"id": 2},
-            {"id": 3},
-        ]
-
-    def test_read_from_offset_partial(self):
-        store = DjangoStreamStore()
-        store.create("s")
-        for ev in [{"id": 1}, {"id": 2}, {"id": 3}]:
-            store.append("s", json.dumps(ev).encode("utf-8"))
-
-        messages, _ = store.read("s")
-        rest, _ = store.read("s", offset=messages[0].offset)
-        assert [json.loads(m.data) for m in rest] == [{"id": 2}, {"id": 3}]
-
-    def test_read_missing_stream_raises(self):
-        with pytest.raises(KeyError):
-            DjangoStreamStore().read("nope")
 
     def test_delete_removes_stream_and_entries(self):
         store = DjangoStreamStore()

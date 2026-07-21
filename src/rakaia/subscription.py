@@ -29,9 +29,9 @@ stream, where the head really does sort before the cursor.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal
 
-from .protocols import ReadableStore
+from .protocols import CursorStore
 from .types import StreamMessage
 
 PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
@@ -45,11 +45,7 @@ PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
 * ``absent`` — the stream does not exist; nothing returned.
 """
 
-
-class CursorStore(ReadableStore, Protocol):
-    """A `ReadableStore` that also exposes its current head offset."""
-
-    def get_current_offset(self, path: str) -> str | None: ...
+# CursorStore lives in rakaia.protocols alongside the other store-facing seams.
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,18 @@
 """
-Structural protocols for pluggable storage backends.
+Structural protocols for pluggable storage and projection backends — the
+extension seams of the event-sourcing framework (ADR 0002).
 
 `replay()` only ever *reads* a stream, so it depends on the narrow
-`ReadableStore` protocol rather than the concrete in-memory `StreamStore`. Any
-backend that can return a stream's messages in order — the in-memory
-`StreamStore` or a durable, DB-backed store — satisfies it.
+`ReadableStore` protocol rather than the concrete in-memory `StreamStore`.
+Producers and the meta-stream registry additionally *write*, captured by
+`WritableStore`. Subscribers additionally need the head offset, captured by
+`CursorStore`. Staged handlers read committed projections through
+`ProjectionReader`. Any backend satisfying the relevant protocol — the in-memory
+`StreamStore`, a durable DB-backed store, or a third-party one — plugs in.
+
+All store-facing protocols live here so they read as one coherent seam:
+`ReadableStore` (read), `WritableStore` (+ create/append/has), `CursorStore`
+(+ get_current_offset).
 """
 
 from __future__ import annotations
@@ -26,6 +34,66 @@ class ReadableStore(Protocol):
         With no `offset`, returns every message; with an `offset`, returns the
         messages after it. Raises `KeyError` if the stream does not exist.
         """
+        ...
+
+
+@runtime_checkable
+class WritableStore(ReadableStore, Protocol):
+    """A store the event-sourcing framework both writes to and reads from.
+
+    This is the **framework** store surface — what producers and the meta-stream
+    registry rely on: create a stream, append enveloped events, check existence,
+    and read them back (inherited from `ReadableStore`). It deliberately excludes
+    the Durable Streams **protocol-server** lifecycle (producer epoch/seq
+    fencing, close, TTL, long-poll/`wait_for_messages`); those live on the
+    standalone server's store and are not required to back `replay()`/projections.
+    See ADR 0002.
+
+    Return types are intentionally loose (`Any`): the in-memory `StreamStore`
+    returns rich protocol types (`Stream`/`AppendResult`) while `DjangoStreamStore`
+    returns ORM rows (`StreamEntry`). What both guarantee is the read-back
+    behaviour exercised by the shared conformance suite (`tests/store_contract.py`).
+    """
+
+    def has(self, path: str) -> bool:
+        """Whether a stream exists at `path`."""
+        ...
+
+    def create(self, path: str) -> Any:
+        """Idempotently create the stream at `path`. `append` requires it to exist.
+
+        Only idempotent creation by `path` is part of the contract. Concrete
+        stores may accept extra keyword-only options (content type, TTL, …) via
+        their own richer signatures — deliberately *not* on this protocol, so a
+        backend that ignores such an option (e.g. `DjangoStreamStore`) can't be
+        called with it through the `WritableStore` type and silently no-op.
+        """
+        ...
+
+    def append(self, path: str, data: bytes, options: Any = None) -> Any:
+        """Append one (optionally enveloped) event to `path`.
+
+        Raises `KeyError` if the stream does not exist (create it first) — the one
+        guaranteed exception. Beyond that, backends may raise for their own
+        validation (the in-memory `StreamStore` raises `ValueError` on a
+        content-type or Stream-Seq conflict) or signal a closed stream without
+        raising; `DjangoStreamStore` has no such concept. Depend only on the
+        `KeyError` here; treat richer errors as backend-specific.
+
+        The envelope — `label` and `metadata` on `options` (an `AppendOptions`) —
+        is recorded and read back by `read`; ambient `provenance()` merges under
+        explicit metadata.
+        """
+        ...
+
+
+@runtime_checkable
+class CursorStore(ReadableStore, Protocol):
+    """A `ReadableStore` that also exposes its current head offset — what a
+    subscriber (`poll()`) needs to detect new messages and a rewound log."""
+
+    def get_current_offset(self, path: str) -> str | None:
+        """The offset after the last message, or None if the stream is absent."""
         ...
 
 
