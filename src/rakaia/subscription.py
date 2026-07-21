@@ -30,11 +30,13 @@ offsets alone.** A recreated stream re-issues offsets from the low end, so:
   as ``caught_up`` and the new content at that offset is **silently skipped** —
   a real gap in the at-least-once guarantee, but only across a delete+recreate.
 
-Closing this needs a **stream-generation token** (a per-stream identity that
-changes on recreate — e.g. the Django ``Stream`` row's pk) threaded through the
-cursor, so a generation change forces a resync regardless of offset. That is the
-tracked follow-up before this is relied on across stream recreation; it does not
-affect append-only streams, which are correct as-is. See issue #11 / PR #33.
+The root-cause fix lives in the **store**, not here: make offsets globally
+monotonic so a recreated stream issues offsets strictly greater than any prior
+one (the EventStoreDB ``$all`` / Kinesis model). Then recreated content sorts
+past the cursor and is delivered as a normal ``advanced`` — no consumer-side
+change needed. The protocol already discourages the trigger ("if a stream is
+deleted a new stream SHOULD NOT be created at the same URL"), and append-only
+streams — the intended use — are unaffected. Tracked in issue #34.
 """
 
 from __future__ import annotations

@@ -68,10 +68,13 @@ the old cursor, the next poll reads as a benign `advanced` (the new events are
 still delivered). But if it lands on the **exact** offset the consumer last
 committed, the poll reads as `caught_up` and the new content is **silently
 skipped** — a real gap, but only across a delete+recreate, never on an
-append-only stream. Closing it needs a **stream-generation token** (a per-stream
-identity that changes on recreate — e.g. the Django `Stream` row's pk) threaded
-through the cursor; that is the tracked follow-up (issue #11 / PR #33) before
-this is relied on across stream recreation.
+append-only stream. The protocol already discourages the trigger ("if a stream
+is deleted a new stream SHOULD NOT be created at the same URL", §3). The
+root-cause fix lives in the **store**: make offsets globally monotonic (a
+recreated stream issues offsets strictly greater than any prior one — the
+EventStoreDB `$all` / Kinesis model), after which recreated content sorts past
+the cursor and is delivered as a normal `advanced`, with no consumer-side
+change. Tracked in [issue #34](https://github.com/joshbrooks/rakaia/issues/34).
 
 ## Durable cursors (Django)
 
