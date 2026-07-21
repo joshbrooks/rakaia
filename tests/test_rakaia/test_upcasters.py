@@ -197,6 +197,11 @@ def _sf_v1_to_v2(event: dict) -> dict:
     return {**event, "sf_touched": True}
 
 
+def _tf_v2_to_v3(event: dict) -> dict:
+    # preserves form_type (the discriminator) so content-routing survives the chain
+    return {**event, "v3": True}
+
+
 class TestContentRouting:
     """match_field: route the pattern against event[match_field] (e.g. form_type)
     instead of the stream/event-match string — so per-form upcasters work on a
@@ -204,11 +209,19 @@ class TestContentRouting:
 
     def test_current_version_matches_on_content_field(self, reg: UpcasterRegistry):
         reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
-        # path string alone can't resolve a content-routed upcaster
-        assert reg.current_version("submissions:abc") == 1
         # with the event, it routes on form_type
         assert reg.current_version("submissions:abc", {"form_type": "TF_13_2_1"}) == 2
+        # present-but-non-matching form_type is a normal no-match, not an error
         assert reg.current_version("submissions:abc", {"form_type": "SF_1_1"}) == 1
+
+    def test_content_routed_without_event_raises(self, reg: UpcasterRegistry):
+        # mirrors HandlerRegistry: a content-routed registration matched without
+        # an event is a caller bug (the event would silently stay un-upcast).
+        # The framework always passes the event (upcast_to_current), so this only
+        # bites callers of current_version()/apply_chain() who omit it.
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        with pytest.raises(ValueError, match="match_field='form_type'"):
+            reg.current_version("submissions:abc")
 
     def test_apply_chain_content_routed(self, reg: UpcasterRegistry):
         reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
@@ -251,6 +264,35 @@ class TestContentRouting:
             return {**event, "hit": True}
 
         assert reg.all_upcasters()[0].match_field == "form_type"
+
+    def test_multi_step_content_routed_chain(self, reg: UpcasterRegistry):
+        # v1->v2->v3, both steps content-routed; discriminator preserved so
+        # routing survives the whole chain.
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        reg.register("TF_13_2_1", 2, _tf_v2_to_v3, match_field="form_type")
+        out = reg.upcast_to_current(
+            {"schema_version": 1, "form_type": "TF_13_2_1"}, "submissions:abc"
+        )
+        assert out["schema_version"] == 3
+        assert out["quantized"] is True and out["v3"] is True
+
+    def test_stream_and_content_routed_same_key_conflicts(self, reg: UpcasterRegistry):
+        # (event_match, from_version) ignores match_field, so a stream-routed and
+        # a content-routed upcaster can't share it — converting one to the other
+        # under the same identifiers is a migration foot-gun that must fail loudly,
+        # naming match_field as the differentiator.
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2)  # stream-routed
+        with pytest.raises(UpcasterConflictError, match="match_field"):
+            reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+
+    def test_content_routed_ambiguous_match_raises(self, reg: UpcasterRegistry):
+        # two content-routed patterns that both match one event → ambiguous chain.
+        reg.register("TF_*", 1, _tf_v1_to_v2, match_field="form_type")
+        reg.register("TF_13_*", 1, _sf_v1_to_v2, match_field="form_type")
+        with pytest.raises(UpcasterChainError, match="Multiple upcasters match"):
+            reg.upcast_to_current(
+                {"schema_version": 1, "form_type": "TF_13_2_1"}, "submissions:abc"
+            )
 
 
 class TestUpcastToCurrent:

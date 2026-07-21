@@ -582,7 +582,11 @@ class UpcasterRegistry:
             raise UpcasterConflictError(
                 f"Upcaster already registered for event_match={event_match!r}, "
                 f"from_version={from_version} (existing dotted_path="
-                f"{existing.dotted_path!r}, new={new.dotted_path!r})"
+                f"{existing.dotted_path!r} match_field={existing.match_field!r}, "
+                f"new dotted_path={new.dotted_path!r} match_field={new.match_field!r})."
+                " The (event_match, from_version) key ignores match_field, so a "
+                "stream-routed and a content-routed upcaster cannot share it — "
+                "give them distinct event_match patterns."
             )
 
         if self._store is not None:
@@ -595,11 +599,23 @@ class UpcasterRegistry:
         up: UpcasterVersion, event: dict[str, Any] | None, event_match_str: str
     ) -> str:
         """The string an upcaster's pattern is matched against: a content field
-        when `match_field` is set (mirrors handler routing), else the stream/
-        event-match string. A content-routed upcaster with no event to read
-        yields "" (so it simply does not match)."""
+        when `match_field` is set (mirrors `HandlerRegistry._match_subject`), else
+        the stream/event-match string.
+
+        A content-routed upcaster matched with `event=None` raises — like handler
+        dispatch — to catch a caller who forgot to pass the event (which would
+        otherwise leave the event silently un-upcast). An event that is present
+        but lacks the field yields "" and simply does not match (a different
+        form_type on the stream is normal, not an error)."""
         if up.match_field is not None:
-            return str((event or {}).get(up.match_field, ""))
+            if event is None:
+                raise ValueError(
+                    f"Upcaster (event_match={up.event_match!r}) routes on "
+                    f"match_field={up.match_field!r} but was matched without an "
+                    "event; pass the decoded event to current_version()/"
+                    "apply_chain() (or use upcast_to_current)."
+                )
+            return str(event.get(up.match_field, ""))
         return event_match_str
 
     def current_version(
@@ -634,6 +650,13 @@ class UpcasterRegistry:
         (default 1). Each step finds the upcaster matching the event_match (or
         `event[match_field]` for content-routed upcasters) and the current
         version, then bumps schema_version on the result.
+
+        Content-routing note: each step is re-matched against the *progressively
+        upcasted* event, so a content-routed chain's `match_field` discriminator
+        must stay stable across the chain. An upcaster that renames or rewrites
+        the discriminator (e.g. v1→v2 renaming `form_type`) re-routes subsequent
+        steps off the new value — keep the discriminator field constant, or route
+        those steps on the stream path.
 
         If `drift_callback` is provided, it is called once per step with
         `(version, current_hash)` if the upcaster's source hash has changed
