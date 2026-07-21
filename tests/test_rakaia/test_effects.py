@@ -169,6 +169,24 @@ class TestDispatchExternal:
         )
         assert n == 0
 
+    def test_kind_none_treated_as_unknown(self):
+        # A kind=None external effect has no handler; pins the behavior so a
+        # future refactor (e.g. handlers.get(eff.kind, default)) can't silently
+        # change it. Raises by default, skipped under on_unknown="ignore".
+        with pytest.raises(KeyError, match="kind=None"):
+            dispatch_external(
+                [Effect(op="external", kind=None, payload={})],
+                {"email": lambda _e: None},
+            )
+        assert (
+            dispatch_external(
+                [Effect(op="external", kind=None, payload={})],
+                {"email": lambda _e: None},
+                on_unknown="ignore",
+            )
+            == 0
+        )
+
 
 class TestCheckDisjointDefaults:
     def test_no_effects(self):
