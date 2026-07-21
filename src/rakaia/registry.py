@@ -107,6 +107,16 @@ class ReducerVersion:
     accumulated projections (e.g. all contributing rows for a group) and
     returning the idempotent Effects that materialise the aggregate. It is the
     replay-time hook that `reconcile_aggregate` is designed to fill.
+
+    **Replacement semantics — last-write-wins by name, not seq-versioned.**
+    A reducer is a single *current* definition keyed by `name`, unlike a handler,
+    which is a series of `[from_seq, to_seq)`-bracketed versions. Registering a
+    different function under an existing name **replaces** the prior one. This is
+    intentional: a reducer recomputes an aggregate *wholesale* from the committed
+    projections on every replay, so there is no per-sequence window a reducer
+    could be versioned over — the only thing that matters is the definition in
+    force when replay runs. If you need two coexisting reduce steps, give them
+    distinct names.
     """
 
     name: str
@@ -266,6 +276,23 @@ class HandlerRegistry:
 
         self._reducers[name] = reducer
         return reducer
+
+    def reset(self) -> None:
+        """Clear all in-memory registrations (handlers, reducers, and the
+        persisted-id dedup caches) so a fresh set can be registered.
+
+        This resets **in-memory registration state only** — it is the seam for
+        per-test isolation (see `reset_default_registries()` and the test-isolation
+        section of ``docs/versioned-handlers.md``). It does **not** delete the
+        durable meta-streams (``__rakaia__:handlers`` / ``__rakaia__:reducers``);
+        to discard those, delete the streams via the store. On a store-backed
+        registry, clearing the dedup cache means the next `register()` re-appends
+        an audit event even for an already-persisted registration.
+        """
+        self._versions.clear()
+        self._reducers.clear()
+        self._persisted_ids.clear()
+        self._reducer_persisted_ids.clear()
 
     def reducers_for_stage(self, stage: int) -> list[ReducerVersion]:
         """Reducers registered for `stage`, in deterministic (name) order."""
@@ -719,6 +746,16 @@ class UpcasterRegistry:
     def all_upcasters(self) -> list[UpcasterVersion]:
         return list(self._upcasters.values())
 
+    def reset(self) -> None:
+        """Clear all in-memory upcaster registrations and the dedup cache.
+
+        In-memory state only — mirrors `HandlerRegistry.reset()`: the seam for
+        per-test isolation, not a delete of the durable ``__rakaia__:upcasters``
+        meta-stream (delete that via the store if you need to).
+        """
+        self._upcasters.clear()
+        self._persisted_ids.clear()
+
     def rehydrate(self) -> None:
         if self._store is None:
             return
@@ -846,6 +883,24 @@ def get_default_upcaster_registry() -> UpcasterRegistry:
     return _default_upcaster_registry
 
 
+def reset_default_registries() -> None:
+    """Reset both process-wide default registries (handlers + upcasters).
+
+    The one call a test's teardown needs to stop registrations leaking between
+    tests when they use the default registries (via the bare `@register_handler`
+    / `@register_upcaster` / `@register_reducer` decorators). Prefer constructing
+    fresh `HandlerRegistry()` / `UpcasterRegistry()` instances and injecting them
+    into `replay()` where you can; use this when the code under test registers
+    against the module-global default. See the test-isolation section of
+    ``docs/versioned-handlers.md``.
+
+    Resets in-memory registration state only — it does not touch any durable
+    meta-streams (see `HandlerRegistry.reset()`).
+    """
+    _default_registry.reset()
+    _default_upcaster_registry.reset()
+
+
 def upcast(
     event: dict[str, Any],
     event_match: str,
@@ -926,6 +981,9 @@ def register_reducer(
     The decorated function is called `fn(reader)` once during staged replay,
     after `stage`'s per-event handlers commit, and returns the Effects that
     materialise the aggregate (typically via `reconcile_aggregate`).
+
+    A reducer is a single current definition keyed by `name` (last-write-wins),
+    not a seq-versioned series like a handler — see `ReducerVersion`.
 
     Example:
         @register_reducer(name="balance", stage=1)
