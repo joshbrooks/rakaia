@@ -163,7 +163,6 @@ def replay(
     match_str = event_match if event_match is not None else stream_path
 
     messages, _ = store.read(stream_path)
-    target_version = upcasters.current_version(match_str)
 
     result = ReplayResult()
 
@@ -178,10 +177,11 @@ def replay(
         )
 
     def _decode_upcast(seq: int, data: bytes) -> dict:
-        return upcasters.apply_chain(
+        # Target version is resolved per event so content-routed upcasters
+        # (match_field) can key off the event body, not just the stream path.
+        return upcasters.upcast_to_current(
             _decode_event(data, stream_path, seq),
             match_str,
-            target_version,
             drift_callback=_upcaster_drift,
         )
 
@@ -304,13 +304,12 @@ def merge_replay(
     tagged: list[tuple[tuple[Any, str, int], str, dict]] = []
     for path in stream_paths:
         match_str = event_match if event_match is not None else path
-        target_version = upcasters.current_version(match_str)
         messages, _ = store.read(path)
         for offset, msg in enumerate(messages):
-            upcasted = upcasters.apply_chain(
+            # per-event target so content-routed (match_field) upcasters resolve
+            upcasted = upcasters.upcast_to_current(
                 _decode_event(msg.data, path, offset),
                 match_str,
-                target_version,
                 drift_callback=_upcaster_drift,
             )
             if order_key not in upcasted:

@@ -189,6 +189,70 @@ class TestDecorator:
         assert my_upcaster({"a": 1}) == {"a": 1, "tag": "x"}
 
 
+def _tf_v1_to_v2(event: dict) -> dict:
+    return {**event, "quantized": True}
+
+
+def _sf_v1_to_v2(event: dict) -> dict:
+    return {**event, "sf_touched": True}
+
+
+class TestContentRouting:
+    """match_field: route the pattern against event[match_field] (e.g. form_type)
+    instead of the stream/event-match string — so per-form upcasters work on a
+    per-entity stream (submissions:<uuid>) whose path carries no type."""
+
+    def test_current_version_matches_on_content_field(self, reg: UpcasterRegistry):
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        # path string alone can't resolve a content-routed upcaster
+        assert reg.current_version("submissions:abc") == 1
+        # with the event, it routes on form_type
+        assert reg.current_version("submissions:abc", {"form_type": "TF_13_2_1"}) == 2
+        assert reg.current_version("submissions:abc", {"form_type": "SF_1_1"}) == 1
+
+    def test_apply_chain_content_routed(self, reg: UpcasterRegistry):
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        event = {"schema_version": 1, "form_type": "TF_13_2_1", "x": 1}
+        out = reg.upcast_to_current(event, "submissions:abc")
+        assert out["schema_version"] == 2
+        assert out["quantized"] is True
+
+    def test_non_matching_form_type_is_untouched(self, reg: UpcasterRegistry):
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        event = {"form_type": "SF_1_1", "x": 1}
+        out = reg.upcast_to_current(event, "submissions:abc")
+        assert out == event  # no upcaster matched → unchanged, no schema bump
+
+    def test_two_form_types_route_independently(self, reg: UpcasterRegistry):
+        # Both keyed on the same per-entity path family, discriminated by form_type.
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        reg.register("SF_1_1", 1, _sf_v1_to_v2, match_field="form_type")
+        tf = reg.upcast_to_current({"form_type": "TF_13_2_1"}, "submissions:abc")
+        sf = reg.upcast_to_current({"form_type": "SF_1_1"}, "submissions:def")
+        assert tf.get("quantized") and "sf_touched" not in tf
+        assert sf.get("sf_touched") and "quantized" not in sf
+
+    def test_persistence_round_trips_match_field(self):
+        store = StreamStore()
+        reg1 = UpcasterRegistry(store=store)
+        reg1.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        payload = json.loads(store.read(UPCASTERS_META_STREAM)[0][0].data)
+        assert payload["match_field"] == "form_type"
+        # a fresh registry over the same store dedups the identical registration
+        reg2 = UpcasterRegistry(store=store)
+        reg2.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+        assert len(store.read(UPCASTERS_META_STREAM)[0]) == 1
+
+    def test_decorator_passes_match_field(self):
+        reg = UpcasterRegistry()
+
+        @register_upcaster("TF_13_2_1", 1, match_field="form_type", registry=reg)
+        def up(event):
+            return {**event, "hit": True}
+
+        assert reg.all_upcasters()[0].match_field == "form_type"
+
+
 class TestUpcastToCurrent:
     def test_applies_full_chain(self, reg: UpcasterRegistry):
         reg.register("orders", 1, _up_v1_to_v2)

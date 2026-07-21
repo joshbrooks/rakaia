@@ -519,6 +519,12 @@ class UpcasterVersion:
     dotted_path: str
     source_hash: str
 
+    match_field: str | None = None
+    """When set, the ``event_match`` pattern is tested against
+    ``event[match_field]`` (content routing) instead of the stream/event-match
+    string — mirrors ``register_handler``, so a per-form upcaster can route on a
+    per-entity stream (e.g. ``submissions:<uuid>``) whose path carries no type."""
+
 
 class UpcasterRegistry:
     """
@@ -537,7 +543,7 @@ class UpcasterRegistry:
         self._upcasters: dict[tuple[str, int], UpcasterVersion] = {}
         self._store = store
         self._stream_path = stream_path
-        self._persisted_ids: set[tuple[str, int, str, str]] = set()
+        self._persisted_ids: set[tuple[str, int, str, str, str | None]] = set()
         if store is not None:
             self._ensure_stream()
             self._load_persisted_ids()
@@ -547,8 +553,15 @@ class UpcasterRegistry:
         event_match: str,
         from_version: int,
         fn: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        match_field: str | None = None,
     ) -> UpcasterVersion:
-        """Register an upcaster from `from_version` to `from_version + 1`."""
+        """Register an upcaster from `from_version` to `from_version + 1`.
+
+        When `match_field` is set, the `event_match` pattern is tested against
+        `event[match_field]` (content routing) instead of the stream/event-match
+        string, so a per-form upcaster can route on a per-entity stream.
+        """
         if from_version < 1:
             raise ValueError(f"from_version must be >= 1, got {from_version}")
 
@@ -558,6 +571,7 @@ class UpcasterRegistry:
             fn=fn,
             dotted_path=f"{fn.__module__}.{fn.__qualname__}",
             source_hash=hash_function_source(fn),
+            match_field=match_field,
         )
 
         key = (event_match, from_version)
@@ -576,12 +590,30 @@ class UpcasterRegistry:
         self._upcasters[key] = new
         return new
 
-    def current_version(self, event_match_str: str) -> int:
-        """Highest schema version reachable for an event matching this string."""
+    @staticmethod
+    def _subject(
+        up: UpcasterVersion, event: dict[str, Any] | None, event_match_str: str
+    ) -> str:
+        """The string an upcaster's pattern is matched against: a content field
+        when `match_field` is set (mirrors handler routing), else the stream/
+        event-match string. A content-routed upcaster with no event to read
+        yields "" (so it simply does not match)."""
+        if up.match_field is not None:
+            return str((event or {}).get(up.match_field, ""))
+        return event_match_str
+
+    def current_version(
+        self, event_match_str: str, event: dict[str, Any] | None = None
+    ) -> int:
+        """Highest schema version reachable for an event matching this string.
+
+        Pass `event` so content-routed upcasters (registered with `match_field`)
+        match against `event[match_field]`; without it they are skipped.
+        """
         matching_froms = [
             fv
-            for (pattern, fv) in self._upcasters
-            if fnmatch.fnmatchcase(event_match_str, pattern)
+            for (pattern, fv), up in self._upcasters.items()
+            if fnmatch.fnmatchcase(self._subject(up, event, event_match_str), pattern)
         ]
         if not matching_froms:
             return 1
@@ -599,8 +631,9 @@ class UpcasterRegistry:
         Upcast `event` from its current schema_version up to `target_version`.
 
         The event's current version is read from event["schema_version"]
-        (default 1). Each step finds the upcaster matching the event_match
-        and the current version, then bumps schema_version on the result.
+        (default 1). Each step finds the upcaster matching the event_match (or
+        `event[match_field]` for content-routed upcasters) and the current
+        version, then bumps schema_version on the result.
 
         If `drift_callback` is provided, it is called once per step with
         `(version, current_hash)` if the upcaster's source hash has changed
@@ -616,7 +649,10 @@ class UpcasterRegistry:
             matching = [
                 up
                 for (pattern, fv), up in self._upcasters.items()
-                if fv == current and fnmatch.fnmatchcase(event_match_str, pattern)
+                if fv == current
+                and fnmatch.fnmatchcase(
+                    self._subject(up, event, event_match_str), pattern
+                )
             ]
             if not matching:
                 raise UpcasterChainError(
@@ -652,7 +688,7 @@ class UpcasterRegistry:
         step every consumer outside `replay()` needs. Returns the event unchanged
         when no upcasters apply or it is already current.
         """
-        target = self.current_version(event_match_str)
+        target = self.current_version(event_match_str, event)
         return self.apply_chain(
             event, event_match_str, target, drift_callback=drift_callback
         )
@@ -697,6 +733,7 @@ class UpcasterRegistry:
             "from_version": version.from_version,
             "dotted_path": version.dotted_path,
             "source_hash": version.source_hash,
+            "match_field": version.match_field,
         }
         self._store.append(
             self._stream_path,
@@ -750,16 +787,20 @@ def _reducer_identity_from_payload(p: dict[str, Any]) -> tuple[str, int, str, st
     return (p["name"], int(p["stage"]), p["dotted_path"], p["source_hash"])
 
 
-def _u_identity(v: UpcasterVersion) -> tuple[str, int, str, str]:
-    return (v.event_match, v.from_version, v.dotted_path, v.source_hash)
+def _u_identity(v: UpcasterVersion) -> tuple[str, int, str, str, str | None]:
+    # match_field appended last so rehydrate()'s ident[2] (dotted_path) stays valid.
+    return (v.event_match, v.from_version, v.dotted_path, v.source_hash, v.match_field)
 
 
-def _u_identity_from_payload(p: dict[str, Any]) -> tuple[str, int, str, str]:
+def _u_identity_from_payload(
+    p: dict[str, Any],
+) -> tuple[str, int, str, str, str | None]:
     return (
         p["event_match"],
         int(p["from_version"]),
         p["dotted_path"],
         p["source_hash"],
+        p.get("match_field"),  # tolerate pre-match_field persisted payloads
     )
 
 
@@ -882,6 +923,7 @@ def register_upcaster(
     event_match: str,
     from_version: int,
     *,
+    match_field: str | None = None,
     registry: UpcasterRegistry | None = None,
 ) -> Callable[
     [Callable[[dict[str, Any]], dict[str, Any]]],
@@ -890,17 +932,32 @@ def register_upcaster(
     """
     Decorator that registers an upcaster from `from_version` to `from_version+1`.
 
+    By default `event_match` is matched against the stream/event-match string.
+    Set `match_field` to match it against `event[match_field]` instead (content
+    routing, mirroring `register_handler`) — so a per-form upcaster can route on
+    a per-entity stream (e.g. `submissions:<uuid>`) whose path carries no type.
+
     Example:
         @register_upcaster(event_match="room:*:messages", from_version=1)
         def upcast_room_v1_to_v2(event: dict) -> dict:
             return {**event, "currency": "USD"}
+
+        @register_upcaster(event_match="TF_13_2_1", from_version=1,
+                           match_field="form_type")
+        def upcast_tf1321_v1_to_v2(event: dict) -> dict:
+            return {**event, ...}
     """
     target = registry if registry is not None else _default_upcaster_registry
 
     def decorator(
         fn: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-        target.register(event_match=event_match, from_version=from_version, fn=fn)
+        target.register(
+            event_match=event_match,
+            from_version=from_version,
+            fn=fn,
+            match_field=match_field,
+        )
         return fn
 
     return decorator
