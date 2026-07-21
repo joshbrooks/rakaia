@@ -638,6 +638,15 @@ class StreamStore:
         byte_offset = int(parts[1])
 
         new_byte_offset = byte_offset + len(processed_data)
+        # Offsets are `{read_seq}_{byte_offset}`, each zero-padded to 16 digits
+        # so they sort byte-wise lexicographically (the protocol's requirement,
+        # and what keeps offsets monotonic across recreate). `:016d` is a minimum
+        # width, not a cap: the ordering guarantee holds only while both fields
+        # stay < 10**16. That bound is unreachable here — the byte offset is
+        # capped by the process's memory (this store holds every message in RAM,
+        # so 10**16 bytes = ~10 PB is impossible) and 10**16 recreations of one
+        # path equally so. A durable backend that could exceed it must widen the
+        # fields (and INITIAL_OFFSET) in lockstep.
         new_offset = f"{read_seq:016d}_{new_byte_offset:016d}"
 
         message = StreamMessage(
