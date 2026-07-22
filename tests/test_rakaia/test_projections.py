@@ -287,11 +287,39 @@ class TestReconcileAggregate:
         # groups that vanished (no contributors) get their aggregate removed
         assert deletes[0].exclude == {"suku__in": ["Fatuberliu", "Maubara"]}
 
-    def test_empty_groups_deletes_all(self):
-        effects = _agg({})
+    def test_empty_groups_with_scope_clears_only_that_scope(self):
+        # Empty groups under a *non-empty* scope is a safe scoped clear (removes
+        # every aggregate row in the scope) and needs no opt-in.
+        effects = _agg({}, scope={"report_id": 42})
         assert [e for e in effects if e.op == "update_or_create"] == []
         deletes = [e for e in effects if e.op == "delete"]
+        assert deletes[0].lookup == {"report_id": 42}
         assert deletes[0].exclude == {"suku__in": []}
+
+    def test_empty_global_scope_and_empty_groups_raises(self):
+        # The whole-table-wipe footgun (#50): global scope + no groups matches
+        # every row. Guarded — it must be an explicit opt-in, not a silent wipe.
+        with pytest.raises(ValueError, match="allow_full_clear"):
+            _agg({})
+
+    def test_empty_global_scope_and_empty_groups_allowed_with_flag(self):
+        # A legitimate full rebuild that found zero facts opts in explicitly.
+        effects = reconcile_aggregate(
+            model_label="app.Balance",
+            scope_lookup={},
+            group_key="suku",
+            groups={},
+            allow_full_clear=True,
+        )
+        assert [e for e in effects if e.op == "update_or_create"] == []
+        deletes = [e for e in effects if e.op == "delete"]
+        assert deletes[0].lookup == {}
+        assert deletes[0].exclude == {"suku__in": []}
+
+    def test_global_scope_with_groups_needs_no_flag(self):
+        # Global scope but non-empty groups is not a full clear — unaffected.
+        effects = _agg({"a": {"total": 1}})
+        assert [e.op for e in effects] == ["update_or_create", "delete"]
 
     def test_scope_included_in_lookup_and_delete(self):
         effects = _agg({"north": {"total": 5}}, scope={"report_id": 42})
