@@ -97,6 +97,7 @@ class DjangoStreamStore:
                 data=json.loads(data),
                 event_type=label or _APPEND_EVENT_TYPE,
                 metadata=metadata or {},
+                event_ts=getattr(options, "event_ts", None),
             )
             return StreamEntry.objects.create(
                 stream=stream,
@@ -126,6 +127,13 @@ class DjangoStreamStore:
                 data=json.dumps(entry.event.data).encode("utf-8"),
                 offset=_fmt_offset(entry.offset),
                 timestamp=entry.created_at.timestamp(),
+                # Logical envelope ts if the producer set one, else the append
+                # time — mirroring the in-memory store's default.
+                event_ts=(
+                    entry.event.event_ts
+                    if entry.event.event_ts is not None
+                    else entry.created_at.timestamp()
+                ),
                 # `"append"` is the raw-append sentinel → no envelope label;
                 # an empty metadata dict → None, matching the in-memory store.
                 label=""

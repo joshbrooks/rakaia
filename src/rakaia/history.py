@@ -76,10 +76,13 @@ def history_effects(
     which is correct only when `messages` is the **whole stream**. For
     incremental (tail `store.read(path, offset=…)`) or merged inputs — where the
     index restarts and would collide with earlier events of the same subject —
-    pass ``version_of`` to derive a stable per-event version. The durable store's
-    offset is a monotonic integer, so ``version_of=lambda m: int(m.offset)`` is
-    the recommended stable key (matching the RFC's "audit keyed by (stream,
-    offset), never renumbered").
+    pass ``version_of`` to derive a stable per-event version. Use the **opaque
+    offset token itself**, ``version_of=lambda m: m.offset`` (stored in a
+    string/char column): it is stable and never renumbered, matching the RFC's
+    "audit keyed by (stream, offset)". Do **not** parse it with ``int()`` — an
+    offset is opaque and its format is store-specific (the in-memory store's is a
+    compound ``{seq}_{byte}`` string, not an integer); see the `ReadableStore`
+    offset contract.
 
     Args:
         messages: the stream's messages (from ``store.read``), carrying the

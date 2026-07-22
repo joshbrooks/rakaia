@@ -38,11 +38,13 @@ def materialize_history(
     is a no-op), applies them with a `DjangoExecutor`, and returns the applied
     Effects.
 
-    Pass ``version_of=lambda m: int(m.offset)`` to key rows on the durable stream
-    offset — never renumbered, so the keys match an incremental
-    `history_effects` done elsewhere; the default list-index version is fine for
-    this whole-stream read but is not offset-stable. Pass `executor` to reuse a
-    shared executor (e.g. one with ``skip_unchanged=True``).
+    Pass ``version_of=lambda m: m.offset`` to key rows on the durable stream
+    offset — an opaque, never-renumbered token, so the keys match an incremental
+    `history_effects` done elsewhere (store it in a string/char column, since an
+    offset is opaque and **must not** be parsed with ``int()`` — see the
+    `ReadableStore` offset contract). The default list-index version is fine for a
+    whole-stream read but is not offset-stable. Pass `executor` to reuse a shared
+    executor (e.g. one with ``skip_unchanged=True``).
     """
     messages, _ = store.read(path)
     effects = history_effects(

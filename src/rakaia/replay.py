@@ -51,6 +51,23 @@ _log = logging.getLogger("rakaia.replay")
 OnDriftPolicy = Literal["warn", "raise"]
 
 
+class _EnvelopeTs:
+    """Sentinel `order_key` selecting the first-class envelope timestamp."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "ENVELOPE_TS"
+
+
+ENVELOPE_TS = _EnvelopeTs()
+"""Pass as ``merge_replay(order_key=ENVELOPE_TS)`` to merge on the **envelope**
+timestamp (`StreamMessage.event_ts` — the producer's logical event time,
+defaulting to append time) rather than a field read out of the payload body.
+This is the first-class, unambiguous merge key (see the ADR-0002 determinism
+contract); a plain string `order_key` still reads the decoded payload."""
+
+
 @dataclass
 class ReplayResult:
     """Summary of a single replay() invocation."""
@@ -238,7 +255,7 @@ def merge_replay(
     stream_paths: list[str],
     executor: Executor,
     *,
-    order_key: str = "ts",
+    order_key: str | _EnvelopeTs = "ts",
     handler_registry: HandlerRegistry | None = None,
     upcaster_registry: UpcasterRegistry | None = None,
     event_match: str | None = None,
@@ -251,9 +268,9 @@ def merge_replay(
 
     Each stream is already ordered, so this is a k-way merge; the design point is
     the **order key**. Every event is decoded, upcast, and tagged with
-    ``(event[order_key], stream_path, offset)``, then the merged sequence is that
-    tuple sorted — so equal order-key values across streams break by stream path
-    then offset, giving an order that is a pure function of the streams and is
+    ``(sort_value, stream_path, offset)``, then the merged sequence is that tuple
+    sorted — so equal order-key values across streams break by stream path then
+    offset, giving an order that is a pure function of the streams and is
     **independent of the order `stream_paths` is passed**. The merged events then
     run through exactly the same staged handler + reducer pipeline as `replay()`.
 
@@ -261,8 +278,18 @@ def merge_replay(
         store: The store holding the events.
         stream_paths: The streams to merge, each read in full.
         executor: Effect executor.
-        order_key: The event field to merge on (default ``"ts"`` — the envelope
-            timestamp). Raises KeyError-derived ValueError if an event lacks it.
+        order_key: What to merge on. **Two sources, deliberately distinct:**
+
+            - a **string** (default ``"ts"``) reads a field out of the **decoded
+              payload body** (``event[order_key]``). This is *not* the transport
+              or envelope timestamp — it is whatever field the producer wrote into
+              the JSON. A missing key raises a ValueError.
+            - the ``ENVELOPE_TS`` sentinel reads the first-class **envelope**
+              timestamp (``StreamMessage.event_ts`` — the producer's logical event
+              time, defaulting to append time). Prefer this: it is unambiguous and
+              does not require the producer to duplicate a timestamp into the
+              payload. A message with no ``event_ts`` (only a hand-built one; a
+              store always sets it) raises a ValueError.
         handler_registry / upcaster_registry: default to the process-wide ones.
         event_match: Match string for handler routing + upcasting. Default None
             uses each event's **source stream path** as its match string, so
@@ -278,8 +305,9 @@ def merge_replay(
     `HandlerGapError` under merge (the merged range is longer). Version merged
     handlers by content or open ranges.
 
-    Raises `ValueError` on duplicate `stream_paths`, or when an event lacks
-    `order_key` / carries `order_key` values that aren't mutually comparable.
+    Raises `ValueError` on duplicate `stream_paths`, when an event lacks the
+    requested order key (payload field, or `event_ts` under `ENVELOPE_TS`), or
+    when the order-key values aren't mutually comparable across events.
     """
     if len(set(stream_paths)) != len(stream_paths):
         raise ValueError(
@@ -312,12 +340,23 @@ def merge_replay(
                 match_str,
                 drift_callback=_upcaster_drift,
             )
-            if order_key not in upcasted:
-                raise ValueError(
-                    f"Event at offset={offset} in stream={path!r} has no "
-                    f"order_key={order_key!r}; cannot merge deterministically."
-                )
-            tagged.append(((upcasted[order_key], path, offset), match_str, upcasted))
+            if order_key is ENVELOPE_TS:
+                if msg.event_ts is None:
+                    raise ValueError(
+                        f"Event at offset={offset} in stream={path!r} has no "
+                        f"envelope event_ts; cannot merge on ENVELOPE_TS. (A store "
+                        f"always sets it — is this a hand-built StreamMessage?)"
+                    )
+                sort_value: Any = msg.event_ts
+            else:
+                if order_key not in upcasted:
+                    raise ValueError(
+                        f"Event at offset={offset} in stream={path!r} has no "
+                        f"order_key={order_key!r} in its payload; cannot merge "
+                        f"deterministically."
+                    )
+                sort_value = upcasted[order_key]
+            tagged.append(((sort_value, path, offset), match_str, upcasted))
 
     try:
         tagged.sort(key=lambda item: item[0])

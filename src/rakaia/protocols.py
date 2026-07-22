@@ -24,7 +24,20 @@ from .types import StreamMessage
 
 @runtime_checkable
 class ReadableStore(Protocol):
-    """A store `replay()` can read events from."""
+    """A store `replay()` can read events from.
+
+    **Offset contract** (Durable Streams protocol §6). A ``StreamMessage.offset``
+    is an **opaque, lexicographically-sortable** token that marks a position in a
+    stream, and successive appends to one stream yield strictly increasing
+    offsets. Its byte *format* is store-specific — the in-memory `StreamStore`
+    uses a compound ``{seq}_{byte}`` string, `DjangoStreamStore` a zero-padded
+    integer — so consumers **MUST** treat an offset as opaque: pass it back to
+    ``read(path, offset=…)`` to resume, and compare offsets from *the same store*
+    lexicographically for ordering. Do **not** parse one (no ``int(offset)``);
+    that couples you to one backend and breaks portability. For a monotonic
+    per-event number, use the event's position in the read sequence or an envelope
+    field — not the offset.
+    """
 
     def read(
         self, path: str, offset: str | None = None
@@ -32,7 +45,8 @@ class ReadableStore(Protocol):
         """Return ``(messages, up_to_date)`` for `path`, ordered oldest-first.
 
         With no `offset`, returns every message; with an `offset`, returns the
-        messages after it. Raises `KeyError` if the stream does not exist.
+        messages after it (offsets are opaque — see the class docstring). Raises
+        `KeyError` if the stream does not exist.
         """
         ...
 

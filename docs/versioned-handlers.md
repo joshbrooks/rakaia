@@ -268,6 +268,29 @@ The drift signal tells you that a function you'd promised to leave alone
 remedy is either to revert the change or to formalise it as a new
 version covering the appropriate seq range.
 
+### Upcasters rewrite history — and are *not* seq-versioned
+
+Handlers are bracketed by a `[from_seq, to_seq)` range, so old events keep the
+logic that was live when they were written. **Upcasters are not.** An upcaster is
+keyed by `(event_match, from_version)` alone, so editing a shipped upcaster's body
+retroactively changes the effective shape of **every** historical event at that
+schema step — the next replay runs them all through the *new* code.
+
+Drift detection **catches** this (the same `RAKAIA_DRIFT` warning, or a raise
+under `--strict-drift`) but does not prevent it — a source-hash mismatch on an
+upcaster means "you changed how all of history is interpreted," which is almost
+never what you want once events exist at that version.
+
+The contract, therefore:
+
+> Once events exist at schema version *N*, treat the `from_version=N` upcaster's
+> body as **append-only history**. Evolve the schema by adding a *new*
+> `from_version=N` → `N+1` step (a longer chain), never by editing a shipped
+> upcaster in place.
+
+An in-place edit is only safe before any event has been written at that version
+(e.g. still in development). After that, add a step.
+
 ## Registries: global vs injected, and test isolation
 
 The bare decorators (`@register_handler`, `@register_upcaster`,

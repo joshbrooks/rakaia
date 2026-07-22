@@ -280,7 +280,11 @@ class StreamStore:
         # here at the public-append boundary — not in _append_to_stream — so a
         # stream's initial-create message is never stamped.
         message = self._append_to_stream(
-            stream, data, label=opts.label, metadata=merge_provenance(opts.metadata)
+            stream,
+            data,
+            label=opts.label,
+            metadata=merge_provenance(opts.metadata),
+            event_ts=opts.event_ts,
         )
 
         # === STATE MUTATION (only after successful append) ===
@@ -624,6 +628,7 @@ class StreamStore:
         *,
         label: str = "",
         metadata: dict | None = None,
+        event_ts: float | None = None,
     ) -> StreamMessage | None:
         """Append data to a stream, handling JSON mode processing."""
         processed_data = data
@@ -649,10 +654,14 @@ class StreamStore:
         # fields (and INITIAL_OFFSET) in lockstep.
         new_offset = f"{read_seq:016d}_{new_byte_offset:016d}"
 
+        # Envelope timestamp defaults to append time when the producer didn't set
+        # a logical one, so `event_ts` is always populated after a store append.
+        append_time = time.time()
         message = StreamMessage(
             data=processed_data,
             offset=new_offset,
-            timestamp=time.time(),
+            timestamp=append_time,
+            event_ts=event_ts if event_ts is not None else append_time,
             label=label,
             metadata=metadata,
         )

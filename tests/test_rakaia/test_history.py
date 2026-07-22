@@ -100,14 +100,17 @@ class TestHistoryEffects:
             _msg({"key": "s1", "n": 1}, offset="10"),
             _msg({"key": "s1", "n": 2}, offset="20"),
         ]
+        # The stable per-event key is the opaque offset token itself — not
+        # int(m.offset), which the offset contract forbids (formats differ by
+        # store).
         effects = history_effects(
             messages,
             "app.H",
             subject_of=lambda ev: ev["key"],
             defaults_of=lambda _m, ev: {"snapshot": ev},
-            version_of=lambda m: int(m.offset),
+            version_of=lambda m: m.offset,
         )
-        assert [e.lookup["version"] for e in effects] == [10, 20]
+        assert [e.lookup["version"] for e in effects] == ["10", "20"]
 
         # A later tail read of just event #3 keeps its own stable version.
         tail = [_msg({"key": "s1", "n": 3}, offset="30")]
@@ -116,9 +119,9 @@ class TestHistoryEffects:
             "app.H",
             subject_of=lambda ev: ev["key"],
             defaults_of=lambda _m, ev: {"snapshot": ev},
-            version_of=lambda m: int(m.offset),
+            version_of=lambda m: m.offset,
         )
-        assert tail_effects[0].lookup["version"] == 30  # not 0 → no collision
+        assert tail_effects[0].lookup["version"] == "30"  # not 0 → no collision
 
 
 class TestRecoverPeakSnapshot:
