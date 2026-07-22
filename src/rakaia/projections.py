@@ -256,6 +256,8 @@ def reconcile_aggregate(
     scope_lookup: dict[str, Any],
     group_key: str,
     groups: Mapping[Any, dict[str, Any]],
+    *,
+    allow_full_clear: bool = False,
 ) -> list[Effect]:
     """Materialise one recomputed aggregate row per group, without stale rows.
 
@@ -266,12 +268,14 @@ def reconcile_aggregate(
     per group plus a reconcile ``delete`` that removes aggregate rows for groups
     which no longer have any contributors.
 
-    .. warning::
-        The reconcile delete is scoped to ``scope_lookup``. With a global scope
-        (``scope_lookup={}``) **and** empty ``groups``, the delete matches every
-        row in the model and clears the whole table. Pass a non-empty
-        ``scope_lookup`` whenever the aggregate model holds more than this one
-        rollup, so an empty recompute clears only that scope.
+    **Whole-table-wipe guard.** The reconcile delete is scoped to
+    ``scope_lookup``. A global scope (``scope_lookup={}``) **with** empty
+    ``groups`` is a delete that matches *every* row in the model — a full-table
+    clear. That is correct for a full rebuild which legitimately found zero
+    facts, but is a footgun when run against an empty or half-migrated fact
+    table (it silently wipes the projection). So that exact combination raises
+    ``ValueError`` unless you opt in with ``allow_full_clear=True``. A non-empty
+    ``scope_lookup`` (a scoped clear) or non-empty ``groups`` is never gated.
 
     Args:
         model_label: 'app_label.ModelName' of the aggregate model.
@@ -283,12 +287,26 @@ def reconcile_aggregate(
             ``"district"``. (Single-field groups; composite groups are out of
             scope — a simple ``exclude`` cannot express "tuple not in set".)
         groups: mapping of group value to its recomputed ``defaults=`` values.
+        allow_full_clear: opt in to the whole-table clear (global scope + empty
+            groups). Required for that one combination; ignored otherwise.
 
     Returns:
         One ``update_or_create`` Effect per group (in mapping order), followed by
         one ``delete`` Effect removing rows under ``scope_lookup`` whose group is
         not present. Empty ``groups`` yields just the delete, clearing the set.
+
+    Raises:
+        ValueError: if ``scope_lookup`` and ``groups`` are both empty and
+            ``allow_full_clear`` is not set — the un-opted-in whole-table wipe.
     """
+    if not scope_lookup and not groups and not allow_full_clear:
+        raise ValueError(
+            f"reconcile_aggregate({model_label!r}) with a global scope "
+            "(scope_lookup={}) and empty groups would delete every row in the "
+            "model. Pass a non-empty scope_lookup to clear only that scope, or "
+            "allow_full_clear=True to confirm you intend a whole-table clear "
+            "(e.g. a full rebuild that found zero facts)."
+        )
     group_values = list(groups)
     effects: list[Effect] = [
         Effect(
