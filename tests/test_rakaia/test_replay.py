@@ -13,7 +13,7 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import ENVELOPE_TS, merge_replay, replay
+from rakaia.replay import ENVELOPE_TS, TouchedSubject, merge_replay, replay
 from rakaia.store import StreamStore
 from rakaia.types import AppendOptions
 
@@ -896,6 +896,176 @@ class TestReducers:
         )
         assert len(proj.query("app.FinanceLine")) == 3
         assert {b.suku for b in proj.query("app.Balance")} == {"A", "B"}
+
+
+def _capturing_reducer(sink: list):
+    # A two-argument reducer opts in to the touched-subjects signal.
+    def reducer(reader, touched):  # noqa: ARG001
+        sink.append(touched)
+        return []
+
+    return reducer
+
+
+class TestReducerTouchedSubjects:
+    """A reducer that declares a second parameter receives the deterministic set
+    of subjects the pass's per-event handlers wrote (#51)."""
+
+    def test_two_arg_reducer_receives_touched_subjects(self, store: StreamStore):
+        _seed_stream(store, "s", _FINANCE_EVENTS)  # keys f1, f2, f3
+        sink: list = []
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(_capturing_reducer(sink)),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        (touched,) = sink
+        # In event order, one subject per FinanceLine write, each identified by
+        # the effect's (model_label, lookup).
+        assert [(t.model_label, t.lookup) for t in touched] == [
+            ("app.FinanceLine", {"submission_id": "f1"}),
+            ("app.FinanceLine", {"submission_id": "f2"}),
+            ("app.FinanceLine", {"submission_id": "f3"}),
+        ]
+        assert all(isinstance(t, TouchedSubject) for t in touched)
+
+    def test_one_arg_reducer_is_called_unchanged(self, store: StreamStore):
+        # A legacy fn(reader) reducer keeps working — no touched arg is forced.
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(_balance_reducer),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        assert proj.get("app.Balance", suku="A").total == 70
+
+    def test_touched_is_incremental_on_a_tail_replay(self, store: StreamStore):
+        # Replaying only the tail touches only the tail's subjects — the same
+        # reducer scopes to what the pass changed, no code change at the reducer.
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        sink: list = []
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(_capturing_reducer(sink)),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+            start_seq=2,  # only f3
+        )
+        (touched,) = sink
+        assert [t.lookup for t in touched] == [{"submission_id": "f3"}]
+
+    def test_touched_excludes_reducer_outputs(self, store: StreamStore):
+        # touched reflects per-event *handler* writes, not what an earlier
+        # reducer at the same stage emitted. Two stage-1 reducers, name-ordered:
+        # "a_writes" recomputes app.Balance; "b_captures" runs after and must not
+        # see app.Balance in its touched set.
+        _seed_stream(store, "s", _FINANCE_EVENTS)
+        sink: list = []
+        reg = HandlerRegistry()
+        reg.register(
+            "finance", "FINANCE", _finance_line, 0, None, match_field="form_type"
+        )
+        reg.register_reducer("a_writes", 1, _balance_reducer)
+        reg.register_reducer("b_captures", 1, _capturing_reducer(sink))
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=reg,
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        (touched,) = sink
+        assert proj.get("app.Balance", suku="A").total == 70  # a_writes ran first
+        assert {t.model_label for t in touched} == {"app.FinanceLine"}
+
+    def test_touched_deduplicates_repeated_subjects(self, store: StreamStore):
+        # Two events writing the same subject appear once in touched.
+        events = [
+            {
+                "schema_version": 1,
+                "form_type": "FINANCE",
+                "key": "f1",
+                "suku": "A",
+                "delta": 100,
+            },
+            {
+                "schema_version": 1,
+                "form_type": "FINANCE",
+                "key": "f1",
+                "suku": "A",
+                "delta": 5,
+            },
+        ]
+        _seed_stream(store, "s", events)
+        sink: list = []
+        proj = DictProjections()
+        replay(
+            store,
+            "s",
+            proj,
+            handler_registry=_finance_registry(_capturing_reducer(sink)),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        (touched,) = sink
+        assert [t.lookup for t in touched] == [{"submission_id": "f1"}]
+
+    def test_touched_flows_through_merge_replay(self, store: StreamStore):
+        # merge_replay shares the same pipeline; a two-arg reducer gets the
+        # touched subjects merged across streams, in merged order.
+        _seed_stream(
+            store,
+            "fin/a",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f1",
+                    "suku": "A",
+                    "delta": 100,
+                    "ts": "2026-01-01T00:00:00Z",
+                }
+            ],
+        )
+        _seed_stream(
+            store,
+            "fin/b",
+            [
+                {
+                    "schema_version": 1,
+                    "form_type": "FINANCE",
+                    "key": "f2",
+                    "suku": "A",
+                    "delta": -30,
+                    "ts": "2026-01-01T01:00:00Z",
+                }
+            ],
+        )
+        sink: list = []
+        proj = DictProjections()
+        merge_replay(
+            store,
+            ["fin/a", "fin/b"],
+            proj,
+            handler_registry=_finance_registry(_capturing_reducer(sink)),
+            upcaster_registry=UpcasterRegistry(),
+            reader=proj,
+        )
+        (touched,) = sink
+        assert {t.lookup["submission_id"] for t in touched} == {"f1", "f2"}
 
 
 # ---------------------------------------------------------------------------

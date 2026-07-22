@@ -18,7 +18,10 @@ pass per stage in ascending order: the whole range through stage 0, then stage
 projections earlier stages committed. A stage may also declare **reducers**
 (`register_reducer(name, stage, fn)`) that run once, after that stage's per-event
 handlers, to recompute an aggregate from the committed projections via the
-reader. See `register_handler(stage=...)` and `register_reducer(...)`.
+reader. A reducer declaring a second parameter (`fn(reader, touched)`) also
+receives the `TouchedSubject`s the pass's handlers wrote, so one reducer can
+scope its recompute to what changed (incremental) or to everything (full
+rebuild). See `register_handler(stage=...)` and `register_reducer(...)`.
 
 Re-running the same range twice produces identical materialized state because
 all Effects use update_or_create (idempotent).
@@ -26,6 +29,7 @@ all Effects use update_or_create (idempotent).
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import Iterable
@@ -79,6 +83,23 @@ class ReplayResult:
     drift_detected: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TouchedSubject:
+    """One subject a replay pass's per-event handlers wrote: the target model
+    and the ``lookup`` identifying the affected row(s), taken straight from the
+    applied Effect.
+
+    A staged-replay reducer that declares a second parameter receives the
+    deterministic, deduplicated tuple of these — the subjects changed *in this
+    pass* — so it can scope its recompute (e.g. only the touched groups on an
+    incremental forward replay, everything on a full rebuild). A one-argument
+    ``fn(reader)`` reducer is unaffected. See `register_reducer`.
+    """
+
+    model_label: str
+    lookup: dict[str, Any]
+
+
 @dataclass
 class _ReplayCtx:
     """Bundle of the invariants the pipeline helpers need, shared by `replay()`
@@ -90,6 +111,61 @@ class _ReplayCtx:
     include_external: bool
     on_drift: OnDriftPolicy
     result: ReplayResult
+    # Only accumulate touched subjects when a reducer actually opts in (a second
+    # parameter), so the common path pays nothing.
+    track_touched: bool = False
+    touched: list[TouchedSubject] = field(default_factory=list)
+    _touched_seen: set = field(default_factory=set)
+
+
+def _reducer_wants_touched(fn: Any) -> bool:
+    """Whether a reducer opts in to the touched-subjects arg by declaring a
+    second positional parameter — mirroring how a stage > 0 handler opts in to
+    the reader. A plain ``fn(reader)`` returns False and is called with one arg,
+    so existing reducers are unchanged.
+    """
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for p in sig.parameters.values():
+        if p.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 2
+
+
+def _wants_touched_reducer(handlers: HandlerRegistry) -> bool:
+    """Whether any registered reducer opts in — decides if we bother tracking."""
+    return handlers.has_reducers() and any(
+        _reducer_wants_touched(r.fn) for r in handlers.all_reducers()
+    )
+
+
+def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
+    # A subject is a subject-bearing effect's (model_label, lookup). Skip
+    # external effects (no subject) and dedup in first-seen (event) order so the
+    # set is a pure function of the events. A non-hashable lookup value is rare
+    # and simply skips dedup — order still deterministic.
+    for e in effects:
+        if e.op == "external" or e.model_label is None or e.lookup is None:
+            continue
+        try:
+            key = (e.model_label, tuple(sorted(e.lookup.items())))
+        except TypeError:
+            key = None
+        if key is not None:
+            if key in ctx._touched_seen:
+                continue
+            ctx._touched_seen.add(key)
+        ctx.touched.append(
+            TouchedSubject(model_label=e.model_label, lookup=dict(e.lookup))
+        )
 
 
 def _apply_effects(ctx: _ReplayCtx, effects: list[Effect]) -> None:
@@ -112,16 +188,25 @@ def _dispatch_event(
     for version in versions:
         _check_handler_drift(version, ctx.on_drift, ctx.result)
         all_effects.extend(_call_handler(version, upcasted, ctx.reader))
+    if ctx.track_touched:
+        _record_touched(ctx, all_effects)
     _apply_effects(ctx, all_effects)
 
 
 def _run_stage_reducers(ctx: _ReplayCtx, stage: int | None) -> None:
     # Reducers run once per stage, after that stage's per-event handlers have
     # committed, reading the accumulated projections via the reader. A None
-    # stage (single, non-staged pass) has no reducers.
+    # stage (single, non-staged pass) has no reducers. A reducer declaring a
+    # second parameter also receives the subjects the pass's handlers touched so
+    # far (cumulative across stages already run this pass); reducer *outputs* are
+    # not themselves recorded as touched.
     for reducer in ctx.handlers.reducers_for_stage(stage):
         _check_reducer_drift(reducer, ctx.on_drift, ctx.result)
-        _apply_effects(ctx, _normalize_effects(reducer.fn(ctx.reader)))
+        if _reducer_wants_touched(reducer.fn):
+            out = reducer.fn(ctx.reader, tuple(ctx.touched))
+        else:
+            out = reducer.fn(ctx.reader)
+        _apply_effects(ctx, _normalize_effects(out))
 
 
 def replay(
@@ -171,9 +256,11 @@ def replay(
     stage > 0 handlers are called `fn(event, reader)` so they can resolve facts
     earlier stages materialised (a form linking to a reference entity another
     form created, regardless of arrival order). After a stage's per-event
-    handlers, its reducers (`register_reducer`) run once as `fn(reader)` to
-    recompute aggregates. With only stage 0 handlers and no reducers, replay is a
-    single pass, exactly as before.
+    handlers, its reducers (`register_reducer`) run once as `fn(reader)` — or
+    `fn(reader, touched)` for a reducer that opts in to the tuple of
+    `TouchedSubject`s the pass's handlers wrote — to recompute aggregates. With
+    only stage 0 handlers and no reducers, replay is a single pass, exactly as
+    before.
     """
     handlers = handler_registry or get_default_registry()
     upcasters = upcaster_registry or get_default_upcaster_registry()
@@ -212,6 +299,7 @@ def replay(
         include_external=include_external,
         on_drift=on_drift,
         result=result,
+        track_touched=_wants_touched_reducer(handlers),
     )
     stage_numbers = handlers.stages()
     staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
@@ -373,6 +461,7 @@ def merge_replay(
         include_external=include_external,
         on_drift=on_drift,
         result=result,
+        track_touched=_wants_touched_reducer(handlers),
     )
     stage_numbers = handlers.stages()
     staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
