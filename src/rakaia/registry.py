@@ -528,7 +528,8 @@ class UpcasterVersion:
 
 class UpcasterRegistry:
     """
-    Registry of schema-version upcasters, keyed by (event_match, from_version).
+    Registry of schema-version upcasters, keyed by (event_match, from_version,
+    match_field).
 
     Each upcaster transforms an event dict from schema_version N to N+1. The
     registry composes them into a chain via `apply_chain`.
@@ -540,7 +541,7 @@ class UpcasterRegistry:
         *,
         stream_path: str = UPCASTERS_META_STREAM,
     ) -> None:
-        self._upcasters: dict[tuple[str, int], UpcasterVersion] = {}
+        self._upcasters: dict[tuple[str, int, str | None], UpcasterVersion] = {}
         self._store = store
         self._stream_path = stream_path
         self._persisted_ids: set[tuple[str, int, str, str, str | None]] = set()
@@ -561,6 +562,12 @@ class UpcasterRegistry:
         When `match_field` is set, the `event_match` pattern is tested against
         `event[match_field]` (content routing) instead of the stream/event-match
         string, so a per-form upcaster can route on a per-entity stream.
+
+        A stream-routed and a content-routed upcaster may share the same
+        `(event_match, from_version)` — `match_field` is part of the identity
+        key, so they are distinct registrations, not a conflict. A conflict
+        is only raised when `(event_match, from_version, match_field)` are
+        all identical but the function/hash differ.
         """
         if from_version < 1:
             raise ValueError(f"from_version must be >= 1, got {from_version}")
@@ -574,19 +581,16 @@ class UpcasterRegistry:
             match_field=match_field,
         )
 
-        key = (event_match, from_version)
+        key = (event_match, from_version, match_field)
         existing = self._upcasters.get(key)
         if existing is not None:
             if _u_identity(existing) == _u_identity(new):
                 return existing
             raise UpcasterConflictError(
                 f"Upcaster already registered for event_match={event_match!r}, "
-                f"from_version={from_version} (existing dotted_path="
-                f"{existing.dotted_path!r} match_field={existing.match_field!r}, "
-                f"new dotted_path={new.dotted_path!r} match_field={new.match_field!r})."
-                " The (event_match, from_version) key ignores match_field, so a "
-                "stream-routed and a content-routed upcaster cannot share it — "
-                "give them distinct event_match patterns."
+                f"from_version={from_version}, match_field={match_field!r} "
+                f"(existing dotted_path={existing.dotted_path!r}, "
+                f"new dotted_path={new.dotted_path!r})."
             )
 
         if self._store is not None:
@@ -628,7 +632,7 @@ class UpcasterRegistry:
         """
         matching_froms = [
             fv
-            for (pattern, fv), up in self._upcasters.items()
+            for (pattern, fv, _match_field), up in self._upcasters.items()
             if fnmatch.fnmatchcase(self._subject(up, event, event_match_str), pattern)
         ]
         if not matching_froms:
@@ -671,7 +675,7 @@ class UpcasterRegistry:
         while current < target_version:
             matching = [
                 up
-                for (pattern, fv), up in self._upcasters.items()
+                for (pattern, fv, _match_field), up in self._upcasters.items()
                 if fv == current
                 and fnmatch.fnmatchcase(
                     self._subject(up, event, event_match_str), pattern
