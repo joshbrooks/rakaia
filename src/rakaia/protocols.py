@@ -73,12 +73,24 @@ class WritableStore(ReadableStore, Protocol):
     def append(self, path: str, data: bytes, options: Any = None) -> Any:
         """Append one (optionally enveloped) event to `path`.
 
-        Raises `KeyError` if the stream does not exist (create it first) — the one
-        guaranteed exception. Beyond that, backends may raise for their own
-        validation (the in-memory `StreamStore` raises `ValueError` on a
-        content-type or Stream-Seq conflict) or signal a closed stream without
-        raising; `DjangoStreamStore` has no such concept. Depend only on the
-        `KeyError` here; treat richer errors as backend-specific.
+        Three possible outcomes, only the first of which is guaranteed across
+        every backend:
+
+        - Raises `KeyError` if the stream does not exist (create it first) —
+          the one guaranteed exception every `WritableStore` must raise.
+        - May raise `ValueError` for a backend's own validation (the in-memory
+          `StreamStore` raises this on a content-type or Stream-Seq conflict);
+          `DjangoStreamStore` has no such concept and never raises it.
+        - May return normally with a closed-stream signal instead of raising
+          (the in-memory `StreamStore`'s `AppendResult.stream_closed=True`,
+          with `message=None`, when appending to a closed stream);
+          `DjangoStreamStore` has no closed-stream concept and never signals
+          this.
+
+        Depend only on the `KeyError` here; treat the `ValueError` and
+        `stream_closed=True` cases as backend-specific, not part of the
+        `WritableStore` contract (see `tests/store_contract.py` for what is and
+        isn't asserted across backends).
 
         The envelope — `label` and `metadata` on `options` (an `AppendOptions`) —
         is recorded and read back by `read`; ambient `provenance()` merges under
