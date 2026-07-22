@@ -276,14 +276,37 @@ class TestContentRouting:
         assert out["schema_version"] == 3
         assert out["quantized"] is True and out["v3"] is True
 
-    def test_stream_and_content_routed_same_key_conflicts(self, reg: UpcasterRegistry):
-        # (event_match, from_version) ignores match_field, so a stream-routed and
-        # a content-routed upcaster can't share it — converting one to the other
-        # under the same identifiers is a migration foot-gun that must fail loudly,
-        # naming match_field as the differentiator.
+    def test_stream_and_content_routed_same_key_do_not_conflict(
+        self, reg: UpcasterRegistry
+    ):
+        # match_field is part of the identity key, so a stream-routed and a
+        # content-routed upcaster sharing (event_match, from_version) are
+        # distinct registrations, not a conflict — they route on different
+        # subjects (the stream path vs. event[match_field]) so there is no
+        # actual ambiguity.
         reg.register("TF_13_2_1", 1, _tf_v1_to_v2)  # stream-routed
+        reg.register(
+            "TF_13_2_1", 1, _sf_v1_to_v2, match_field="form_type"
+        )  # content-routed
+        assert len(reg.all_upcasters()) == 2
+
+        # stream-routed: matches when event_match_str == "TF_13_2_1"
+        stream_out = reg.upcast_to_current({"schema_version": 1}, "TF_13_2_1")
+        assert stream_out.get("quantized") is True
+
+        # content-routed: matches when event["form_type"] == "TF_13_2_1"
+        content_out = reg.upcast_to_current(
+            {"schema_version": 1, "form_type": "TF_13_2_1"}, "submissions:abc"
+        )
+        assert content_out.get("sf_touched") is True
+
+    def test_genuine_conflict_same_match_field_raises(self, reg: UpcasterRegistry):
+        # Same (event_match, from_version, match_field) with a different
+        # function is a real conflict and must still raise, naming
+        # match_field as part of the identifying key.
+        reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
         with pytest.raises(UpcasterConflictError, match="match_field"):
-            reg.register("TF_13_2_1", 1, _tf_v1_to_v2, match_field="form_type")
+            reg.register("TF_13_2_1", 1, _sf_v1_to_v2, match_field="form_type")
 
     def test_content_routed_ambiguous_match_raises(self, reg: UpcasterRegistry):
         # two content-routed patterns that both match one event → ambiguous chain.
@@ -335,7 +358,7 @@ class TestModuleLevelUpcast:
             assert out["normalised"] is True
             assert out["schema_version"] == 2
         finally:
-            reg._upcasters.pop(("module_upcast_stream", 1), None)
+            reg._upcasters.pop(("module_upcast_stream", 1, None), None)
 
     def test_explicit_registry(self, reg: UpcasterRegistry):
         from rakaia import upcast
