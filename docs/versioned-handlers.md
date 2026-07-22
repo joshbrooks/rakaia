@@ -268,6 +268,64 @@ The drift signal tells you that a function you'd promised to leave alone
 remedy is either to revert the change or to formalise it as a new
 version covering the appropriate seq range.
 
+## Registries: global vs injected, and test isolation
+
+The bare decorators (`@register_handler`, `@register_upcaster`,
+`@register_reducer`) register against **process-wide default registries** —
+convenient for an app that discovers its handlers at import time. But a global
+mutable registry is the seam most at odds with rakaia's otherwise pure design:
+registrations made in one test leak into the next, and long-running / hot-reload
+processes accumulate stale versions.
+
+Two supported patterns keep replay deterministic and tests isolated:
+
+**Preferred — construct and inject a fresh registry.** `replay()` and
+`merge_replay()` take `handler_registry=` / `upcaster_registry=`, so a test (or a
+per-tenant caller) can build its own and never touch the global:
+
+```python
+from rakaia import HandlerRegistry, UpcasterRegistry, replay
+
+handlers = HandlerRegistry()
+handlers.register("mogrify", "room:*", mogrify_v1, effective_from=0)
+replay(store, "room:1", executor, handler_registry=handlers)
+```
+
+This is also how you get **namespace / tenant scoping** today: key a separate
+registry instance per tenant and inject it — there is no built-in scoping on the
+default registry, and this is the escape hatch.
+
+**Default-registry tests — reset in teardown.** When the code under test uses the
+bare decorators, call `reset_default_registries()` between tests:
+
+```python
+import pytest
+from rakaia import reset_default_registries
+
+@pytest.fixture(autouse=True)
+def _isolate_registries():
+    reset_default_registries()
+    yield
+    reset_default_registries()
+```
+
+rakaia's own `tests/test_rakaia/conftest.py` ships exactly this fixture.
+`HandlerRegistry.reset()` / `UpcasterRegistry.reset()` clear **in-memory**
+registration state only; they do **not** delete the durable meta-streams
+(`__rakaia__:handlers`, `__rakaia__:upcasters`, `__rakaia__:reducers`). On a
+store-backed registry, resetting the dedup cache means the next `register()`
+re-appends an audit event even for an already-persisted registration — delete the
+meta-stream via the store if you need a truly clean slate.
+
+### Reducers replace last-write-wins
+
+A **reducer** (`register_reducer(name, stage, fn)`) is a single *current*
+definition keyed by `name` — not a seq-versioned series like a handler.
+Registering a different function under an existing name **replaces** it. This is
+deliberate: a reducer recomputes an aggregate *wholesale* from the committed
+projections on every replay, so there is no per-sequence window to version over.
+If you need two coexisting reduce steps, give them distinct names.
+
 ## Replacing `post_migration_tasks.py`
 
 Existing `PostMigrationTask` entries map naturally onto versioned handlers

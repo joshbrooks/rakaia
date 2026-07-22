@@ -68,6 +68,7 @@ from .registry import (
     register_handler,
     register_reducer,
     register_upcaster,
+    reset_default_registries,
     upcast,
 )
 from .replay import ReplayResult, merge_replay, replay
@@ -167,6 +168,7 @@ __all__ = [
     "UpcasterChainError",
     "get_default_registry",
     "get_default_upcaster_registry",
+    "reset_default_registries",
     "upcast",
     "HANDLERS_META_STREAM",
     "UPCASTERS_META_STREAM",
