@@ -349,6 +349,37 @@ deliberate: a reducer recomputes an aggregate *wholesale* from the committed
 projections on every replay, so there is no per-sequence window to version over.
 If you need two coexisting reduce steps, give them distinct names.
 
+### Reducers: recompute everything, or just what changed
+
+By default a reducer is called `fn(reader)` and recomputes its aggregate
+*wholesale* — correct, and the right thing for a full rebuild. But recomputing
+every group on every incremental save is wasteful when a single submission
+touched two of them.
+
+A reducer that declares a **second parameter** — `fn(reader, touched)` — is
+handed the tuple of `TouchedSubject`s the pass's per-event handlers wrote (each
+carries the effect's `model_label` and `lookup`). It is deterministic and
+deduplicated, in event order, and — crucially — is a function of *this pass*:
+on a full replay it is every subject; on a tail/incremental replay it is only
+the ones the tail touched. So one reducer serves both paths — scope the
+recompute (and the `reconcile_aggregate` scope) to `touched` when it is small,
+recompute everything when it is the whole stream:
+
+```python
+from rakaia import register_reducer, reconcile_aggregate
+
+@register_reducer(name="balance", stage=1)
+def balance(reader, touched):
+    sukus = {t.lookup["suku"] for t in touched if t.model_label == "ida.Line"}
+    groups = _recompute_totals(reader, only=sukus)      # only the touched groups
+    return reconcile_aggregate("ida.Balance", {}, "suku", groups)
+```
+
+The signal is opt-in and detected by signature (the same way a stage > 0 handler
+opts in to the reader): a plain `fn(reader)` reducer is called exactly as before.
+Note it reflects **handler** writes only — a reducer's own output Effects are not
+recorded as touched, so reducers at the same stage don't feed each other.
+
 ## Replacing `post_migration_tasks.py`
 
 Existing `PostMigrationTask` entries map naturally onto versioned handlers

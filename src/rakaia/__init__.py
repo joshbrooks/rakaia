@@ -71,7 +71,7 @@ from .registry import (
     reset_default_registries,
     upcast,
 )
-from .replay import ENVELOPE_TS, ReplayResult, merge_replay, replay
+from .replay import ENVELOPE_TS, ReplayResult, TouchedSubject, merge_replay, replay
 from .store import StreamStore
 from .subscription import Poll, PollStatus, poll
 from .types import (
@@ -177,6 +177,7 @@ __all__ = [
     "merge_replay",
     "ENVELOPE_TS",
     "ReplayResult",
+    "TouchedSubject",
     # Subscriber cursors
     "poll",
     "Poll",

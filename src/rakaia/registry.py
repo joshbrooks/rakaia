@@ -108,6 +108,15 @@ class ReducerVersion:
     returning the idempotent Effects that materialise the aggregate. It is the
     replay-time hook that `reconcile_aggregate` is designed to fill.
 
+    **Optional touched-subjects arg.** A reducer that declares a second
+    parameter is invoked as `fn(reader, touched)`, where ``touched`` is the
+    deterministic, deduplicated tuple of `rakaia.TouchedSubject`s the pass's
+    per-event handlers wrote (their effects' ``(model_label, lookup)``). This
+    lets one reducer serve both paths: scope the recompute to ``touched`` on an
+    incremental forward replay, or ignore it and recompute everything on a full
+    rebuild. A plain ``fn(reader)`` reducer is unaffected (the arg is detected by
+    signature, mirroring how a stage > 0 handler opts in to the reader).
+
     **Replacement semantics — last-write-wins by name, not seq-versioned.**
     A reducer is a single *current* definition keyed by `name`, unlike a handler,
     which is a series of `[from_seq, to_seq)`-bracketed versions. Registering a
@@ -126,7 +135,8 @@ class ReducerVersion:
     """The stage this reducer runs in (after that stage's event handlers)."""
 
     fn: Callable[..., Any]
-    """The reducer callable. reader -> Effect | list[Effect] | None."""
+    """The reducer callable: ``reader -> ...`` or ``reader, touched -> ...``,
+    returning ``Effect | list[Effect] | None``."""
 
     dotted_path: str
     source_hash: str
@@ -984,7 +994,11 @@ def register_reducer(
 
     The decorated function is called `fn(reader)` once during staged replay,
     after `stage`'s per-event handlers commit, and returns the Effects that
-    materialise the aggregate (typically via `reconcile_aggregate`).
+    materialise the aggregate (typically via `reconcile_aggregate`). Declare a
+    second parameter — `fn(reader, touched)` — to also receive the tuple of
+    `rakaia.TouchedSubject`s the pass's handlers wrote, so the same reducer can
+    scope its recompute to what changed (incremental) or recompute everything
+    (full rebuild). The arg is detected by signature; `fn(reader)` is unchanged.
 
     A reducer is a single current definition keyed by `name` (last-write-wins),
     not a seq-versioned series like a handler — see `ReducerVersion`.
@@ -993,6 +1007,13 @@ def register_reducer(
         @register_reducer(name="balance", stage=1)
         def balance(reader):
             groups = _recompute_totals(reader)
+            return reconcile_aggregate("ida.Balance", {}, "suku", groups)
+
+        # touched-aware: only the groups this pass changed
+        @register_reducer(name="balance", stage=1)
+        def balance(reader, touched):
+            sukus = {r.lookup["suku"] for r in touched if r.model_label == "ida.Line"}
+            groups = _recompute_totals(reader, only=sukus)
             return reconcile_aggregate("ida.Balance", {}, "suku", groups)
     """
     target = registry if registry is not None else _default_registry
