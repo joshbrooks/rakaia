@@ -50,7 +50,16 @@ class DjangoStreamStore:
 
     def create(self, path: str, **_kwargs: Any) -> Stream:
         """Ensure a stream row exists (idempotent). Extra kwargs are ignored —
-        the durable store does not model TTL/expiry/content-type."""
+        the durable store does not model TTL/expiry/content-type.
+
+        Unlike the in-memory `StreamStore`, a re-`create` with a *different*
+        `content_type`/`ttl_seconds`/`expires_at`/`closed` never raises
+        `ValueError`: the `Stream` model has no columns for those, so there is
+        no stored config to conflict with. This is a deliberate, permanent
+        divergence (not a gap to close) — see
+        `tests/test_django_rakaia/test_django_store.py::
+        test_create_ignores_conflicting_kwargs_instead_of_raising`.
+        """
         stream, _ = Stream.objects.get_or_create(stream_id=path)
         return stream
 
@@ -65,6 +74,16 @@ class DjangoStreamStore:
         concurrent appends serialize on offset allocation instead of racing to
         the same value and failing the ``unique_together(stream, offset)``
         constraint.
+
+        Unlike the in-memory `StreamStore`, this never raises `ValueError` for
+        a Stream-Seq conflict and never reports a closed stream (no raise, no
+        `stream_closed`-style signal): there is no `closed` column and
+        `options.seq` is not consulted. Stream closing and producer-seq
+        fencing are live-protocol-server concerns, out of scope for the
+        durable event-sourcing store (module docstring). This is a
+        deliberate, permanent divergence — see
+        `tests/test_django_rakaia/test_django_store.py::
+        test_append_has_no_closed_stream_concept`.
         """
         with transaction.atomic():
             try:

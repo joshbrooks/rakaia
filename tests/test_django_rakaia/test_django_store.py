@@ -15,6 +15,7 @@ from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.store import StreamStore
+from rakaia.types import AppendOptions
 
 
 @pytest.mark.django_db
@@ -88,6 +89,38 @@ class TestDjangoStreamStore:
         store.create("t")
         assert store.has("s") is True
         assert set(store.list_paths()) == {"s", "t"}
+
+    def test_create_ignores_conflicting_kwargs_instead_of_raising(self):
+        # Deliberate divergence from the in-memory StreamStore (see its
+        # test_create_conflicting_content_type_raises /
+        # test_create_conflicting_ttl_raises): the Django Stream model has no
+        # content_type/ttl/closed columns at all, so there is no config to
+        # conflict on. `create()` re-`create`d with different kwargs silently
+        # ignores them rather than raising ValueError — this pins that
+        # behaviour so a future caller relying on in-memory-style
+        # conflict-rejection sees a failing test instead of a silent no-op.
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json")
+        # No ValueError, and the extra kwargs leave no trace to conflict on.
+        again = store.create("s", content_type="text/plain")
+        assert Stream.objects.filter(stream_id="s").count() == 1
+        assert again.stream_id == "s"
+
+    def test_append_has_no_closed_stream_concept(self):
+        # Deliberate divergence from the in-memory StreamStore (see its
+        # test_append_to_closed_stream_returns_stream_closed /
+        # test_seq_conflict_raises): DjangoStreamStore does not model stream
+        # closing or Stream-Seq/producer fencing (module docstring — those are
+        # live-protocol-server concerns, out of scope for the durable
+        # event-sourcing store). There is nothing to close and no seq option
+        # honoured, so repeated appends never raise ValueError and never
+        # report stream_closed — appends just keep succeeding.
+        store = DjangoStreamStore()
+        store.create("s")
+        first = store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
+        second = store.append("s", b'{"id": 2}', AppendOptions(seq="5"))
+        assert first.event.data == {"id": 1}
+        assert second.event.data == {"id": 2}
 
     def test_get_current_offset(self):
         store = DjangoStreamStore()
