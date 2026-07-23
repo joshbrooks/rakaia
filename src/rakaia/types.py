@@ -7,6 +7,7 @@ and protocol constants.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -44,6 +45,16 @@ SSE_CLOSED_FIELD = "streamClosed"
 
 # Offset format: zero-padded 16-digit numbers separated by underscore
 INITIAL_OFFSET = "0000000000000000_0000000000000000"
+
+# Canonical offset-validation pattern: a `{digits}_{digits}` token, or the
+# sentinels `-1` (stream start) / `now` (current tail). This is the ONE source of
+# truth every offset producer/validator imports — the in-memory `StreamStore`,
+# the standalone `handler` ASGI server, and the Django `protocol_views`. Servers
+# may still emit *different* offset formats (the protocol mandates opacity, not
+# one format — §6; see #49 / `tests/store_contract.py`), but they must all agree
+# on what a syntactically valid offset looks like, so validation can't silently
+# drift apart via copy-paste (issue #41).
+VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+_\d+)$")
 
 # Default port for standalone servers
 DEFAULT_PORT = 4437

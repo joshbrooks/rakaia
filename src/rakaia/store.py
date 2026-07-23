@@ -8,7 +8,6 @@ producer validation, long-poll waiting, and TTL/expiry.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from datetime import datetime, timezone
 
@@ -36,8 +35,10 @@ from .types import (
     StreamMessage,
 )
 
-# Valid offset pattern: exactly digits_digits, or sentinel -1, or now
-VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+_\d+)$")
+# NB: this module generates offsets (the `{seq}_{byte}` format) but never
+# *validates* them, so it deliberately does not import `VALID_OFFSET_PATTERN`.
+# Offset validation lives in the two protocol servers (`handler` /
+# `protocol_views`), which share the one pattern from `.types` (#41).
 
 
 class StreamStore:
