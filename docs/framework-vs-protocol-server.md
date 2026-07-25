@@ -101,10 +101,12 @@ Two divergences between the stores are **intentional and pinned**, not gaps:
   mandates opacity, not one format (§6). What *is* contract — and tested on both
   — is offset *behaviour*: opaque, lexicographically sortable, strictly
   increasing (#49, #55).
-- **`DjangoStreamStore` implements only the framework subset** (`create` /
-  `append` / `read` / `get_current_offset`). Producer epoch/seq dedup, stream
-  close, TTL, and long-poll are Tier-2 protocol-server concerns and are
-  deliberately absent — a framework consumer must not depend on them from the
+- **`DjangoStreamStore` implements the framework store surface, not the
+  protocol-server one.** It satisfies `WritableStore` + `CursorStore`
+  (`create` / `append` / `read` / `has` / `get_current_offset`, plus the
+  `get` / `delete` / `list_paths` conveniences), but **not** the Tier-2
+  concerns — producer epoch/seq dedup, stream close, TTL, and long-poll are
+  deliberately absent, so a framework consumer must not depend on them from the
   durable store.
 
 ## See also
