@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .effects import Effect
+from .effects import ApplyReport, Effect
 
 
 class CollectingExecutor:
@@ -30,5 +30,7 @@ class CollectingExecutor:
     def __init__(self) -> None:
         self.effects: list[Effect] = []
 
-    def apply(self, effects: Iterable[Effect]) -> None:
+    def apply(self, effects: Iterable[Effect]) -> ApplyReport:
         self.effects.extend(effects)
+        # Records effects without applying them, so it observes no retire flips.
+        return ApplyReport()

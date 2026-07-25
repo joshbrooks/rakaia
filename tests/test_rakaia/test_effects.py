@@ -128,6 +128,34 @@ class TestEffectValidation:
             patch={"resolved_at": "t"},
         )
 
+    def test_transition_kind_on_retire_ok(self):
+        eff = Effect(
+            op="retire",
+            model_label="m.Alert",
+            lookup={"s": 1},
+            patch={"resolved_at": "t"},
+            transition_kind="alert_transition",
+        )
+        assert eff.transition_kind == "alert_transition"
+
+    def test_transition_kind_on_non_retire_rejected(self):
+        # transition_kind means "emit one external per row this retire flipped".
+        # Only a retire flips rows silently; on any other op the flag is
+        # meaningless and would be dropped — fail loudly instead.
+        with pytest.raises(ValueError, match="only applies to op='retire'"):
+            Effect(
+                op="update_or_create",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                transition_kind="alert_transition",
+            )
+
+    def test_transition_kind_defaults_to_none(self):
+        eff = Effect(
+            op="retire", model_label="m.Alert", lookup={"s": 1}, patch={"r": 1}
+        )
+        assert eff.transition_kind is None
+
 
 class TestDispatchExternal:
     def test_routes_by_kind(self):

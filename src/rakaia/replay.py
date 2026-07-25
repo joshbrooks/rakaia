@@ -168,6 +168,27 @@ def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
         )
 
 
+def _synth_transitions(report: object) -> list[Effect]:
+    # Turn the executor's retire-flip report into one external transition per
+    # row a retire actually flipped. `report` may be None (executors that don't
+    # observe flips) — treat that as nothing to synthesise.
+    flips = getattr(report, "retire_flips", None) or []
+    out: list[Effect] = []
+    for eff, rows in flips:
+        if eff.transition_kind is None:
+            continue
+        patch = eff.patch or {}
+        for identity in rows:
+            out.append(
+                Effect(
+                    op="external",
+                    kind=eff.transition_kind,
+                    payload={"key": dict(identity), "state": "resolved", **patch},
+                )
+            )
+    return out
+
+
 def _apply_effects(ctx: _ReplayCtx, effects: list[Effect]) -> None:
     external_count = sum(1 for e in effects if e.op == "external")
     if not ctx.include_external:
@@ -175,9 +196,17 @@ def _apply_effects(ctx: _ReplayCtx, effects: list[Effect]) -> None:
     to_apply = (
         effects if ctx.include_external else [e for e in effects if e.op != "external"]
     )
-    if to_apply:
-        ctx.executor.apply(to_apply)
-        ctx.result.effects_applied += len(to_apply)
+    if not to_apply:
+        return
+    report = ctx.executor.apply(to_apply)
+    ctx.result.effects_applied += len(to_apply)
+    # A retire that flipped rows (a real machine resolution) yields external
+    # transitions; feed them back through the same gate — so they're skipped-and-
+    # counted on replay by default, delivered only when include_external. They're
+    # all op="external", so this recurses at most once (no further flips).
+    synth = _synth_transitions(report)
+    if synth:
+        _apply_effects(ctx, synth)
 
 
 def _dispatch_event(
