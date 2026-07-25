@@ -114,6 +114,8 @@ the channel layer.
 
 - [What's new — a guided tour](whats-new.md) — recent features, each with a demo.
 - [Glossary](glossary.md) — plain-language definitions of the event-sourcing terms.
+- [Framework vs. protocol server](framework-vs-protocol-server.md) — the package
+  boundary and the "what needs Django / what is pure" matrix.
 - [Django integration](django-integration.md) — Models, decorator, admin, SSE,
   and adopting the durable store.
 - [Versioned handlers](versioned-handlers.md) — Time-correct replay, handler
