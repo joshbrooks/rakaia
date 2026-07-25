@@ -9,6 +9,12 @@
 3. Broadcasts changes to connected SSE clients through Django Channels.
 4. Provides a Django admin interface for browsing streams and events.
 
+!!! tip "Which parts actually need Django (or Channels)?"
+    Everything in the `rakaia` package is stdlib-only, and within `django_rakaia`
+    only the SSE broadcast needs `channels`. See
+    [Framework vs. protocol server](framework-vs-protocol-server.md) for the full
+    "what needs Django / what is pure" matrix and the `RAKAIA_ENABLE_SSE` gate.
+
 ## Setup
 
 ```python
