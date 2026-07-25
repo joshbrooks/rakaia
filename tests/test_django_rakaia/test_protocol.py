@@ -494,3 +494,81 @@ class TestErrorHandling:
         Note: Content-type validation is a TODO item.
         """
         pytest.skip("Content-type validation is a TODO item")
+
+
+# =============================================================================
+# Offset Contract (issue #41 — the framework ↔ protocol-server boundary)
+# =============================================================================
+
+
+class TestOffsetContract:
+    """Pin the offset invariants the #41 finding exposed.
+
+    The two protocol servers (`rakaia.handler` over the in-memory store, and
+    `django_rakaia.protocol_views` over the ORM) are allowed to emit *different*
+    offset formats — the protocol mandates opacity, not one format (§6), and the
+    store-format divergence is deliberately pinned (see #49 / `tests/
+    store_contract.py`). What must NOT diverge is:
+
+    1. the *validation pattern* — one shared source of truth, so the servers
+       can't drift into accepting each other's offsets by silent copy-paste; and
+    2. the offset *behaviour* — strictly increasing, lexicographically sortable,
+       and usable as an opaque resume token — the same behaviour the store
+       contract asserts, now asserted at the protocol-server boundary too.
+    """
+
+    def test_offset_pattern_is_single_source(self):
+        # Both offset *validators* must reference ONE canonical pattern object, so
+        # a future edit can't relax one server's validation without the other.
+        from django_rakaia import protocol_views
+        from rakaia import handler
+        from rakaia import types as rakaia_types
+
+        canonical = rakaia_types.VALID_OFFSET_PATTERN
+        assert handler.VALID_OFFSET_PATTERN is canonical
+        assert protocol_views.VALID_OFFSET_PATTERN is canonical
+
+    @pytest.mark.django_db
+    def test_offsets_strictly_increase_lexicographically(
+        self, client: Client, stream_id: str
+    ):
+        # Successive appends yield offsets that strictly increase under plain
+        # string comparison — no numeric parsing — mirroring the store contract.
+        client.put(
+            f"/protocol/streams/{stream_id}/create", content_type="application/json"
+        )
+        offsets = []
+        for i in range(12):  # spans the 9→10 boundary that breaks naive int-as-str
+            response = client.post(
+                f"/protocol/streams/{stream_id}/append",
+                data=json.dumps({"i": i}).encode("utf-8"),
+                content_type="application/json",
+            )
+            offsets.append(response.headers["Stream-Next-Offset"])
+
+        assert offsets == sorted(offsets)  # lexicographic order matches append order
+        assert len(set(offsets)) == len(offsets)  # no duplicates
+        assert all(a < b for a, b in zip(offsets, offsets[1:], strict=False))
+
+    @pytest.mark.django_db
+    def test_offset_is_an_opaque_resume_token(self, client: Client, stream_id: str):
+        # Reading from a returned offset yields exactly the events after it, with
+        # no client-side parsing of the offset's internal structure.
+        client.put(
+            f"/protocol/streams/{stream_id}/create", content_type="application/json"
+        )
+        second_offset = None
+        for i in range(4):
+            response = client.post(
+                f"/protocol/streams/{stream_id}/append",
+                data=json.dumps({"i": i}).encode("utf-8"),
+                content_type="application/json",
+            )
+            if i == 1:
+                second_offset = response.headers["Stream-Next-Offset"]
+
+        response = client.get(
+            f"/protocol/streams/{stream_id}/read?offset={second_offset}"
+        )
+        rows = [json.loads(line) for line in response.content.decode().splitlines()]
+        assert rows == [{"i": 2}, {"i": 3}]

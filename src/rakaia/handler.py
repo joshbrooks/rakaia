@@ -47,6 +47,7 @@ from .types import (
     STREAM_EXPIRES_AT_HEADER,
     STREAM_SSE_DATA_ENCODING_HEADER,
     STREAM_TTL_HEADER,
+    VALID_OFFSET_PATTERN,
     AppendOptions,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -61,8 +62,8 @@ STREAM_CURSOR_HEADER_RESP = "Stream-Cursor"
 STREAM_UP_TO_DATE_HEADER_RESP = "Stream-Up-To-Date"
 STREAM_CLOSED_HEADER_RESP = "Stream-Closed"
 
-# Valid offset pattern
-VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+_\d+)$")
+# `VALID_OFFSET_PATTERN` is imported from `.types` (the single source of truth,
+# #41) so this server and the Django `protocol_views` validate offsets identically.
 
 # Strict integer pattern for producer headers
 STRICT_INTEGER_PATTERN = re.compile(r"^\d+$")

@@ -24,7 +24,6 @@ Usage:
 
 import asyncio
 import json
-import re
 
 from django.db import transaction
 from django.db.models import Max
@@ -33,16 +32,27 @@ from django.urls import path
 from django.views.decorators.http import require_http_methods
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
+from rakaia.types import VALID_OFFSET_PATTERN
 
 # =============================================================================
 # Constants and Type Aliases
 # =============================================================================
 
-# Offset format: {read_seq}_{byte_offset} (both zero-padded to 16 digits)
+# Offset format for this (Django ORM-backed) protocol server: a fixed `0`
+# generation sentinel, an underscore, then the entry's monotonic 1-indexed
+# **sequence number** (from `Stream.get_next_offset`) zero-padded to 16 digits —
+# e.g. `"0_0000000000000001"`. The low field is a sequence number, NOT a byte
+# offset: this server counts events, not bytes. The generation is a literal `0`
+# (it does not yet advance across delete+recreate — that is #34 Defect #2,
+# deferred). Padding keeps offsets lexicographically sortable per protocol §6.
+# The in-memory `handler` server emits a *different* format (`{seq}_{byte}`) for
+# the same protocol — permitted: the protocol mandates opacity, not one format
+# (§6; see #49). Only the *validation* pattern is shared (imported above, #41).
 OFFSET_FORMAT = "0_{:016d}"
 
-# Valid offset pattern per protocol spec
-VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+_\d+)$")
+# `VALID_OFFSET_PATTERN` is imported from `rakaia.types` (the single source of
+# truth, #41) so this server and the in-memory `handler` validate offsets
+# identically even though they format them differently.
 
 # Header names (protocol specification)
 STREAM_NEXT_OFFSET_HEADER = "Stream-Next-Offset"
@@ -59,26 +69,27 @@ CACHE_CONTROL_HEADER = "Cache-Control"
 
 def format_offset(offset: int) -> str:
     """
-    Format an integer offset as a protocol-compliant offset string.
+    Format an integer sequence number as a protocol-compliant offset string.
 
     Args:
-        offset: Integer offset value.
+        offset: The entry's monotonic 1-indexed sequence number.
 
     Returns:
-        Formatted offset string (e.g., "0_0000000000000001").
+        Formatted offset string (e.g., "0_0000000000000001"): the `0`
+        generation sentinel, then the zero-padded sequence number.
     """
     return OFFSET_FORMAT.format(offset)
 
 
 def parse_offset(offset_str: str) -> int:
     """
-    Parse a protocol offset string to an integer.
+    Parse a protocol offset string back to its integer sequence number.
 
     Args:
-        offset_str: Offset string in format "read_seq_byte_offset".
+        offset_str: Offset string in format "{generation}_{sequence}".
 
     Returns:
-        Integer byte offset.
+        The sequence number (the part after the underscore).
 
     Raises:
         ValueError: If offset format is invalid.
