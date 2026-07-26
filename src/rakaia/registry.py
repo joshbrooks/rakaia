@@ -1013,6 +1013,8 @@ def register_reducer(
         @register_reducer(name="balance", stage=1)
         def balance(reader, touched):
             sukus = {r.lookup["suku"] for r in touched if r.model_label == "ida.Line"}
+            if not sukus:
+                return []  # nothing changed this pass — a no-op, not a clear
             groups = _recompute_totals(reader, only=sukus)
             return reconcile_aggregate("ida.Balance", {}, "suku", groups)
     """
