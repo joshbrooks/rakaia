@@ -38,6 +38,7 @@ nav = [
     { "Deployment" = "deployment.md" },
     { Reference = [
         { "Protocol specification" = "protocol.md" },
+        { "Producer fencing & validation" = "producer-fencing.md" },
         { "Backend storage" = "streams-backend-storage.md" },
     ] },
     { "Decision records" = [
