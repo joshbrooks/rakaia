@@ -113,3 +113,23 @@ class TestConsumerCursor:
         result = poll_consumer(store, CONSUMER, "s")
         assert result.status == "caught_up"
         assert result.messages == []
+
+    def test_empty_recreate_with_lagging_cursor_reports_caught_up(self):
+        # #34 Defect #2, read side: the sibling test above commits a cursor AT the
+        # head. This covers a cursor BELOW the retired high-water — a consumer that
+        # was still behind when the stream was deleted. After an empty recreate the
+        # head reflects the watermark while no entries exist above the cursor, so
+        # the poll must report `caught_up`, not `advanced` with an empty delta.
+        store = DjangoStreamStore()
+        store.create("s")
+        _append(store, "s", 10)
+        poll_consumer(store, CONSUMER, "s")
+        # Commit a cursor below the head (10): this consumer is still catching up.
+        commit_cursor(CONSUMER, "s", "00000000000000000005")
+
+        store.delete("s")
+        store.create("s")  # recreated, no append yet
+
+        result = poll_consumer(store, CONSUMER, "s")
+        assert result.status == "caught_up"
+        assert result.messages == []

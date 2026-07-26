@@ -39,7 +39,9 @@ PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
 
 * ``fresh`` — first poll (no prior cursor); every message returned.
 * ``advanced`` — new messages since the cursor; the delta returned.
-* ``caught_up`` — cursor is at the head; nothing new.
+* ``caught_up`` — no messages live above the cursor; nothing new. Covers both
+  a cursor at the head and a cursor below a head that only reflects a persisted
+  high-water (a stream recreated but not yet re-appended, #34).
 * ``rewound`` — cursor sorts past the head (log truncated/rebuilt); re-read from
   the start. The consumer should reset any derived state before applying.
 * ``absent`` — the stream does not exist; nothing returned.
@@ -103,6 +105,13 @@ def poll(store: CursorStore, path: str, cursor: str | None) -> Poll:
         return Poll(messages=[], cursor=cursor, status="caught_up")
 
     messages, _ = store.read(path, cursor)
+    if not messages:
+        # The head sorts after the cursor, yet nothing lives above it: the head
+        # reflects a persisted high-water for a stream recreated but not yet
+        # re-appended (globally-monotonic offsets, #34). There is no delta to
+        # apply, so this is `caught_up` — not an `advanced` with an empty delta,
+        # which would falsely signal new content to a status-branching consumer.
+        return Poll(messages=[], cursor=cursor, status="caught_up")
     return Poll(messages=messages, cursor=_tail(messages, cursor), status="advanced")
 
 
