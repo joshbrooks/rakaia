@@ -617,3 +617,74 @@ class TestGloballyMonotonicOffsets:
         # Every recreation's tail is strictly greater than the last.
         assert tails == sorted(tails)
         assert len(set(tails)) == 4
+
+
+class TestReadEdgeCases:
+    """Boundary behaviour of read(): empty streams, sentinel offsets, and the
+    exclusive-offset contract (read returns messages strictly after `offset`)."""
+
+    def test_read_empty_stream(self, store: StreamStore):
+        store.create("s")
+        messages, up_to_date = store.read("s")
+        assert messages == []
+        assert up_to_date is True
+
+    def test_read_empty_stream_with_sentinel_offset(self, store: StreamStore):
+        store.create("s")
+        messages, up_to_date = store.read("s", "-1")
+        assert messages == []
+        assert up_to_date is True
+
+    def test_read_missing_stream_raises(self, store: StreamStore):
+        with pytest.raises(KeyError):
+            store.read("nope")
+
+    def test_read_from_offset_is_exclusive(self, store: StreamStore):
+        store.create("s")
+        offsets = [
+            store.append("s", b"a").message.offset,
+            store.append("s", b"b").message.offset,
+            store.append("s", b"c").message.offset,
+        ]
+        # Offsets are strictly increasing and lexicographically sortable.
+        assert offsets == sorted(offsets)
+        assert len(set(offsets)) == 3
+
+        # No offset (or "-1") returns the whole stream in order.
+        allmsgs, up = store.read("s")
+        assert [m.offset for m in allmsgs] == offsets
+        assert up is True
+
+        # Reading from an offset is exclusive: it returns messages after it.
+        after_first, _ = store.read("s", offsets[0])
+        assert [m.offset for m in after_first] == offsets[1:]
+
+        # Reading from the tail offset yields nothing — caught up.
+        after_last, up = store.read("s", offsets[-1])
+        assert after_last == []
+        assert up is True
+
+    def test_read_beyond_tail_returns_empty(self, store: StreamStore):
+        store.create("s")
+        store.append("s", b"a")
+        msgs, up = store.read("s", "9999999999999999_9999999999999999")
+        assert msgs == []
+        assert up is True
+
+
+class TestClosedStreamAppend:
+    """Appending to a closed stream is rejected without mutating the log, even
+    when a Stream-Seq is supplied."""
+
+    def test_append_to_closed_stream_with_seq_rejected(self, store: StreamStore):
+        store.create("s")
+        store.append("s", b"a")
+        store.close_stream("s")
+
+        result = store.append("s", b"b", AppendOptions(seq=5))
+        assert result.stream_closed is True
+        assert result.message is None
+
+        # The rejected append left the log untouched.
+        msgs, _ = store.read("s")
+        assert [m.data for m in msgs] == [b"a"]
