@@ -27,6 +27,24 @@ class TestEffect:
         assert eff.lookup == {"id": 5}
         assert eff.defaults == {"name": "general"}
 
+    def test_update_effect_fields(self):
+        # update-if-exists: same shape as update_or_create (model_label + lookup
+        # + defaults) but never inserts. The row-sparing/retire fields stay None.
+        eff = Effect(
+            op="update",
+            model_label="myapp.ProjectProjection",
+            lookup={"project_id": 5},
+            defaults={"ksp_operational": 300},
+        )
+        assert eff.op == "update"
+        assert eff.model_label == "myapp.ProjectProjection"
+        assert eff.lookup == {"project_id": 5}
+        assert eff.defaults == {"ksp_operational": 300}
+        assert eff.exclude is None
+        assert eff.spare_keys is None
+        assert eff.patch is None
+        assert eff.transition_kind is None
+
     def test_external_effect_fields(self):
         eff = Effect(
             op="external",
@@ -191,6 +209,29 @@ class TestEffectValidation:
         )
         assert eff.transition_kind is None
 
+    def test_exclude_on_update_rejected(self):
+        # `exclude` only applies to op='delete'; an update ignores it in the
+        # executor, so the existing guard must reject it for the new op too.
+        with pytest.raises(ValueError, match="only applies to op='delete'"):
+            Effect(
+                op="update",
+                model_label="m.M",
+                lookup={"id": 1},
+                exclude={"idx__in": [0]},
+            )
+
+    def test_transition_kind_on_update_rejected(self):
+        # Only a retire flips rows silently; the notification flags are
+        # meaningless on an update and must be rejected by the existing guard.
+        with pytest.raises(ValueError, match="only applies to op='retire'"):
+            Effect(
+                op="update",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                transition_kind="alert_transition",
+                transition_key_fields=("alert_type",),
+            )
+
 
 class TestDispatchExternal:
     def test_routes_by_kind(self):
@@ -297,6 +338,68 @@ class TestCheckDisjointDefaults:
                     ),
                     Effect(
                         op="update_or_create",
+                        model_label="m.M",
+                        lookup={"id": 1},
+                        defaults={"x": 2},
+                    ),
+                ]
+            )
+
+    def test_disjoint_update_defaults_on_same_row_ok(self):
+        # The multi-owner case: two owners each write a disjoint column to the
+        # same row via op="update". This must NOT collide.
+        check_disjoint_defaults(
+            [
+                Effect(
+                    op="update",
+                    model_label="m.M",
+                    lookup={"id": 1},
+                    defaults={"ksp_operational": 1},
+                ),
+                Effect(
+                    op="update",
+                    model_label="m.M",
+                    lookup={"id": 1},
+                    defaults={"effective_status": "verified"},
+                ),
+            ]
+        )
+
+    def test_overlapping_update_defaults_on_same_row_raises(self):
+        # Two owners must never write the SAME column on the same row, even via
+        # update — the collision check covers op="update" too.
+        with pytest.raises(EffectCollisionError, match="'x'"):
+            check_disjoint_defaults(
+                [
+                    Effect(
+                        op="update",
+                        model_label="m.M",
+                        lookup={"id": 1},
+                        defaults={"x": 1},
+                    ),
+                    Effect(
+                        op="update",
+                        model_label="m.M",
+                        lookup={"id": 1},
+                        defaults={"x": 2},
+                    ),
+                ]
+            )
+
+    def test_update_and_upsert_same_field_same_row_raises(self):
+        # Cross-op collision: an update and an update_or_create writing the same
+        # field on the same row still collide.
+        with pytest.raises(EffectCollisionError, match="'x'"):
+            check_disjoint_defaults(
+                [
+                    Effect(
+                        op="update_or_create",
+                        model_label="m.M",
+                        lookup={"id": 1},
+                        defaults={"x": 1},
+                    ),
+                    Effect(
+                        op="update",
                         model_label="m.M",
                         lookup={"id": 1},
                         defaults={"x": 2},

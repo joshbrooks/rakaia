@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any, Literal, Protocol
 
-EffectOp = Literal["update_or_create", "delete", "external", "retire"]
+EffectOp = Literal["update_or_create", "update", "delete", "external", "retire"]
 
 
 # =============================================================================
@@ -28,21 +28,26 @@ class Effect:
     """A pure data description of one side-effect."""
 
     op: EffectOp
-    """The kind of effect. 'update_or_create', 'delete' and 'retire' are
-    replay-safe; 'external' (email, third-party call) is skipped by default on
-    replay."""
+    """The kind of effect. 'update_or_create', 'update', 'delete' and 'retire'
+    are replay-safe; 'external' (email, third-party call) is skipped by default
+    on replay."""
 
-    # Fields for op="update_or_create", op="delete" and op="retire"
+    # Fields for op="update_or_create", op="update", op="delete" and op="retire"
     model_label: str | None = None
     """'app_label.ModelName', e.g. 'myapp.Room'."""
 
     lookup: dict[str, Any] | None = None
-    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'delete'
-    and 'retire', the `filter()` scope. An empty dict on a delete scopes the
-    whole model."""
+    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'update',
+    'delete' and 'retire', the `filter()` scope. An empty dict on a delete scopes
+    the whole model."""
 
     defaults: dict[str, Any] | None = None
-    """Default field values passed as `defaults=` to update_or_create."""
+    """Default field values. For 'update_or_create', passed as `defaults=`; for
+    'update', the `update()` SET values — the row(s) matching `lookup` are
+    updated in place and **never** inserted (a no-op when nothing matches or when
+    `defaults` is empty). 'update' is the update-if-exists primitive a secondary
+    owner of a multi-owned projection row uses instead of a hand-rolled
+    exists-guard."""
 
     # Field for op="delete"
     exclude: dict[str, Any] | None = None
@@ -198,15 +203,19 @@ def _row_key(effect: Effect) -> tuple[str, str]:
 
 def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
     """
-    Raise EffectCollisionError if two update_or_create effects targeting the
-    same (model_label, lookup) row share any key in their `defaults`.
+    Raise EffectCollisionError if two write effects targeting the same
+    (model_label, lookup) row share any key in their `defaults`.
 
-    External effects are ignored. Effects without `defaults` are ignored.
+    Covers both `update_or_create` and `update` (the write ops that carry
+    `defaults`), including a mix of the two — the multi-owner invariant is that
+    each owner writes a *disjoint* set of columns, so two effects writing the
+    same column on the same row is always a bug. External, delete and retire
+    effects are ignored, as are effects without `defaults`.
     """
     # field -> first-seen effect index, keyed by row
     seen: dict[tuple[str, str], dict[str, int]] = {}
     for idx, eff in enumerate(effects):
-        if eff.op != "update_or_create" or not eff.defaults:
+        if eff.op not in ("update_or_create", "update") or not eff.defaults:
             continue
         row = _row_key(eff)
         existing = seen.setdefault(row, {})

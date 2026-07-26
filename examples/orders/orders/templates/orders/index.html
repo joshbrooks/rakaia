@@ -49,6 +49,11 @@
 </head>
 <body>
 <div class="wrap">
+    <nav style="display:flex;gap:1.2em;font-size:0.9em;margin-bottom:1.5em;">
+        <a href="{% url 'orders:index' %}" style="color:var(--ink);font-weight:700;text-decoration:none;">Projection</a>
+        <a href="{% url 'orders:live' %}" style="color:var(--accent);text-decoration:none;">Live stream</a>
+        <a href="{% url 'orders:info' %}" style="color:var(--accent);text-decoration:none;">How it works</a>
+    </nav>
     <h1>Orders projection</h1>
     <p class="sub">
         These rows are <strong>derived state</strong>, re-computed by replaying
@@ -67,11 +72,22 @@
     {% endif %}
 
     {% if orders %}
+    <div class="banner">
+        <strong>Update-if-exists:</strong> the <code>Bonus</code> column is
+        written by a <em>separate</em> loyalty-bonus event via
+        <code>op="update"</code> — a secondary owner that decorates an
+        <em>existing</em> row and never inserts. <code>ORD-1003</code> earned a
+        <strong>+50</strong> bonus. A bonus for <code>ORD-9999</code> (an order
+        that was never placed) is a clean no-op — notice there is <strong>no
+        <code>ORD-9999</code> row below</strong>. <code>update_or_create</code>
+        would have left a phantom half-row.
+    </div>
     <table>
         <thead>
             <tr>
                 <th>Order</th><th>Status</th><th>Subtotal</th>
-                <th>Tax rate</th><th>Tax</th><th>Total</th><th>Points</th>
+                <th>Tax rate</th><th>Tax</th><th>Total</th>
+                <th>Points</th><th>Bonus</th>
             </tr>
         </thead>
         <tbody>
@@ -84,6 +100,7 @@
                 <td>{{ o.tax }}</td>
                 <td>{{ o.total }}</td>
                 <td>{{ o.loyalty_points }}</td>
+                <td>{% if o.bonus_points %}<strong>{{ o.bonus_points }}</strong>{% else %}{{ o.bonus_points }}{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -92,7 +109,9 @@
 
     <footer>
         Re-run <code class="inline">demo_orders</code> as often as you like — the
-        projection is rebuilt idempotently via <code class="inline">update_or_create</code>.
+        projection is rebuilt idempotently via
+        <code class="inline">update_or_create</code> (order rows) and
+        <code class="inline">update</code> (loyalty bonus).
     </footer>
 </div>
 </body>

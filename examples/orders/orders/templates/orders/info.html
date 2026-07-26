@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>How OrderSummary is built — Rakaia Orders</title>
+    <style>
+        :root {
+            --ink: #0f172a; --muted: #64748b; --accent: #2563eb;
+            --line: #e2e8f0; --pre: #f1f5f9; --ok: #10b981;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: var(--ink); background: #f8fafc; line-height: 1.6;
+        }
+        .wrap { max-width: 54em; margin: 0 auto; padding: 2.5em 2em 5em; }
+        nav { display: flex; gap: 1.2em; font-size: 0.9em; margin-bottom: 2em; }
+        nav a { color: var(--accent); text-decoration: none; }
+        nav a.here { color: var(--ink); font-weight: 700; }
+        h1 { font-size: 2em; margin: 0 0 0.2em; letter-spacing: -0.02em; }
+        h2 { font-size: 1.3em; margin: 2.2em 0 0.4em; letter-spacing: -0.01em; }
+        p.sub { color: var(--muted); margin: 0 0 1em; max-width: 42em; }
+        .card { background: #fff; border: 1px solid var(--line); border-radius: 10px;
+                padding: 1.2em 1.4em; margin: 1em 0; }
+        .mermaid { text-align: center; margin: 0.4em 0; }
+        pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 1em 1.2em;
+              overflow-x: auto; font-size: 0.82em; line-height: 1.5; }
+        pre code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+        code.inline { background: var(--pre); padding: 0.12em 0.4em; border-radius: 4px;
+                      font-size: 0.9em; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin: 0.5em 0; }
+        th, td { text-align: left; padding: 0.5em 0.7em; border-bottom: 1px solid var(--line); }
+        thead th { color: var(--muted); font-weight: 600; }
+        .key { color: var(--accent); font-weight: 600; }
+        .tag { font-size: 0.75em; padding: 0.1em 0.5em; border-radius: 999px; font-weight: 700; }
+        .tag.uoc { background: #dbeafe; color: #1e40af; }
+        .tag.upd { background: #ede9fe; color: #6d28d9; }
+        footer { color: var(--muted); font-size: 0.85em; margin-top: 3em;
+                 border-top: 1px solid var(--line); padding-top: 1em; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <nav>
+        <a href="{% url 'orders:index' %}">Projection</a>
+        <a href="{% url 'orders:live' %}">Live stream</a>
+        <a class="here" href="{% url 'orders:info' %}">How it works</a>
+    </nav>
+
+    <h1>How <code class="inline">OrderSummary</code> is built</h1>
+    <p class="sub">
+        <code class="inline">OrderSummary</code> looks like a table, but you never
+        <code class="inline">INSERT</code> or <code class="inline">UPDATE</code> it
+        by hand. It is <strong>derived state</strong> — a read model re-computed by
+        <em>replaying</em> an append-only log of order events through pure handlers.
+        This page shows how.
+    </p>
+
+    <h2>1 · The pipeline</h2>
+    <p class="sub">
+        The event log is the source of truth. To change state you append an event;
+        to read state you replay the log into <code class="inline">OrderSummary</code>.
+        Replay is idempotent, so re-running it converges to the same rows.
+    </p>
+    <div class="card">
+        <div class="mermaid">
+flowchart LR
+  E["order event<br/>(a dict)"] -->|append| S[("orders stream<br/>append-only log")]
+  S -->|replay| U["upcaster<br/>qty → quantity"]
+  U --> H["versioned handler<br/>event → Effect"]
+  H --> X{"DjangoExecutor"}
+  X -->|update_or_create / update| P[("OrderSummary<br/>read model")]
+        </div>
+    </div>
+
+    <h2>2 · An event is not a row</h2>
+    <p class="sub">
+        A handler is a pure function: it takes one (already-upcasted) event and
+        returns an <code class="inline">Effect</code> — a <em>description</em> of a
+        write, not the write itself. The <code class="inline">DjangoExecutor</code>
+        applies it. That's what makes handlers trivially testable and replay-safe.
+    </p>
+    {% verbatim %}
+    <pre><code># event in the log                         # Effect the handler returns
+{                                          Effect(
+  "order_id": "ORD-1003",                    op="update_or_create",
+  "status": "PAID",                          model_label="orders.OrderSummary",
+  "items": [                                 lookup={"order_id": "ORD-1003"},
+    {"sku": "KETTLE-STEEL",                  defaults={
+     "quantity": 1, "price": "40.00"}         "status": "PAID", "subtotal": 40,
+  ]                                            "tax_rate": 0, "tax": 0, "total": 40,
+}                                            },
+                                           )</code></pre>
+    {% endverbatim %}
+
+    <h2>3 · Versioned handlers — why tax flips at seq 3</h2>
+    <p class="sub">
+        The sales-tax rule changed at one point in the log
+        (<code class="inline">TAX_CHANGE_SEQ = 3</code>). Two versions of the same
+        handler are registered; the event's <span class="key">seq</span> (its
+        position in the stream, <em>not</em> its order number) selects the version
+        that was in effect then. Replaying an old event still uses the old rate —
+        the fix-forward never rewrites history.
+    </p>
+    <div class="card">
+        <div class="mermaid">
+flowchart TD
+  A["event at seq n"] --> B{"n &lt; 3 ?"}
+  B -->|yes| V1["order_totals v1<br/>rate = 0%"]
+  B -->|no| V2["order_totals v2<br/>rate = 10%"]
+  V1 --> R["tax = subtotal × rate<br/>total = subtotal + tax"]
+  V2 --> R
+        </div>
+    </div>
+    {% verbatim %}
+    <pre><code>@register_handler(name="order_totals", effective_from=0, effective_to=TAX_CHANGE_SEQ)
+def order_totals_v1(event):        # seq 0,1,2
+    return _totals_effect(event, Decimal("0"))          # 0% tax
+
+@register_handler(name="order_totals", effective_from=TAX_CHANGE_SEQ, effective_to=None)
+def order_totals_v2(event):        # seq 3, 4, 5, ...
+    return _totals_effect(event, GST_RATE)              # 10% tax
+
+def _totals_effect(event, rate):
+    subtotal = sum(Decimal(i["price"]) * i["quantity"] for i in event["items"])
+    tax = (subtotal * rate).quantize(Decimal("0.01"))
+    return Effect(op="update_or_create", model_label="orders.OrderSummary",
+                  lookup={"order_id": event["order_id"]},
+                  defaults={"subtotal": subtotal, "tax_rate": rate,
+                            "tax": tax, "total": subtotal + tax, ...})</code></pre>
+    {% endverbatim %}
+
+    <h2>4 · One row, several owners</h2>
+    <p class="sub">
+        A single <code class="inline">OrderSummary</code> row is assembled by
+        <em>three independent handlers</em>, each owning a <strong>disjoint</strong>
+        set of columns. <code class="inline">check_disjoint_defaults</code> rejects
+        any batch where two handlers write the same column, so ownership stays
+        clean.
+    </p>
+    <div class="card">
+        <div class="mermaid">
+flowchart LR
+  H1["order_totals"] --> C1
+  H2["order_loyalty"] --> C2
+  H3["order_bonus"] --> C3
+  subgraph ROW["one OrderSummary row · keyed by order_id"]
+    C1["status, subtotal,<br/>tax_rate, tax, total"]
+    C2["loyalty_points"]
+    C3["bonus_points"]
+  end
+        </div>
+    </div>
+    <table>
+        <thead><tr><th>Columns</th><th>Owner</th><th>Effect op</th><th>Value</th></tr></thead>
+        <tbody>
+            <tr><td>status, subtotal, tax…</td><td>order_totals</td>
+                <td><span class="tag uoc">update_or_create</span></td>
+                <td>computed from the order's items</td></tr>
+            <tr><td>loyalty_points</td><td>order_loyalty</td>
+                <td><span class="tag uoc">update_or_create</span></td>
+                <td>1 pt per $ of subtotal, PAID only</td></tr>
+            <tr><td>bonus_points</td><td>order_bonus</td>
+                <td><span class="tag upd">update</span></td>
+                <td>carried on a separate bonus event</td></tr>
+        </tbody>
+    </table>
+
+    <h2>5 · <code class="inline">op="update"</code> — update-if-exists</h2>
+    <p class="sub">
+        <code class="inline">order_totals</code> and
+        <code class="inline">order_loyalty</code> use
+        <code class="inline">update_or_create</code> because they legitimately
+        <em>create</em> the order's row. But a loyalty <em>bonus</em> is a
+        <strong>secondary owner</strong>: it should decorate an existing row and
+        never mint one. That's exactly what <code class="inline">op="update"</code>
+        does — <code class="inline">filter(...).update(...)</code>, which updates in
+        place and is a no-op when nothing matches.
+    </p>
+    <div class="card">
+        <div class="mermaid">
+flowchart TD
+  B["loyalty_bonus event<br/>{order_id, bonus}"] --> Q{"row for<br/>order_id exists?"}
+  Q -->|yes| U["UPDATE bonus_points<br/>✅ lands"]
+  Q -->|no| N["nothing matches<br/>✅ clean no-op, no phantom row"]
+        </div>
+    </div>
+    {% verbatim %}
+    <pre><code># the handler — a secondary owner, never inserts
+def order_bonus(event):
+    if not _is_bonus(event):
+        return None
+    return Effect(op="update", model_label="orders.OrderSummary",
+                  lookup={"order_id": event["order_id"]},
+                  defaults={"bonus_points": int(event["bonus"])})
+
+# the executor — update-if-exists in one line
+def _update(eff):
+    model.objects.filter(**eff.lookup).update(**eff.defaults)  # never INSERTs</code></pre>
+    {% endverbatim %}
+    <p class="sub">
+        On the <a href="{% url 'orders:live' %}">live page</a>, watch a bonus for a
+        fabricated <code class="inline">ORD-GHOST-*</code>: the feed shows a no-op
+        and <strong>no ghost row ever appears</strong> in the table.
+        <code class="inline">update_or_create</code> couldn't express that.
+    </p>
+
+    <h2>6 · Putting it together</h2>
+    <p class="sub">
+        Every page here — static, live, or a migration dry-run — is the same call.
+        Point <code class="inline">replay</code> at the stream and an executor;
+        the registered handlers and upcasters do the rest.
+    </p>
+    {% verbatim %}
+    <pre><code>from rakaia.replay import replay
+from django_rakaia.effect_executor import DjangoExecutor
+
+replay(store=store, stream_path="orders", executor=DjangoExecutor())
+# start_seq=N replays only the tail — that's what the live producer does each tick.
+# Swap in CollectingExecutor() to preview the effects without writing (a dry run).</code></pre>
+    {% endverbatim %}
+
+    <footer>
+        Source: <code class="inline">orders/handlers.py</code>,
+        <code class="inline">orders/models.py</code>,
+        <code class="inline">orders/live.py</code> ·
+        the <code class="inline">op="update"</code> primitive lives in
+        <code class="inline">src/rakaia/effects.py</code> and
+        <code class="inline">src/django_rakaia/effect_executor.py</code>.
+    </footer>
+</div>
+
+<script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: "neutral",
+        flowchart: { htmlLabels: true, curve: "basis" },
+    });
+</script>
+</body>
+</html>

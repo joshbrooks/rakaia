@@ -215,6 +215,12 @@ orders-dev:
     cd {{ORDERS_DIR}} && uv run python manage.py migrate
     cd {{ORDERS_DIR}} && uv run python manage.py runserver 0.0.0.0:8002
 
+# Live stream demo: random orders pushed ~1/s + a submit form (open /live/)
+orders-live:
+    cd {{ORDERS_DIR}} && uv run python manage.py migrate
+    @echo "Open http://localhost:8002/live/ — orders stream in live via op=\"update\""
+    cd {{ORDERS_DIR}} && uv run python manage.py runserver 0.0.0.0:8002
+
 # ---------------------------------------------------------------------------
 # FormKit-submissions prototype (adoption spike for formkit-ninja)
 # ---------------------------------------------------------------------------

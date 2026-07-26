@@ -10,7 +10,7 @@ from django.test.utils import CaptureQueriesContext
 from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import Effect, EffectCollisionError
 
-from .models import Area, Project
+from .models import Area, History, Project
 
 
 def _updates(ctx: CaptureQueriesContext) -> list[str]:
@@ -321,3 +321,124 @@ class TestSkipUnchanged:
         with CaptureQueriesContext(connection) as ctx:
             executor.apply([self._area_upsert(area.id, "X")])
         assert len(_updates(ctx)) == 1
+
+
+@pytest.mark.django_db
+class TestDjangoExecutorUpdate:
+    """op="update" is update-if-exists: it modifies matching rows in place and
+    never inserts, so a secondary owner of a multi-owned projection row can emit
+    it unconditionally without minting an empty row."""
+
+    def test_update_modifies_existing_row(self):
+        area = Area.objects.create(name="Old")
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"id": area.id},
+                    defaults={"name": "New"},
+                )
+            ]
+        )
+        assert Area.objects.get(id=area.id).name == "New"
+
+    def test_update_noop_when_absent(self):
+        # The core update-if-exists guarantee: a lookup that matches nothing
+        # writes nothing and — crucially — inserts nothing.
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"name": "ghost"},
+                    defaults={"name": "ghost"},
+                )
+            ]
+        )
+        assert Area.objects.count() == 0
+
+    def test_update_empty_defaults_is_noop(self):
+        # No defaults (or an empty dict) matches a row but writes nothing and
+        # must not error.
+        area = Area.objects.create(name="stays")
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"id": area.id},
+                )
+            ]
+        )
+        assert Area.objects.get(id=area.id).name == "stays"
+
+    def test_update_clears_column_to_none(self):
+        # The verified->draft "clear an existing row" path: contributors vanished
+        # but the row (owned by others) stays; the owner nulls its columns.
+        History.objects.create(
+            submission_id="s", version=1, marker="c", actor=7, ts=1.0
+        )
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.History",
+                    lookup={"submission_id": "s", "version": 1},
+                    defaults={"actor": None},
+                )
+            ]
+        )
+        assert History.objects.get(submission_id="s", version=1).actor is None
+
+    def test_multi_owner_disjoint_updates_land(self):
+        # Two independent owners each write a disjoint column to the same row in
+        # one batch; both writes must land.
+        History.objects.create(submission_id="s", version=1, marker="c")
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.History",
+                    lookup={"submission_id": "s", "version": 1},
+                    defaults={"actor": 42},
+                ),
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.History",
+                    lookup={"submission_id": "s", "version": 1},
+                    defaults={"ts": 9.5},
+                ),
+            ]
+        )
+        row = History.objects.get(submission_id="s", version=1)
+        assert row.actor == 42
+        assert row.ts == 9.5
+
+    def test_updates_applied_before_deletes(self):
+        # Parity with the upsert-before-delete ordering: a batch that updates a
+        # pre-existing "temp" row and deletes it converges to 0 rows regardless
+        # of the effects' order (writes run before deletes).
+        Area.objects.create(name="temp")
+        executor = DjangoExecutor()
+        executor.apply(
+            [
+                Effect(
+                    op="delete",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"name": "temp"},
+                ),
+                Effect(
+                    op="update",
+                    model_label="test_django_rakaia.Area",
+                    lookup={"name": "temp"},
+                    defaults={"name": "temp"},
+                ),
+            ]
+        )
+        assert not Area.objects.filter(name="temp").exists()
