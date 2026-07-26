@@ -392,6 +392,44 @@ async def _handle_head(
 # =============================================================================
 
 
+async def _validate_read_params(
+    send: Send,
+    qs: str,
+    offset: str | None,
+    live: str | None,
+    cors: dict[str, str],
+) -> bool:
+    """Validate the GET read query parameters.
+
+    On the first invalid parameter, send a ``400`` and return ``False`` — the
+    caller must then return. Returns ``True`` when the read may proceed.
+    """
+    if offset is not None:
+        if offset == "":
+            await _send_error(send, 400, b"Empty offset parameter", cors)
+            return False
+
+        if len(get_all_query_params(qs, "offset")) > 1:
+            await _send_error(
+                send, 400, b"Multiple offset parameters not allowed", cors
+            )
+            return False
+
+        if not VALID_OFFSET_PATTERN.match(offset):
+            await _send_error(send, 400, b"Invalid offset format", cors)
+            return False
+
+    # Long-poll and SSE both require an explicit offset.
+    if (live == "long-poll" or live == "sse") and not offset:
+        label = "SSE" if live == "sse" else "Long-poll"
+        await _send_error(
+            send, 400, f"{label} requires offset parameter".encode(), cors
+        )
+        return False
+
+    return True
+
+
 async def _handle_read(
     path: str,
     scope: Scope,
@@ -411,29 +449,7 @@ async def _handle_read(
     live = get_query_param(qs, "live")
     cursor = get_query_param(qs, "cursor")
 
-    # Validate offset
-    if offset is not None:
-        if offset == "":
-            await _send_error(send, 400, b"Empty offset parameter", cors)
-            return
-
-        all_offsets = get_all_query_params(qs, "offset")
-        if len(all_offsets) > 1:
-            await _send_error(
-                send, 400, b"Multiple offset parameters not allowed", cors
-            )
-            return
-
-        if not VALID_OFFSET_PATTERN.match(offset):
-            await _send_error(send, 400, b"Invalid offset format", cors)
-            return
-
-    # Require offset for long-poll and SSE
-    if (live == "long-poll" or live == "sse") and not offset:
-        label = "SSE" if live == "sse" else "Long-poll"
-        await _send_error(
-            send, 400, f"{label} requires offset parameter".encode(), cors
-        )
+    if not await _validate_read_params(send, qs, offset, live, cors):
         return
 
     # Determine base64 encoding for SSE binary streams
@@ -817,31 +833,37 @@ async def _handle_sse(
 # =============================================================================
 
 
-async def _handle_append(
-    path: str,
-    scope: Scope,
-    receive: Receive,
-    send: Send,
-    store: StreamStore,
-    cors: dict[str, str],
-) -> None:
-    content_type = get_header(scope, "content-type")
-    seq = get_header(scope, "stream-seq")
-    closed_header = get_header(scope, STREAM_CLOSED_HEADER)
-    close_stream = closed_header == "true"
+@dataclass
+class _ParsedProducer:
+    """Validated producer coordinates parsed from the append request headers."""
 
-    # Extract producer headers
+    producer_id: str | None
+    epoch: int | None
+    seq: int | None
+    has_all: bool
+    """Whether all three producer headers were supplied (idempotent-producer mode)."""
+
+
+async def _parse_producer_headers(
+    send: Send,
+    scope: Scope,
+    cors: dict[str, str],
+) -> _ParsedProducer | None:
+    """Extract and validate the idempotent-producer headers.
+
+    All three (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`) must be present
+    together or absent together, and epoch/seq must be non-negative integers.
+    On any violation, send a ``400`` and return ``None`` — the caller must then
+    return. Otherwise return the parsed coordinates (epoch/seq are ``None`` when
+    no producer headers were supplied).
+    """
     producer_id = get_header(scope, PRODUCER_ID_HEADER)
     producer_epoch_str = get_header(scope, PRODUCER_EPOCH_HEADER)
     producer_seq_str = get_header(scope, PRODUCER_SEQ_HEADER)
 
-    # Validate producer headers - all three together or none
-    has_any = any(
-        h is not None for h in [producer_id, producer_epoch_str, producer_seq_str]
-    )
-    has_all = all(
-        h is not None for h in [producer_id, producer_epoch_str, producer_seq_str]
-    )
+    present = [producer_id, producer_epoch_str, producer_seq_str]
+    has_any = any(h is not None for h in present)
+    has_all = all(h is not None for h in present)
 
     if has_any and not has_all:
         await _send_error(
@@ -850,13 +872,12 @@ async def _handle_append(
             b"All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together",
             cors,
         )
-        return
+        return None
 
     if has_all and producer_id == "":
         await _send_error(send, 400, b"Invalid Producer-Id: must not be empty", cors)
-        return
+        return None
 
-    # Parse producer epoch/seq
     producer_epoch: int | None = None
     producer_seq: int | None = None
     if has_all:
@@ -870,7 +891,7 @@ async def _handle_append(
                 b"Invalid Producer-Epoch: must be a non-negative integer",
                 cors,
             )
-            return
+            return None
         producer_epoch = int(producer_epoch_str)
 
         if not STRICT_INTEGER_PATTERN.match(producer_seq_str):
@@ -880,8 +901,32 @@ async def _handle_append(
                 b"Invalid Producer-Seq: must be a non-negative integer",
                 cors,
             )
-            return
+            return None
         producer_seq = int(producer_seq_str)
+
+    return _ParsedProducer(producer_id, producer_epoch, producer_seq, has_all)
+
+
+async def _handle_append(
+    path: str,
+    scope: Scope,
+    receive: Receive,
+    send: Send,
+    store: StreamStore,
+    cors: dict[str, str],
+) -> None:
+    content_type = get_header(scope, "content-type")
+    seq = get_header(scope, "stream-seq")
+    closed_header = get_header(scope, STREAM_CLOSED_HEADER)
+    close_stream = closed_header == "true"
+
+    parsed = await _parse_producer_headers(send, scope, cors)
+    if parsed is None:
+        return
+    producer_id = parsed.producer_id
+    producer_epoch = parsed.epoch
+    producer_seq = parsed.seq
+    has_all = parsed.has_all
 
     body = await read_body(receive)
 
