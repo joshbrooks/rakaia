@@ -70,16 +70,19 @@ class TestConsumerCursor:
         assert offsets == sorted(offsets)
         assert len(offsets) == 12
 
-    def test_rewind_after_recreate_shorter(self):
-        # Consume 10 events, then rebuild the stream with only 2. The Django
-        # store still resets offsets on recreate (its globally-monotonic fix,
-        # defect #2, is deferred in #34), so the stale cursor sorts past the new
-        # head and the poll correctly reports a rewind.
+    def test_recreate_delivers_new_content_via_monotonic_offsets(self):
+        # #34 Defect #2 fixed: consume 10 events, then rebuild the stream with 2.
+        # Durable offsets are now globally monotonic across delete+recreate, so
+        # the recreated content is issued offsets strictly greater than the
+        # retired ones. The stale cursor therefore sorts BEFORE the new head, and
+        # the poll delivers the new events as an ordinary `advanced` — no
+        # `caught_up` silent skip, no rewind. (`rewound` remains reachable only
+        # for a genuinely truncated log or a cursor from a different stream.)
         store = DjangoStreamStore()
         store.create("s")
         _append(store, "s", 10)
         first = poll_consumer(store, CONSUMER, "s")
-        assert int(first.cursor) == 10  # zero-padded now, but numerically 10
+        assert int(first.cursor) == 10  # zero-padded, numerically 10
         commit_cursor(CONSUMER, "s", first.cursor)
 
         store.delete("s")
@@ -87,5 +90,26 @@ class TestConsumerCursor:
         _append(store, "s", 2)
 
         result = poll_consumer(store, CONSUMER, "s")
-        assert result.status == "rewound"
-        assert len(result.messages) == 2  # re-read from the start
+        assert result.status == "advanced"
+        assert len(result.messages) == 2  # the new content, delivered not skipped
+        # The recreated stream's offsets are strictly greater than the old head.
+        assert result.cursor > first.cursor
+
+    def test_empty_recreate_does_not_spuriously_rewind(self):
+        # #34 Defect #2, read side: in the window after a recreate but BEFORE the
+        # first append, the stream looks empty but its watermark survives. The
+        # head must reflect that high-water so a stale cursor reads as `caught_up`
+        # (nothing new yet), not `rewound` — which would tell the consumer to
+        # wipe its derived state for a stream that will resume above the cursor.
+        store = DjangoStreamStore()
+        store.create("s")
+        _append(store, "s", 10)
+        first = poll_consumer(store, CONSUMER, "s")
+        commit_cursor(CONSUMER, "s", first.cursor)
+
+        store.delete("s")
+        store.create("s")  # recreated, no append yet
+
+        result = poll_consumer(store, CONSUMER, "s")
+        assert result.status == "caught_up"
+        assert result.messages == []

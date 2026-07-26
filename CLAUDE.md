@@ -1,5 +1,14 @@
 # CLAUDE.md
 
+## Development
+
+- **Running tests:** the test deps live in extras. In a fresh checkout **or a new
+  git worktree**, run `uv sync --extra dev --extra django` before `pytest` —
+  plain `uv run` bootstraps only the zero-dependency core package, so tests fail
+  with `No module named pytest` until the extras are synced.
+- CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`,
+  `pytest`, and `zensical build`; run those before pushing.
+
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
