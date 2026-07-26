@@ -104,3 +104,20 @@ class TestPoll:
         result = poll(store, "s", cursor=cursor)
         assert result.status == "advanced"
         assert [m.data for m in result.messages] == [b"XX"]  # delivered, not skipped
+
+    def test_empty_recreate_with_lagging_cursor_reports_caught_up(self):
+        # Read-side companion to the globally-monotonic fix (#34): after a stream
+        # is deleted and recreated but BEFORE any re-append, the head reflects the
+        # retired high-water while the stream holds no messages. A consumer whose
+        # cursor sorts below that head has nothing to apply yet, so the poll must
+        # report `caught_up` — not `advanced` with an empty delta, which would
+        # falsely signal "new content" to a consumer that branches on the status
+        # rather than iterating the (empty) message list.
+        store = _store_with("s", [b"a", b"b"])  # gen 0
+        cursor = poll(store, "s", cursor=None).cursor
+        store.delete("s")
+        store.create("s")  # gen 1, recreated, no append yet — head sorts > cursor
+        result = poll(store, "s", cursor=cursor)
+        assert result.status == "caught_up"
+        assert result.messages == []
+        assert result.cursor == cursor  # unchanged; nothing consumed
