@@ -289,6 +289,13 @@ rakaia port="4437":
 conformance port="4437":
     ./conformance/run.sh {{port}}
 
+# Regenerate conformance/expected-failures.txt from a fresh run. Use when the
+# accepted protocol gap changes (fork lands, or the suite version bumps); review
+# the diff before committing.
+conformance-baseline port="4437":
+    ./conformance/run.sh {{port}}
+    node conformance/check-regressions.mjs --write-baseline
+
 # ---------------------------------------------------------------------------
 # Quality gates
 # ---------------------------------------------------------------------------

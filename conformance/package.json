@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Runs the upstream @durable-streams/server-conformance-tests suite against a running rakaia server.",
   "scripts": {
-    "test": "vitest run --no-coverage --reporter=default"
+    "test": "vitest run --no-coverage --reporter=default",
+    "test:ci": "vitest run --no-coverage --reporter=default --reporter=json --outputFile.json=./conformance-results.json",
+    "check-regressions": "node check-regressions.mjs"
   },
   "devDependencies": {
     "@durable-streams/server-conformance-tests": "0.3.6",

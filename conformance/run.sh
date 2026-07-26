@@ -59,7 +59,14 @@ if [ -z "${ready}" ]; then
   exit 1
 fi
 
-# Run the conformance suite.
+# Run the conformance suite. It emits a machine-readable JSON report
+# (conformance/conformance-results.json) alongside the human output. Expected
+# failures (the unimplemented stream-forking family) make vitest exit non-zero,
+# so we tolerate that here and let check-regressions.mjs decide the real verdict:
+# it distinguishes NEW regressions from the known gap.
 echo "==> Running Durable Streams conformance suite against ${BASE_URL}"
-CONFORMANCE_TEST_URL="${BASE_URL}" npm --prefix "${HERE}" test
+CONFORMANCE_TEST_URL="${BASE_URL}" npm --prefix "${HERE}" run test:ci || true
+
+echo "==> Checking results against the expected-failures baseline"
+node "${HERE}/check-regressions.mjs"
 exit $?

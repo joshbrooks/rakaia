@@ -4,8 +4,13 @@ name: Conformance
 # live rakaia server. It is currently INFORMATIONAL (non-blocking): the suite
 # step uses `continue-on-error` so failures are reported without blocking
 # merges while rakaia's protocol coverage matures (stream forking is not yet
-# implemented). Flip `continue-on-error` off to make it a required check once
-# rakaia passes the full suite.
+# implemented).
+#
+# Results are diffed against conformance/expected-failures.txt so a genuine
+# regression is distinguished from the known gap: NEW failures surface as
+# `::error::` annotations and a step summary, while expected fork failures stay
+# quiet. To make regressions block merges later, either flip `continue-on-error`
+# off below or set CONFORMANCE_FAIL_ON_REGRESSION=1 for the run step.
 
 on:
   push:
@@ -42,27 +47,23 @@ jobs:
         working-directory: conformance
         run: npm ci
 
+      # Runs the suite and diffs the results against conformance/expected-failures.txt.
+      # check-regressions.mjs writes the GitHub step summary and emits `::error::`
+      # annotations for any NEW failure, so regressions are loud on the PR. The step
+      # stays informational (continue-on-error) — the check exits 0 unless
+      # CONFORMANCE_FAIL_ON_REGRESSION=1, which is the one-line switch to make
+      # regressions a required check later.
       - name: Run Durable Streams conformance suite (informational)
         id: conformance
         continue-on-error: true
         run: ./conformance/run.sh 4437 2>&1 | tee conformance-results.log
 
-      - name: Summarize results
-        if: always()
-        run: |
-          {
-            echo "### Durable Streams conformance results"
-            echo ""
-            echo '```'
-            grep -E "Test Files|Tests " conformance-results.log | tail -5 \
-              || echo "(no summary captured — see the uploaded log)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload full log
+      - name: Upload logs and JSON report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-log
-          path: conformance-results.log
+          path: |
+            conformance-results.log
+            conformance/conformance-results.json
           if-no-files-found: warn
