@@ -75,4 +75,4 @@ The suite runs in CI as a **non-blocking / informational** check
 currently passes the full protocol surface **except the stream forking family**
 (`Stream-Forked-From` / `Stream-Fork-Offset` / `Stream-Fork-Sub-Offset`,
 sub-offset prefix materialization, cascade GC, and fork TTL inheritance), which
-is not yet implemented. See the tracking issue for details.
+is not yet implemented. See #61 for the tracking issue.

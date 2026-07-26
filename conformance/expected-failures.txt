@@ -6,7 +6,7 @@
 # that is NOT listed here is a NEW regression; anything listed here that now
 # PASSES should be removed to shrink the baseline.
 #
-# Current gap: the entire stream-forking family (not yet implemented).
+# Current gap: the entire stream-forking family (not yet implemented). See #61.
 # Regenerate with: just conformance-baseline   (see conformance/README.md)
 # Lines starting with # and blank lines are ignored.
 #
