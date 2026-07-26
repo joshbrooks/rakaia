@@ -36,7 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .effects import Effect, Executor
+from .effects import ApplyReport, Effect, Executor
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
     HandlerDriftError,
@@ -168,11 +168,15 @@ def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
         )
 
 
-def _synth_transitions(report: object) -> list[Effect]:
+def _synth_transitions(report: ApplyReport | None) -> list[Effect]:
     # Turn the executor's retire-flip report into one external transition per
     # row a retire actually flipped. `report` may be None (executors that don't
-    # observe flips) — treat that as nothing to synthesise.
-    flips = getattr(report, "retire_flips", None) or []
+    # observe flips) — treat that as nothing to synthesise. Typed as
+    # `ApplyReport | None` (not `object`) so a rename of `retire_flips` is a
+    # type error rather than a silent "synthesise nothing" regression.
+    if report is None:
+        return []
+    flips = report.retire_flips
     out: list[Effect] = []
     for eff, rows in flips:
         if eff.transition_kind is None:

@@ -197,8 +197,16 @@ def reconcile_by_key(
                 spare_keys=keys,
                 patch=dict(retire),
                 transition_kind=transition_kind,
+                # The full ordered identity of a flipped row: the scope-equality
+                # columns plus the natural key, deduped first-seen. Passed
+                # explicitly (rather than re-derived from `lookup` in the
+                # executor) so a scope key written as a lookup span, e.g.
+                # `org__id`, still lands in the transition payload instead of
+                # being mistaken for a filter and dropped.
                 transition_key_fields=(
-                    tuple(key_fields) if transition_kind is not None else None
+                    tuple(dict.fromkeys((*scope, *key_fields)))
+                    if transition_kind is not None
+                    else None
                 ),
             )
         )

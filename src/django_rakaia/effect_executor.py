@@ -123,25 +123,26 @@ class DjangoExecutor:
         # that flip NULL->set. Capture their identities BEFORE the UPDATE (same
         # atomic txn) only when the effect asked to notify — otherwise skip the
         # SELECT entirely so a plain retire costs nothing extra.
+        #
+        # `select_for_update` locks the captured rows for the rest of the txn so
+        # a concurrent transaction can't resolve or otherwise mutate a captured
+        # row between this SELECT and the UPDATE below — without the lock, under
+        # READ COMMITTED the reported flip set could diverge from the rows the
+        # UPDATE actually flips (a false or missed transition). No-op on SQLite,
+        # which serialises writers anyway.
         flipped: list[dict[str, Any]] = []
         if eff.transition_kind is not None:
             cols = cls._identity_cols(eff)
-            flipped = list(qs.order_by(*cols).values(*cols))
+            flipped = list(qs.select_for_update().order_by(*cols).values(*cols))
         qs.update(**eff.patch)
         return flipped
 
     @staticmethod
     def _identity_cols(eff: Effect) -> list[str]:
-        """Columns identifying a flipped row in its transition payload: the
-        retire's scope-equality columns (lookup keys with no ``__`` lookup
-        modifier — the open-guard and retire_filter are excluded) plus the
-        natural-key columns the reconcile named, deduped in first-seen order for
-        a deterministic SELECT."""
-        cols: list[str] = []
-        for k in eff.lookup or {}:
-            if "__" not in k and k not in cols:
-                cols.append(k)
-        for k in eff.transition_key_fields or ():
-            if k not in cols:
-                cols.append(k)
-        return cols
+        """Columns identifying a flipped row in its transition payload. The
+        producer (`reconcile_by_key`) states the full ordered identity — scope
+        columns plus the natural key — in ``transition_key_fields``, so the
+        executor uses it verbatim for a deterministic ``ORDER BY``/``SELECT``
+        rather than re-deriving it from ``lookup`` (which can't tell a scope
+        column from the open-guard/retire_filter)."""
+        return list(eff.transition_key_fields or ())

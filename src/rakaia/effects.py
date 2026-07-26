@@ -83,10 +83,12 @@ class Effect:
     to notify about)."""
 
     transition_key_fields: tuple[str, ...] | None = None
-    """Natural-key column names identifying each flipped row in the transition
-    payload (the executor also folds in the retire's scope-equality columns).
-    Set by ``reconcile_by_key`` from its ``key_fields`` when ``transition_kind``
-    is requested. Only meaningful on op="retire"."""
+    """The full ordered set of columns identifying each flipped row in the
+    transition payload — the retire's scope-equality columns *plus* its natural
+    key. The executor uses these verbatim for its deterministic identity SELECT
+    (it does not re-derive them from ``lookup``). Set by ``reconcile_by_key``
+    from ``scope`` + ``key_fields`` when ``transition_kind`` is requested. Only
+    meaningful on op="retire"."""
 
     def __post_init__(self) -> None:
         # `exclude` and `spare_keys` are ALTERNATIVE row-sparing mechanisms.
