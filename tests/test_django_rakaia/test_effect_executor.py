@@ -18,6 +18,11 @@ def _updates(ctx: CaptureQueriesContext) -> list[str]:
         q["sql"]
         for q in ctx.captured_queries
         if q["sql"].lstrip().upper().startswith("UPDATE")
+        # Exclude the per-path offset high-water bump (#34): that UPDATE comes
+        # from get_next_offset on the stream-append side (these projection
+        # models are @stream_model, so writing them emits an event), not from
+        # the executor's projection write that these skip-unchanged tests count.
+        and "rakaia_streamoffsetwatermark" not in q["sql"]
     ]
 
 

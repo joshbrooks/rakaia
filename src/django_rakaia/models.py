@@ -45,21 +45,61 @@ class Stream(models.Model):
         return self.stream_id
 
     def get_next_offset(self) -> int:
-        """Calculate the next monotonic offset for this stream.
+        """Calculate the next globally-monotonic offset for this stream.
 
-        Must be called inside a transaction: locks this stream row with
-        select_for_update() so concurrent writers serialize on offset
-        allocation instead of colliding on unique_together(stream, offset).
-        This is the single offset-allocation path shared by every write
-        surface (durable store, ``@stream_model`` signals, protocol views).
+        Must be called inside a transaction: locks the per-path high-water row
+        (``StreamOffsetWatermark``) with select_for_update() so concurrent
+        writers serialize on offset allocation instead of colliding on
+        unique_together(stream, offset). This is the single offset-allocation
+        path shared by every write surface (durable store, ``@stream_model``
+        signals, protocol views).
+
+        Offsets are **globally monotonic across delete+recreate** (#34, Defect
+        #2): the high-water row is keyed by ``stream_id`` and is never
+        cascade-deleted with the ``Stream``, so a stream recreated at the same
+        path resumes numbering *above* the retired high mark rather than
+        restarting at 1. That closes the silent-data-loss window where a stale
+        subscriber cursor collides with the recreated stream's head. This is the
+        durable analogue of the in-memory store's in-process ``_retired_seq``.
         """
-        # Lock the stream row for the duration of the enclosing transaction.
-        Stream.objects.select_for_update().get(pk=self.pk)
-        agg = self.entries.aggregate(max_offset=Max("offset"))
-        max_offset = agg["max_offset"]
-        if max_offset is None:
-            return 1
-        return max_offset + 1
+        # Lock the per-path high-water for the duration of the enclosing
+        # transaction. get_or_create tolerates the first-writer race (it retries
+        # on the unique-key IntegrityError); the subsequent locked read then
+        # serializes the read-modify-write.
+        StreamOffsetWatermark.objects.get_or_create(stream_path=self.stream_id)
+        watermark = StreamOffsetWatermark.objects.select_for_update().get(
+            stream_path=self.stream_id
+        )
+        # `max(entries, watermark)` is belt-and-suspenders: the watermark alone
+        # is authoritative for live streams, but taking the max also seeds it
+        # correctly from any pre-existing entries (e.g. rows written before this
+        # high-water table existed) on the first allocation after migration.
+        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+        nxt = max(entries_max or 0, watermark.high) + 1
+        watermark.high = nxt
+        watermark.save(update_fields=["high"])
+        return nxt
+
+
+class StreamOffsetWatermark(models.Model):
+    """The highest offset ever issued for a stream path, surviving deletion.
+
+    Keyed by ``stream_path`` (the ``Stream.stream_id`` string) with **no FK to
+    ``Stream``**, so it is *not* cascade-deleted when a stream is deleted. That
+    persistence is the whole point: it lets a recreated stream resume offset
+    numbering above the retired high mark, keeping durable offsets globally
+    monotonic across delete+recreate (#34, Defect #2). See
+    ``Stream.get_next_offset``.
+    """
+
+    stream_path = models.CharField(max_length=255, primary_key=True)
+    high = models.BigIntegerField(default=0)
+
+    class Meta:
+        db_table = "rakaia_streamoffsetwatermark"
+
+    def __str__(self) -> str:
+        return f"{self.stream_path}={self.high}"
 
 
 class StreamEvent(models.Model):

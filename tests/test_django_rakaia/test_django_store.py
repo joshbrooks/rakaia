@@ -48,13 +48,13 @@ class TestDjangoStreamStore:
         )
         assert offsets == [1, 2]
 
-    def test_append_locks_stream_row_for_offset_allocation(self):
+    def test_append_locks_for_offset_allocation(self):
         # Regression guard for the concurrency bug: offset allocation must go
-        # through select_for_update() so concurrent appends serialize on the
-        # stream row instead of racing to the same offset and failing the
-        # unique_together(stream, offset) constraint. SQLite (the CI backend)
-        # can't reproduce the race across connections, so assert the lock is
-        # acquired rather than trying to trigger the collision.
+        # through select_for_update() so concurrent appends serialize (now on the
+        # per-path StreamOffsetWatermark row, #34) instead of racing to the same
+        # offset and failing the unique_together(stream, offset) constraint.
+        # SQLite (the CI backend) can't reproduce the race across connections, so
+        # assert the lock is acquired rather than trying to trigger the collision.
         store = DjangoStreamStore()
         store.create("s")
 
@@ -68,7 +68,7 @@ class TestDjangoStreamStore:
         with patch.object(QuerySet, "select_for_update", spy):
             store.append("s", b'{"id": 1}')
 
-        assert locked, "append must lock the stream row via select_for_update()"
+        assert locked, "append must lock the watermark row via select_for_update()"
 
     def test_delete_removes_stream_and_entries(self):
         store = DjangoStreamStore()
@@ -130,6 +130,26 @@ class TestDjangoStreamStore:
         store.append("s", b'{"id": 2}')
         # Offsets are zero-padded for lexicographic sortability (#34).
         assert store.get_current_offset("s") == "00000000000000000002"
+
+    def test_offsets_stay_monotonic_across_delete_recreate(self):
+        # #34 Defect #2: a stream recreated at the same path must resume
+        # numbering ABOVE the retired high mark, so an offset is never reused.
+        # Otherwise a subscriber holding a cursor from the old incarnation reads
+        # the recreated head as `caught_up` and silently skips the new content.
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        store.append("s", b'{"id": 2}')
+        before = store.get_current_offset("s")
+
+        store.delete("s")
+        store.create("s")
+        store.append("s", b'{"id": 3}')
+        after = store.get_current_offset("s")
+
+        # Strictly greater under plain string (lexicographic) comparison — the
+        # recreated stream's head sorts past any prior cursor.
+        assert after > before
 
     def test_durability_across_instances(self):
         # The property the in-memory store lacks: a fresh instance sees data
