@@ -151,6 +151,24 @@ class TestDjangoStreamStore:
         # recreated stream's head sorts past any prior cursor.
         assert after > before
 
+    def test_current_offset_reflects_watermark_after_empty_recreate(self):
+        # #34 Defect #2, read side: get_current_offset must not regress below the
+        # retired high-water in the window after a recreate but BEFORE the first
+        # append. Allocation resumes above the watermark, so the reported head
+        # must too — otherwise a stale cursor sorts past a head of 0 and the poll
+        # spuriously reports `rewound` for a stream that only looks empty.
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        store.append("s", b'{"id": 2}')
+        retired = store.get_current_offset("s")
+
+        store.delete("s")
+        store.create("s")  # recreated, no append yet
+
+        # Head stays at the retired high-water, not 0.
+        assert store.get_current_offset("s") == retired
+
     def test_durability_across_instances(self):
         # The property the in-memory store lacks: a fresh instance sees data
         # written by an earlier one, because state lives in the database.

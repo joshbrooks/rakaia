@@ -24,11 +24,12 @@ import json
 from typing import Any
 
 from django.db import transaction
+from django.db.models import Max
 
 from rakaia.context import merge_provenance
 from rakaia.types import StreamMessage
 
-from .models import Stream, StreamEntry, StreamEvent
+from .models import Stream, StreamEntry, StreamEvent, StreamOffsetWatermark
 
 # StreamEvent.event_type is required metadata for the dashboard; raw stream
 # appends carry no type, so they are recorded under a single stable label.
@@ -158,12 +159,26 @@ class DjangoStreamStore:
         return deleted > 0
 
     def get_current_offset(self, path: str) -> str | None:
-        """The latest offset as a string, or None if the stream is absent."""
+        """The latest offset ever issued for the stream as a string, or None if
+        the stream is absent.
+
+        Reflects the persisted high-water (``StreamOffsetWatermark``), not only
+        the live entries: a stream recreated at the same path reports a head at
+        or above its retired high mark even before the first re-append, so a
+        stale subscriber cursor reads as ``caught_up`` rather than a spurious
+        ``rewound`` (#34, Defect #2). Mirrors ``Stream.get_next_offset``'s
+        ``max(entries, watermark)`` so allocation and tail-reporting agree.
+        """
         stream = Stream.objects.filter(stream_id=path).first()
         if stream is None:
             return None
-        latest = stream.entries.order_by("-offset").values_list("offset", flat=True)
-        return _fmt_offset(latest[0]) if latest else _fmt_offset(0)
+        entries_max = stream.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+        watermark_high = (
+            StreamOffsetWatermark.objects.filter(stream_path=path)
+            .values_list("high", flat=True)
+            .first()
+        )
+        return _fmt_offset(max(entries_max or 0, watermark_high or 0))
 
     def list_paths(self) -> list[str]:
         return list(Stream.objects.values_list("stream_id", flat=True))
