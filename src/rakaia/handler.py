@@ -68,6 +68,25 @@ STREAM_CLOSED_HEADER_RESP = "Stream-Closed"
 # Strict integer pattern for producer headers
 STRICT_INTEGER_PATTERN = re.compile(r"^\d+$")
 
+
+async def _send_error(
+    send: Send,
+    status: int,
+    message: bytes,
+    cors: dict[str, str],
+    extra_headers: dict[str, str] | None = None,
+) -> None:
+    """Send a plain-text error response carrying the CORS headers.
+
+    Collapses the repeated ``send_response(send, status, {**cors,
+    "content-type": "text/plain"}, msg)`` shape used throughout the handler.
+    """
+    headers = {**cors, "content-type": "text/plain"}
+    if extra_headers:
+        headers.update(extra_headers)
+    await send_response(send, status, headers, message)
+
+
 # Valid TTL pattern (non-negative integer, no leading zeros except for "0")
 VALID_TTL_PATTERN = re.compile(r"^(0|[1-9]\d*)$")
 
@@ -85,7 +104,6 @@ class InjectedFault:
     delay_ms: int | None = None
     drop_connection: bool = False
     truncate_body_bytes: int | None = None
-    probability: float | None = None
     method: str | None = None
     corrupt_body: bool = False
     jitter_ms: int | None = None
@@ -192,59 +210,31 @@ def create_app(
             elif method == "DELETE":
                 await _handle_delete(path, send, actual_store, cors_headers)
             else:
-                await send_response(
-                    send,
-                    405,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Method not allowed",
-                )
+                await _send_error(send, 405, b"Method not allowed", cors_headers)
         except KeyError as e:
             msg = str(e)
             if "not found" in msg.lower():
-                await send_response(
-                    send,
-                    404,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Stream not found",
-                )
+                await _send_error(send, 404, b"Stream not found", cors_headers)
             else:
                 raise
         except ValueError as e:
             msg = str(e)
             if "already exists with different configuration" in msg:
-                await send_response(
+                await _send_error(
                     send,
                     409,
-                    {**cors_headers, "content-type": "text/plain"},
                     b"Stream already exists with different configuration",
+                    cors_headers,
                 )
             elif "Sequence conflict" in msg:
-                await send_response(
-                    send,
-                    409,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Sequence conflict",
-                )
+                await _send_error(send, 409, b"Sequence conflict", cors_headers)
             elif "Content-type mismatch" in msg:
-                await send_response(
-                    send,
-                    409,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Content-type mismatch",
-                )
+                await _send_error(send, 409, b"Content-type mismatch", cors_headers)
             elif "Invalid JSON" in msg:
-                await send_response(
-                    send,
-                    400,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Invalid JSON",
-                )
+                await _send_error(send, 400, b"Invalid JSON", cors_headers)
             elif "Empty arrays are not allowed" in msg:
-                await send_response(
-                    send,
-                    400,
-                    {**cors_headers, "content-type": "text/plain"},
-                    b"Empty arrays are not allowed",
+                await _send_error(
+                    send, 400, b"Empty arrays are not allowed", cors_headers
                 )
             else:
                 raise
@@ -282,23 +272,15 @@ async def _handle_create(
 
     # Validate TTL and Expires-At
     if ttl_header and expires_at_header:
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            b"Cannot specify both Stream-TTL and Stream-Expires-At",
+        await _send_error(
+            send, 400, b"Cannot specify both Stream-TTL and Stream-Expires-At", cors
         )
         return
 
     ttl_seconds: int | None = None
     if ttl_header:
         if not VALID_TTL_PATTERN.match(ttl_header):
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Invalid Stream-TTL value",
-            )
+            await _send_error(send, 400, b"Invalid Stream-TTL value", cors)
             return
         ttl_seconds = int(ttl_header)
 
@@ -309,12 +291,7 @@ async def _handle_create(
 
             datetime.fromisoformat(expires_at_header.replace("Z", "+00:00"))
         except ValueError:
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Invalid Stream-Expires-At timestamp",
-            )
+            await _send_error(send, 400, b"Invalid Stream-Expires-At timestamp", cors)
             return
 
     # Read body
@@ -381,7 +358,7 @@ async def _handle_head(
 ) -> None:
     stream = store.get(path)
     if stream is None:
-        await send_response(send, 404, {**cors, "content-type": "text/plain"}, b"")
+        await _send_error(send, 404, b"", cors)
         return
 
     headers: dict[str, str] = {
@@ -426,12 +403,7 @@ async def _handle_read(
 ) -> None:
     stream = store.get(path)
     if stream is None:
-        await send_response(
-            send,
-            404,
-            {**cors, "content-type": "text/plain"},
-            b"Stream not found",
-        )
+        await _send_error(send, 404, b"Stream not found", cors)
         return
 
     qs = get_query_string(scope)
@@ -442,41 +414,25 @@ async def _handle_read(
     # Validate offset
     if offset is not None:
         if offset == "":
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Empty offset parameter",
-            )
+            await _send_error(send, 400, b"Empty offset parameter", cors)
             return
 
         all_offsets = get_all_query_params(qs, "offset")
         if len(all_offsets) > 1:
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Multiple offset parameters not allowed",
+            await _send_error(
+                send, 400, b"Multiple offset parameters not allowed", cors
             )
             return
 
         if not VALID_OFFSET_PATTERN.match(offset):
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Invalid offset format",
-            )
+            await _send_error(send, 400, b"Invalid offset format", cors)
             return
 
     # Require offset for long-poll and SSE
     if (live == "long-poll" or live == "sse") and not offset:
         label = "SSE" if live == "sse" else "Long-poll"
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            f"{label} requires offset parameter".encode(),
+        await _send_error(
+            send, 400, f"{label} requires offset parameter".encode(), cors
         )
         return
 
@@ -888,21 +844,16 @@ async def _handle_append(
     )
 
     if has_any and not has_all:
-        await send_response(
+        await _send_error(
             send,
             400,
-            {**cors, "content-type": "text/plain"},
             b"All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together",
+            cors,
         )
         return
 
     if has_all and producer_id == "":
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            b"Invalid Producer-Id: must not be empty",
-        )
+        await _send_error(send, 400, b"Invalid Producer-Id: must not be empty", cors)
         return
 
     # Parse producer epoch/seq
@@ -913,21 +864,21 @@ async def _handle_append(
         assert producer_seq_str is not None
 
         if not STRICT_INTEGER_PATTERN.match(producer_epoch_str):
-            await send_response(
+            await _send_error(
                 send,
                 400,
-                {**cors, "content-type": "text/plain"},
                 b"Invalid Producer-Epoch: must be a non-negative integer",
+                cors,
             )
             return
         producer_epoch = int(producer_epoch_str)
 
         if not STRICT_INTEGER_PATTERN.match(producer_seq_str):
-            await send_response(
+            await _send_error(
                 send,
                 400,
-                {**cors, "content-type": "text/plain"},
                 b"Invalid Producer-Seq: must be a non-negative integer",
+                cors,
             )
             return
         producer_seq = int(producer_seq_str)
@@ -944,12 +895,7 @@ async def _handle_append(
                 path, producer_id, producer_epoch, producer_seq
             )
             if close_result is None:
-                await send_response(
-                    send,
-                    404,
-                    {**cors, "content-type": "text/plain"},
-                    b"Stream not found",
-                )
+                await _send_error(send, 404, b"Stream not found", cors)
                 return
 
             pr = close_result.producer_result
@@ -967,50 +913,42 @@ async def _handle_append(
                 )
                 return
             if isinstance(pr, ProducerStaleEpoch):
-                await send_response(
+                await _send_error(
                     send,
                     403,
-                    {
-                        **cors,
-                        "content-type": "text/plain",
-                        PRODUCER_EPOCH_HEADER: str(pr.current_epoch),
-                    },
                     b"Stale producer epoch",
+                    cors,
+                    {PRODUCER_EPOCH_HEADER: str(pr.current_epoch)},
                 )
                 return
             if isinstance(pr, ProducerInvalidEpochSeq):
-                await send_response(
-                    send,
-                    400,
-                    {**cors, "content-type": "text/plain"},
-                    b"New epoch must start with sequence 0",
+                await _send_error(
+                    send, 400, b"New epoch must start with sequence 0", cors
                 )
                 return
             if isinstance(pr, ProducerSequenceGap):
-                await send_response(
+                await _send_error(
                     send,
                     409,
+                    b"Producer sequence gap",
+                    cors,
                     {
-                        **cors,
-                        "content-type": "text/plain",
                         PRODUCER_EXPECTED_SEQ_HEADER: str(pr.expected_seq),
                         PRODUCER_RECEIVED_SEQ_HEADER: str(pr.received_seq),
                     },
-                    b"Producer sequence gap",
                 )
                 return
             if isinstance(pr, ProducerStreamClosed):
                 s = store.get(path)
-                await send_response(
+                await _send_error(
                     send,
                     409,
+                    b"Stream is closed",
+                    cors,
                     {
-                        **cors,
-                        "content-type": "text/plain",
                         STREAM_CLOSED_HEADER_RESP: "true",
                         STREAM_OFFSET_HEADER_RESP: s.current_offset if s else "",
                     },
-                    b"Stream is closed",
                 )
                 return
 
@@ -1031,12 +969,7 @@ async def _handle_append(
             # Simple close without producer
             close_result = store.close_stream(path)
             if close_result is None:
-                await send_response(
-                    send,
-                    404,
-                    {**cors, "content-type": "text/plain"},
-                    b"Stream not found",
-                )
+                await _send_error(send, 404, b"Stream not found", cors)
                 return
             await send_response(
                 send,
@@ -1051,22 +984,12 @@ async def _handle_append(
 
     # Empty body without close is an error
     if len(body) == 0:
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            b"Empty body",
-        )
+        await _send_error(send, 400, b"Empty body", cors)
         return
 
     # Content-Type required for bodies
     if not content_type:
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            b"Content-Type header is required",
-        )
+        await _send_error(send, 400, b"Content-Type header is required", cors)
         return
 
     append_opts = AppendOptions(
@@ -1103,16 +1026,15 @@ async def _handle_append(
             return
 
         s = store.get(path)
-        await send_response(
+        await _send_error(
             send,
             409,
+            b"Stream is closed",
+            cors,
             {
-                **cors,
-                "content-type": "text/plain",
                 STREAM_CLOSED_HEADER_RESP: "true",
                 STREAM_OFFSET_HEADER_RESP: s.current_offset if s else "",
             },
-            b"Stream is closed",
         )
         return
 
@@ -1146,38 +1068,29 @@ async def _handle_append(
         return
 
     if isinstance(pr, ProducerStaleEpoch):
-        await send_response(
+        await _send_error(
             send,
             403,
-            {
-                **cors,
-                "content-type": "text/plain",
-                PRODUCER_EPOCH_HEADER: str(pr.current_epoch),
-            },
             b"Stale producer epoch",
+            cors,
+            {PRODUCER_EPOCH_HEADER: str(pr.current_epoch)},
         )
         return
 
     if isinstance(pr, ProducerInvalidEpochSeq):
-        await send_response(
-            send,
-            400,
-            {**cors, "content-type": "text/plain"},
-            b"New epoch must start with sequence 0",
-        )
+        await _send_error(send, 400, b"New epoch must start with sequence 0", cors)
         return
 
     if isinstance(pr, ProducerSequenceGap):
-        await send_response(
+        await _send_error(
             send,
             409,
+            b"Producer sequence gap",
+            cors,
             {
-                **cors,
-                "content-type": "text/plain",
                 PRODUCER_EXPECTED_SEQ_HEADER: str(pr.expected_seq),
                 PRODUCER_RECEIVED_SEQ_HEADER: str(pr.received_seq),
             },
-            b"Producer sequence gap",
         )
         return
 
@@ -1194,12 +1107,7 @@ async def _handle_delete(
     cors: dict[str, str],
 ) -> None:
     if not store.has(path):
-        await send_response(
-            send,
-            404,
-            {**cors, "content-type": "text/plain"},
-            b"Stream not found",
-        )
+        await _send_error(send, 404, b"Stream not found", cors)
         return
 
     store.delete(path)
@@ -1224,22 +1132,12 @@ async def _handle_test_inject(
         try:
             config = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Invalid JSON body",
-            )
+            await _send_error(send, 400, b"Invalid JSON body", cors)
             return
 
         path = config.get("path")
         if not path:
-            await send_response(
-                send,
-                400,
-                {**cors, "content-type": "text/plain"},
-                b"Missing required field: path",
-            )
+            await _send_error(send, 400, b"Missing required field: path", cors)
             return
 
         injected_faults[path] = InjectedFault(
@@ -1249,7 +1147,6 @@ async def _handle_test_inject(
             delay_ms=config.get("delayMs"),
             drop_connection=config.get("dropConnection", False),
             truncate_body_bytes=config.get("truncateBodyBytes"),
-            probability=config.get("probability"),
             method=config.get("method"),
             corrupt_body=config.get("corruptBody", False),
             jitter_ms=config.get("jitterMs"),
@@ -1271,12 +1168,7 @@ async def _handle_test_inject(
             b'{"ok":true}',
         )
     else:
-        await send_response(
-            send,
-            405,
-            {**cors, "content-type": "text/plain"},
-            b"Method not allowed",
-        )
+        await _send_error(send, 405, b"Method not allowed", cors)
 
 
 def _consume_fault(

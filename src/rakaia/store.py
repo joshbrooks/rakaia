@@ -8,6 +8,7 @@ producer validation, long-poll waiting, and TTL/expiry.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -39,6 +40,8 @@ from .types import (
 # *validates* them, so it deliberately does not import `VALID_OFFSET_PATTERN`.
 # Offset validation lives in the two protocol servers (`handler` /
 # `protocol_views`), which share the one pattern from `.types` (#41).
+
+_log = logging.getLogger("rakaia.store")
 
 
 class StreamStore:
@@ -83,7 +86,14 @@ class StreamStore:
                 if now > expires.replace(tzinfo=timezone.utc).timestamp():
                     return True
             except ValueError:
-                pass
+                # A malformed Stream-Expires-At can't be evaluated, so the
+                # stream is treated as non-expiring. Log it rather than
+                # swallowing silently so bad data is observable.
+                _log.debug(
+                    "Ignoring malformed expires_at %r on stream %r",
+                    stream.expires_at,
+                    stream.path,
+                )
 
         return False
 
