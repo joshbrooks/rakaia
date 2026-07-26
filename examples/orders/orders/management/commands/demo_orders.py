@@ -17,12 +17,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from django.core.management.base import BaseCommand, CommandParser
+from django.core.management.base import BaseCommand, CommandError, CommandParser
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.store import get_store
 from orders.models import OrderSummary
-from orders.seed import SAMPLE_ORDERS, TAX_CHANGE_SEQ
+from orders.seed import SAMPLE_BONUSES, SAMPLE_ORDERS, TAX_CHANGE_SEQ
 from rakaia import CollectingExecutor
 from rakaia.replay import replay
 
@@ -58,11 +58,15 @@ class Command(BaseCommand):
         OrderSummary.objects.all().delete()
 
         store.create(STREAM)
-        for event in SAMPLE_ORDERS:
+        # Orders first, then the loyalty-bonus events — so each bonus carries a
+        # higher seq than the order it decorates and finds the row already
+        # materialised when op="update" applies.
+        for event in [*SAMPLE_ORDERS, *SAMPLE_BONUSES]:
             store.append(STREAM, json.dumps(event).encode("utf-8"))
         self.stdout.write(
             f"Seeded {len(SAMPLE_ORDERS)} order events "
-            f"(tax rule changes at seq {TAX_CHANGE_SEQ}).\n"
+            f"(tax rule changes at seq {TAX_CHANGE_SEQ}) "
+            f"+ {len(SAMPLE_BONUSES)} loyalty-bonus events.\n"
         )
 
         # Dry run first: a CollectingExecutor records the effects replay would
@@ -89,6 +93,7 @@ class Command(BaseCommand):
         )
         self._print_result(result)
         self._print_table()
+        self._check_update_if_exists()
 
         if opts["twice"]:
             before = OrderSummary.objects.count()
@@ -123,12 +128,30 @@ class Command(BaseCommand):
     def _print_table(self) -> None:
         header = (
             f"\n{'order':<10}{'status':<11}{'subtotal':>10}"
-            f"{'rate':>7}{'tax':>9}{'total':>10}{'points':>8}"
+            f"{'rate':>7}{'tax':>9}{'total':>10}{'points':>8}{'bonus':>7}"
         )
         self.stdout.write(header)
         self.stdout.write("-" * len(header.strip("\n")))
         for o in OrderSummary.objects.all():
             self.stdout.write(
                 f"{o.order_id:<10}{o.status:<11}{o.subtotal:>10}"
-                f"{o.tax_rate:>7}{o.tax:>9}{o.total:>10}{o.loyalty_points:>8}"
+                f"{o.tax_rate:>7}{o.tax:>9}{o.total:>10}"
+                f"{o.loyalty_points:>8}{o.bonus_points:>7}"
             )
+
+    def _check_update_if_exists(self) -> None:
+        """Prove the op="update" (update-if-exists) guarantee both ways: the
+        bonus for a real order landed, and the bonus for an order that was never
+        placed minted no row."""
+        landed = OrderSummary.objects.get(order_id="ORD-1003").bonus_points
+        phantom = OrderSummary.objects.filter(order_id="ORD-9999").exists()
+        if landed != 50 or phantom:
+            raise CommandError(
+                f"update-if-exists failed: ORD-1003 bonus={landed} (want 50), "
+                f"ORD-9999 row exists={phantom} (want False)"
+            )
+        self.stdout.write(
+            '\nop="update": bonus landed on ORD-1003 (+50) and minted NO row '
+            "for ORD-9999 (a bonus for an order never placed) — "
+            "update_or_create would have left a phantom row. ✓"
+        )

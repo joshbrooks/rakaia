@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rakaia Orders — live stream</title>
+    <style>
+        :root {
+            --ink: #0f172a; --muted: #64748b; --accent: #2563eb;
+            --line: #e2e8f0; --pre: #f1f5f9; --ok: #10b981;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: var(--ink); background: #f8fafc; line-height: 1.5;
+        }
+        .wrap { max-width: 68em; margin: 0 auto; padding: 2.5em 2em; }
+        h1 { font-size: 1.8em; margin: 0 0 0.1em; letter-spacing: -0.02em; }
+        p.sub { color: var(--muted); margin: 0 0 1.5em; max-width: 46em; }
+        .live-indicator {
+            display: inline-block; width: 0.6em; height: 0.6em; border-radius: 50%;
+            background: var(--ok); margin-right: 0.4em; vertical-align: middle;
+        }
+        .live-indicator.stale { background: #ef4444; }
+        .cols { display: flex; gap: 1.5em; align-items: flex-start; flex-wrap: wrap; }
+        .panel { flex: 1 1 22em; min-width: 20em; }
+        h2 { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.06em;
+             color: var(--muted); margin: 0 0 0.6em; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em;
+                background: #fff; border-radius: 8px; overflow: hidden; }
+        th, td { text-align: right; padding: 0.5em 0.7em; border-bottom: 1px solid var(--line); }
+        th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+        thead th { color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--line); }
+        td.bonus b { color: var(--accent); }
+        .feed { list-style: none; margin: 0; padding: 0; font-family: ui-monospace, monospace;
+                font-size: 0.82em; max-height: 30em; overflow-y: auto;
+                background: #fff; border-radius: 8px; border: 1px solid var(--line); }
+        .feed li { padding: 0.35em 0.7em; border-bottom: 1px solid var(--pre);
+                   display: flex; gap: 0.6em; align-items: baseline; }
+        .feed li:last-child { border-bottom: none; }
+        .tag { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em;
+               padding: 0.05em 0.45em; border-radius: 999px; font-weight: 700; }
+        .tag.order { background: #dbeafe; color: #1e40af; }
+        .tag.bonus { background: #ede9fe; color: #6d28d9; }
+        .tag.note  { background: #fee2e2; color: #b91c1c; }
+        .oid { color: var(--ink); }
+        .out { margin-left: auto; color: var(--muted); }
+        .out.noop { color: #b45309; }
+        .out.applied { color: var(--ok); }
+        form.add { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+                   padding: 1em; margin-bottom: 1.2em; display: flex; flex-wrap: wrap;
+                   gap: 0.6em; align-items: end; }
+        form.add label { font-size: 0.75em; color: var(--muted); display: block; }
+        form.add select, form.add input { padding: 0.4em; font-size: 0.9em;
+               border: 1px solid var(--line); border-radius: 5px; }
+        form.add button { padding: 0.5em 1.1em; font-size: 0.9em; background: var(--accent);
+               color: #fff; border: 0; border-radius: 5px; cursor: pointer; }
+        code.inline { background: var(--pre); padding: 0.1em 0.35em; border-radius: 4px; }
+        footer { color: var(--muted); font-size: 0.85em; margin-top: 2em; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <nav style="display:flex;gap:1.2em;font-size:0.9em;margin-bottom:1.5em;">
+        <a href="{% url 'orders:index' %}" style="color:var(--accent);text-decoration:none;">Projection</a>
+        <a href="{% url 'orders:live' %}" style="color:var(--ink);font-weight:700;text-decoration:none;">Live stream</a>
+        <a href="{% url 'orders:info' %}" style="color:var(--accent);text-decoration:none;">How it works</a>
+    </nav>
+    <h1>Orders — live stream</h1>
+    <p class="sub">
+        A background producer invents a random order every ~0.5–1.5&nbsp;s,
+        appends it to the event stream, and replays it through the versioned
+        handlers into the <strong>OrderSummary</strong> projection. About one in
+        four events is a loyalty bonus applied with <code class="inline">op="update"</code>:
+        it lands on an existing order, or is a clean <strong>no-op</strong> when it
+        targets an order that was never placed — watch the feed, and note that no
+        <code class="inline">ORD-GHOST-*</code> row ever appears in the table.
+    </p>
+    <p>
+        <span class="live-indicator" id="live"></span>
+        <span id="stat" style="color:var(--muted);font-size:0.9em;">connecting…</span>
+    </p>
+
+    <form class="add" id="add-form" method="post" action="{% url 'orders:live_submit' %}">
+        {% csrf_token %}
+        <div>
+            <label for="sku">Item</label>
+            <select name="sku" id="sku">
+                {% for s in skus %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="quantity">Qty</label>
+            <input type="number" name="quantity" id="quantity" value="1" min="1" max="20" style="width:5em;">
+        </div>
+        <div>
+            <label for="status">Status</label>
+            <select name="status" id="status">
+                {% for st in statuses %}<option value="{{ st }}"{% if st == 'PAID' %} selected{% endif %}>{{ st }}</option>{% endfor %}
+            </select>
+        </div>
+        <button type="submit">Submit order</button>
+    </form>
+
+    <div class="cols">
+        <div class="panel" style="flex: 2 1 34em;">
+            <h2>Projection — OrderSummary</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Order</th><th>Status</th><th>Subtotal</th>
+                        <th>Tax</th><th>Total</th><th>Points</th><th>Bonus</th>
+                    </tr>
+                </thead>
+                <tbody id="rows">
+                    <tr><td colspan="7" style="text-align:center;color:var(--muted);">waiting for the first order…</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="panel">
+            <h2>Event stream (newest first)</h2>
+            <ul class="feed" id="feed"></ul>
+        </div>
+    </div>
+
+    <footer>
+        The producer thread is the only code that touches the in-memory stream;
+        this page just polls <code class="inline">/live/data/</code>. Reset the
+        demo by restarting <code class="inline">just orders-live</code>.
+    </footer>
+</div>
+
+<script>
+    const dataUrl = "{% url 'orders:live_data' %}";
+    const rowsEl = document.getElementById("rows");
+    const feedEl = document.getElementById("feed");
+    const liveEl = document.getElementById("live");
+    const statEl = document.getElementById("stat");
+
+    function fmtRow(o) {
+        const bonus = o.bonus_points
+            ? `<b>${o.bonus_points}</b>` : o.bonus_points;
+        return `<tr>
+            <td>${o.order_id}</td><td>${o.status}</td><td>${o.subtotal}</td>
+            <td>${o.tax}</td><td>${o.total}</td><td>${o.loyalty_points}</td>
+            <td class="bonus">${bonus}</td></tr>`;
+    }
+
+    function fmtEvent(e) {
+        const outClass = e.outcome && e.outcome.startsWith("no-op") ? "noop"
+            : (e.outcome === "applied" ? "applied" : "");
+        const detail = e.detail ? ` ${e.detail}` : "";
+        return `<li>
+            <span class="tag ${e.kind}">${e.kind}</span>
+            <span class="oid">${e.order_id}</span>
+            <span style="color:var(--muted);">${detail}</span>
+            <span class="out ${outClass}">${e.outcome || ""}</span></li>`;
+    }
+
+    async function tick() {
+        try {
+            const r = await fetch(dataUrl, {headers: {"X-Requested-With": "XMLHttpRequest"}});
+            if (!r.ok) throw new Error(r.status);
+            const d = await r.json();
+            liveEl.classList.remove("stale");
+            statEl.textContent =
+                `${d.stats.events} events streamed · ${d.orders.length} rows`;
+            rowsEl.innerHTML = d.orders.length
+                ? d.orders.map(fmtRow).join("")
+                : `<tr><td colspan="7" style="text-align:center;color:var(--muted);">waiting for the first order…</td></tr>`;
+            feedEl.innerHTML = d.events.map(fmtEvent).join("");
+        } catch (err) {
+            liveEl.classList.add("stale");
+            statEl.textContent = "disconnected — is the server running?";
+        }
+    }
+
+    // Submit the form via fetch so the page never reloads; the next poll shows it.
+    const form = document.getElementById("add-form");
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+            await fetch(form.action, {
+                method: "POST",
+                body: new FormData(form),
+                headers: {"X-Requested-With": "XMLHttpRequest"},
+            });
+        } catch (_) { /* the poll will reflect it, or show disconnected */ }
+    });
+
+    tick();
+    setInterval(tick, 1000);
+</script>
+</body>
+</html>

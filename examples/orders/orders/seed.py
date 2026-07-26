@@ -17,6 +17,10 @@ v1* — it exercises the upcaster and the v2 tax handler at once.
 
 Loyalty points are only awarded on PAID orders; PENDING/CANCELLED orders show
 the sibling handler returning no effect.
+
+`SAMPLE_BONUSES` (below the orders) are promotional `kind="loyalty_bonus"`
+events, appended after the orders so they carry the highest seqs. They drive the
+`order_bonus` handler's `op="update"` — the update-if-exists showcase.
 """
 
 # The tax rule changed at this sequence boundary: orders placed before it keep
@@ -82,5 +86,31 @@ SAMPLE_ORDERS: list[dict] = [
         "items": [
             {"sku": "KETTLE-STEEL", "quantity": 1, "price": "40.00"},
         ],
+    },
+]
+
+# Promotional loyalty-bonus events (kind="loyalty_bonus"), appended *after* all
+# the orders so they carry the highest seqs. Each credits `bonus` points to an
+# order via the `order_bonus` handler's op="update" — update-if-exists:
+#
+#   * ORD-1003 exists (seeded above) -> the bonus lands on its row.
+#   * ORD-9999 was never placed       -> op="update" is a clean no-op. NO row is
+#     minted. (update_or_create would leave a phantom half-row here — the exact
+#     footgun op="update" removes.)
+#
+# Because single-stage replay applies each event before the next, a bonus that
+# targets an already-seen order finds the row waiting for it.
+SAMPLE_BONUSES: list[dict] = [
+    {
+        "schema_version": 2,
+        "kind": "loyalty_bonus",
+        "order_id": "ORD-1003",  # a real, already-placed order
+        "bonus": 50,
+    },
+    {
+        "schema_version": 2,
+        "kind": "loyalty_bonus",
+        "order_id": "ORD-9999",  # no such order was ever placed
+        "bonus": 10,
     },
 ]
