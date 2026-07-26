@@ -183,7 +183,11 @@ def _synth_transitions(report: object) -> list[Effect]:
                 Effect(
                     op="external",
                     kind=eff.transition_kind,
-                    payload={"key": dict(identity), "state": "resolved", **patch},
+                    # Spread patch first so the orchestrator's own `key`/`state`
+                    # always win: reconcile_by_key is a generic primitive, and a
+                    # patch column named `key` or `state` must not clobber the
+                    # row identity or the transition state.
+                    payload={**patch, "key": dict(identity), "state": "resolved"},
                 )
             )
     return out

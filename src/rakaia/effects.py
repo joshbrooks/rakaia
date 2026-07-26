@@ -117,6 +117,22 @@ class Effect:
                 f"Effect sets `transition_kind`/`transition_key_fields` with "
                 f"op={self.op!r}; it only applies to op='retire'."
             )
+        # The two are a pair: `transition_key_fields` names the columns that
+        # identify each flipped row, and the executor's deterministic
+        # `ORDER BY`/identity SELECT relies on them being present whenever
+        # `transition_kind` asks for notifications. Enforce both-or-neither (and
+        # non-empty key fields) so a half-set retire can't silently degrade to a
+        # non-deterministic, identity-less transition.
+        if (self.transition_kind is None) != (self.transition_key_fields is None):
+            raise ValueError(
+                "Effect sets one of `transition_kind`/`transition_key_fields` "
+                "without the other; they must be set together."
+            )
+        if self.transition_key_fields is not None and not self.transition_key_fields:
+            raise ValueError(
+                "Effect sets an empty `transition_key_fields`; it must name at "
+                "least one column identifying each flipped row."
+            )
 
 
 # =============================================================================

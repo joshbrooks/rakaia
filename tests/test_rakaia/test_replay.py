@@ -6,14 +6,20 @@ import json
 
 import pytest
 
-from rakaia.effects import Effect
+from rakaia.effects import ApplyReport, Effect
 from rakaia.registry import (
     HandlerDriftError,
     HandlerGapError,
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import ENVELOPE_TS, TouchedSubject, merge_replay, replay
+from rakaia.replay import (
+    ENVELOPE_TS,
+    TouchedSubject,
+    _synth_transitions,
+    merge_replay,
+    replay,
+)
 from rakaia.store import StreamStore
 from rakaia.types import AppendOptions
 
@@ -1351,3 +1357,45 @@ class TestMergeReplay:
                 handler_registry=_touch_registry(),
                 upcaster_registry=UpcasterRegistry(),
             )
+
+
+class TestSynthTransitions:
+    """`_synth_transitions` turns an executor's retire-flip report into one
+    external transition per flipped row (issue #32)."""
+
+    @staticmethod
+    def _retire(patch):
+        return Effect(
+            op="retire",
+            model_label="app.Alert",
+            lookup={"stream_key": "s"},
+            patch=patch,
+            transition_kind="alert_transition",
+            transition_key_fields=("alert_type",),
+        )
+
+    def test_one_transition_per_flipped_row(self):
+        eff = self._retire({"resolved_at": "t2", "resolved_by": "system"})
+        rows = [
+            {"stream_key": "s", "alert_type": "a"},
+            {"stream_key": "s", "alert_type": "b"},
+        ]
+        out = _synth_transitions(ApplyReport(retire_flips=[(eff, rows)]))
+        assert [e.payload["key"]["alert_type"] for e in out] == ["a", "b"]
+        assert all(e.kind == "alert_transition" for e in out)
+        assert all(e.payload["state"] == "resolved" for e in out)
+        assert all(e.payload["resolved_by"] == "system" for e in out)
+
+    def test_patch_columns_never_clobber_identity_or_state(self):
+        # A generic reconcile whose soft-delete patch touches columns literally
+        # named `key`/`state` must not overwrite the transition's row identity
+        # or its resolved state.
+        eff = self._retire({"state": "archived", "key": "nope", "resolved_at": "t"})
+        rows = [{"stream_key": "s", "alert_type": "a"}]
+        (t,) = _synth_transitions(ApplyReport(retire_flips=[(eff, rows)]))
+        assert t.payload["key"] == {"stream_key": "s", "alert_type": "a"}
+        assert t.payload["state"] == "resolved"
+        assert t.payload["resolved_at"] == "t"  # non-colliding patch cols kept
+
+    def test_none_report_yields_nothing(self):
+        assert _synth_transitions(None) == []

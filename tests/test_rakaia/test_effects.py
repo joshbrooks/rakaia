@@ -135,8 +135,43 @@ class TestEffectValidation:
             lookup={"s": 1},
             patch={"resolved_at": "t"},
             transition_kind="alert_transition",
+            transition_key_fields=("alert_type", "field_key"),
         )
         assert eff.transition_kind == "alert_transition"
+        assert eff.transition_key_fields == ("alert_type", "field_key")
+
+    def test_transition_kind_without_key_fields_rejected(self):
+        # The pair identifies each flipped row; a half-set retire would degrade
+        # the executor's deterministic identity SELECT — reject it.
+        with pytest.raises(ValueError, match="set together"):
+            Effect(
+                op="retire",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                patch={"resolved_at": "t"},
+                transition_kind="alert_transition",
+            )
+
+    def test_key_fields_without_transition_kind_rejected(self):
+        with pytest.raises(ValueError, match="set together"):
+            Effect(
+                op="retire",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                patch={"resolved_at": "t"},
+                transition_key_fields=("alert_type",),
+            )
+
+    def test_empty_transition_key_fields_rejected(self):
+        with pytest.raises(ValueError, match="at least one column"):
+            Effect(
+                op="retire",
+                model_label="m.Alert",
+                lookup={"s": 1},
+                patch={"resolved_at": "t"},
+                transition_kind="alert_transition",
+                transition_key_fields=(),
+            )
 
     def test_transition_kind_on_non_retire_rejected(self):
         # transition_kind means "emit one external per row this retire flipped".
