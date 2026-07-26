@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the pinned Durable Streams conformance suite (and vitest) current so new
+  # protocol revisions surface as PRs instead of drifting silently. On such a PR,
+  # conformance/check-regressions.mjs shows any newly-added protocol tests as NEW
+  # failures — an immediate, readable picture of what the newer revision requires.
+  - package-ecosystem: npm
+    directory: /conformance
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(conformance)"
+    labels:
+      - dependencies
+      - conformance
