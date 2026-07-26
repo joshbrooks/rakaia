@@ -96,6 +96,7 @@ def reconcile_by_key(
     *,
     retire_filter: dict[str, Any] | None = None,
     retire: Literal["delete"] | dict[str, Any] = "delete",
+    transition_kind: str | None = None,
 ) -> list[Effect]:
     """Reconcile a set of rows keyed by a *composite natural key*.
 
@@ -129,6 +130,13 @@ def reconcile_by_key(
             field (e.g. a stale ``resolved_by``) is still retired correctly. The
             patch value must be the triggering event's timestamp, never
             ``timezone.now()``.
+        transition_kind: opt-in machine-resolution notifications. When set (only
+            valid with a soft-delete ``retire`` patch), the retire Effect is
+            marked so the replay orchestrator emits one ``external`` effect of
+            this ``kind`` per row the retire actually flipped (NULL->set) — the
+            real machine resolutions. Like all external effects it is skipped on
+            replay by default, so a rebuild never re-spams. Omit it (default) and
+            the retire stays silent, exactly as before.
 
     Returns:
         One ``update_or_create`` Effect per item, followed by one retire Effect
@@ -156,6 +164,11 @@ def reconcile_by_key(
     ]
 
     if retire == "delete":
+        if transition_kind is not None:
+            raise ValueError(
+                "transition_kind requires a soft-delete retire patch; a hard "
+                "delete leaves no resolved row to notify about."
+            )
         effects.append(
             Effect(
                 op="delete",
@@ -183,6 +196,10 @@ def reconcile_by_key(
                 lookup={**scope, **retire_filter, **open_guard},
                 spare_keys=keys,
                 patch=dict(retire),
+                transition_kind=transition_kind,
+                transition_key_fields=(
+                    tuple(key_fields) if transition_kind is not None else None
+                ),
             )
         )
     return effects

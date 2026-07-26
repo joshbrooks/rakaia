@@ -29,6 +29,23 @@ from .models import Alert
 
 ALERT = "test_django_rakaia.Alert"
 
+
+class _CapturingDjangoExecutor(DjangoExecutor):
+    """DjangoExecutor that also records the ``external`` effects handed to it.
+
+    The base executor drops externals; this records them so a delivery test can
+    assert what the replay orchestrator synthesised from retire flips."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.externals: list[Effect] = []
+
+    def apply(self, effects):
+        effects = list(effects)
+        self.externals.extend(e for e in effects if e.op == "external")
+        return super().apply(effects)
+
+
 # The machine-owned alert types (partisipa's NON_USER_RESOLVABLE_FLAG_TYPES) —
 # non-user-resolvable, so they ignore dismissals (machine wins).
 MACHINE_TYPES = ["ff4_operational_exceeds_ksp", "sf11_smt_exceeds_cap"]
@@ -188,7 +205,11 @@ def _seed(stream_key: str, alert_type: str, *, field_key: str = "", resolved_at=
 
 
 def _machine_reconcile(
-    stream_key: str, violations: list[dict], ts: str
+    stream_key: str,
+    violations: list[dict],
+    ts: str,
+    *,
+    transition_kind: str | None = None,
 ) -> list[Effect]:
     """One reconcile pass over the current machine violations for an entity."""
     return reconcile_by_key(
@@ -209,6 +230,7 @@ def _machine_reconcile(
         },
         retire_filter={"alert_type__in": MACHINE_TYPES},
         retire={"resolved_at": ts, "resolved_by": "system"},
+        transition_kind=transition_kind,
     )
 
 
@@ -301,6 +323,143 @@ class TestMachineReconciledAlerts:
         row = Alert.objects.get(stream_key="sub-1")
         assert not row.is_open  # correctly retired despite the reopen cycle
         assert row.resolved_at == "t4"
+
+
+@pytest.mark.django_db
+class TestRetireFlipReport:
+    """Issue #32 R3: the executor reports which rows a retire actually flipped
+    (NULL->set) so the orchestrator can emit one transition per real resolution.
+    Opt-in: only a retire carrying ``transition_kind`` pays for the extra SELECT.
+    """
+
+    def test_apply_reports_flipped_open_rows_only(self):
+        # b is open (will flip); c is already resolved (open-guard excludes it).
+        _seed("sub-1", "sf11_smt_exceeds_cap", field_key="b")
+        _seed(
+            "sub-1",
+            "sf11_smt_exceeds_cap",
+            field_key="c",
+            resolved_at="2026-01-01T00:00:00Z",
+        )
+        report = DjangoExecutor().apply(
+            _machine_reconcile(
+                "sub-1",
+                [],
+                ts="2026-07-20T09:00:00Z",
+                transition_kind="alert_transition",
+            )
+        )
+        assert len(report.retire_flips) == 1
+        eff, rows = report.retire_flips[0]
+        assert eff.transition_kind == "alert_transition"
+        # Only the open row flipped; identity is the full natural key.
+        assert rows == [
+            {
+                "stream_key": "sub-1",
+                "alert_type": "sf11_smt_exceeds_cap",
+                "field_key": "b",
+            }
+        ]
+
+    def test_flip_order_is_deterministic(self):
+        for fk in ("z", "a", "m"):
+            _seed("sub-1", "sf11_smt_exceeds_cap", field_key=fk)
+        report = DjangoExecutor().apply(
+            _machine_reconcile("sub-1", [], ts="t", transition_kind="alert_transition")
+        )
+        _, rows = report.retire_flips[0]
+        assert [r["field_key"] for r in rows] == ["a", "m", "z"]  # ordered by key
+
+    def test_no_report_and_no_extra_query_without_transition_kind(self):
+        _seed("sub-1", "sf11_smt_exceeds_cap", field_key="b")
+        report = DjangoExecutor().apply(
+            _machine_reconcile("sub-1", [], ts="t")  # no transition_kind
+        )
+        assert report.retire_flips == []
+
+
+@pytest.mark.django_db
+class TestMachineResolutionTransitions:
+    """Issue #32 R4 (headline): replaying machine reconciles emits exactly one
+    ``external`` ``alert_transition`` per *real* resolution — skipped on replay
+    by default, delivered when ``include_external=True``, never re-spammed."""
+
+    @staticmethod
+    def _seed_stream(events: list[dict]) -> StreamStore:
+        store = StreamStore()
+        store.create("sub:1")
+        for ev in events:
+            store.append("sub:1", json.dumps(ev).encode("utf-8"))
+        return store
+
+    @staticmethod
+    def _registry() -> HandlerRegistry:
+        reg = HandlerRegistry()
+
+        def reconcile_h(ev):
+            return _machine_reconcile(
+                ev["stream_key"],
+                ev["violations"],
+                ev["ts"],
+                transition_kind="alert_transition",
+            )
+
+        reg.register("reconcile_h", "sub:1", reconcile_h, 0, None)
+        return reg
+
+    # A = still violating on the 2nd pass; B = cleared -> the one real resolution.
+    A = {"alert_type": "ff4_operational_exceeds_ksp", "field_key": "a"}
+    B = {"alert_type": "sf11_smt_exceeds_cap", "field_key": "b"}
+
+    @property
+    def _events(self) -> list[dict]:
+        return [
+            {"stream_key": "sub-1", "ts": "t1", "violations": [self.A, self.B]},
+            {"stream_key": "sub-1", "ts": "t2", "violations": [self.A]},
+        ]
+
+    def test_one_transition_per_real_resolution(self):
+        store = self._seed_stream(self._events)
+        ex = _CapturingDjangoExecutor()
+        replay(
+            store, "sub:1", ex, handler_registry=self._registry(), include_external=True
+        )
+        assert len(ex.externals) == 1
+        t = ex.externals[0]
+        assert t.kind == "alert_transition"
+        assert t.payload["state"] == "resolved"
+        assert t.payload["key"] == {
+            "stream_key": "sub-1",
+            "alert_type": "sf11_smt_exceeds_cap",
+            "field_key": "b",
+        }
+        assert t.payload["resolved_by"] == "system"
+        assert t.payload["resolved_at"] == "t2"
+
+    def test_still_violating_key_emits_no_transition(self):
+        store = self._seed_stream(self._events)
+        ex = _CapturingDjangoExecutor()
+        replay(
+            store, "sub:1", ex, handler_registry=self._registry(), include_external=True
+        )
+        fired = {t.payload["key"]["alert_type"] for t in ex.externals}
+        assert "ff4_operational_exceeds_ksp" not in fired  # A stayed open
+
+    def test_transition_skipped_on_replay_by_default(self):
+        store = self._seed_stream(self._events)
+        ex = _CapturingDjangoExecutor()
+        result = replay(store, "sub:1", ex, handler_registry=self._registry())
+        assert ex.externals == []  # not delivered
+        assert result.external_effects_skipped == 1  # but counted
+
+    def test_rebuild_is_silent_by_default(self):
+        store = self._seed_stream(self._events)
+        reg = self._registry()
+        for _ in range(2):  # a rebuild replays from scratch at the default gate
+            ex = _CapturingDjangoExecutor()
+            result = replay(store, "sub:1", ex, handler_registry=reg)
+            assert ex.externals == []
+            assert result.external_effects_skipped == 1
 
 
 # ===========================================================================

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any, Literal, Protocol
 
 EffectOp = Literal["update_or_create", "delete", "external", "retire"]
@@ -72,6 +73,21 @@ class Effect:
     payload: dict[str, Any] | None = None
     """Opaque payload for external effects."""
 
+    # Fields for op="retire" — machine-resolution notifications
+    transition_kind: str | None = None
+    """When set on a retire, the orchestrator emits one ``external`` effect of
+    this ``kind`` per row the retire actually flipped (its liveness sentinel went
+    NULL->set) — the "one transition per real machine resolution" of a
+    ``reconcile_by_key`` soft-delete. Opt-in: a retire without it costs no extra
+    query. Only meaningful on op="retire" (a hard delete leaves no resolved row
+    to notify about)."""
+
+    transition_key_fields: tuple[str, ...] | None = None
+    """Natural-key column names identifying each flipped row in the transition
+    payload (the executor also folds in the retire's scope-equality columns).
+    Set by ``reconcile_by_key`` from its ``key_fields`` when ``transition_kind``
+    is requested. Only meaningful on op="retire"."""
+
     def __post_init__(self) -> None:
         # `exclude` and `spare_keys` are ALTERNATIVE row-sparing mechanisms.
         # Setting both silently ANDs them in the executor
@@ -90,6 +106,32 @@ class Effect:
             raise ValueError(
                 f"Effect sets `exclude` with op={self.op!r}; `exclude` only applies "
                 "to op='delete'. Use `spare_keys` to spare rows from a retire."
+            )
+        # `transition_kind`/`transition_key_fields` drive per-flip notifications,
+        # which only a retire produces (it flips rows silently). On any other op
+        # they would be dropped — fail loudly.
+        if (
+            self.transition_kind is not None or self.transition_key_fields is not None
+        ) and self.op != "retire":
+            raise ValueError(
+                f"Effect sets `transition_kind`/`transition_key_fields` with "
+                f"op={self.op!r}; it only applies to op='retire'."
+            )
+        # The two are a pair: `transition_key_fields` names the columns that
+        # identify each flipped row, and the executor's deterministic
+        # `ORDER BY`/identity SELECT relies on them being present whenever
+        # `transition_kind` asks for notifications. Enforce both-or-neither (and
+        # non-empty key fields) so a half-set retire can't silently degrade to a
+        # non-deterministic, identity-less transition.
+        if (self.transition_kind is None) != (self.transition_key_fields is None):
+            raise ValueError(
+                "Effect sets one of `transition_kind`/`transition_key_fields` "
+                "without the other; they must be set together."
+            )
+        if self.transition_key_fields is not None and not self.transition_key_fields:
+            raise ValueError(
+                "Effect sets an empty `transition_key_fields`; it must name at "
+                "least one column identifying each flipped row."
             )
 
 
@@ -110,6 +152,22 @@ class EffectCollisionError(Exception):
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class ApplyReport:
+    """What ``Executor.apply`` observed while applying a batch.
+
+    Currently carries ``retire_flips``: one ``(retire_effect, flipped_rows)``
+    entry per retire that opted into notifications (``transition_kind`` set),
+    where ``flipped_rows`` is the list of identity dicts for the rows whose
+    liveness sentinel actually went NULL->set. The orchestrator turns these into
+    one ``external`` transition each. Executors that don't observe flips (or
+    predate this) may return ``None``; the orchestrator treats that as empty."""
+
+    retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = dc_field(
+        default_factory=list
+    )
+
+
 class Executor(Protocol):
     """
     Applies a batch of effects to durable storage.
@@ -119,7 +177,7 @@ class Executor(Protocol):
     before calling apply().
     """
 
-    def apply(self, effects: Iterable[Effect]) -> None: ...
+    def apply(self, effects: Iterable[Effect]) -> ApplyReport | None: ...
 
 
 # =============================================================================

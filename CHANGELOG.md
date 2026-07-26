@@ -14,6 +14,16 @@ is not yet tagged in a release.
 
 ### Added
 
+- **Machine-resolution transitions for `reconcile_by_key`** (#32). A retire that
+  soft-deletes stale rows can now notify. Opt in with
+  `reconcile_by_key(..., transition_kind="alert_transition")`: the executor
+  captures the identities of the rows the open-guarded retire actually flipped
+  (NULL→set) and returns them in `ApplyReport.retire_flips`, and the replay
+  orchestrator emits one `external` transition per real resolution — skipped and
+  counted on replay by default, delivered under `include_external=True`, so a
+  rebuild never re-spams. `Executor.apply` now returns an `ApplyReport` (was
+  `None`). → [`docs/alerts-projection.md`](docs/alerts-projection.md).
+
 - **Versioned event handlers, upcasters & replay** (#3). Register handlers
   against a sequence range so old events run through the business logic that was
   correct *when they happened*; replay is idempotent and detects handler drift.

@@ -45,7 +45,7 @@ re-derivation must never clobber a human's judgment, and vice-versa.
 | Layer | Owner | rakaia mechanism | Status |
 |---|---|---|---|
 | **1. Authored / informational** (`alert`, `backfilled`, …) | an actor | appended `alert_raised` / `alert_dismissed` events → natural-key `update_or_create` (+ `external` transition) | **shipped (Phase 1)** |
-| **2. Machine-reconciled** (validator violations) | the rules | `reconcile_by_key(..., retire={"resolved_at": ts})`, scoped by `retire_filter` to machine types | **shipped (Phase 2)** |
+| **2. Machine-reconciled** (validator violations) | the rules | `reconcile_by_key(..., retire={"resolved_at": ts})`, scoped by `retire_filter` to machine types (+ opt-in `external` transition per real resolution) | **shipped (Phase 2 + #32)** |
 | **3. Dismissable warnings** (derived ⊕ authored) | rules *and* actor | staged replay: stage-1 reconcile reads stage-0 `alert_dismissed` via the `reader` — authored wins for user-resolvable types | **shipped (Phase 3)** |
 
 ## Phase 1 — authored alerts (shipped, zero core changes)
@@ -88,14 +88,22 @@ touch authored rows —
 retire="delete"`); it and `reconcile_by_key` share the executor. Unifying the
 two is a safe future cleanup, not required.
 
-### Known limitation carried into Phase 3
+### Machine-resolution transitions (shipped — the executor-diff, issue #32)
 
-`reconcile_by_key` emits **no** `external` transition. One retire Effect covers N
-rows, and a pure handler cannot see which rows actually flipped, so it cannot
-emit "one transition per real machine resolution" without either (a) an
-executor-level diff (return the rows a retire actually updated) or (b) the
-reader. Until then, machine resolutions are silent; only authored transitions
-notify. Phase 3 deferred this to a follow-up (see its "Remaining core gap").
+A pure handler cannot see which rows a single retire Effect actually flipped, so
+machine resolutions were originally silent. Closed via the **executor-diff**: the
+retire is already open-guarded (`resolved_at__isnull=True`), so the rows it
+matches are *exactly* the ones flipping NULL→set. Opt in with
+`reconcile_by_key(..., transition_kind="alert_transition")`; the executor then
+captures those rows' identities (a `SELECT` before the `UPDATE`, same txn — paid
+only when opted in) and returns them in `ApplyReport.retire_flips`. The replay
+orchestrator turns each into one `Effect(op="external", kind="alert_transition",
+payload={"key": <natural key>, "state": "resolved", ...})`. Because they're
+`external`, they ride the same replay gate as authored transitions — skipped and
+counted on replay by default, delivered only under `include_external=True` — so a
+rebuild never re-spams. Reference + tests:
+`tests/test_django_rakaia/test_alerts.py::TestRetireFlipReport` and
+`::TestMachineResolutionTransitions`.
 
 ## Phase 3 — composition (derived ⊕ authored), shipped
 
@@ -134,14 +142,11 @@ union. Authored-only types (`alert`) sit outside `RULE_TYPES`, so the reconcile
 never touches them — zero clobber, preserved. Reference + tests:
 `tests/test_django_rakaia/test_alerts.py::TestComposedAlerts`.
 
-### Remaining core gap (follow-up, optional)
+### Machine-resolution transitions — shipped (issue #32)
 
-`reconcile_by_key` emits **no** `external` transition — one retire Effect covers
-N rows and a pure handler cannot see which rows actually flipped. Accurate "one
-transition per real machine resolution" needs the executor to **return the rows a
-retire actually updated** so the orchestrator can emit transitions. Authored
-transitions already fire correctly (Phase 1). Tracked separately; not required
-for composition correctness.
+The one gap Phase 3 deferred — `reconcile_by_key` emitting no `external`
+transition for a machine resolution — is now closed via the executor-diff. See
+"Machine-resolution transitions (shipped)" under Phase 2 above.
 
 ### Acceptance — the spike oracle
 

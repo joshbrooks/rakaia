@@ -81,7 +81,7 @@ class TestReconcileChildren:
         assert parent == {"parent_id": 7}
 
 
-def _by_key(items, *, retire="delete", retire_filter=None):
+def _by_key(items, *, retire="delete", retire_filter=None, transition_kind=None):
     return reconcile_by_key(
         model_label="app.Alert",
         scope={"stream_key": "sub-1"},
@@ -94,6 +94,7 @@ def _by_key(items, *, retire="delete", retire_filter=None):
         defaults_fn=lambda v: {"severity": v.get("severity", "info")},
         retire_filter=retire_filter,
         retire=retire,
+        transition_kind=transition_kind,
     )
 
 
@@ -143,6 +144,35 @@ class TestReconcileByKey:
         }
         assert r.patch == {"resolved_at": "t1", "resolved_by": "system"}
         assert r.spare_keys == [{"alert_type": "ff4", "field_key": "a"}]
+
+    def test_retire_carries_transition_kind_when_requested(self):
+        # R1: opt-in — a soft-delete retire asked to notify stamps the kind on
+        # the retire Effect so the orchestrator can emit one external transition
+        # per row the retire actually flipped.
+        effects = _by_key(
+            [{"alert_type": "ff4", "field_key": "a"}],
+            retire={"resolved_at": "t1", "resolved_by": "system"},
+            transition_kind="alert_transition",
+        )
+        retire = next(e for e in effects if e.op == "retire")
+        assert retire.transition_kind == "alert_transition"
+
+    def test_retire_has_no_transition_kind_by_default(self):
+        retire = next(
+            e for e in _by_key([], retire={"resolved_at": "t1"}) if e.op == "retire"
+        )
+        assert retire.transition_kind is None
+
+    def test_upserts_never_carry_transition_kind(self):
+        # Only the retire flips rows silently; the upserts are per-item and
+        # never a machine resolution, so they never carry the marker.
+        effects = _by_key(
+            [{"alert_type": "ff4", "field_key": "a"}],
+            retire={"resolved_at": "t1"},
+            transition_kind="alert_transition",
+        )
+        upserts = [e for e in effects if e.op == "update_or_create"]
+        assert upserts and all(e.transition_kind is None for e in upserts)
 
     def test_empty_items_retire_spares_nothing(self):
         effects = _by_key([], retire={"resolved_at": "t1"})
