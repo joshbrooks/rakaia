@@ -157,3 +157,40 @@ It trades one UPDATE per row for one SELECT per row, so reach for it when writes
 are the expensive part. It's opt-in because skipping a no-op write is observably
 different — an unchanged row's `auto_now` fields don't advance and its
 `post_save` signal doesn't fire.
+
+## Multi-owner rows: `op="update"` (update-if-exists)
+
+Sometimes one projection row is assembled by **several independent reducers**,
+each owning a disjoint set of columns — a `ProjectProjection` whose status
+columns come from one reducer and whose finance columns come from another. Only
+the *primary* owner should create the row; a secondary owner must write its
+columns **only if the row already exists**, never mint an empty one.
+
+`op="update_or_create"` can't express that — it always inserts on a miss. The
+`op="update"` effect is the missing primitive: it updates the row(s) matching
+`lookup` in place and **never inserts** — a no-op when nothing matches (and a
+no-op when `defaults` is empty). So the secondary owner emits its effect
+unconditionally, with no read:
+
+```python
+# finance reducer — owns only the ksp_* columns of a shared row
+Effect(
+    op="update",
+    model_label="ida.ProjectProjection",
+    lookup={"project_id": project_id},
+    defaults={"ksp_operational": op_total, "ksp_infrastructure": inf_total},
+)
+```
+
+Before `op="update"`, that reducer had to hand-roll a guard —
+`... and not ProjectProjection.objects.filter(project_id=project_id).exists()` —
+to avoid minting an empty row for a project with no status row yet. That read
+broke the pure `event → Effect` model and cost a query per group. Update-if-exists
+removes it: an absent row is a no-op, and when contributors vanish the same
+effect with `defaults={"ksp_operational": None, ...}` clears the columns on the
+row that's still there.
+
+The disjoint-defaults invariant still holds across owners: two effects (whether
+`update` or `update_or_create`) that write the **same** column on the same row in
+one batch raise `EffectCollisionError`, so overlapping ownership surfaces as a
+loud error rather than a last-writer-wins race.

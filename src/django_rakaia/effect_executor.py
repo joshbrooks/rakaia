@@ -1,12 +1,15 @@
 """
 Django implementation of the rakaia.effects.Executor protocol.
 
-Applies update_or_create, delete and retire Effects to the Django ORM in a
-single atomic transaction. Upserts are applied first, then deletes, then
-retires, so a batch that reconciles a row set (upsert the current rows, then
-prune/soft-delete the stale ones) is deterministic. External effects passed to
-apply() are silently dropped — the replay orchestrator decides whether external
-effects reach the executor based on its include_external setting.
+Applies update_or_create, update, delete and retire Effects to the Django ORM in
+a single atomic transaction. Writes (upserts and in-place updates) are applied
+first, then deletes, then retires, so a batch that reconciles a row set (upsert
+the current rows, then prune/soft-delete the stale ones) is deterministic.
+``op="update"`` is update-if-exists: ``filter(**lookup).update(**defaults)`` —
+it modifies matching rows in place and never inserts, so a secondary owner of a
+multi-owned projection row can emit it unconditionally. External effects passed
+to apply() are silently dropped — the replay orchestrator decides whether
+external effects reach the executor based on its include_external setting.
 
 Pass ``skip_unchanged=True`` to avoid writing rows whose values already match.
 By default (matching Django's ``update_or_create``) every upsert issues an
@@ -44,12 +47,14 @@ class DjangoExecutor:
         check_disjoint_defaults(effects_list)
         retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = []
         with transaction.atomic():
-            # Upserts first, then deletes, then retires: reconcile batches
+            # Writes first, then deletes, then retires: reconcile batches
             # (upsert current rows, prune/soft-delete the rest) converge
             # regardless of handler order.
             for eff in effects_list:
                 if eff.op == "update_or_create":
                     self._upsert(eff)
+                elif eff.op == "update":
+                    self._update(eff)
             for eff in effects_list:
                 if eff.op == "delete":
                     self._delete(eff)
@@ -69,6 +74,22 @@ class DjangoExecutor:
             model.objects.update_or_create(**eff.lookup, defaults=defaults)
             return
         self._upsert_skip_unchanged(model, eff.lookup, defaults)
+
+    @staticmethod
+    def _update(eff: Effect) -> None:
+        """Update-if-exists: update the rows matching `lookup` in place, never
+        insert. A no-op when nothing matches or when `defaults` is empty.
+
+        `skip_unchanged` is not wired here: `QuerySet.update()` already issues a
+        single UPDATE and does not advance `auto_now` columns, so the write-churn
+        concern that motivates the upsert's SELECT-first path does not apply."""
+        if eff.model_label is None or eff.lookup is None:
+            raise ValueError("update effect requires model_label and lookup")
+        defaults = eff.defaults or {}
+        if not defaults:
+            return  # nothing to write — a pure no-op
+        model = apps.get_model(eff.model_label)
+        model.objects.filter(**eff.lookup).update(**defaults)
 
     @staticmethod
     def _upsert_skip_unchanged(model: type, lookup: dict, defaults: dict) -> None:
