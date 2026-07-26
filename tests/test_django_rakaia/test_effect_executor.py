@@ -14,15 +14,19 @@ from .models import Area, Project
 
 
 def _updates(ctx: CaptureQueriesContext) -> list[str]:
+    # Count only UPDATEs to the projection tables under test. Writes to rakaia's
+    # own `rakaia_*` tables (the stream append log and the #34 offset high-water)
+    # are append-path infrastructure — emitted as a side effect of saving a
+    # @stream_model projection — not the executor's projection write these
+    # skip-unchanged tests measure. Excluding by the `rakaia_` db_table prefix
+    # (the app models set it explicitly; the projection tables under test are
+    # `test_django_rakaia_*`) keeps the count stable as the append path evolves,
+    # rather than naming one infrastructure table.
     return [
-        q["sql"]
+        sql
         for q in ctx.captured_queries
-        if q["sql"].lstrip().upper().startswith("UPDATE")
-        # Exclude the per-path offset high-water bump (#34): that UPDATE comes
-        # from get_next_offset on the stream-append side (these projection
-        # models are @stream_model, so writing them emits an event), not from
-        # the executor's projection write that these skip-unchanged tests count.
-        and "rakaia_streamoffsetwatermark" not in q["sql"]
+        if (sql := q["sql"].lstrip()).upper().startswith("UPDATE")
+        and not sql.lower().startswith('update "rakaia_')
     ]
 
 
