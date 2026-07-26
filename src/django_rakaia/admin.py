@@ -77,6 +77,7 @@ class StreamEventAdmin(admin.ModelAdmin):
             data_str = json.dumps(data, indent=2)
             if len(data_str) > 100:
                 return data_str[:97] + "..."
+            return data_str
         except (TypeError, ValueError):
             return str(obj.data)  # type: ignore[call-overload]
 
@@ -253,7 +254,7 @@ class TranslatableAdmin(admin.ModelAdmin):
 
     def msgstr_preview(self, obj):
         if not obj.msgstr:
-            return format_html(
+            return mark_safe(
                 '<span style="color: #999; font-style: italic;">Not translated</span>'
             )
 
@@ -285,10 +286,10 @@ class TranslatableAdmin(admin.ModelAdmin):
 
     def deleted_status(self, obj):
         if obj.deleted:
-            return format_html(
+            return mark_safe(
                 '<span style="color: #dc3545; font-weight: bold;">Deleted</span>'
             )
-        return format_html('<span style="color: #28a745;">Active</span>')
+        return mark_safe('<span style="color: #28a745;">Active</span>')
 
     deleted_status.short_description = "Status"
 
