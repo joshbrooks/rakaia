@@ -279,6 +279,19 @@ class Balance(models.Model):
         app_label = "test_django_rakaia"
 
 
+class Measure(models.Model):
+    """Projection row with a UUID natural key and a Decimal column — the
+    fixture for the ``diff_effects_against_rows`` verification helper, whose
+    default normalizers cover exactly these two "log carries a different
+    representation than the column" cases (UUID<->str, over-precise Decimal)."""
+
+    ref = models.UUIDField(unique=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 class History(models.Model):
     """Audit-log read-model for the history materializer tests."""
 
