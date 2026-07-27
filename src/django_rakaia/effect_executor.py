@@ -47,10 +47,25 @@ def _row_accessor(obj: Any) -> Any:
 
 
 class DjangoExecutor:
-    """Apply Effects via Django's ORM."""
+    """Apply Effects via Django's ORM.
 
-    def __init__(self, *, skip_unchanged: bool = False) -> None:
+    Pass `using` to apply against a named database alias instead of the default
+    — so a full from-scratch rebuild can be replayed into a *disposable*
+    database (an in-memory sqlite, or a throwaway Postgres) and verified without
+    touching production, at full ORM fidelity. `using=None` targets the default
+    alias, exactly as before. Pair with `DjangoProjectionReader(using=...)`.
+    """
+
+    def __init__(
+        self, *, skip_unchanged: bool = False, using: str | None = None
+    ) -> None:
         self._skip_unchanged = skip_unchanged
+        self._using = using
+
+    def _manager(self, model: type) -> Any:
+        # `.using(None)` keeps default routing, so this is uniform whether or
+        # not an alias was given.
+        return model.objects.using(self._using)
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport:
         effects_list = list(effects)
@@ -59,7 +74,7 @@ class DjangoExecutor:
         # and a sibling's Ref values are substituted before that sibling applies.
         resolver = RefResolver()
         retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = []
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             # Writes first, then deletes, then retires: reconcile batches
             # (upsert current rows, prune/soft-delete the rest) converge
             # regardless of handler order. Writes apply before deletes/retires,
@@ -89,12 +104,13 @@ class DjangoExecutor:
         model = apps.get_model(eff.model_label)
         defaults = eff.defaults or {}
         if not self._skip_unchanged:
-            obj, _ = model.objects.update_or_create(**eff.lookup, defaults=defaults)
+            obj, _ = self._manager(model).update_or_create(
+                **eff.lookup, defaults=defaults
+            )
             return obj
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
-    @staticmethod
-    def _update(eff: Effect) -> None:
+    def _update(self, eff: Effect) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never
         insert. A no-op when nothing matches or when `defaults` is empty.
 
@@ -107,24 +123,23 @@ class DjangoExecutor:
         if not defaults:
             return  # nothing to write — a pure no-op
         model = apps.get_model(eff.model_label)
-        model.objects.filter(**eff.lookup).update(**defaults)
+        self._manager(model).filter(**eff.lookup).update(**defaults)
 
-    @staticmethod
-    def _upsert_skip_unchanged(model: type, lookup: dict, defaults: dict) -> Any:
+    def _upsert_skip_unchanged(self, model: type, lookup: dict, defaults: dict) -> Any:
         try:
-            row = model.objects.get(**lookup)
+            row = self._manager(model).get(**lookup)
         except model.DoesNotExist:
             # Mirror update_or_create's create path: lookup fields + defaults,
             # dropping any lookup that isn't a concrete field assignment.
             params = {k: v for k, v in lookup.items() if "__" not in k}
             params.update(defaults)
-            return model.objects.create(**params)
+            return self._manager(model).create(**params)
         changed = {k: v for k, v in defaults.items() if getattr(row, k) != v}
         if not changed:
             return row  # nothing to write — skip the UPDATE entirely
         for field, value in changed.items():
             setattr(row, field, value)
-        row.save(update_fields=list(changed))
+        row.save(using=self._using, update_fields=list(changed))
         return row
 
     @staticmethod
@@ -141,23 +156,21 @@ class DjangoExecutor:
             spared |= Q(**key)
         return qs.exclude(spared)
 
-    @classmethod
-    def _delete(cls, eff: Effect) -> None:
+    def _delete(self, eff: Effect) -> None:
         if eff.model_label is None or eff.lookup is None:
             raise ValueError("delete effect requires model_label and lookup")
         model = apps.get_model(eff.model_label)
-        qs = model.objects.filter(**eff.lookup).exclude(**(eff.exclude or {}))
-        cls._spare(qs, eff.spare_keys).delete()
+        qs = self._manager(model).filter(**eff.lookup).exclude(**(eff.exclude or {}))
+        self._spare(qs, eff.spare_keys).delete()
 
-    @classmethod
-    def _retire(cls, eff: Effect) -> list[dict[str, Any]]:
+    def _retire(self, eff: Effect) -> list[dict[str, Any]]:
         if eff.model_label is None or eff.lookup is None:
             raise ValueError("retire effect requires model_label and lookup")
         if not eff.patch:
             raise ValueError("retire effect requires a non-empty patch")
         model = apps.get_model(eff.model_label)
-        qs = model.objects.filter(**eff.lookup)
-        qs = cls._spare(qs, eff.spare_keys)
+        qs = self._manager(model).filter(**eff.lookup)
+        qs = self._spare(qs, eff.spare_keys)
         # The retire is open-guarded, so the rows it matches are exactly the ones
         # that flip NULL->set. Capture their identities BEFORE the UPDATE (same
         # atomic txn) only when the effect asked to notify — otherwise skip the
@@ -171,7 +184,7 @@ class DjangoExecutor:
         # which serialises writers anyway.
         flipped: list[dict[str, Any]] = []
         if eff.transition_kind is not None:
-            cols = cls._identity_cols(eff)
+            cols = self._identity_cols(eff)
             flipped = list(qs.select_for_update().order_by(*cols).values(*cols))
         qs.update(**eff.patch)
         return flipped

@@ -24,16 +24,30 @@ from django.db.models import QuerySet
 
 
 class DjangoProjectionReader:
-    """Read-only projection accessor over `apps.get_model(...).objects`."""
+    """Read-only projection accessor over `apps.get_model(...).objects`.
+
+    Pass `using` to read from a named database alias instead of the default —
+    the read half of the "replay a from-scratch rebuild into a disposable
+    database and verify it" pattern (#68). `using=None` reads the default alias,
+    exactly as before.
+    """
+
+    def __init__(self, *, using: str | None = None) -> None:
+        self._using = using
 
     def get(self, model_label: str, /, **lookup: Any) -> Any | None:
         """The single row matching `lookup`, or None (never raises on absence)."""
-        return apps.get_model(model_label).objects.filter(**lookup).first()
+        return self._manager(model_label).filter(**lookup).first()
 
     def filter(self, model_label: str, /, **lookup: Any) -> QuerySet:
         """A queryset of the rows matching `lookup`."""
-        return apps.get_model(model_label).objects.filter(**lookup)
+        return self._manager(model_label).filter(**lookup)
 
     def query(self, model_label: str, /) -> QuerySet:
         """A queryset of every row of the model."""
-        return apps.get_model(model_label).objects.all()
+        return self._manager(model_label).all()
+
+    def _manager(self, model_label: str) -> QuerySet:
+        # `.using(None)` is a no-op that keeps default routing, so this is
+        # uniform whether or not an alias was given.
+        return apps.get_model(model_label).objects.using(self._using)
