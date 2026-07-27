@@ -67,6 +67,7 @@ from .registry import (
     get_default_upcaster_registry,
     register_handler,
     register_reducer,
+    register_simple,
     register_upcaster,
     reset_default_registries,
     upcast,
@@ -153,6 +154,7 @@ __all__ = [
     "project_latest",
     # Versioned handlers — registry
     "register_handler",
+    "register_simple",
     "register_reducer",
     "register_upcaster",
     "HandlerRegistry",

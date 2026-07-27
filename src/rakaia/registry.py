@@ -983,6 +983,38 @@ def register_handler(
     return decorator
 
 
+def register_simple(
+    name: str,
+    event_match: str,
+    *,
+    match_field: str | None = None,
+    stage: int = 0,
+    registry: HandlerRegistry | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register an always-on handler — the common "just project" case.
+
+    Shorthand for ``register_handler(name, event_match, effective_from=0,
+    effective_to=None, ...)``: one open-ended version covering every sequence,
+    with no seq-range ceremony. Reach for `register_handler` only when you
+    actually need version brackets (a handler whose body changes at a known
+    sequence). `match_field` and `stage` pass straight through.
+
+    Example:
+        @register_simple("project_registry", "TF_6_1_1", match_field="form_type")
+        def project_registry(event):
+            return Effect(op="update_or_create", ...)
+    """
+    return register_handler(
+        name,
+        event_match,
+        effective_from=0,
+        effective_to=None,
+        match_field=match_field,
+        stage=stage,
+        registry=registry,
+    )
+
+
 def register_reducer(
     name: str,
     stage: int,

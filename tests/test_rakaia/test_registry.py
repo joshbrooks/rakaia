@@ -298,3 +298,54 @@ class TestDecorator:
         from rakaia.registry import get_default_registry
 
         assert get_default_registry() is get_default_registry()
+
+
+class TestRegisterSimple:
+    """`register_simple` = the always-on, single-stage projection case without
+    the `effective_from=0` ceremony (#68 minor)."""
+
+    def test_registers_open_range_from_zero(self):
+        from rakaia.registry import register_simple
+
+        reg = HandlerRegistry()
+
+        @register_simple("proj", "room:*", registry=reg)
+        def handler(event):
+            return event
+
+        (version,) = reg.all_versions()
+        assert version.effective_from == 0
+        assert version.effective_to is None
+        assert version.stage == 0
+        assert version.match_field is None
+        # Covers any sequence, since it is open-ended from 0.
+        assert reg.resolve("room:5", 0) == [version]
+        assert reg.resolve("room:5", 10_000) == [version]
+
+    def test_passes_through_match_field_and_stage(self):
+        from rakaia.registry import register_simple
+
+        reg = HandlerRegistry()
+
+        @register_simple(
+            "link", "SF_1_2", match_field="form_type", stage=1, registry=reg
+        )
+        def handler(event, reader):  # noqa: ARG001
+            return event
+
+        (version,) = reg.all_versions()
+        assert version.match_field == "form_type"
+        assert version.stage == 1
+        assert version.effective_from == 0
+        assert version.effective_to is None
+
+    def test_returns_original_function(self):
+        from rakaia.registry import register_simple
+
+        reg = HandlerRegistry()
+
+        @register_simple("m", "e", registry=reg)
+        def handler(event):
+            return event
+
+        assert handler({"x": 1}) == {"x": 1}
