@@ -179,6 +179,59 @@ class TestMatchField:
             reg.resolve("room:5", 0)
 
 
+class TestEventMatchSet:
+    """`event_match` may be a collection of patterns, so one registration covers
+    several unrelated form_types that share no glob (#68 item 4)."""
+
+    def test_set_matches_any_member(self, reg: HandlerRegistry):
+        v = reg.register(
+            "sweep",
+            {"TF_6_1_1", "SF_1_2", "POM_1"},
+            _fn("v1"),
+            0,
+            None,
+            match_field="form_type",
+        )
+        for ft in ("TF_6_1_1", "SF_1_2", "POM_1"):
+            assert reg.resolve("submissions", 0, event={"form_type": ft}) == [v]
+        assert reg.resolve("submissions", 0, event={"form_type": "CFM_2"}) == []
+
+    def test_set_elements_may_be_globs(self, reg: HandlerRegistry):
+        v = reg.register(
+            "sweep", {"SF_*", "TF_6_1_1"}, _fn("v1"), 0, None, match_field="form_type"
+        )
+        assert reg.resolve("submissions", 0, event={"form_type": "SF_9_9"}) == [v]
+        assert reg.resolve("submissions", 0, event={"form_type": "TF_6_1_1"}) == [v]
+        assert reg.resolve("submissions", 0, event={"form_type": "TF_1_3"}) == []
+
+    def test_set_without_match_field_routes_on_stream_path(self, reg: HandlerRegistry):
+        v = reg.register("sweep", {"room:*", "chat:*"}, _fn("v1"), 0, None)
+        assert reg.resolve("room:5", 0) == [v]
+        assert reg.resolve("chat:9", 0) == [v]
+        assert reg.resolve("dm:1", 0) == []
+
+    def test_list_and_tuple_accepted_and_order_independent(self, reg: HandlerRegistry):
+        # A list/tuple is accepted; the canonical form is order-independent, so
+        # re-registering the same members in a different order is a no-op.
+        fn = _fn("v1")
+        v1 = reg.register("sweep", ["A", "B"], fn, 0, None, match_field="form_type")
+        v2 = reg.register("sweep", ("B", "A"), fn, 0, None, match_field="form_type")
+        assert v1 is v2
+        assert len(reg.all_versions()) == 1
+
+    def test_empty_collection_raises(self, reg: HandlerRegistry):
+        with pytest.raises(ValueError, match="at least one"):
+            reg.register("sweep", set(), _fn("v1"), 0, None, match_field="form_type")
+
+    def test_gap_check_spans_a_set_series(self, reg: HandlerRegistry):
+        # A set series with a coverage gap still raises when a matching event
+        # lands in the gap (the coverage check is per series, not per element).
+        reg.register("sweep", {"A", "B"}, _fn("v1"), 0, 10, match_field="form_type")
+        reg.register("sweep", {"A", "B"}, _fn("v2"), 20, None, match_field="form_type")
+        with pytest.raises(HandlerGapError):
+            reg.resolve("submissions", 15, event={"form_type": "A"})
+
+
 class TestStage:
     def test_register_with_stage(self, reg: HandlerRegistry):
         v = reg.register("m", "e", _fn("v1"), 0, None, stage=1)
