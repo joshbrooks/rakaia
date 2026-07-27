@@ -1,4 +1,10 @@
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
+DATABASES = {
+    "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"},
+    # A second in-memory alias used by the `using=` seam tests — a disposable
+    # database a from-scratch rebuild can be replayed into without touching
+    # `default` (see test_using_seam.py; #68 item 2).
+    "overlay": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"},
+}
 INSTALLED_APPS = [
     "daphne",
     "channels",

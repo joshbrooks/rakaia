@@ -102,6 +102,47 @@ Drop `--dry-run` to apply the same effects via the `DjangoExecutor`. See
 [Versioned handlers](versioned-handlers.md) for the full command reference
 (`--from`, `--to`, `--strict-drift`, `--include-external`).
 
+## Verifying a from-scratch rebuild: the `using=` seam
+
+A `CollectingExecutor` answers a **regression** question: *"does replaying the log
+reproduce the rows I already have?"* It writes nothing, so it leans on the target
+rows already existing. It cannot answer the **rebuild** question — *"can I build
+the whole projection from the log into an empty schema, correctly?"* — because a
+stage-1 handler that resolves a reference another form created would find nothing
+(the reference was recorded, never applied), so the link can't be verified.
+
+The honest answer is not a bespoke in-memory shadow that imitates the ORM, but the
+**real** executor and reader pointed at a **disposable database**. Both
+`DjangoExecutor` and `DjangoProjectionReader` take a `using=` database alias:
+
+```python
+# settings: a throwaway alias — in-memory sqlite for fast/CI proofs,
+# or a scratch Postgres for a full-fidelity cut-over rehearsal.
+DATABASES["rebuild"] = {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
+
+replay(
+    store, "submissions",
+    DjangoExecutor(using="rebuild"),                 # writes land in the scratch DB
+    reader=DjangoProjectionReader(using="rebuild"),  # stage-1 reads them back
+    handler_registry=reg,
+)
+# ...then diff the rebuilt rows against production and throw the scratch DB away.
+```
+
+Because it is the real ORM, you get full fidelity — constraints, defaults, joins,
+`__gte` — for free, with no query engine to write and nothing written to
+production.
+
+Two caveats worth stating plainly:
+
+- **Diff on natural keys, not pks.** A from-scratch rebuild assigns fresh primary
+  keys (and a symbolic `Ref` resolves FKs to *those* pks), so
+  correctness is structural — *"the same submission binds to the same Project by
+  natural key"* — never *"row 42 → row 42."*
+- **sqlite `:memory:` is full *ORM* fidelity, not full *Postgres* fidelity.** Use
+  it for fast, CI-able iteration; replay into a throwaway Postgres alias (same
+  code, different `using=`) for the final cut-over proof.
+
 ## See it run
 
 Both worked examples exercise the dry run before writing:
