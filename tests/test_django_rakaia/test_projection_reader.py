@@ -154,6 +154,60 @@ class TestReducerOverOrm:
 
 
 @pytest.mark.django_db
+class TestReconcileAggregateMultiOwner:
+    """The #67 invariant end-to-end: a vanished group null-clears only this
+    reducer's columns, leaving the shared row and its other owners intact."""
+
+    def test_vanished_group_spares_other_owners_columns(self):
+        from rakaia.projections import reconcile_aggregate
+
+        from .models import SukuProjection
+
+        # A shared row per suku: `status` owned by a status reducer, `ksp_total`
+        # owned by the finance reducer. Both suku A and B currently populated.
+        SukuProjection.objects.create(suku="A", status="approved", ksp_total=70)
+        SukuProjection.objects.create(suku="B", status="pending", ksp_total=50)
+
+        # The finance reducer recomputes and now only suku A has contributors —
+        # B's finance group vanished (but B's row still exists for its status).
+        effects = reconcile_aggregate(
+            "test_django_rakaia.SukuProjection",
+            {},
+            "suku",
+            {"A": {"ksp_total": 70}},
+            owns=["ksp_total"],
+        )
+        DjangoExecutor().apply(effects)
+
+        a = SukuProjection.objects.get(suku="A")
+        b = SukuProjection.objects.get(suku="B")
+        # A: present group, its finance column kept; status untouched.
+        assert (a.ksp_total, a.status) == (70, "approved")
+        # B: vanished group — finance column null-cleared, but the row SURVIVES
+        # and the status reducer's column is intact (not a whole-row delete).
+        assert (b.ksp_total, b.status) == (None, "pending")
+
+    def test_rerun_is_idempotent(self):
+        from rakaia.projections import reconcile_aggregate
+
+        from .models import SukuProjection
+
+        SukuProjection.objects.create(suku="B", status="pending", ksp_total=50)
+        effects = reconcile_aggregate(
+            "test_django_rakaia.SukuProjection",
+            {},
+            "suku",
+            {},  # no finance contributors anywhere
+            owns=["ksp_total"],
+            allow_full_clear=True,
+        )
+        DjangoExecutor().apply(effects)
+        DjangoExecutor().apply(effects)  # second pass converges, no error
+        b = SukuProjection.objects.get(suku="B")
+        assert (b.ksp_total, b.status) == (None, "pending")
+
+
+@pytest.mark.django_db
 class TestMergeReplayOverOrm:
     def test_merge_two_finance_streams_then_reduce(self):
         from .models import Balance

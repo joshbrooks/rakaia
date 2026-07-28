@@ -369,6 +369,101 @@ class TestReconcileAggregate:
         assert scope == {"report_id": 42}
 
 
+class TestReconcileAggregateMultiOwner:
+    """`owns=` — reconcile a group set that shares a row with other reducers."""
+
+    def _agg(self, groups, *, owns=("ksp_total",), scope=None, retire_filter=None):
+        return reconcile_aggregate(
+            model_label="app.Project",
+            scope_lookup=scope if scope is not None else {"report_id": 7},
+            group_key="suku",
+            groups=groups,
+            owns=owns,
+            retire_filter=retire_filter,
+        )
+
+    def test_per_group_effects_are_update_not_upsert(self):
+        # Multi-owner never mints the shared row — the row's existence is owned
+        # by whoever creates it, so each group is an update-if-exists.
+        effects = self._agg({"north": {"ksp_total": 5}})
+        assert [e.op for e in effects] == ["update", "retire"]
+        upd = effects[0]
+        assert upd.lookup == {"report_id": 7, "suku": "north"}
+        assert upd.defaults == {"ksp_total": 5}
+
+    def test_reconcile_is_retire_nulling_only_owned_columns(self):
+        effects = self._agg(
+            {"north": {"ksp_total": 5}}, owns=("ksp_total", "ksp_count")
+        )
+        retire = effects[-1]
+        assert retire.op == "retire"
+        assert retire.lookup == {"report_id": 7}
+        # only this owner's columns are cleared; other owners' columns untouched
+        assert retire.patch == {"ksp_total": None, "ksp_count": None}
+        # present groups are spared from the null-out
+        assert retire.spare_keys == [{"suku": "north"}]
+        # a pure null-out needs no liveness/open-guard and fires no transition
+        assert retire.transition_kind is None
+
+    def test_retire_spares_every_present_group(self):
+        effects = self._agg({"north": {"ksp_total": 1}, "south": {"ksp_total": 2}})
+        assert effects[-1].spare_keys == [{"suku": "north"}, {"suku": "south"}]
+
+    def test_empty_groups_clears_owner_columns_in_scope(self):
+        # This owner has no contributors anywhere in the (bounded) scope: clear
+        # its columns on every row in scope, sparing nothing.
+        effects = self._agg({})
+        assert [e.op for e in effects] == ["retire"]
+        assert effects[0].spare_keys == []
+        assert effects[0].patch == {"ksp_total": None}
+
+    def test_retire_filter_narrows_only_the_reconcile_pass(self):
+        # Touched-scoped replay: bound the reconcile to the recomputed subjects
+        # so groups elsewhere that still exist are not reaped.
+        effects = self._agg(
+            {"north": {"ksp_total": 5}},
+            scope={},
+            retire_filter={"report_id__in": [7, 8]},
+        )
+        upd, retire = effects
+        # retire_filter scopes the reconcile, not the per-group upsert
+        assert upd.lookup == {"suku": "north"}
+        assert retire.lookup == {"report_id__in": [7, 8]}
+
+    def test_empty_owns_raises(self):
+        with pytest.raises(ValueError, match="owns"):
+            self._agg({"north": {"ksp_total": 1}}, owns=[])
+
+    def test_global_scope_empty_groups_raises_mentioning_columns(self):
+        with pytest.raises(ValueError, match="null-clear this owner's columns"):
+            self._agg({}, scope={})
+
+    def test_retire_filter_alone_bounds_the_pass_no_flag(self):
+        # A non-empty retire_filter bounds the reconcile, so the wipe guard does
+        # not fire even under a global scope with empty groups.
+        effects = self._agg({}, scope={}, retire_filter={"report_id__in": [7]})
+        assert [e.op for e in effects] == ["retire"]
+        assert effects[0].lookup == {"report_id__in": [7]}
+
+    def test_global_scope_empty_groups_allowed_with_flag(self):
+        effects = reconcile_aggregate(
+            model_label="app.Project",
+            scope_lookup={},
+            group_key="suku",
+            groups={},
+            owns=("ksp_total",),
+            allow_full_clear=True,
+        )
+        assert [e.op for e in effects] == ["retire"]
+        assert effects[0].lookup == {}
+        assert effects[0].spare_keys == []
+
+    def test_scope_lookup_not_mutated(self):
+        scope = {"report_id": 7}
+        self._agg({"north": {"ksp_total": 1}}, scope=scope)
+        assert scope == {"report_id": 7}
+
+
 class TestProjectLatest:
     def _project(self, messages):
         return project_latest(

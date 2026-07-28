@@ -194,3 +194,43 @@ The disjoint-defaults invariant still holds across owners: two effects (whether
 `update` or `update_or_create`) that write the **same** column on the same row in
 one batch raise `EffectCollisionError`, so overlapping ownership surfaces as a
 loud error rather than a last-writer-wins race.
+
+### Reconciling a multi-owned aggregate: `reconcile_aggregate(owns=…)`
+
+The write side above is only half the story. `reconcile_aggregate` also emits a
+**reconcile pass** that removes rows for groups which lost their last
+contributor — and by default that pass is a whole-row `delete`. On a shared row
+that delete would clobber the *other* owners' columns when this reducer's group
+vanishes. Pass `owns=` (the columns this reducer owns) to switch to the
+multi-owner reconcile:
+
+```python
+# finance reducer recomputes its ksp_total per suku on a shared SukuProjection row
+reconcile_aggregate(
+    "ida.SukuProjection",
+    scope_lookup={},
+    group_key="suku",
+    groups={suku: {"ksp_total": total} for suku, total in recomputed.items()},
+    owns=["ksp_total"],            # <- multi-owner mode
+)
+```
+
+With `owns=` set, each group is an `op="update"` (never mints the row), and a
+vanished group's row is **not deleted** — its `ksp_total` is null-cleared via an
+`op="retire"` patch that spares the groups still present, leaving the status
+reducer's columns on that row untouched. The null-out needs no liveness guard: a
+column set to `None` converges on re-run, so it is idempotent as-is (unlike a
+soft-delete `retire`, which stamps a sentinel and must guard on it).
+
+Under an **incremental, touched-aware** reducer that recomputes only the touched
+subjects, bound the reconcile with `retire_filter=` so it does not reap groups
+elsewhere that still exist but were not recomputed this pass — it scopes only the
+reconcile, not the per-group upserts:
+
+```python
+reconcile_aggregate(
+    "ida.SukuProjection", scope_lookup={}, group_key="suku",
+    groups=recomputed, owns=["ksp_total"],
+    retire_filter={"report_id__in": touched_report_ids},
+)
+```
