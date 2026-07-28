@@ -117,18 +117,23 @@ pipeline.
 
 ## Sample applications
 
-Each example is a standalone Django project that demonstrates one feature area
-end-to-end. The two headless demos print their results; the two web demos are
-live in the browser. Run them all with `just demo`, or individually:
+Each example demonstrates one feature area end-to-end. Most are standalone Django
+projects; two are zero-dependency scripts (no Django). Run them all with
+`just demo`, or individually:
 
 | Example | Demonstrates | Run |
 |---|---|---|
 | [`examples/orders/`](examples/orders/) | Versioned handlers, upcasters, replay, dry-run | `just orders-demo` |
 | [`examples/formkit_submissions/`](examples/formkit_submissions/) | Projections/fan-out, `reconcile_children`, migration parity | `just formkit-demo` |
+| [`examples/protocol_streams/`](examples/protocol_streams/) | Protocol layer (no Django): producer fencing, close, `poll` cursors | `just protocol-demo` |
+| [`examples/multi_owner/`](examples/multi_owner/) | Effect primitives (no Django): `Ref`, `reconcile_aggregate(owns=)` | `just multi-owner-demo` |
 | [`examples/chat/`](examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` |
 | [`examples/polyglot/`](examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` |
 
-For a narrated walkthrough of what each proves, see
+For the full catalog with a concept-coverage matrix, see
+[`docs/examples.md`](docs/examples.md) (human) or the machine-readable
+[Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog)
+bundle in [`okf/`](okf/) (agents/tools). For a narrated walkthrough, see
 [`docs/whats-new.md`](docs/whats-new.md).
 
 ## Running it

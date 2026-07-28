@@ -19,6 +19,13 @@ Every demo is **assertion-backed**: it prints what it proves and fails loudly if
 the behaviour regresses. Running them is the fastest way to confirm the library
 works after a change.
 
+!!! note "Machine-readable companion"
+    A structured, cross-linked version of this page lives as an
+    [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog)
+    bundle at [`okf/`](https://github.com/joshbrooks/rakaia/tree/main/okf) in the
+    repo — one concept document per example and per concept group, for agents and
+    tools to consume.
+
 ## The mental model
 
 Rakaia is two layers, and the examples split along that line.
