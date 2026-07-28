@@ -84,6 +84,30 @@ class TestPersistence:
         messages2, _ = store.read(HANDLERS_META_STREAM)
         assert len(messages2) == 1
 
+    def test_event_match_set_persists_as_sorted_list_and_dedups(
+        self, store: StreamStore
+    ):
+        reg = HandlerRegistry(store=store)
+        reg.register(
+            "sweep", {"TF_6_1_1", "SF_1_2"}, _fn("v1"), 0, None, match_field="form_type"
+        )
+
+        messages, _ = store.read(HANDLERS_META_STREAM)
+        payload = json.loads(messages[0].data)
+        # Serialized deterministically as a sorted list so the meta-stream is
+        # stable regardless of set iteration order.
+        assert payload["event_match"] == ["SF_1_2", "TF_6_1_1"]
+
+        # A fresh registry over the same store reconstructs the same canonical
+        # (frozenset) identity, so the identical registration dedups — no
+        # re-append even though the members are passed in a different order.
+        reg2 = HandlerRegistry(store=store)
+        reg2.register(
+            "sweep", ["TF_6_1_1", "SF_1_2"], _fn("v1"), 0, None, match_field="form_type"
+        )
+        messages2, _ = store.read(HANDLERS_META_STREAM)
+        assert len(messages2) == 1
+
     def test_missing_match_field_defaults_to_none(self, store: StreamStore):
         reg = HandlerRegistry(store=store)
         reg.register("m", "e", _fn("v1"), 0, None)

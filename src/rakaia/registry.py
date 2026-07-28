@@ -16,7 +16,7 @@ from __future__ import annotations
 import fnmatch
 import importlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -67,8 +67,12 @@ class HandlerVersion:
     name: str
     """Handler name, stable across versions (e.g. 'mogrify')."""
 
-    event_match: str
-    """Glob pattern matched against the event's stream/event-type."""
+    event_match: str | frozenset[str]
+    """Glob pattern(s) matched against the routing subject. A ``str`` is a single
+    glob (the common case); a ``frozenset`` matches the subject against **any**
+    of its element globs, so one registration covers several unrelated
+    form_types that share no glob prefix (e.g. ``{"TF_6_1_1", "SF_1_2"}``). Set
+    at registration from a str or any iterable of strings."""
 
     effective_from: int
     """Inclusive lower bound on stream sequence."""
@@ -168,7 +172,9 @@ class HandlerRegistry:
         stream_path: str = HANDLERS_META_STREAM,
     ) -> None:
         # (name, event_match) -> sorted list of HandlerVersion by effective_from
-        self._versions: dict[tuple[str, str], list[HandlerVersion]] = {}
+        self._versions: dict[
+            tuple[str, str | frozenset[str]], list[HandlerVersion]
+        ] = {}
         # reducer name -> ReducerVersion
         self._reducers: dict[str, ReducerVersion] = {}
         self._store = store
@@ -176,7 +182,7 @@ class HandlerRegistry:
         self._reducer_stream_path = REDUCERS_META_STREAM
         # Identity tuples already persisted to the stream — used for dedup.
         self._persisted_ids: set[
-            tuple[str, str, int, int | None, str, str, str | None, int]
+            tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]
         ] = set()
         self._reducer_persisted_ids: set[tuple[str, int, str, str]] = set()
         if store is not None:
@@ -188,7 +194,7 @@ class HandlerRegistry:
     def register(
         self,
         name: str,
-        event_match: str,
+        event_match: str | Iterable[str],
         fn: Callable[..., Any],
         effective_from: int,
         effective_to: int | None = None,
@@ -203,13 +209,18 @@ class HandlerRegistry:
         dotted_path, source_hash, match_field, stage) is a no-op that returns
         the existing version without re-appending to the meta-stream.
 
-        When `match_field` is set, `event_match` is matched against
+        `event_match` is a glob string or an iterable of glob strings; a
+        collection matches the subject against **any** of its members, so one
+        registration covers several unrelated form_types that share no glob
+        (canonicalised to a `frozenset`, so member order does not matter). When
+        `match_field` is set, the pattern(s) are matched against
         `event[match_field]` (e.g. 'form_type') instead of the stream path.
 
         `stage` (default 0) controls replay ordering: replay runs stages in
         ascending order, and a stage > 0 handler is invoked as `fn(event,
         reader)` so it can read earlier stages' projections.
         """
+        event_match = _canonical_event_match(event_match)
         if effective_from < 0:
             raise ValueError(
                 f"effective_from must be non-negative, got {effective_from}"
@@ -343,7 +354,7 @@ class HandlerRegistry:
         resolved: list[HandlerVersion] = []
         for (name, pattern), versions in self._versions.items():
             subject = self._match_subject(name, versions, event_match, event)
-            if not fnmatch.fnmatchcase(subject, pattern):
+            if not _pattern_matches(pattern, subject):
                 continue
             covering = [
                 v
@@ -463,7 +474,13 @@ class HandlerRegistry:
             return
         payload = {
             "name": version.name,
-            "event_match": version.event_match,
+            # A frozenset event_match serializes as a sorted list so the
+            # meta-stream is stable regardless of set iteration order.
+            "event_match": (
+                version.event_match
+                if isinstance(version.event_match, str)
+                else sorted(version.event_match)
+            ),
             "effective_from": version.effective_from,
             "effective_to": version.effective_to,
             "dotted_path": version.dotted_path,
@@ -817,13 +834,46 @@ class UpcasterRegistry:
 
 
 # =============================================================================
+# event_match helpers
+# =============================================================================
+
+
+def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[str]:
+    """Normalise an `event_match` argument to its stored form.
+
+    A plain string is kept as-is (the common single-glob case). Any other
+    iterable of strings becomes a ``frozenset`` — hashable (so it works as the
+    series key and in the identity tuple) and order-independent (so the same
+    members in a different order dedup). Raises on an empty collection or a
+    non-string member, which are always mistakes.
+    """
+    if isinstance(event_match, str):
+        return event_match
+    members = frozenset(event_match)
+    if not members:
+        raise ValueError(
+            "event_match collection must contain at least one pattern (got empty)"
+        )
+    if not all(isinstance(m, str) for m in members):
+        raise ValueError("event_match collection members must all be strings")
+    return members
+
+
+def _pattern_matches(pattern: str | frozenset[str], subject: str) -> bool:
+    """Whether `subject` matches `pattern` — a single glob, or any glob in a set."""
+    if isinstance(pattern, str):
+        return fnmatch.fnmatchcase(subject, pattern)
+    return any(fnmatch.fnmatchcase(subject, p) for p in pattern)
+
+
+# =============================================================================
 # Identity helpers
 # =============================================================================
 
 
 def _identity(
     v: HandlerVersion,
-) -> tuple[str, str, int, int | None, str, str, str | None, int]:
+) -> tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]:
     # match_field / stage are appended after dotted_path (index 4) and
     # source_hash (index 5) so rehydrate()'s ident[4] lookup stays valid.
     return (
@@ -840,10 +890,14 @@ def _identity(
 
 def _identity_from_payload(
     p: dict[str, Any],
-) -> tuple[str, str, int, int | None, str, str, str | None, int]:
+) -> tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]:
     return (
         p["name"],
-        p["event_match"],
+        # Reconstruct the same canonical (frozenset) identity a list-serialized
+        # set was persisted from, so a reload dedups against the live version.
+        p["event_match"]
+        if isinstance(p["event_match"], str)
+        else frozenset(p["event_match"]),
         int(p["effective_from"]),
         p["effective_to"] if p["effective_to"] is None else int(p["effective_to"]),
         p["dotted_path"],
@@ -936,7 +990,7 @@ def upcast(
 
 def register_handler(
     name: str,
-    event_match: str,
+    event_match: str | Iterable[str],
     effective_from: int,
     effective_to: int | None = None,
     *,
@@ -947,9 +1001,12 @@ def register_handler(
     """
     Decorator that registers a handler version with the default registry.
 
-    Pass `match_field` to route on a payload field (e.g. 'form_type') instead
-    of the stream path. Pass `stage` (default 0) to place the handler in a
-    replay stage; stage > 0 handlers are called `fn(event, reader)`.
+    `event_match` is a glob string or an iterable of glob strings; a collection
+    matches any of its members, so one registration covers several unrelated
+    form_types (e.g. `{"TF_6_1_1", "SF_1_2"}`) without a per-value loop. Pass
+    `match_field` to route on a payload field (e.g. 'form_type') instead of the
+    stream path. Pass `stage` (default 0) to place the handler in a replay stage;
+    stage > 0 handlers are called `fn(event, reader)`.
 
     Example:
         @register_handler(
@@ -965,6 +1022,15 @@ def register_handler(
                 lookup={"id": event["room_id"]},
                 defaults={"name": event["name"]},
             )
+
+        # One registration for several form_types that share no glob:
+        @register_handler(
+            name="sweep",
+            event_match={"TF_6_1_1", "SF_1_2", "POM_1"},
+            effective_from=0,
+            match_field="form_type",
+        )
+        def sweep(event): ...
     """
     target = registry if registry is not None else _default_registry
 
@@ -981,6 +1047,38 @@ def register_handler(
         return fn
 
     return decorator
+
+
+def register_simple(
+    name: str,
+    event_match: str | Iterable[str],
+    *,
+    match_field: str | None = None,
+    stage: int = 0,
+    registry: HandlerRegistry | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register an always-on handler — the common "just project" case.
+
+    Shorthand for ``register_handler(name, event_match, effective_from=0,
+    effective_to=None, ...)``: one open-ended version covering every sequence,
+    with no seq-range ceremony. Reach for `register_handler` only when you
+    actually need version brackets (a handler whose body changes at a known
+    sequence). `match_field` and `stage` pass straight through.
+
+    Example:
+        @register_simple("project_registry", "TF_6_1_1", match_field="form_type")
+        def project_registry(event):
+            return Effect(op="update_or_create", ...)
+    """
+    return register_handler(
+        name,
+        event_match,
+        effective_from=0,
+        effective_to=None,
+        match_field=match_field,
+        stage=stage,
+        registry=registry,
+    )
 
 
 def register_reducer(

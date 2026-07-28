@@ -9,10 +9,8 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.store import get_store
+from django_rakaia.replay import replay_stream
 from rakaia.executors import CollectingExecutor
-from rakaia.replay import replay
 
 
 class Command(BaseCommand):
@@ -55,11 +53,12 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:  # noqa: ARG002
         dry_run = options["dry_run"]
         # On a dry run, collect the effects instead of applying them so we can
-        # both report the count and list exactly what *would* be written.
-        executor: Any = CollectingExecutor() if dry_run else DjangoExecutor()
-        result = replay(
-            store=get_store(),
-            stream_path=options["stream"],
+        # both report the count and list exactly what *would* be written. A real
+        # run defaults to the DjangoExecutor; either way replay_stream supplies
+        # the DjangoProjectionReader so staged handlers/reducers work.
+        executor: Any = CollectingExecutor() if dry_run else None
+        result = replay_stream(
+            options["stream"],
             executor=executor,
             start_seq=options["start_seq"],
             end_seq=options["end_seq"],

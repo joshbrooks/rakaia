@@ -28,6 +28,9 @@ Public API:
     - stream_model: Decorator for automatically streaming model changes
     - create_stream_event: Helper function for manually creating stream events
     - register_stream_event_admin: Register stream event model with Django admin
+    - diff_effects_against_rows: Verify replayed effects reproduce the projection
+      (import from django_rakaia.verification — see that module; not eagerly
+      imported here because it pulls in the ORM before apps are ready)
 """
 
 # We intentionally do not eager import models here
