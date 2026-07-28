@@ -19,6 +19,7 @@ Copyright &copy; 2026 Josh Brooks
 nav = [
     { "Overview" = "index.md" },
     { "What's new" = "whats-new.md" },
+    { "Examples & concept coverage" = "examples.md" },
     { "Glossary" = "glossary.md" },
     { "Framework vs. protocol server" = "framework-vs-protocol-server.md" },
     { "Django integration" = "django-integration.md" },
