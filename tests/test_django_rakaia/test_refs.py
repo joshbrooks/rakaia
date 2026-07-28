@@ -7,7 +7,7 @@ import pytest
 from django.contrib.auth.models import User
 
 from django_rakaia.effect_executor import DjangoExecutor
-from rakaia.effects import Effect, Ref, UnresolvedRefError
+from rakaia.effects import DuplicateProducesError, Effect, Ref, UnresolvedRefError
 
 from .models import Area, Project
 
@@ -80,6 +80,28 @@ class TestRefsThroughDjangoExecutor:
             ),
         ]
         with pytest.raises(UnresolvedRefError, match="area"):
+            DjangoExecutor().apply(effects)
+
+    def test_duplicate_produces_id_raises(self):
+        # Two producers share one id — a Ref to it would silently bind to the
+        # second, orphaning the first. apply() rejects it loudly.
+        effects = [
+            Effect(
+                op="update_or_create",
+                model_label="test_django_rakaia.Area",
+                lookup={"name": "First"},
+                defaults={},
+                produces="area",
+            ),
+            Effect(
+                op="update_or_create",
+                model_label="test_django_rakaia.Area",
+                lookup={"name": "Second"},
+                defaults={},
+                produces="area",
+            ),
+        ]
+        with pytest.raises(DuplicateProducesError, match="area"):
             DjangoExecutor().apply(effects)
 
     def test_skip_unchanged_executor_also_records_produces(self):

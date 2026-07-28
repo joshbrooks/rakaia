@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.effects import Effect, Ref, RefResolver, UnresolvedRefError
+from rakaia.effects import (
+    DuplicateProducesError,
+    Effect,
+    Ref,
+    RefResolver,
+    UnresolvedRefError,
+)
 
 
 class TestRefAndProduces:
@@ -61,6 +67,14 @@ class TestRefResolver:
         resolver = RefResolver()
         with pytest.raises(UnresolvedRefError, match="proj"):
             resolver.resolve_value(Ref("proj"))
+
+    def test_duplicate_produces_id_raises(self):
+        # Re-declaring a produces id would silently rebind every Ref to the
+        # second producer's row, orphaning the first — a loud error instead.
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 1}))
+        with pytest.raises(DuplicateProducesError, match="proj"):
+            resolver.record("proj", self._accessor({"pk": 2}))
 
     def test_resolve_effect_substitutes_in_defaults_and_lookup(self):
         resolver = RefResolver()

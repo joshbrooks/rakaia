@@ -207,6 +207,12 @@ class UnresolvedRefError(Exception):
     (a forward reference or a typo)."""
 
 
+class DuplicateProducesError(Exception):
+    """Two effects in one batch declare the same `produces` id. The id would
+    silently bind to the second producer's row, orphaning the first — always a
+    bug, so it is rejected rather than resolved to the wrong row."""
+
+
 # =============================================================================
 # Ref resolution (used by applying executors — DjangoExecutor, OverlayExecutor)
 # =============================================================================
@@ -234,7 +240,19 @@ class RefResolver:
 
     def record(self, produces_id: str, accessor: Callable[[str], Any]) -> None:
         """Register the row produced under `produces_id`; `accessor(field)`
-        returns that row's value for a column (``"pk"`` for the primary key)."""
+        returns that row's value for a column (``"pk"`` for the primary key).
+
+        Raises :class:`DuplicateProducesError` if `produces_id` was already
+        declared in this batch — a re-declaration would silently rebind every
+        `Ref` to the second producer's row, so it is a loud error, never a
+        silent wrong binding.
+        """
+        if produces_id in self._symbols:
+            raise DuplicateProducesError(
+                f"Two effects in this batch declare produces={produces_id!r}; "
+                f"a Ref to it would bind to the wrong row. Give each producer a "
+                f"distinct id."
+            )
         self._symbols[produces_id] = accessor
 
     def resolve_value(self, value: Any) -> Any:
