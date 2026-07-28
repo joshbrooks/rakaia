@@ -28,11 +28,16 @@ EffectOp = Literal["update_or_create", "update", "delete", "external", "retire"]
 class Ref:
     """A batch-local reference to a row a *sibling* effect materialises.
 
-    Placed as a **value** inside another effect's ``lookup``/``defaults``/
-    ``patch``/``payload``/``spare_keys``, it stands in for a column of the row
-    produced by the effect that declared the matching ``produces=`` id earlier
-    in the same ``apply()`` batch. The executor substitutes the real value at
-    apply time.
+    Placed as a **direct value** inside another effect's ``lookup``/``defaults``/
+    ``patch``/``spare_keys`` (or a delete's ``exclude``), it stands in for a
+    column of the row produced by the effect that declared the matching
+    ``produces=`` id earlier in the same ``apply()`` batch. The executor
+    substitutes the real value at apply time.
+
+    Must be a **direct** value — a ``Ref`` nested inside a list or dict (e.g.
+    ``defaults={"tags": [Ref("t")]}``) is not resolved. Not resolved in
+    ``op="external"`` payloads either: the shipped executors do not apply
+    external effects, so a ``Ref`` there would never be substituted.
 
     ``field`` defaults to ``"pk"`` (the produced row's primary key — the FK case),
     or names any other column, e.g. ``Ref("proj", "suku")``.
@@ -232,8 +237,10 @@ class RefResolver:
     literal ``Ref`` values, which is correct.
     """
 
-    # Effect fields whose dict values may carry a Ref.
-    _MAPPING_FIELDS = ("lookup", "defaults", "patch", "payload", "exclude")
+    # Effect fields whose dict values may carry a Ref. `payload` is excluded on
+    # purpose: it is only meaningful for op="external", which the shipped
+    # executors never apply, so a Ref there could not be substituted anyway.
+    _MAPPING_FIELDS = ("lookup", "defaults", "patch", "exclude")
 
     def __init__(self) -> None:
         self._symbols: dict[str, Callable[[str], Any]] = {}
@@ -265,7 +272,13 @@ class RefResolver:
                 f"Effect references produces={value.produces!r} but no earlier "
                 f"effect in this batch produced it (forward reference or typo)."
             )
-        return accessor(value.field)
+        try:
+            return accessor(value.field)
+        except AttributeError as exc:
+            raise UnresolvedRefError(
+                f"Ref(produces={value.produces!r}, field={value.field!r}): the "
+                f"produced row has no attribute {value.field!r}."
+            ) from exc
 
     def _resolve_mapping(self, mapping: dict[str, Any] | None) -> dict[str, Any] | None:
         if not mapping or not any(isinstance(v, Ref) for v in mapping.values()):

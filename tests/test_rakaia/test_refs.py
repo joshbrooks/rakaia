@@ -76,6 +76,34 @@ class TestRefResolver:
         with pytest.raises(DuplicateProducesError, match="proj"):
             resolver.record("proj", self._accessor({"pk": 2}))
 
+    def test_ref_to_missing_field_raises_helpful_error(self):
+        import types
+
+        # Mirror the real DjangoExecutor accessor (getattr -> AttributeError).
+        row = types.SimpleNamespace(pk=1, code="P-1")
+
+        def accessor(field):
+            return row.pk if field in ("pk", "id") else getattr(row, field)
+
+        resolver = RefResolver()
+        resolver.record("proj", accessor)
+        with pytest.raises(UnresolvedRefError, match="has no attribute"):
+            resolver.resolve_value(Ref("proj", "nope"))
+
+    def test_nested_ref_is_not_resolved(self):
+        # A Ref must be a direct value; one nested in a list/dict passes through
+        # unchanged (documented limitation, pinned here).
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 7}))
+        eff = Effect(
+            op="update_or_create",
+            model_label="app.X",
+            lookup={"id": "1"},
+            defaults={"tags": [Ref("proj")]},
+        )
+        resolved = resolver.resolve_effect(eff)
+        assert resolved.defaults["tags"] == [Ref("proj")]
+
     def test_resolve_effect_substitutes_in_defaults_and_lookup(self):
         resolver = RefResolver()
         resolver.record("proj", self._accessor({"pk": 7}))
