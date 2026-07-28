@@ -279,6 +279,22 @@ class Balance(models.Model):
         app_label = "test_django_rakaia"
 
 
+class SukuProjection(models.Model):
+    """Multi-owned aggregate row for the `reconcile_aggregate(owns=...)` tests.
+
+    One row per ``suku`` whose columns are written by two independent reducers:
+    a status reducer owns ``status``, a finance reducer owns ``ksp_total``. When
+    one owner's group vanishes, its columns must be null-cleared without
+    disturbing the other owner's — the multi-owner reconcile invariant (#67)."""
+
+    suku = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=16, null=True, default=None)
+    ksp_total = models.IntegerField(null=True, default=None)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 class Measure(models.Model):
     """Projection row with a UUID natural key and a Decimal column — the
     fixture for the ``diff_effects_against_rows`` verification helper, whose

@@ -282,6 +282,8 @@ def reconcile_aggregate(
     group_key: str,
     groups: Mapping[Any, dict[str, Any]],
     *,
+    owns: Sequence[str] | None = None,
+    retire_filter: dict[str, Any] | None = None,
     allow_full_clear: bool = False,
 ) -> list[Effect]:
     """Materialise one recomputed aggregate row per group, without stale rows.
@@ -293,63 +295,124 @@ def reconcile_aggregate(
     per group plus a reconcile ``delete`` that removes aggregate rows for groups
     which no longer have any contributors.
 
-    **Whole-table-wipe guard.** The reconcile delete is scoped to
-    ``scope_lookup``. A global scope (``scope_lookup={}``) **with** empty
-    ``groups`` is a delete that matches *every* row in the model — a full-table
-    clear. That is correct for a full rebuild which legitimately found zero
-    facts, but is a footgun when run against an empty or half-migrated fact
-    table (it silently wipes the projection). So that exact combination raises
-    ``ValueError`` unless you opt in with ``allow_full_clear=True``. A non-empty
-    ``scope_lookup`` (a scoped clear) or non-empty ``groups`` is never gated.
+    **Multi-owner mode (`owns=`).** The default whole-row reconcile is wrong when
+    the aggregate row is *shared* — one row whose columns are written by several
+    independent reducers (e.g. a status reducer owns some columns, a finance
+    reducer owns others). Deleting the whole row when *this* reducer's group
+    vanishes would clobber the columns owned by the others. Pass ``owns=`` (the
+    column names this reducer owns) to switch to a mode that composes on a shared
+    row: each group is an ``op="update"`` (update-if-exists — never mints a row,
+    so the row's *existence* stays owned by whoever creates it), and a vanished
+    group's row is not deleted but **null-cleared on this owner's columns only**
+    via an ``op="retire"`` patch, leaving the other owners' columns intact. The
+    null-out needs no liveness/open-guard (unlike a soft-delete `retire`): setting
+    a column to ``None`` converges on re-run, so it is idempotent as-is.
+
+    **Touched-scoped replay (`retire_filter=`).** The reconcile pass (delete or
+    retire) narrows to ``scope_lookup`` (plus ``retire_filter``). Under an
+    incremental *touched-aware* reducer that recomputes only the touched
+    subjects, the un-narrowed pass would reap groups elsewhere that still exist
+    but were not recomputed this pass. Pass ``retire_filter=`` to bound the
+    reconcile to the touched scope (as `reconcile_by_key` does), e.g.
+    ``{"report_id__in": touched_report_ids}`` — it scopes *only* the reconcile,
+    not the per-group upserts.
+
+    **Whole-table-wipe guard.** The reconcile pass is scoped to ``scope_lookup``
+    (plus ``retire_filter``). A global scope with empty ``groups`` matches *every*
+    row in the model — a full-table clear (a whole-row delete in single-owner
+    mode, or a null-out of this owner's columns on every row in multi-owner mode).
+    That is correct for a full rebuild which legitimately found zero facts, but is
+    a footgun against an empty or half-migrated fact table. So that exact
+    combination raises ``ValueError`` unless you opt in with
+    ``allow_full_clear=True``. A non-empty ``scope_lookup``, ``retire_filter`` or
+    ``groups`` bounds the pass and is never gated.
 
     Args:
         model_label: 'app_label.ModelName' of the aggregate model.
         scope_lookup: lookup bounding the aggregate set, e.g. ``{}`` for a global
             rollup or ``{"report_id": r}`` for a scoped one. Each row is keyed by
-            this plus ``{group_key: value}``; the reconcile delete is scoped to
-            it.
+            this plus ``{group_key: value}``; the reconcile pass is scoped to it.
         group_key: the field identifying a group, e.g. ``"suku"`` or
             ``"district"``. (Single-field groups; composite groups are out of
             scope — a simple ``exclude`` cannot express "tuple not in set".)
         groups: mapping of group value to its recomputed ``defaults=`` values.
+        owns: the columns this reducer owns on a shared (multi-owned) row. When
+            given, per-group effects are ``op="update"`` and a vanished group's
+            row is null-cleared on these columns instead of deleted. Omit (the
+            default) for the single-owner whole-row reconcile. An empty sequence
+            is rejected — pass the columns, or omit.
+        retire_filter: extra filter scoping **only** the reconcile pass, distinct
+            from the per-group key. Use it to keep a touched-scoped reducer from
+            reaping groups outside the recomputed scope.
         allow_full_clear: opt in to the whole-table clear (global scope + empty
-            groups). Required for that one combination; ignored otherwise.
+            groups + empty retire_filter). Required for that one combination;
+            ignored otherwise.
 
     Returns:
-        One ``update_or_create`` Effect per group (in mapping order), followed by
-        one ``delete`` Effect removing rows under ``scope_lookup`` whose group is
-        not present. Empty ``groups`` yields just the delete, clearing the set.
+        One per-group Effect (``update_or_create``, or ``update`` in multi-owner
+        mode) in mapping order, followed by one reconcile Effect: a ``delete`` of
+        rows whose group is not present (single-owner), or a ``retire`` null-out
+        of this owner's columns on those rows (multi-owner). Empty ``groups``
+        yields just the reconcile effect, clearing the set.
 
     Raises:
-        ValueError: if ``scope_lookup`` and ``groups`` are both empty and
-            ``allow_full_clear`` is not set — the un-opted-in whole-table wipe.
+        ValueError: if ``owns`` is an empty sequence; or if ``scope_lookup``,
+            ``retire_filter`` and ``groups`` are all empty and ``allow_full_clear``
+            is not set — the un-opted-in whole-table wipe.
     """
-    if not scope_lookup and not groups and not allow_full_clear:
+    if owns is not None and not owns:
+        raise ValueError(
+            f"reconcile_aggregate({model_label!r}) got owns=[]; pass the columns "
+            "this reducer owns on the shared row, or omit owns for single-owner "
+            "(whole-row) mode."
+        )
+    retire_filter = dict(retire_filter or {})
+    if not scope_lookup and not retire_filter and not groups and not allow_full_clear:
+        cleared = (
+            "null-clear this owner's columns on every row"
+            if owns is not None
+            else "delete every row"
+        )
         raise ValueError(
             f"reconcile_aggregate({model_label!r}) with a global scope "
-            "(scope_lookup={}) and empty groups would delete every row in the "
-            "model. Pass a non-empty scope_lookup to clear only that scope, or "
+            f"(scope_lookup={{}}) and empty groups would {cleared} in the model. "
+            "Pass a non-empty scope_lookup or retire_filter to bound it, or "
             "allow_full_clear=True to confirm you intend a whole-table clear "
             "(e.g. a full rebuild that found zero facts)."
         )
     group_values = list(groups)
+    per_group_op = "update" if owns is not None else "update_or_create"
     effects: list[Effect] = [
         Effect(
-            op="update_or_create",
+            op=per_group_op,
             model_label=model_label,
             lookup={**scope_lookup, group_key: value},
             defaults=dict(groups[value]),
         )
         for value in group_values
     ]
-    effects.append(
-        Effect(
-            op="delete",
-            model_label=model_label,
-            lookup=dict(scope_lookup),
-            exclude={f"{group_key}__in": group_values},
+    reconcile_lookup = {**scope_lookup, **retire_filter}
+    if owns is not None:
+        # Vanished group: null-clear only this owner's columns, sparing the
+        # groups still present, so the shared row survives for its other owners.
+        effects.append(
+            Effect(
+                op="retire",
+                model_label=model_label,
+                lookup=reconcile_lookup,
+                spare_keys=[{group_key: value} for value in group_values],
+                patch=dict.fromkeys(owns),
+            )
         )
-    )
+    else:
+        effects.append(
+            Effect(
+                op="delete",
+                model_label=model_label,
+                lookup=reconcile_lookup,
+                exclude={f"{group_key}__in": group_values},
+            )
+        )
     return effects
 
 
