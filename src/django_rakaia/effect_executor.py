@@ -33,7 +33,17 @@ from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
 
-from rakaia.effects import ApplyReport, Effect, check_disjoint_defaults
+from rakaia.effects import ApplyReport, Effect, RefResolver, check_disjoint_defaults
+
+
+def _row_accessor(obj: Any) -> Any:
+    """A `RefResolver` accessor over an applied ORM row: `field -> value`,
+    with ``"pk"``/``"id"`` mapping to the primary key."""
+
+    def get(field: str) -> Any:
+        return obj.pk if field in ("pk", "id") else getattr(obj, field)
+
+    return get
 
 
 class DjangoExecutor:
@@ -45,35 +55,43 @@ class DjangoExecutor:
     def apply(self, effects: Iterable[Effect]) -> ApplyReport:
         effects_list = list(effects)
         check_disjoint_defaults(effects_list)
+        # One resolver per batch: an upsert declaring produces= records its row,
+        # and a sibling's Ref values are substituted before that sibling applies.
+        resolver = RefResolver()
         retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = []
         with transaction.atomic():
             # Writes first, then deletes, then retires: reconcile batches
             # (upsert current rows, prune/soft-delete the rest) converge
-            # regardless of handler order.
+            # regardless of handler order. Writes apply before deletes/retires,
+            # so a produces= row is always recorded before any later effect that
+            # refs it.
             for eff in effects_list:
                 if eff.op == "update_or_create":
-                    self._upsert(eff)
+                    obj = self._upsert(resolver.resolve_effect(eff))
+                    if eff.produces is not None:
+                        resolver.record(eff.produces, _row_accessor(obj))
                 elif eff.op == "update":
-                    self._update(eff)
+                    self._update(resolver.resolve_effect(eff))
             for eff in effects_list:
                 if eff.op == "delete":
-                    self._delete(eff)
+                    self._delete(resolver.resolve_effect(eff))
             for eff in effects_list:
                 if eff.op == "retire":
-                    flipped = self._retire(eff)
-                    if eff.transition_kind is not None:
-                        retire_flips.append((eff, flipped))
+                    reff = resolver.resolve_effect(eff)
+                    flipped = self._retire(reff)
+                    if reff.transition_kind is not None:
+                        retire_flips.append((reff, flipped))
         return ApplyReport(retire_flips=retire_flips)
 
-    def _upsert(self, eff: Effect) -> None:
+    def _upsert(self, eff: Effect) -> Any:
         if eff.model_label is None or eff.lookup is None:
             raise ValueError("update_or_create effect requires model_label and lookup")
         model = apps.get_model(eff.model_label)
         defaults = eff.defaults or {}
         if not self._skip_unchanged:
-            model.objects.update_or_create(**eff.lookup, defaults=defaults)
-            return
-        self._upsert_skip_unchanged(model, eff.lookup, defaults)
+            obj, _ = model.objects.update_or_create(**eff.lookup, defaults=defaults)
+            return obj
+        return self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
     @staticmethod
     def _update(eff: Effect) -> None:
@@ -92,7 +110,7 @@ class DjangoExecutor:
         model.objects.filter(**eff.lookup).update(**defaults)
 
     @staticmethod
-    def _upsert_skip_unchanged(model: type, lookup: dict, defaults: dict) -> None:
+    def _upsert_skip_unchanged(model: type, lookup: dict, defaults: dict) -> Any:
         try:
             row = model.objects.get(**lookup)
         except model.DoesNotExist:
@@ -100,14 +118,14 @@ class DjangoExecutor:
             # dropping any lookup that isn't a concrete field assignment.
             params = {k: v for k, v in lookup.items() if "__" not in k}
             params.update(defaults)
-            model.objects.create(**params)
-            return
+            return model.objects.create(**params)
         changed = {k: v for k, v in defaults.items() if getattr(row, k) != v}
         if not changed:
-            return  # nothing to write — skip the UPDATE entirely
+            return row  # nothing to write — skip the UPDATE entirely
         for field, value in changed.items():
             setattr(row, field, value)
         row.save(update_fields=list(changed))
+        return row
 
     @staticmethod
     def _spare(qs: Any, spare_keys: list[dict[str, Any]] | None) -> Any:

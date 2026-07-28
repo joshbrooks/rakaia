@@ -13,9 +13,45 @@ import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from dataclasses import replace as dc_replace
 from typing import Any, Literal, Protocol
 
 EffectOp = Literal["update_or_create", "update", "delete", "external", "retire"]
+
+
+# =============================================================================
+# Symbolic refs — bind to a sibling effect's generated key
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class Ref:
+    """A batch-local reference to a row a *sibling* effect materialises.
+
+    Placed as a **direct value** inside another effect's ``lookup``/``defaults``/
+    ``patch``/``spare_keys`` (or a delete's ``exclude``), it stands in for a
+    column of the row produced by the effect that declared the matching
+    ``produces=`` id earlier in the same ``apply()`` batch. The executor
+    substitutes the real value at apply time.
+
+    Must be a **direct** value — a ``Ref`` nested inside a list or dict (e.g.
+    ``defaults={"tags": [Ref("t")]}``) is not resolved. Not resolved in
+    ``op="external"`` payloads either: the shipped executors do not apply
+    external effects, so a ``Ref`` there would never be substituted.
+
+    ``field`` defaults to ``"pk"`` (the produced row's primary key — the FK case),
+    or names any other column, e.g. ``Ref("proj", "suku")``.
+
+    Determinism note: ``Ref("proj")`` resolves to a **DB-assigned pk**, which is
+    not stable across a full rebuild (correct for an FK column, whose integrity
+    holds; use a natural-key ``field`` if you need a value stable across rebuilds).
+    """
+
+    produces: str
+    """The correlation id a sibling effect declared via ``produces=``."""
+
+    field: str = "pk"
+    """Which column of the produced row to substitute. Default: the primary key."""
 
 
 # =============================================================================
@@ -71,6 +107,14 @@ class Effect:
     `{"resolved_at": <event ts>}`. The value must be the *triggering event's*
     timestamp, never `timezone.now()`, or replay is not deterministic."""
 
+    # Field for op="update_or_create" — symbolic refs
+    produces: str | None = None
+    """A batch-local correlation id naming the single row this upsert
+    materialises, so a sibling effect can bind to it via ``Ref(produces)``
+    without a staging split or a natural-key reader lookup. Only valid on
+    op="update_or_create" (the single-row upsert); an ``update`` can match many
+    rows and a delete/retire/external produces none."""
+
     # Fields for op="external"
     kind: str | None = None
     """Sub-kind of external effect ('email', 'stripe_charge', ...)."""
@@ -96,6 +140,15 @@ class Effect:
     meaningful on op="retire"."""
 
     def __post_init__(self) -> None:
+        # `produces` names the single row an upsert materialises, so a sibling
+        # can bind to its pk. An `update` may match many rows (ambiguous which
+        # one), and delete/retire/external materialise none — reject those.
+        if self.produces is not None and self.op != "update_or_create":
+            raise ValueError(
+                f"Effect sets produces={self.produces!r} with op={self.op!r}; "
+                "produces names the single row an update_or_create materialises "
+                "and is only valid on that op."
+            )
         # `exclude` and `spare_keys` are ALTERNATIVE row-sparing mechanisms.
         # Setting both silently ANDs them in the executor
         # (`.exclude(**exclude).exclude(Q(...))`), which is never intended —
@@ -152,6 +205,104 @@ class EffectCollisionError(Exception):
     Two sibling effects target the same (model_label, lookup) row with
     overlapping keys in `defaults`, violating the disjoint-defaults invariant.
     """
+
+
+class UnresolvedRefError(Exception):
+    """A `Ref` names a `produces` id no earlier effect in the batch produced
+    (a forward reference or a typo)."""
+
+
+class DuplicateProducesError(Exception):
+    """Two effects in one batch declare the same `produces` id. The id would
+    silently bind to the second producer's row, orphaning the first — always a
+    bug, so it is rejected rather than resolved to the wrong row."""
+
+
+# =============================================================================
+# Ref resolution (used by applying executors — DjangoExecutor, OverlayExecutor)
+# =============================================================================
+
+
+class RefResolver:
+    """Resolves `Ref` placeholders against rows produced earlier in one batch.
+
+    An applying executor keeps one resolver per ``apply()`` call. As it applies
+    each write effect that declares ``produces=X``, it calls ``record(X,
+    accessor)`` with a callable mapping a field name to the produced row's value
+    (e.g. ``lambda f: obj.pk if f in ("pk", "id") else getattr(obj, f)``). Before
+    applying any effect it calls ``resolve_effect(effect)`` to substitute every
+    ``Ref`` value; a ``Ref`` to an id not yet produced raises
+    :class:`UnresolvedRefError` (deterministic — a forward ref is never a silent
+    ``None``). The `CollectingExecutor` does *not* resolve — a dry run keeps the
+    literal ``Ref`` values, which is correct.
+    """
+
+    # Effect fields whose dict values may carry a Ref. `payload` is excluded on
+    # purpose: it is only meaningful for op="external", which the shipped
+    # executors never apply, so a Ref there could not be substituted anyway.
+    _MAPPING_FIELDS = ("lookup", "defaults", "patch", "exclude")
+
+    def __init__(self) -> None:
+        self._symbols: dict[str, Callable[[str], Any]] = {}
+
+    def record(self, produces_id: str, accessor: Callable[[str], Any]) -> None:
+        """Register the row produced under `produces_id`; `accessor(field)`
+        returns that row's value for a column (``"pk"`` for the primary key).
+
+        Raises :class:`DuplicateProducesError` if `produces_id` was already
+        declared in this batch — a re-declaration would silently rebind every
+        `Ref` to the second producer's row, so it is a loud error, never a
+        silent wrong binding.
+        """
+        if produces_id in self._symbols:
+            raise DuplicateProducesError(
+                f"Two effects in this batch declare produces={produces_id!r}; "
+                f"a Ref to it would bind to the wrong row. Give each producer a "
+                f"distinct id."
+            )
+        self._symbols[produces_id] = accessor
+
+    def resolve_value(self, value: Any) -> Any:
+        """A `Ref` -> the produced row's value; any other value unchanged."""
+        if not isinstance(value, Ref):
+            return value
+        accessor = self._symbols.get(value.produces)
+        if accessor is None:
+            raise UnresolvedRefError(
+                f"Effect references produces={value.produces!r} but no earlier "
+                f"effect in this batch produced it (forward reference or typo)."
+            )
+        try:
+            return accessor(value.field)
+        except AttributeError as exc:
+            raise UnresolvedRefError(
+                f"Ref(produces={value.produces!r}, field={value.field!r}): the "
+                f"produced row has no attribute {value.field!r}."
+            ) from exc
+
+    def _resolve_mapping(self, mapping: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not mapping or not any(isinstance(v, Ref) for v in mapping.values()):
+            return mapping  # unchanged (same object) — no Ref to substitute
+        return {k: self.resolve_value(v) for k, v in mapping.items()}
+
+    def resolve_effect(self, effect: Effect) -> Effect:
+        """Return `effect` with every `Ref` value substituted, or `effect`
+        itself (unchanged) when it carries no refs — the common fast path."""
+        changed: dict[str, Any] = {}
+        for name in self._MAPPING_FIELDS:
+            original = getattr(effect, name)
+            resolved = self._resolve_mapping(original)
+            if resolved is not original:
+                changed[name] = resolved
+        if effect.spare_keys:
+            new_spare = [self._resolve_mapping(k) for k in effect.spare_keys]
+            if any(
+                n is not o for n, o in zip(new_spare, effect.spare_keys, strict=True)
+            ):
+                changed["spare_keys"] = new_spare
+        if not changed:
+            return effect
+        return dc_replace(effect, **changed)
 
 
 # =============================================================================

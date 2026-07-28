@@ -21,10 +21,14 @@ from .append import append_if_changed, snapshots_equal
 from .context import get_provenance, provenance
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
 from .effects import (
+    DuplicateProducesError,
     Effect,
     EffectCollisionError,
     EffectOp,
     Executor,
+    Ref,
+    RefResolver,
+    UnresolvedRefError,
     check_disjoint_defaults,
     dispatch_external,
 )
@@ -143,6 +147,10 @@ __all__ = [
     "EffectOp",
     "Executor",
     "EffectCollisionError",
+    "DuplicateProducesError",
+    "Ref",
+    "RefResolver",
+    "UnresolvedRefError",
     "check_disjoint_defaults",
     "dispatch_external",
     "CollectingExecutor",
