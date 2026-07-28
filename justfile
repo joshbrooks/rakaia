@@ -29,6 +29,7 @@ ORDERS_DIR      := "examples/orders"
 FORMKIT_DIR     := "examples/formkit_submissions"
 HISTORY_DIR     := "examples/partisipa_history"
 PARTISIPA_DIR   := "examples/partisipa_staged"
+COOKBOOK_DIR    := "examples/projection_cookbook"
 CLOSE_DIR       := "examples/partisipa_close"
 MERGE_DIR       := "examples/partisipa_merge"
 REPEATERS_DIR   := "examples/partisipa_repeaters"
@@ -209,6 +210,11 @@ polyglot-serve workers="4" host="0.0.0.0" port="8001": redis-up
 orders-demo:
     cd {{ORDERS_DIR}} && uv run python manage.py migrate
     cd {{ORDERS_DIR}} && uv run python manage.py demo_orders --twice
+
+# Projection cookbook: staged replay + reader + executor + diff verification
+cookbook-demo:
+    cd {{COOKBOOK_DIR}} && uv run python manage.py migrate
+    cd {{COOKBOOK_DIR}} && uv run python manage.py demo_cookbook
 
 # Dev server showing the materialized orders projection
 orders-dev:

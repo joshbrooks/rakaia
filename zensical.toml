@@ -29,6 +29,7 @@ nav = [
     { "Alerts projection" = "alerts-projection.md" },
     { "Subscriber cursors" = "subscriber-cursors.md" },
     { "Dry-run & executors" = "dry-run-and-executors.md" },
+    { "Projection cookbook" = "projection-cookbook.md" },
     { "pghistory retirement (spike)" = "pghistory-retirement.md" },
     { "Staged replay (spike)" = "staged-replay.md" },
     { "Close preconditions (spike)" = "close-preconditions.md" },
