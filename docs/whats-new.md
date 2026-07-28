@@ -46,6 +46,7 @@ SSE demos. To jump straight to one, use its command from the table.
 |---|---|---|
 | [`orders`](../examples/orders/) | Versioned handlers, upcasters, replay, dry-run | `just orders-demo` |
 | [`formkit_submissions`](../examples/formkit_submissions/) | Projections/fan-out, `reconcile_children`, migration parity | `just formkit-demo` |
+| [`formkit_submissions` (stream)](../examples/formkit_submissions/) | Arrow-flip: append log = source of truth → projection | `just formkit-stream-demo` |
 | [`chat`](../examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` → http://localhost:8000 |
 | [`polyglot`](../examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` → http://localhost:8001 |
 
@@ -54,6 +55,13 @@ a real (Partisipa) form pipeline — staged replay (`just partisipa-demo`),
 multi-stream merge (`just partisipa-merge-demo`), and nested-repeater
 tree-reconcile (`just partisipa-tree-demo`). They're linked from the sections
 below.
+
+Two **zero-dependency demos** cover the layers underneath Django, with no
+database at all: [`protocol_streams`](../examples/protocol_streams/) drives the
+raw protocol — append/read, producer fencing, close, subscriber cursors
+(`just protocol-demo`) — and [`multi_owner`](../examples/multi_owner/) drives the
+effect primitives for a row with several writers — symbolic `Ref`s,
+`reconcile_aggregate(owns=)`, `reconcile_by_key` (`just multi-owner-demo`).
 
 ---
 

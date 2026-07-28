@@ -21,13 +21,23 @@ INSTALLED_APPS = [
     "chat",
 ]
 
+import importlib.util  # noqa: E402
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     # WhiteNoise must come right after SecurityMiddleware so static-file
     # requests bypass the rest of the stack. With DEBUG=True the runserver
     # staticfiles handler still takes precedence; with DEBUG=False (e.g.
     # under `just serve`/hypercorn) WhiteNoise is what serves /static/.
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    #
+    # It ships in the `prod` extra, so it is inserted only when installed:
+    # `just dev` (dev extras only) serves static via the runserver handler and
+    # does not need it, while `just install` / `just serve` pull it in.
+    *(
+        ["whitenoise.middleware.WhiteNoiseMiddleware"]
+        if importlib.util.find_spec("whitenoise")
+        else []
+    ),
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

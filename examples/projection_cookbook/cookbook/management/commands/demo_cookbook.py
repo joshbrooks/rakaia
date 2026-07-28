@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from cookbook.models import Project, Task
@@ -32,6 +33,10 @@ class Command(BaseCommand):
     help = "Seed a two-form stream and replay it into a staged projection."
 
     def handle(self, *args: Any, **opts: Any) -> None:  # noqa: ARG002
+        # Self-contained: ensure this demo's tables exist so `manage.py
+        # demo_*` works when run directly, not only via the migrate-first
+        # `just` recipe. Idempotent — a no-op once migrations are applied.
+        call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
 
         # 1. Seed. Reset first so the command is re-runnable (fresh stream, empty

@@ -21,9 +21,18 @@ INSTALLED_APPS = [
     "polyglot",
 ]
 
+import importlib.util  # noqa: E402
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    # WhiteNoise ships in the `prod` extra and serves /static/ under
+    # `just serve`/hypercorn. It is inserted only when installed so that
+    # `just dev` (dev extras only) works — runserver serves static itself.
+    *(
+        ["whitenoise.middleware.WhiteNoiseMiddleware"]
+        if importlib.util.find_spec("whitenoise")
+        else []
+    ),
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

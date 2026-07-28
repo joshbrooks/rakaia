@@ -27,6 +27,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from django_rakaia.store import get_store
@@ -68,6 +69,10 @@ class Command(BaseCommand):
     help = "Decide a POM_1 cycle close from cross-form preconditions via replay."
 
     def handle(self, *args: Any, **opts: Any) -> None:  # noqa: ARG002
+        # Self-contained: ensure this demo's tables exist so `manage.py
+        # demo_*` works when run directly, not only via the migrate-first
+        # `just` recipe. Idempotent — a no-op once migrations are applied.
+        call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
         store.delete(STREAM)
         store.create(STREAM)

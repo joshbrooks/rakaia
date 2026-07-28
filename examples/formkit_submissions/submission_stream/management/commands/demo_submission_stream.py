@@ -16,6 +16,7 @@ import contextlib
 import json
 from typing import Any
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
 from submission_stream import stream
@@ -37,6 +38,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **opts: Any) -> None:  # noqa: ARG002
+        # Self-contained: ensure this demo's tables exist so `manage.py
+        # demo_*` works when run directly, not only via the migrate-first
+        # `just` recipe. Idempotent — a no-op once migrations are applied.
+        call_command("migrate", verbosity=0, interactive=False)
         store = stream.get_store()
 
         if opts["reproject_only"]:
