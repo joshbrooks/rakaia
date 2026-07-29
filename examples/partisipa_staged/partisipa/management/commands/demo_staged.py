@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from django_rakaia.store import get_store
@@ -55,6 +56,10 @@ class Command(BaseCommand):
     help = "Demonstrate staged replay resolving late-arriving cross-form links."
 
     def handle(self, *args: Any, **opts: Any) -> None:  # noqa: ARG002
+        # Self-contained: ensure this demo's tables exist so `manage.py
+        # demo_*` works when run directly, not only via the migrate-first
+        # `just` recipe. Idempotent — a no-op once migrations are applied.
+        call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
         store.delete(STREAM)
         store.create(STREAM)

@@ -236,6 +236,11 @@ formkit-demo:
     cd {{FORMKIT_DIR}} && uv run python manage.py migrate
     cd {{FORMKIT_DIR}} && uv run python manage.py demo_submissions --twice
 
+# Arrow-flip: SubmissionEvent (append log = source of truth) -> Submission projection
+formkit-stream-demo:
+    cd {{FORMKIT_DIR}} && uv run python manage.py migrate
+    cd {{FORMKIT_DIR}} && uv run python manage.py demo_submission_stream
+
 # Dev server showing the materialized submission projection
 formkit-dev:
     cd {{FORMKIT_DIR}} && uv run python manage.py migrate
@@ -291,6 +296,14 @@ partisipa-tree-demo:
 # Run the zero-dep ASGI rakaia app under uvicorn
 rakaia port="4437":
     uv run uvicorn rakaia:app --host 0.0.0.0 --port {{port}}
+
+# Protocol layer (no Django): append/read, producer fencing, close, poll cursors
+protocol-demo:
+    uv run python examples/protocol_streams/demo.py
+
+# Effect primitives (no Django): Ref, reconcile_aggregate(owns=), reconcile_by_key
+multi-owner-demo:
+    cd examples/multi_owner && uv run python demo.py
 
 # ---------------------------------------------------------------------------
 # Durable Streams conformance suite
