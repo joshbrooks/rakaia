@@ -46,6 +46,7 @@ nav = [
     { "Decision records" = [
         { "ADR 0001 — Ordering child collections" = "adr/0001-ordering-child-collections-in-projections.md" },
         { "ADR 0002 — Framework vs protocol-server boundary" = "adr/0002-framework-vs-protocol-server-boundary.md" },
+        { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
     ] },
 ]
 

@@ -35,6 +35,8 @@ from django.db.models import Q
 
 from rakaia.effects import ApplyReport, Effect, RefResolver, check_disjoint_defaults
 
+from .verification import canonical_value
+
 
 def _row_accessor(obj: Any) -> Any:
     """A `RefResolver` accessor over an applied ORM row: `field -> value`,
@@ -134,7 +136,19 @@ class DjangoExecutor:
             params = {k: v for k, v in lookup.items() if "__" not in k}
             params.update(defaults)
             return self._manager(model).create(**params)
-        changed = {k: v for k, v in defaults.items() if getattr(row, k) != v}
+        # Compare through the field's canonical form, not raw ``!=`` (P4): the log
+        # can carry a representation the column would round or re-type — a JSON
+        # float for a DecimalField, a UUID string for a UUIDField — which is not a
+        # real change. Using the same normalizer as ``diff_effects_against_rows``
+        # keeps "unchanged" defined identically in the migration diff and here, so
+        # skip_unchanged doesn't churn a row on every replay over a coercion-only
+        # difference.
+        changed = {
+            k: v
+            for k, v in defaults.items()
+            if canonical_value(model, k, getattr(row, k))
+            != canonical_value(model, k, v)
+        }
         if not changed:
             return row  # nothing to write — skip the UPDATE entirely
         for field, value in changed.items():

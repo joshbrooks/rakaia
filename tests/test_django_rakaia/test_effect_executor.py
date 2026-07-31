@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from uuid import uuid4
+
 import pytest
 from django.contrib.auth.models import User
 from django.db import connection
@@ -10,7 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import Effect, EffectCollisionError
 
-from .models import Area, History, Project
+from .models import Area, History, Measure, Project
 
 
 def _updates(ctx: CaptureQueriesContext) -> list[str]:
@@ -321,6 +324,74 @@ class TestSkipUnchanged:
         with CaptureQueriesContext(connection) as ctx:
             executor.apply([self._area_upsert(area.id, "X")])
         assert len(_updates(ctx)) == 1
+
+
+@pytest.mark.django_db
+class TestSkipUnchangedCoercion:
+    """P4 — `skip_unchanged` compares through the field's canonical form, not raw
+    `!=`, so a value the column would round or re-type is not a spurious change.
+    Without this, replaying a log that carries a JSON float for a DecimalField (or
+    a string for a UUIDField) rewrites the row on *every* pass, defeating the
+    optimisation. Uses the same normalizer as `diff_effects_against_rows`, so
+    "unchanged" is defined identically in the migration diff and on the write path.
+    """
+
+    def _measure_upsert(self, ref, amount) -> Effect:
+        return Effect(
+            op="update_or_create",
+            model_label="test_django_rakaia.Measure",
+            lookup={"ref": ref},
+            defaults={"amount": amount},
+        )
+
+    def test_json_float_equal_to_stored_decimal_issues_no_update(self):
+        ref = uuid4()
+        Measure.objects.create(ref=ref, amount=Decimal("2.10"))
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            # 2.1 is how the JSON log decodes it — equal to the column's 2.10.
+            executor.apply([self._measure_upsert(str(ref), 2.1)])
+        assert _updates(ctx) == []
+
+    def test_over_precise_decimal_equal_after_rounding_issues_no_update(self):
+        ref = uuid4()
+        Measure.objects.create(ref=ref, amount=Decimal("2.10"))
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            # More scale than the column stores; rounds to the same 2.10.
+            executor.apply([self._measure_upsert(str(ref), Decimal("2.104"))])
+        assert _updates(ctx) == []
+
+    def test_uuid_string_equal_to_stored_uuid_issues_no_update(self):
+        ref = uuid4()
+        Measure.objects.create(ref=ref, amount=Decimal("2.10"))
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply(
+                [
+                    Effect(
+                        op="update_or_create",
+                        model_label="test_django_rakaia.Measure",
+                        lookup={"ref": str(ref)},
+                        defaults={"ref": str(ref), "amount": Decimal("2.10")},
+                    )
+                ]
+            )
+        assert _updates(ctx) == []
+
+    def test_genuinely_different_decimal_still_writes(self):
+        ref = uuid4()
+        Measure.objects.create(ref=ref, amount=Decimal("2.10"))
+        executor = DjangoExecutor(skip_unchanged=True)
+        with CaptureQueriesContext(connection) as ctx:
+            executor.apply([self._measure_upsert(str(ref), 3.5)])
+        assert len(_updates(ctx)) == 1
+        assert Measure.objects.get(ref=ref).amount == Decimal("3.50")
+
+    def test_raw_comparison_would_have_churned(self):
+        # Guardrail: the raw `!=` the fix replaced treats float 2.1 and
+        # Decimal("2.10") as different — this documents the drift we closed.
+        assert Decimal("2.10") != 2.1
 
 
 @pytest.mark.django_db
