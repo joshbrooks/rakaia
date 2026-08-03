@@ -128,6 +128,31 @@ assert report.ok, report                         # or: report.raise_if_diff()
 mismatches that produce false diffs — a `UUID` column read back vs a string in
 the effect, and a JSON float vs the column's rounded `Decimal`.
 
+### Verifying a large sweep in bulk
+
+The diff does one `reader.get` per effect — one round-trip each. Fine for a
+cookbook; on a full reconcile (tens of thousands of effects) it is tens of
+thousands of round-trips. Give the *same* batch to a
+[`PreloadedProjectionReader`](../src/django_rakaia/verification.py) and it
+bulk-fetches every lookup up front, one query per `(model, lookup-shape)` group,
+then serves each `get` from an in-memory snapshot:
+
+```python
+from django_rakaia.verification import (
+    PreloadedProjectionReader,
+    diff_effects_against_rows,
+)
+
+effects = list(ex.effects)
+reader = PreloadedProjectionReader(effects, using="rebuild")   # one bulk fetch per shape
+diff_effects_against_rows(effects, reader=reader).raise_if_diff()
+```
+
+It is a **point-in-time snapshot** — build it for read-only verification, not for
+live staged replay (where rows change as the replay writes them; use a plain
+`DjangoProjectionReader` there). A `get` for a lookup outside the batch, or one
+that spans a relation (`field__gte`), falls back to a live query and memoises it.
+
 ## Run it
 
 ```sh
