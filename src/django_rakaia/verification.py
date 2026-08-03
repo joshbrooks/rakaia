@@ -186,6 +186,27 @@ def normalize_decimal(model: type, field_name: str, value: Any) -> Any:
 DEFAULT_NORMALIZERS: tuple[Normalizer, ...] = (normalize_uuid, normalize_decimal)
 
 
+def canonical_value(
+    model: type,
+    field_name: str,
+    value: Any,
+    normalizers: tuple[Normalizer, ...] = DEFAULT_NORMALIZERS,
+) -> Any:
+    """Coerce ``value`` into the comparable form the column stores.
+
+    Applies ``normalizers`` in order (UUID→str, Decimal→column scale by default).
+    Shared by :func:`diff_effects_against_rows` and the executor's
+    ``skip_unchanged`` compare, so under the **default** normalizers "unchanged"
+    means the same thing in the migration diff and on the write path — a value the
+    DB would round or re-type is not counted as a change (ADR 0003 / P4). The skip
+    path always uses :data:`DEFAULT_NORMALIZERS`; a diff given a custom
+    ``normalizers=`` set is not mirrored there. See :data:`DEFAULT_NORMALIZERS`.
+    """
+    for norm in normalizers:
+        value = norm(model, field_name, value)
+    return value
+
+
 # =============================================================================
 # Public entry point
 # =============================================================================
@@ -258,9 +279,7 @@ def _diff_row(
 def _canonical(
     model: type, field_name: str, value: Any, normalizers: tuple[Normalizer, ...]
 ) -> Any:
-    for norm in normalizers:
-        value = norm(model, field_name, value)
-    return value
+    return canonical_value(model, field_name, value, normalizers)
 
 
 def _resolve_field(model: type, name: str) -> Any | None:

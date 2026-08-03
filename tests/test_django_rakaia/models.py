@@ -11,6 +11,12 @@ This demonstrates multi-stream events:
 - User events appear in "user:{id}:projects" stream
 - Area events appear in "area:{id}:projects" stream
 - Project events appear in BOTH "user:{created_by_id}:projects" AND "area:{area_id}:projects" streams
+
+NOTE: `Area` and `Project` are `@stream_model` — saving one fires a `post_save`
+that appends a StreamEvent to the `default` database. For isolation / query-count
+/ hermeticity tests (anything asserting "no writes/reads to `default`" or counting
+UPDATEs), use a PLAIN model instead: `FinanceLine`, `Measure`, `Balance`,
+`SukuProjection`, or `History`.
 """
 
 from __future__ import annotations

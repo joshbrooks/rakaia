@@ -8,6 +8,10 @@
   with `No module named pytest` until the extras are synced.
 - CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`,
   `pytest`, and `zensical build`; run those before pushing.
+- To reproduce the **full** CI gate locally you also need the docs extra
+  (`zensical` isn't in `dev`/`django`): `uv sync --extra dev --extra django --extra docs`,
+  then `uv run zensical build`. Without `--extra docs` that step fails with
+  `Failed to spawn: zensical`.
 
 ## gstack
 

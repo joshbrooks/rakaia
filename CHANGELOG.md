@@ -14,6 +14,16 @@ is not yet tagged in a release.
 
 ### Added
 
+- **Handler hermeticity guard** (P1, [ADR 0003](docs/adr/0003-handler-hermeticity.md)).
+  `django_rakaia.hermeticity.deny_database_access(*aliases)` raises
+  `AmbientDatabaseAccess` on any query to the named aliases — the read-side
+  mirror of the rebuild gate's write-side `assert_no_live_writes`. Wrap the
+  handler-dispatch region of a from-scratch rebuild in
+  `deny_database_access("default")` and an ambient `Model.objects` read inside a
+  handler (which would make a green rebuild lie) becomes a loud failure instead
+  of a silent determinism leak. Read the log from an in-memory `StreamStore` (or
+  another alias) so the event source doesn't trip it.
+
 - **Machine-resolution transitions for `reconcile_by_key`** (#32). A retire that
   soft-deletes stale rows can now notify. Opt in with
   `reconcile_by_key(..., transition_kind="alert_transition")`: the executor
@@ -79,6 +89,20 @@ is not yet tagged in a release.
 - **Guided "What's new" tour, dry-run/executors reference, and a `just demo`
   recipe** that runs the scripted demos end-to-end.
   → [`docs/whats-new.md`](docs/whats-new.md).
+
+### Changed
+
+- **`skip_unchanged` compares through the field's canonical form, not raw `!=`**
+  (P4). The executor's opt-in skip path now normalises both the stored value and
+  the effect's `defaults` via the shared `canonical_value` (the same UUID/Decimal
+  normalizer `diff_effects_against_rows` uses), so a value the column would round
+  or re-type — a JSON `float` for a `DecimalField`, a UUID string for a
+  `UUIDField` — is no longer counted as a change. Without this, replaying such a
+  log rewrote the row on every pass, defeating the optimisation. With the default
+  normalizers, "unchanged" now means the same thing in the migration diff and on
+  the write path. (The skip path always uses `DEFAULT_NORMALIZERS`; a
+  `diff_effects_against_rows` call given a *custom* `normalizers=` set is on its
+  own — `DjangoExecutor` has no hook to match it.)
 
 ### Spikes / prototypes
 
