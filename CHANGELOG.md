@@ -14,6 +14,17 @@ is not yet tagged in a release.
 
 ### Added
 
+- **`PreloadedProjectionReader` — bulk-fetch a verification sweep.**
+  `diff_effects_against_rows` does one `reader.get` per effect (one round-trip
+  each), which is thousands of round-trips on a full reconcile. Pass the same
+  effect batch to `django_rakaia.verification.PreloadedProjectionReader(effects,
+  using=...)` and it fetches every lookup up front — one query per `(model,
+  lookup-shape)` group — then serves each `get` from an in-memory snapshot;
+  lookups outside the batch (or relation-spanning ones) fall back to a live,
+  memoised read. A point-in-time snapshot: for read-only verification, not live
+  staged replay. Upstreamed from the Partisipa migration's `PreloadReader`
+  workaround. → [`docs/projection-cookbook.md`](docs/projection-cookbook.md).
+
 - **Handler hermeticity guard** (P1, [ADR 0003](docs/adr/0003-handler-hermeticity.md)).
   `django_rakaia.hermeticity.deny_database_access(*aliases)` raises
   `AmbientDatabaseAccess` on any query to the named aliases — the read-side

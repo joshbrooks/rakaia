@@ -33,7 +33,7 @@ from uuid import UUID
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
-from django.db.models import DecimalField
+from django.db.models import DecimalField, Q
 
 from rakaia.effects import Effect
 
@@ -251,6 +251,125 @@ def diff_effects_against_rows(
             RowDiff(eff.model_label, eff.lookup, missing=False, field_diffs=field_diffs)
         )
     return DiffReport(rows=rows)
+
+
+# =============================================================================
+# Batch-fetching reader (for large sweeps)
+# =============================================================================
+
+
+class PreloadedProjectionReader(DjangoProjectionReader):
+    """A :class:`DjangoProjectionReader` that bulk-fetches, up front, the rows a
+    batch of effects will look up — so each :meth:`get` serves from an in-memory
+    snapshot instead of issuing one ``SELECT`` per effect.
+
+    :func:`diff_effects_against_rows` does one ``reader.get`` per effect, which is
+    one round-trip per effect: fine for a handful, thousands on a full reconcile
+    sweep. Give the *same* batch to this reader and to the diff and that collapses
+    to **one query per (model, lookup-shape) group**::
+
+        effects = list(collecting_executor.effects)
+        reader = PreloadedProjectionReader(effects, using="rebuild")
+        diff_effects_against_rows(effects, reader=reader).raise_if_diff()
+
+    Semantics and limits:
+
+    * The cache is a **point-in-time snapshot** taken at construction. Use it for
+      read-only verification, *not* during live staged replay — there the rows
+      change as the replay writes them, so use a plain
+      :class:`DjangoProjectionReader`.
+    * A :meth:`get` for a lookup not in the batch (or one that spans a relation,
+      e.g. ``field__gte``) falls back to a live query and memoises the result, so
+      a repeat is free.
+    * :meth:`filter` and :meth:`query` are inherited unchanged — always live. Only
+      the exact-match :meth:`get` path (all :func:`diff_effects_against_rows`
+      uses) is preloaded.
+    """
+
+    _MISSING = object()
+
+    def __init__(self, effects: Iterable[Effect], *, using: str | None = None) -> None:
+        super().__init__(using=using)
+        # (model_label, canonical-key) -> row, or None for a recorded miss ("no
+        # such row" — a real cached answer). A key *absent* from the map has never
+        # been fetched, so get() does a live lookup and memoises it.
+        self._cache: dict[tuple[str, tuple], Any] = {}
+        self._preload(effects)
+
+    def _preload(self, effects: Iterable[Effect]) -> None:
+        # Group every usable lookup by its "shape" — (model_label, sorted field
+        # names) — so one query per shape fetches all of its rows at once.
+        by_shape: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
+        for eff in effects:
+            if eff.model_label is None or not eff.lookup:
+                continue
+            if any("__" in k for k in eff.lookup):
+                continue  # spanning lookup — can't index by exact match; left to live get()
+            shape = (eff.model_label, tuple(sorted(eff.lookup)))
+            by_shape.setdefault(shape, []).append(eff.lookup)
+
+        for (model_label, fields), lookups in by_shape.items():
+            model = apps.get_model(model_label)
+            # De-dup requested keys and seed each as a miss; a fetched row overwrites.
+            requested: dict[tuple[str, tuple], Any] = {}
+            unique_lookups: list[dict[str, Any]] = []
+            for lookup in lookups:
+                key = (model_label, self._key(model, lookup.items()))
+                if key not in requested:
+                    requested[key] = None
+                    unique_lookups.append(lookup)
+            if not unique_lookups:
+                continue
+            for row in self._fetch(model_label, fields, unique_lookups):
+                key = (
+                    model_label,
+                    self._key(model, [(f, getattr(row, f)) for f in fields]),
+                )
+                if (
+                    requested.get(key) is None
+                ):  # first row wins, mirroring get()->first()
+                    requested[key] = row
+            self._cache.update(requested)
+
+    def _fetch(
+        self, model_label: str, fields: tuple[str, ...], lookups: list[dict[str, Any]]
+    ) -> Iterable[Any]:
+        manager = self._manager(model_label)
+        if len(fields) == 1:
+            # Single natural key — a ``field__in=[...]`` beats an N-clause OR.
+            (field,) = fields
+            return manager.filter(**{f"{field}__in": [lk[field] for lk in lookups]})
+        # Composite key — OR one Q per lookup. (Seed from None, not an empty
+        # ``Q()``: ``Q() | Q(...)`` matches *everything*.)
+        combined: Q | None = None
+        for lookup in lookups:
+            clause = Q(**lookup)
+            combined = clause if combined is None else combined | clause
+        return manager.filter(combined)
+
+    @staticmethod
+    def _key(model: type, items: Iterable[tuple[str, Any]]) -> tuple:
+        """A field-order-independent key, canonicalised through the same
+        normalizers as the diff so a str-UUID lookup keys to the same slot as the
+        stored ``uuid.UUID`` row it matched."""
+        return tuple(
+            (f, canonical_value(model, f, v))
+            for f, v in sorted(items, key=lambda kv: kv[0])
+        )
+
+    def get(self, model_label: str, /, **lookup: Any) -> Any | None:
+        if any("__" in k for k in lookup):
+            return super().get(model_label, **lookup)  # spanning — not preloadable
+        model = apps.get_model(model_label)
+        key = (model_label, self._key(model, lookup.items()))
+        cached = self._cache.get(key, self._MISSING)
+        if cached is not self._MISSING:
+            return cached  # a preloaded hit, or a recorded miss (None)
+        row = super().get(
+            model_label, **lookup
+        )  # outside the batch — live, then memoise
+        self._cache[key] = row
+        return row
 
 
 # =============================================================================
