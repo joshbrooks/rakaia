@@ -332,8 +332,10 @@ class TestSkipUnchangedCoercion:
     `!=`, so a value the column would round or re-type is not a spurious change.
     Without this, replaying a log that carries a JSON float for a DecimalField (or
     a string for a UUIDField) rewrites the row on *every* pass, defeating the
-    optimisation. Uses the same normalizer as `diff_effects_against_rows`, so
-    "unchanged" is defined identically in the migration diff and on the write path.
+    optimisation. Uses `canonical_value` with the default normalizers — the set
+    `diff_effects_against_rows` uses by default — so under those, "unchanged" is
+    defined identically in the migration diff and on the write path. (A diff run
+    with a custom `normalizers=` set has no executor counterpart.)
     """
 
     def _measure_upsert(self, ref, amount) -> Effect:

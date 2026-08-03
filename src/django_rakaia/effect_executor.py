@@ -139,10 +139,12 @@ class DjangoExecutor:
         # Compare through the field's canonical form, not raw ``!=`` (P4): the log
         # can carry a representation the column would round or re-type — a JSON
         # float for a DecimalField, a UUID string for a UUIDField — which is not a
-        # real change. Using the same normalizer as ``diff_effects_against_rows``
-        # keeps "unchanged" defined identically in the migration diff and here, so
+        # real change. Uses ``canonical_value`` with the default normalizers — the
+        # same set ``diff_effects_against_rows`` uses by default — so with those,
+        # "unchanged" is defined identically in the migration diff and here and
         # skip_unchanged doesn't churn a row on every replay over a coercion-only
-        # difference.
+        # difference. (A diff run with a *custom* ``normalizers=`` set can diverge:
+        # there is no executor hook to pass one through.)
         changed = {
             k: v
             for k, v in defaults.items()

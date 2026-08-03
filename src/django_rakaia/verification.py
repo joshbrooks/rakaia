@@ -196,9 +196,11 @@ def canonical_value(
 
     Applies ``normalizers`` in order (UUID→str, Decimal→column scale by default).
     Shared by :func:`diff_effects_against_rows` and the executor's
-    ``skip_unchanged`` compare, so "unchanged" means the same thing in the
-    migration diff and on the write path — a value the DB would round or re-type
-    is not counted as a change (ADR 0003 / P4). See :data:`DEFAULT_NORMALIZERS`.
+    ``skip_unchanged`` compare, so under the **default** normalizers "unchanged"
+    means the same thing in the migration diff and on the write path — a value the
+    DB would round or re-type is not counted as a change (ADR 0003 / P4). The skip
+    path always uses :data:`DEFAULT_NORMALIZERS`; a diff given a custom
+    ``normalizers=`` set is not mirrored there. See :data:`DEFAULT_NORMALIZERS`.
     """
     for norm in normalizers:
         value = norm(model, field_name, value)

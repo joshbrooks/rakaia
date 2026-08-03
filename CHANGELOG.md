@@ -98,8 +98,11 @@ is not yet tagged in a release.
   normalizer `diff_effects_against_rows` uses), so a value the column would round
   or re-type — a JSON `float` for a `DecimalField`, a UUID string for a
   `UUIDField` — is no longer counted as a change. Without this, replaying such a
-  log rewrote the row on every pass, defeating the optimisation. "Unchanged" now
-  means the same thing in the migration diff and on the write path.
+  log rewrote the row on every pass, defeating the optimisation. With the default
+  normalizers, "unchanged" now means the same thing in the migration diff and on
+  the write path. (The skip path always uses `DEFAULT_NORMALIZERS`; a
+  `diff_effects_against_rows` call given a *custom* `normalizers=` set is on its
+  own — `DjangoExecutor` has no hook to match it.)
 
 ### Spikes / prototypes
 
