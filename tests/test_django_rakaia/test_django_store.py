@@ -9,7 +9,12 @@ import pytest
 from django.db.models.query import QuerySet
 
 from django_rakaia.django_store import DjangoStreamStore
-from django_rakaia.models import Stream, StreamEntry
+from django_rakaia.models import (
+    Stream,
+    StreamEntry,
+    StreamEvent,
+    StreamOffsetWatermark,
+)
 from rakaia import CollectingExecutor
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
@@ -176,6 +181,174 @@ class TestDjangoStreamStore:
         DjangoStreamStore().append("s", b'{"id": 42}')
         messages, _ = DjangoStreamStore().read("s")
         assert [json.loads(m.data) for m in messages] == [{"id": 42}]
+
+    def test_append_many_byte_identical_to_append_loop(self):
+        # Acceptance criterion: append_many([...]) produces byte-identical
+        # persisted state (event data/type/metadata/event_ts + contiguous
+        # offsets) to a loop of append(...). Build one stream each way and
+        # compare the ORM rows directly.
+        batch = [
+            (b'{"id": 1}', None),
+            (b'{"id": 2}', AppendOptions(label="update", metadata={"user": 7})),
+            (b'{"id": 3}', AppendOptions(event_ts=1_600_000_000.5)),
+        ]
+
+        store = DjangoStreamStore()
+        store.create("loop")
+        for data, options in batch:
+            store.append("loop", data, options)
+        store.create("bulk")
+        returned = store.append_many("bulk", batch)
+
+        def rows(path):
+            return [
+                (e.event.data, e.event.event_type, e.event.metadata, e.event.event_ts)
+                for e in StreamEntry.objects.filter(stream__stream_id=path)
+                .select_related("event")
+                .order_by("offset")
+            ]
+
+        assert rows("bulk") == rows("loop")
+        # Entries returned in input order, offsets contiguous from 1.
+        assert [e.offset for e in returned] == [1, 2, 3]
+        assert [
+            json.loads(store.read("bulk")[0][i].data.decode()) for i in range(3)
+        ] == [
+            {"id": 1},
+            {"id": 2},
+            {"id": 3},
+        ]
+
+    def test_append_many_bounded_queries(self):
+        # Acceptance criterion: a large batch runs in an N-independent, bounded
+        # number of queries — O(1)-ish transactions, not the ~O(N) a loop of
+        # append() does. bulk_create may split into a few batches under SQLite's
+        # bind-param cap, so assert a small constant ceiling (well under the
+        # ~5*N a loop of append() would issue) rather than an exact count.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        store = DjangoStreamStore()
+        store.create("s")
+        batch = [(json.dumps({"id": i}).encode(), None) for i in range(1000)]
+        with CaptureQueriesContext(connection) as ctx:
+            store.append_many("s", batch)
+        assert len(ctx.captured_queries) < 30
+        assert StreamEntry.objects.filter(stream__stream_id="s").count() == 1000
+
+    def test_append_many_locks_watermark_once(self):
+        # The single-contiguous-allocation guarantee: the whole batch takes the
+        # watermark select_for_update() lock exactly once (vs once per item for
+        # a loop of append). Mirrors test_append_locks_for_offset_allocation.
+        store = DjangoStreamStore()
+        store.create("s")
+
+        original = QuerySet.select_for_update
+        locked = []
+
+        def spy(qs, *args, **kwargs):
+            locked.append(True)
+            return original(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "select_for_update", spy):
+            store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])
+
+        assert len(locked) == 1, "append_many must lock the watermark exactly once"
+
+    def test_append_many_interleaves_with_append_without_collision(self):
+        # Interleaved append + append_many share the one offset-allocation path,
+        # so offsets stay unique, contiguous and strictly increasing (same lock
+        # semantics as today). SQLite can't reproduce a true cross-connection
+        # race, so assert the allocation is contiguous rather than triggering it.
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        store.append_many("s", [(b'{"id": 2}', None), (b'{"id": 3}', None)])
+        store.append("s", b'{"id": 4}')
+
+        offsets = list(
+            StreamEntry.objects.filter(stream__stream_id="s")
+            .order_by("offset")
+            .values_list("offset", flat=True)
+        )
+        assert offsets == [1, 2, 3, 4]
+
+    def test_append_many_empty_is_noop_without_stream(self):
+        # Empty batch returns [] without a DB hit, so it never raises for a
+        # missing stream (unlike a non-empty batch).
+        store = DjangoStreamStore()
+        assert store.append_many("missing", []) == []
+
+    def test_append_many_missing_stream_raises(self):
+        store = DjangoStreamStore()
+        with pytest.raises(KeyError):
+            store.append_many("missing", [(b'{"id": 1}', None)])
+
+    def test_append_many_preserves_distinct_per_item_envelopes(self):
+        # Sharpens the "identical to N appends" claim on the envelope: every
+        # item carries its OWN label/metadata/event_ts (not a uniform batch),
+        # and a raw-append item keeps the default label / empty metadata / null
+        # ts — asserted row-by-row.
+        store = DjangoStreamStore()
+        store.create("s")
+        batch = [
+            (
+                b'{"id": 1}',
+                AppendOptions(label="create", metadata={"a": 1}, event_ts=1000.0),
+            ),
+            (
+                b'{"id": 2}',
+                AppendOptions(label="update", metadata={"b": 2}, event_ts=2000.0),
+            ),
+            (b'{"id": 3}', None),
+        ]
+        store.append_many("s", batch)
+        rows = [
+            (e.event.data, e.event.event_type, e.event.metadata, e.event.event_ts)
+            for e in StreamEntry.objects.filter(stream__stream_id="s")
+            .select_related("event")
+            .order_by("offset")
+        ]
+        assert rows == [
+            ({"id": 1}, "create", {"a": 1}, 1000.0),
+            ({"id": 2}, "update", {"b": 2}, 2000.0),
+            ({"id": 3}, "append", {}, None),
+        ]
+
+    def test_append_many_rolls_back_atomically_on_failure(self):
+        # The whole batch is one transaction: if entry creation fails, the
+        # already-bulk_created events AND the watermark advance roll back with
+        # it — no partial write, no leaked offset block.
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 0}')  # seed one entry -> watermark high = 1
+        high_before = StreamOffsetWatermark.objects.get(stream_path="s").high
+        events_before = StreamEvent.objects.count()
+
+        with (
+            patch.object(
+                StreamEntry.objects, "bulk_create", side_effect=RuntimeError("boom")
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])
+
+        assert StreamEvent.objects.count() == events_before
+        assert StreamOffsetWatermark.objects.get(stream_path="s").high == high_before
+        # The seeded entry survives; nothing from the failed batch persisted.
+        assert list(
+            StreamEntry.objects.filter(stream__stream_id="s")
+            .order_by("offset")
+            .values_list("offset", flat=True)
+        ) == [1]
+
+    def test_get_next_offset_block_rejects_non_positive_count(self):
+        # The shared allocation path guards its precondition: a caller must
+        # reserve at least one offset. append_many short-circuits an empty batch
+        # before allocating, so this guard only trips on direct misuse.
+        stream = Stream.objects.create(stream_id="s")
+        with pytest.raises(ValueError, match="count must be >= 1"):
+            stream.get_next_offset_block(0)
 
 
 @pytest.mark.django_db

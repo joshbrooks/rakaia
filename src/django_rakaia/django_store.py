@@ -21,6 +21,7 @@ validation, stream closing) are intentionally not implemented here.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from django.db import transaction
@@ -105,6 +106,72 @@ class DjangoStreamStore:
                 event=event,
                 offset=stream.get_next_offset(),
             )
+
+    def append_many(
+        self, path: str, events: Iterable[tuple[bytes, Any]]
+    ) -> list[StreamEntry]:
+        """Append an ordered batch in ONE transaction, returning the entries in
+        input order.
+
+        Semantically identical to calling :meth:`append` once per item — same
+        event rows, same envelope mapping (``label``->``event_type``,
+        per-event ``merge_provenance`` for ``metadata``, ``event_ts``) — but it
+        locks the stream's high-water once, allocates a single contiguous offset
+        block for the whole batch (so ``unique_together(stream, offset)`` still
+        holds and concurrent writers serialize exactly as ``append`` does), and
+        ``bulk_create``s the events then the entries. This collapses an N-append
+        seed/replay from N transactions into **one** transaction with a bounded
+        number of queries: the events and entries are each ``bulk_create``d,
+        chunked under the driver's bind-parameter cap, so it is a handful of
+        INSERTs regardless of N (not the 2N a loop of ``append`` issues).
+
+        The entries link to the just-created events by instance, which relies on
+        ``bulk_create`` populating primary keys — backends with
+        ``INSERT ... RETURNING`` (Postgres, and the modern SQLite used in CI).
+        The durable store targets Postgres, where this holds.
+
+        One ``append_many`` holds the watermark lock for the whole batch, which
+        is ideal for exclusive backfills; on a live, high-throughput stream a
+        very large batch would stall concurrent appends, so chunk it caller-side
+        if that matters.
+
+        Each item is a ``(data, options)`` tuple where ``options`` is an
+        ``AppendOptions`` or ``None`` (a raw append). An empty batch is a no-op
+        that returns ``[]`` without touching the database (so it never raises
+        for a missing stream). A non-empty batch raises ``KeyError`` if the
+        stream does not exist, like :meth:`append`.
+        """
+        items = list(events)
+        if not items:
+            return []
+
+        with transaction.atomic():
+            try:
+                stream = Stream.objects.get(stream_id=path)
+            except Stream.DoesNotExist as exc:
+                raise KeyError(f"Stream not found: {path}") from exc
+
+            # Mirror `append`'s per-event envelope mapping. `merge_provenance`
+            # is evaluated per item so ambient provenance is captured for each.
+            stream_events = [
+                StreamEvent(
+                    data=json.loads(data),
+                    event_type=(getattr(options, "label", "") or "")
+                    or _APPEND_EVENT_TYPE,
+                    metadata=merge_provenance(getattr(options, "metadata", None)) or {},
+                    event_ts=getattr(options, "event_ts", None),
+                )
+                for data, options in items
+            ]
+            StreamEvent.objects.bulk_create(stream_events)
+
+            start = stream.get_next_offset_block(len(stream_events))
+            entries = [
+                StreamEntry(stream=stream, event=event, offset=start + i)
+                for i, event in enumerate(stream_events)
+            ]
+            StreamEntry.objects.bulk_create(entries)
+            return entries
 
     def read(
         self, path: str, offset: str | None = None

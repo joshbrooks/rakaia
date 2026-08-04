@@ -289,6 +289,27 @@ class TestAppend:
         assert stream.last_seq == "2"
 
 
+class TestAppendMany:
+    def test_append_many_delegates_to_append(self, store: StreamStore):
+        # append_many returns one AppendResult per item in order, and delegates
+        # to append so per-item semantics (here: producer seq progression) are
+        # preserved exactly as a loop of append would be.
+        store.create("foo", content_type="application/octet-stream")
+        batch = [
+            (b"a", AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)),
+            (b"b", AppendOptions(producer_id="p", producer_epoch=0, producer_seq=1)),
+            (b"c", AppendOptions(producer_id="p", producer_epoch=0, producer_seq=2)),
+        ]
+        results = store.append_many("foo", batch)
+        assert len(results) == 3
+        assert [r.message.data for r in results] == [b"a", b"b", b"c"]
+        assert all(r.producer_result.status == "accepted" for r in results)
+
+    def test_append_many_empty_returns_empty(self, store: StreamStore):
+        store.create("foo", content_type="application/octet-stream")
+        assert store.append_many("foo", []) == []
+
+
 # =============================================================================
 # Producer validation
 # =============================================================================
