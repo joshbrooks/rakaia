@@ -175,3 +175,43 @@ class StoreContract:
         store.append("s", b'{"id": 1}')
         after = store.get_current_offset("s")
         assert after is not None and after != before
+
+    def test_append_many_matches_append_loop(self, store):
+        # append_many([...]) produces the same read-back stream state as calling
+        # append once per item — same data, order, envelope (label/metadata/
+        # event_ts), and strictly-increasing offsets — on every backend. Result
+        # object types differ per backend (AppendResult vs StreamEntry), so the
+        # contract asserts read-back state, not the return values.
+        batch = [
+            (b'{"id": 1}', None),
+            (b'{"id": 2}', AppendOptions(label="update", metadata={"user": 7})),
+            (b'{"id": 3}', AppendOptions(event_ts=1_600_000_000.5)),
+        ]
+
+        store.create("loop")
+        for data, options in batch:
+            store.append("loop", data, options)
+
+        store.create("bulk")
+        store.append_many("bulk", batch)
+
+        loop_msgs, _ = store.read("loop")
+        bulk_msgs, _ = store.read("bulk")
+        assert len(bulk_msgs) == len(loop_msgs) == 3
+        for loop_m, bulk_m in zip(loop_msgs, bulk_msgs, strict=True):
+            assert json.loads(bulk_m.data) == json.loads(loop_m.data)
+            assert bulk_m.label == loop_m.label
+            assert bulk_m.metadata == loop_m.metadata
+        # A producer-set event_ts round-trips verbatim; an unset one defaults to
+        # each store's own append time (so it differs between the two runs by
+        # design) — assert it's populated as a float rather than equal.
+        assert bulk_msgs[2].event_ts == 1_600_000_000.5
+        assert isinstance(bulk_msgs[0].event_ts, float)
+        offsets = [m.offset for m in bulk_msgs]
+        assert all(a < b for a, b in zip(offsets, offsets[1:], strict=False))
+
+    def test_append_many_empty_is_noop(self, store):
+        store.create("s")
+        assert store.append_many("s", []) == []
+        messages, _ = store.read("s")
+        assert messages == []

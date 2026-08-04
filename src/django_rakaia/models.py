@@ -47,12 +47,25 @@ class Stream(models.Model):
     def get_next_offset(self) -> int:
         """Calculate the next globally-monotonic offset for this stream.
 
+        Thin wrapper over :meth:`get_next_offset_block` for the single-event
+        write path; see that method for the locking and monotonicity contract.
+        """
+        return self.get_next_offset_block(1)
+
+    def get_next_offset_block(self, count: int) -> int:
+        """Atomically reserve ``count`` contiguous offsets, returning the first.
+
+        The reserved block is ``start .. start + count - 1``. ``count`` must be
+        ``>= 1``. This is the single offset-allocation path shared by every
+        write surface (durable store single + bulk append, ``@stream_model``
+        signals, protocol views).
+
         Must be called inside a transaction: locks the per-path high-water row
         (``StreamOffsetWatermark``) with select_for_update() so concurrent
         writers serialize on offset allocation instead of colliding on
-        unique_together(stream, offset). This is the single offset-allocation
-        path shared by every write surface (durable store, ``@stream_model``
-        signals, protocol views).
+        unique_together(stream, offset). A bulk writer holds the lock once and
+        advances the high-water by the whole block, so interleaved single and
+        bulk appends never overlap offsets.
 
         Offsets are **globally monotonic across delete+recreate** (#34, Defect
         #2): the high-water row is keyed by ``stream_id`` and is never
@@ -62,6 +75,8 @@ class Stream(models.Model):
         subscriber cursor collides with the recreated stream's head. This is the
         durable analogue of the in-memory store's in-process ``_retired_seq``.
         """
+        if count < 1:
+            raise ValueError(f"count must be >= 1, got {count}")
         # Lock the per-path high-water for the duration of the enclosing
         # transaction. get_or_create tolerates the first-writer race (it retries
         # on the unique-key IntegrityError); the subsequent locked read then
@@ -75,10 +90,10 @@ class Stream(models.Model):
         # correctly from any pre-existing entries (e.g. rows written before this
         # high-water table existed) on the first allocation after migration.
         entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
-        nxt = max(entries_max or 0, watermark.high) + 1
-        watermark.high = nxt
+        start = max(entries_max or 0, watermark.high) + 1
+        watermark.high = start + count - 1
         watermark.save(update_fields=["high"])
-        return nxt
+        return start
 
 
 class StreamOffsetWatermark(models.Model):

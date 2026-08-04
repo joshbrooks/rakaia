@@ -17,6 +17,7 @@ All store-facing protocols live here so they read as one coherent seam:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 from .types import StreamMessage
@@ -109,6 +110,19 @@ class WritableStore(ReadableStore, Protocol):
         The envelope — `label` and `metadata` on `options` (an `AppendOptions`) —
         is recorded and read back by `read`; ambient `provenance()` merges under
         explicit metadata.
+        """
+        ...
+
+    def append_many(self, path: str, events: Iterable[tuple[bytes, Any]]) -> list[Any]:
+        """Append an ordered batch of `(data, options)` events, returning one
+        result per item in input order.
+
+        Semantically identical to calling `append` once per item — same
+        `KeyError`-if-missing guarantee and same per-event envelope handling —
+        but a backend may collapse the batch into a single transaction (the
+        durable `DjangoStreamStore` does, which is the point). An empty batch is
+        a no-op returning `[]`. Result element types stay backend-specific and
+        loose, exactly as `append`'s do.
         """
         ...
 

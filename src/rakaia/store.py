@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from .context import merge_provenance
@@ -329,6 +330,22 @@ class StreamStore:
             producer_result=producer_result,
             stream_closed=opts.close,
         )
+
+    def append_many(
+        self,
+        path: str,
+        events: Iterable[tuple[bytes, AppendOptions | None]],
+    ) -> list[AppendResult]:
+        """Append an ordered batch, returning one ``AppendResult`` per item.
+
+        API parity with :meth:`DjangoStreamStore.append_many` so a consumer can
+        call one method against either backend. The in-memory store has no
+        per-append transaction cost to amortise, so this simply delegates to
+        :meth:`append` per item, preserving every append semantic
+        (producer/seq/close validation, TTL touch, long-poll notification). An
+        empty batch returns ``[]``.
+        """
+        return [self.append(path, data, options) for data, options in events]
 
     async def append_with_producer(
         self,
