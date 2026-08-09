@@ -1,5 +1,8 @@
 [project]
-name = "rakaia"
+# Distribution name is `rakaia-streams` because `rakaia` is already taken on
+# PyPI by an unrelated placeholder. The import name is unaffected:
+#   pip install rakaia-streams   ->   import rakaia
+name = "rakaia-streams"
 version = "0.1.0"
 description = "Python server implementation of the Durable Streams protocol"
 readme = "README.md"
@@ -21,6 +24,12 @@ classifiers = [
 ]
 # Zero runtime dependencies - pure ASGI, stdlib only
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/joshbrooks/rakaia"
+Repository = "https://github.com/joshbrooks/rakaia"
+Issues = "https://github.com/joshbrooks/rakaia/issues"
+Changelog = "https://github.com/joshbrooks/rakaia/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 django = [

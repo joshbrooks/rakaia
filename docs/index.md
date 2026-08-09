@@ -40,19 +40,19 @@ flowchart LR
 
 ```bash
 # Core protocol server only (zero runtime dependencies)
-pip install rakaia
+pip install rakaia-streams
 
 # With the Django integration
-pip install "rakaia[django]"
+pip install "rakaia-streams[django]"
 
 # With Redis-backed channel layer (for multi-process SSE)
-pip install "rakaia[django,redis]"
+pip install "rakaia-streams[django,redis]"
 ```
 
 ## Quick Start (standalone server)
 
 ```bash
-pip install rakaia uvicorn
+pip install rakaia-streams uvicorn
 uvicorn rakaia:app --port 4437
 ```
 

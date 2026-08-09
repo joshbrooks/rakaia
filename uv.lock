@@ -1134,7 +1134,7 @@ wheels = [
 ]
 
 [[package]]
-name = "rakaia"
+name = "rakaia-streams"
 version = "0.1.0"
 source = { editable = "." }
 

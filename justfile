@@ -366,6 +366,34 @@ docs-serve:
 check: lint fmt-check test docs
 
 # ---------------------------------------------------------------------------
+# Release / publishing (dist name: rakaia-streams)
+# ---------------------------------------------------------------------------
+
+# Build the sdist + wheel into dist/ (clears stale artifacts first)
+build:
+    rm -rf dist/
+    uv build
+    uvx twine check dist/*
+
+# Tag the current pyproject version and push it — this triggers .github/workflows/publish.yml
+release: check build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(uv run --no-project python -c \
+        'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Working tree is dirty — commit before releasing." >&2
+        exit 1
+    fi
+    echo "Tagging v${version} and pushing (CI publishes to PyPI)."
+    git tag "v${version}"
+    git push origin "v${version}"
+
+# Upload dist/ to TestPyPI by hand (needs a TestPyPI token; CI is the normal path)
+publish-test: build
+    uvx twine upload --repository testpypi dist/*
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 
