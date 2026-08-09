@@ -34,6 +34,15 @@ def _entries(stream_id: str):
     return list(stream.entries.order_by("offset")) if stream else []
 
 
+# The emulated trigger below is SQLite dialect (`SELECT RAISE(IGNORE)`). The
+# test settings are SQLite everywhere today; skip rather than fail with a
+# syntax error if a run is ever pointed at another backend.
+requires_sqlite = pytest.mark.skipif(
+    connection.vendor != "sqlite",
+    reason="emulated soft-delete trigger uses SQLite-specific RAISE(IGNORE)",
+)
+
+
 @contextlib.contextmanager
 def db_level_soft_delete(model_cls: type[models.Model]):
     """Emulate ``pgtrigger.SoftDelete`` for the duration of the block.
@@ -283,6 +292,7 @@ class TestSoftDeleteAwareDelete:
 
         assert [e.event.event_type for e in _entries(stream_id)] == ["create"]
 
+    @requires_sqlite
     def test_db_level_soft_delete_with_on_delete_none_streams_nothing(self):
         """The trap: ``on_delete=None`` loses a DB-level soft delete entirely.
 
@@ -306,6 +316,7 @@ class TestSoftDeleteAwareDelete:
             "premise of the on_delete=None guidance would be sound if it did"
         )
 
+    @requires_sqlite
     def test_db_level_soft_delete_with_on_delete_update_records_the_flip(self):
         """``on_delete="update"`` is what actually captures a DB-level soft delete."""
         doc = ArchivedDoc.objects.create(name="Archivable")

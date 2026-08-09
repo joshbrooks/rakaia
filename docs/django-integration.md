@@ -240,6 +240,8 @@ User = get_user_model()
 
 @receiver(post_save, sender=User)
 def emit_user_event(sender, instance, created, **kwargs):
+    if kwargs.get("raw"):  # fixture load — replayed history, not a new fact
+        return
     create_stream_event(
         stream_paths=f"user:{instance.id}:activity",
         to_dataclass=lambda obj: UserData(id=obj.id, username=obj.username),
@@ -247,6 +249,12 @@ def emit_user_event(sender, instance, created, **kwargs):
         action="create" if created else "update",
     )
 ```
+
+The `raw` guard is **yours to write here.** `@stream_model` applies it for you;
+a hand-wired receiver does not get it, and `create_stream_event` never sees the
+signal kwargs. Without the guard this handler appends a phantom event per
+fixture row on every `loaddata` — and `auth.User`, the model that drives you to
+the manual path in the first place, is the one most likely to be in a dump.
 
 ## Real-time SSE
 

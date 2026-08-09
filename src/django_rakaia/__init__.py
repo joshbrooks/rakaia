@@ -14,9 +14,13 @@ Usage:
     class MyModel(models.Model):
         name = models.CharField(max_length=100)
 
-    # Or use create_stream_event for built-in models
+    # Or use create_stream_event for built-in models. A hand-wired receiver
+    # does not get `@stream_model`'s `raw` guard — write it yourself, or every
+    # `loaddata` row appends a phantom event (issue #80).
     @receiver(post_save, sender=User)
     def handle_user_save(sender, instance, created, **kwargs):
+        if kwargs.get("raw"):
+            return
         create_stream_event(
             stream_paths=f"user:{instance.id}:activity",
             to_dataclass=to_user_data,
