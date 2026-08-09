@@ -14,15 +14,18 @@ It ships two installable packages:
 ## Install
 
 ```bash
-pip install rakaia                 # core protocol server
-pip install "rakaia[django]"       # + Django integration
-pip install "rakaia[django,prod]"  # + channels-redis + hypercorn for prod
+pip install rakaia-streams                 # core protocol server
+pip install "rakaia-streams[django]"       # + Django integration
+pip install "rakaia-streams[django,prod]"  # + channels-redis + hypercorn for prod
 ```
+
+The distribution is named `rakaia-streams` on PyPI (plain `rakaia` was already
+taken); the import names are unchanged — `import rakaia`, `import django_rakaia`.
 
 ## Quick start (standalone)
 
 ```bash
-pip install rakaia uvicorn
+pip install rakaia-streams uvicorn
 uvicorn rakaia:app --port 4437
 ```
 

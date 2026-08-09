@@ -48,19 +48,19 @@ declares `dependencies = []`), and within `django_rakaia` **only SSE needs
 
 ```bash
 # 1. Framework + standalone protocol server, zero dependencies
-pip install rakaia
+pip install rakaia-streams
 
 # 2. Django durable store + projections + DB-backed protocol server (no SSE)
-pip install rakaia django            # NB: not the [django] extra — see below
+pip install rakaia-streams django            # NB: not the [django] extra — see below
 
 # 3. Everything, including real-time SSE
-pip install "rakaia[django]"         # pulls django + channels + daphne
+pip install "rakaia-streams[django]"         # pulls django + channels + daphne
 ```
 
 !!! note "The `[django]` extra currently bundles `channels`+`daphne`"
-    `rakaia[django]` installs `django`, `channels`, **and** `daphne` together, so
-    profile 2 (framework-tier Django use with no SSE) is expressed by installing
-    `rakaia` + `django` directly rather than via the extra. The **runtime** import
+    `rakaia-streams[django]` installs `django`, `channels`, **and** `daphne`
+    together, so profile 2 (framework-tier Django use with no SSE) is expressed
+    by installing `rakaia-streams` + `django` directly rather than via the extra. The **runtime** import
     of `channels` is already optional (below); splitting the extra into
     `[django]` (ORM only) and `[sse]` (`channels`+`daphne`) so the *install* is
     also minimal is a natural follow-up (tracked under #41).
