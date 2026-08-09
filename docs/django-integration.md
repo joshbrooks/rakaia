@@ -181,6 +181,24 @@ land as strings. No pre-stringifying in the transformer; a `TypeError` at insert
 time would otherwise be raised from inside `post_save` and take down the save
 being audited.
 
+Datetimes are the one lossy case. `DjangoJSONEncoder` truncates — does not round
+— to millisecond precision, and emits no fractional part at all when
+`microsecond` is 0:
+
+| model value | payload string |
+| --- | --- |
+| `…12:30:00.123456+00:00` | `"2026-08-09T12:30:00.123Z"` |
+| `…12:30:00.123999+00:00` | `"2026-08-09T12:30:00.123Z"` |
+| `…12:30:00.000000+00:00` | `"2026-08-09T12:30:00Z"` |
+
+Django stores microseconds, so a payload timestamp will **not** compare equal to
+the column it came from. That matters in two places: comparing a payload field
+against a source row, and `merge_replay(order_key=...)` pointed at a payload
+datetime, where two events inside the same millisecond now tie and fall through
+to the `(stream_path, offset)` tiebreak. Prefer the `ENVELOPE_TS` order key,
+which reads the `event_ts` column instead. If you need full precision in the
+payload, format the value explicitly in `to_dataclass`.
+
 ### Soft-delete models
 
 `pgtrigger.SoftDelete` rewrites a `DELETE` into `UPDATE is_active=false`, so the

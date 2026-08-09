@@ -149,7 +149,7 @@ class TestJsonEncoding:
         stored = StreamEvent.objects.get(pk=event.pk).data
         assert stored["ref"] == str(ref)
         assert stored["amount"] == "12.50"
-        assert stored["recorded_at"].startswith("2026-08-09T12:30:00")
+        assert stored["recorded_at"] == "2026-08-09T12:30:00Z"
 
     def test_stream_event_metadata_accepts_django_types(self):
         moment = dt.datetime(2026, 8, 9, 12, 30, tzinfo=dt.timezone.utc)
@@ -161,7 +161,34 @@ class TestJsonEncoding:
         )
 
         stored = StreamEvent.objects.get(pk=event.pk).metadata
-        assert stored["at"].startswith("2026-08-09T12:30:00")
+        assert stored["at"] == "2026-08-09T12:30:00Z"
+
+    @pytest.mark.parametrize(
+        ("microsecond", "expected"),
+        [
+            (123456, "2026-08-09T12:30:00.123Z"),
+            (123999, "2026-08-09T12:30:00.123Z"),
+            (4, "2026-08-09T12:30:00.000Z"),
+            (0, "2026-08-09T12:30:00Z"),
+        ],
+    )
+    def test_datetimes_truncate_to_milliseconds(self, microsecond, expected):
+        """Pin the encoder's lossy case so it cannot change silently.
+
+        ``DjangoJSONEncoder`` truncates — does not round — to three fractional
+        digits, and drops the fractional part entirely when ``microsecond`` is
+        0. Django stores microseconds, so a payload timestamp never compares
+        equal to the column it was lifted from.
+        """
+        moment = dt.datetime(
+            2026, 8, 9, 12, 30, microsecond=microsecond, tzinfo=dt.timezone.utc
+        )
+
+        event = StreamEvent.objects.create(
+            data={"recorded_at": moment}, event_type="create"
+        )
+
+        assert StreamEvent.objects.get(pk=event.pk).data["recorded_at"] == expected
 
     def test_create_stream_event_needs_no_prestringify(self):
         """A transformer may return the model's own field values verbatim."""
@@ -181,7 +208,7 @@ class TestJsonEncoding:
         stored = StreamEvent.objects.get(pk=event.pk).data
         assert stored["ref"] == str(measure.ref)
         assert stored["amount"] == "3.25"
-        assert stored["recorded_at"].startswith("2026-08-09T00:00:00")
+        assert stored["recorded_at"] == "2026-08-09T00:00:00Z"
 
     def test_in_memory_event_carries_the_encoded_payload(self):
         """The field encoder only covers the INSERT.

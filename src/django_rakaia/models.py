@@ -138,7 +138,14 @@ class StreamEvent(models.Model):
     serialized (to strings) instead of raising ``TypeError`` at insert time from
     inside the consumer's ``post_save``, i.e. crashing the very save being
     audited. Consumers do not need to pre-stringify payloads (issue #80). The
-    encoder is Python-side only — no schema change."""
+    encoder is Python-side only — no schema change.
+
+    ``datetime``/``time`` values are truncated (not rounded) to **millisecond**
+    precision, because that is what ``DjangoJSONEncoder`` emits; a
+    ``microsecond`` of exactly 0 emits no fractional part at all. The models the
+    payload is lifted from store microseconds, so a payload timestamp will not
+    compare equal to its source column. Format the value yourself in
+    ``to_dataclass`` if you need the full precision or a stable string shape."""
     event_type = models.CharField(max_length=50, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     metadata = models.JSONField(default=dict, blank=True, encoder=DjangoJSONEncoder)
