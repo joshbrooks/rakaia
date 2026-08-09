@@ -8,6 +8,7 @@ for efficient querying and real-time updates via Unix sockets.
 import enum
 import warnings
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from django.db.models import Max
 from django.utils import timezone
@@ -131,10 +132,16 @@ class StreamEvent(models.Model):
         created_at: When the event was created
     """
 
-    data = models.JSONField()  # type: ignore[assignment]
+    data = models.JSONField(encoder=DjangoJSONEncoder)  # type: ignore[assignment]
+    """The event payload. Encoded with ``DjangoJSONEncoder`` so the types Django
+    models actually hold — ``UUID``, ``datetime``/``date``, ``Decimal`` — are
+    serialized (to strings) instead of raising ``TypeError`` at insert time from
+    inside the consumer's ``post_save``, i.e. crashing the very save being
+    audited. Consumers do not need to pre-stringify payloads (issue #80). The
+    encoder is Python-side only — no schema change."""
     event_type = models.CharField(max_length=50, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    metadata = models.JSONField(default=dict, blank=True)
+    metadata = models.JSONField(default=dict, blank=True, encoder=DjangoJSONEncoder)
     """Event-sourcing envelope metadata (actor, url, causation, …). Empty for
     raw/pure-protocol appends. `event_type` doubles as the envelope label."""
     event_ts = models.FloatField(null=True, blank=True, db_index=True)

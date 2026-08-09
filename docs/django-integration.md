@@ -168,6 +168,48 @@ Every `Project.save()` emits a single `StreamEvent` plus one `StreamEntry`
 per stream returned by `stream_paths`. Deletes emit an event with
 `event_type="delete"`.
 
+Saves made with `raw=True` — `manage.py loaddata`, test databases restored via
+`serialized_rollback=True` — are **ignored**. Fixture rows are replayed history,
+not new facts; appending them would inflate the stream on every restore, and a
+raw instance can reference foreign-key rows that have not been loaded yet.
+
+### Payload types
+
+`StreamEvent.data` is encoded with `DjangoJSONEncoder`, so a payload may carry
+`UUID`, `datetime`/`date`, and `Decimal` values straight off the model — they
+land as strings. No pre-stringifying in the transformer; a `TypeError` at insert
+time would otherwise be raised from inside `post_save` and take down the save
+being audited.
+
+### Soft-delete models
+
+`pgtrigger.SoftDelete` rewrites a `DELETE` into `UPDATE is_active=false`, so the
+row survives — but Django still fires `post_delete`. The default behaviour would
+record a hard delete that never happened, snapshotting the stale pre-delete
+state, while the real `is_active` flip never reaches the stream. Two ways out:
+
+```python
+# 1. Suppress it. The soft delete's UPDATE arrives through post_save as an
+#    ordinary "update" event.
+@stream_model(stream_paths=..., to_dataclass=..., on_delete=None)
+class Node(models.Model): ...
+
+
+# 2. Emit the update that actually occurred, with a payload describing the
+#    state the row ended up in rather than the one Django hands post_delete.
+@stream_model(
+    stream_paths=...,
+    to_dataclass=to_node_data,
+    on_delete="update",
+    delete_to_dataclass=lambda obj: NodeData(id=obj.id, is_active=False),
+)
+class Node(models.Model): ...
+```
+
+`on_delete` accepts `"delete"` (the default), `"update"`, or `None` (register no
+`post_delete` receiver at all). `delete_to_dataclass` replaces `to_dataclass`
+for the delete signal only, and requires `on_delete` to be set.
+
 ## Manual event creation
 
 If you can't decorate the model (e.g. it's `auth.User`), call

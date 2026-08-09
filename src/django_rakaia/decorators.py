@@ -7,7 +7,7 @@ streams with independent, monotonic offsets per stream.
 
 import dataclasses
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from django.db import models, transaction
 from django.db.models.signals import post_delete, post_save
@@ -22,6 +22,7 @@ StreamPathResolver = (
     | Callable[[models.Model], list[str]]
 )
 DataclassTransformer = Callable[[models.Model], Any]
+DeleteEventType = Literal["delete", "update"] | None
 
 
 def _get_or_create_stream(stream_id: str) -> Stream:
@@ -126,6 +127,8 @@ def create_stream_event(
 def stream_model(
     stream_paths: StreamPathResolver,
     to_dataclass: DataclassTransformer,
+    on_delete: DeleteEventType = "delete",
+    delete_to_dataclass: DataclassTransformer | None = None,
 ) -> Callable[[type[models.Model]], type[models.Model]]:
     """
     Decorator to automatically stream Django model changes to stream events.
@@ -139,6 +142,31 @@ def stream_model(
             - A list of stream ID strings
             - A callable that takes the instance and returns a string or list
         to_dataclass: Callable converting model instance to dataclass.
+        on_delete: What to append when Django fires ``post_delete``:
+            - ``"delete"`` (default): a ``delete`` event — the row is gone.
+            - ``"update"``: an ``update`` event — for soft-delete models where
+              the DELETE was rewritten into an UPDATE and the row survives.
+            - ``None``: nothing; no ``post_delete`` receiver is registered.
+        delete_to_dataclass: Optional transformer used *instead of*
+            ``to_dataclass`` for the delete signal. Django hands ``post_delete``
+            the pre-delete in-memory instance, so a soft-delete model needs this
+            to describe the state the row actually ended up in. Requires
+            ``on_delete`` to be set.
+
+    Soft-delete models (issue #80):
+        With ``pgtrigger.SoftDelete`` a ``DELETE`` becomes ``UPDATE
+        is_active=false`` and the row survives, but Django still fires
+        ``post_delete``. The default would record a hard delete that never
+        happened, snapshotting the stale ``is_active=True`` state. Either
+        suppress it (``on_delete=None``) and let the real flip stream through
+        ``post_save``, or re-type it (``on_delete="update"`` with a
+        ``delete_to_dataclass`` that reports the post-delete state).
+
+    Fixtures (issue #80):
+        Saves made with ``raw=True`` — ``manage.py loaddata``, test databases
+        restored via ``serialized_rollback`` — are ignored. Fixture rows are
+        replayed history, not new facts, and a raw instance may reference FK
+        rows that have not been loaded yet.
 
     Example (single stream):
         @stream_model(
@@ -162,6 +190,16 @@ def stream_model(
             created_by = models.ForeignKey(User, on_delete=models.CASCADE)
     """
 
+    if on_delete not in ("delete", "update", None):
+        raise ValueError(
+            f"on_delete must be 'delete', 'update', or None; got {on_delete!r}"
+        )
+    if delete_to_dataclass is not None and on_delete is None:
+        raise ValueError(
+            "delete_to_dataclass is set but on_delete=None, so no delete event "
+            "is ever emitted. Drop one of the two."
+        )
+
     def decorator(model_cls: type[models.Model]) -> type[models.Model]:
         @receiver(post_save, sender=model_cls, weak=False)
         def handle_post_save(
@@ -169,19 +207,29 @@ def stream_model(
             instance: models.Model,
             created: bool,
             signal: Any,  # noqa: ARG001
-            **kwargs: Any,  # noqa: ARG001
+            **kwargs: Any,
         ) -> None:
+            # `raw=True` means a fixture load (loaddata, serialized_rollback):
+            # replayed history, not a new fact, and the instance may reference
+            # FK rows that are not loaded yet. See issue #80.
+            if kwargs.get("raw"):
+                return
             action = "create" if created else "update"
             create_stream_event(stream_paths, to_dataclass, instance, action)
 
-        @receiver(post_delete, sender=model_cls, weak=False)
-        def handle_post_delete(
-            sender: type[models.Model],  # noqa: ARG001
-            instance: models.Model,
-            signal: Any,  # noqa: ARG001
-            **kwargs: Any,  # noqa: ARG001
-        ) -> None:
-            create_stream_event(stream_paths, to_dataclass, instance, "delete")
+        if on_delete is not None:
+            delete_transformer = delete_to_dataclass or to_dataclass
+
+            @receiver(post_delete, sender=model_cls, weak=False)
+            def handle_post_delete(
+                sender: type[models.Model],  # noqa: ARG001
+                instance: models.Model,
+                signal: Any,  # noqa: ARG001
+                **kwargs: Any,  # noqa: ARG001
+            ) -> None:
+                create_stream_event(
+                    stream_paths, delete_transformer, instance, on_delete
+                )
 
         return model_cls
 
