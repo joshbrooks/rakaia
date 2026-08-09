@@ -28,10 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        # Pinned to an exact version on purpose: setup-uv stopped publishing
+        # floating major/minor tags at v8 (supply-chain hardening), so `@v9`
+        # does not exist. Bump this explicitly.
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
@@ -57,7 +60,7 @@ jobs:
       - name: Check distribution metadata
         run: uvx twine check dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -71,7 +74,7 @@ jobs:
       # Required for Trusted Publishing; mints the short-lived OIDC token.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
