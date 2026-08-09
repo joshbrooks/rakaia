@@ -221,10 +221,12 @@ class DocData:
 class SoftDeleteDoc(models.Model):
     """Fixture for ``stream_model(on_delete=None)`` — issue #80 item 3.
 
-    Stands in for a ``pgtrigger.SoftDelete`` model: a ``DELETE`` is rewritten
-    into an ``UPDATE`` in the database, but Django still fires ``post_delete``.
-    Suppressing the delete event keeps the stream honest — the real
-    ``is_active`` flip arrives as an ``update`` through ``post_save``.
+    Suppression: no ``post_delete`` receiver is registered at all. Appropriate
+    for a model that soft-deletes in Python (a ``delete()`` override calling
+    ``save()``, so the flip already arrives through ``post_save``) or one whose
+    deletes are not worth streaming. Under a *database-level* soft delete it is
+    a trap — the flip never reaches the stream; see
+    ``test_db_level_soft_delete_with_on_delete_none_streams_nothing``.
     """
 
     name = models.CharField(max_length=100)

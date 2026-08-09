@@ -6,9 +6,11 @@ streams with independent, monotonic offsets per stream.
 """
 
 import dataclasses
+import json
 from collections.abc import Callable
 from typing import Any, Literal
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models, transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -101,7 +103,18 @@ def create_stream_event(
             f"to_dataclass must return a dataclass, got {type(dc_instance)}"
         )
 
-    payload = dataclasses.asdict(dc_instance)
+    # Encode here, not just on the way to the column. `StreamEvent.data` uses
+    # DjangoJSONEncoder, but that only covers the INSERT — the encoded form is
+    # never written back onto the in-memory instance. The SSE fan-out
+    # (`channels_signals.handle_stream_entry_created`) broadcasts
+    # `instance.event.data` from that same in-memory object, and the production
+    # channel layer (`channels_redis`, msgpack) and the SSE view (`json.dumps`)
+    # both choke on a raw UUID/datetime/Decimal — synchronously, inside the
+    # consumer's own `post_save`. Round-tripping through the encoder here makes
+    # the instance carry exactly the primitives the DB row does (issue #80).
+    payload = json.loads(
+        json.dumps(dataclasses.asdict(dc_instance), cls=DjangoJSONEncoder)
+    )
 
     # Create event and entries atomically
     with transaction.atomic():
@@ -146,7 +159,10 @@ def stream_model(
             - ``"delete"`` (default): a ``delete`` event — the row is gone.
             - ``"update"``: an ``update`` event — for soft-delete models where
               the DELETE was rewritten into an UPDATE and the row survives.
-            - ``None``: nothing; no ``post_delete`` receiver is registered.
+            - ``None``: nothing; no ``post_delete`` receiver is registered. Use
+              this only when the delete genuinely has nothing to record — see
+              the warning below, it is *not* the answer for a DB-level soft
+              delete.
         delete_to_dataclass: Optional transformer used *instead of*
             ``to_dataclass`` for the delete signal. Django hands ``post_delete``
             the pre-delete in-memory instance, so a soft-delete model needs this
@@ -157,10 +173,20 @@ def stream_model(
         With ``pgtrigger.SoftDelete`` a ``DELETE`` becomes ``UPDATE
         is_active=false`` and the row survives, but Django still fires
         ``post_delete``. The default would record a hard delete that never
-        happened, snapshotting the stale ``is_active=True`` state. Either
-        suppress it (``on_delete=None``) and let the real flip stream through
-        ``post_save``, or re-type it (``on_delete="update"`` with a
-        ``delete_to_dataclass`` that reports the post-delete state).
+        happened, snapshotting the stale ``is_active=True`` state.
+
+        Use ``on_delete="update"`` with a ``delete_to_dataclass`` that reports
+        the state the row ended up in. **Do not use** ``on_delete=None`` here:
+        the flip is performed by a ``BEFORE DELETE`` trigger inside the
+        database, so Django only ever issued a ``DELETE`` and ``post_save``
+        never fires. Suppressing ``post_delete`` drops the soft delete from the
+        stream entirely, and a projection replayed from it shows the row active
+        forever — strictly worse than the phantom hard delete.
+
+        ``on_delete=None`` is for models that soft-delete in *Python* (a
+        ``delete()`` override that calls ``save()``, so the flip already
+        arrives as an ordinary ``post_save`` update), or for models whose
+        deletes are simply not worth streaming.
 
     Fixtures (issue #80):
         Saves made with ``raw=True`` — ``manage.py loaddata``, test databases
@@ -219,6 +245,10 @@ def stream_model(
 
         if on_delete is not None:
             delete_transformer = delete_to_dataclass or to_dataclass
+            # Bound inside the `if` so the closure closes over an already-narrowed
+            # `str`; type checkers do not carry the outer narrowing into a nested
+            # function body.
+            delete_event_type: str = on_delete
 
             @receiver(post_delete, sender=model_cls, weak=False)
             def handle_post_delete(
@@ -228,7 +258,7 @@ def stream_model(
                 **kwargs: Any,  # noqa: ARG001
             ) -> None:
                 create_stream_event(
-                    stream_paths, delete_transformer, instance, on_delete
+                    stream_paths, delete_transformer, instance, delete_event_type
                 )
 
         return model_cls

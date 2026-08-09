@@ -25,6 +25,11 @@ def _sanitize_group_name(name: str) -> str:
 @receiver(post_save, sender=StreamEvent)
 def handle_stream_event_created(sender, instance, created, **kwargs):  # noqa: ARG001
     """Broadcast translation events to the 'translations' channel group."""
+    # Fixture loads (`loaddata`, `serialized_rollback`) are replayed history,
+    # not live facts — broadcasting them sends phantom frames to connected
+    # clients. See issue #80.
+    if kwargs.get("raw"):
+        return
     if not created or not instance.data.get("translatable_id"):
         return
 
@@ -58,6 +63,11 @@ def handle_stream_event_created(sender, instance, created, **kwargs):  # noqa: A
 @receiver(post_save, sender=StreamEntry)
 def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: ARG001
     """Broadcast stream events to the stream's channel group."""
+    # As above: skip fixture rows. Beyond the phantom frame, the `instance.stream`
+    # / `instance.event` dereferences below are separate queries that raise
+    # DoesNotExist mid-`loaddata` if the parent rows are not restored yet.
+    if kwargs.get("raw"):
+        return
     if not created:
         return
 

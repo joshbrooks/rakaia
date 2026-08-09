@@ -186,17 +186,10 @@ being audited.
 `pgtrigger.SoftDelete` rewrites a `DELETE` into `UPDATE is_active=false`, so the
 row survives — but Django still fires `post_delete`. The default behaviour would
 record a hard delete that never happened, snapshotting the stale pre-delete
-state, while the real `is_active` flip never reaches the stream. Two ways out:
+state. Emit the update that actually occurred, with a payload describing the
+state the row ended up in rather than the one Django hands `post_delete`:
 
 ```python
-# 1. Suppress it. The soft delete's UPDATE arrives through post_save as an
-#    ordinary "update" event.
-@stream_model(stream_paths=..., to_dataclass=..., on_delete=None)
-class Node(models.Model): ...
-
-
-# 2. Emit the update that actually occurred, with a payload describing the
-#    state the row ended up in rather than the one Django hands post_delete.
 @stream_model(
     stream_paths=...,
     to_dataclass=to_node_data,
@@ -205,6 +198,19 @@ class Node(models.Model): ...
 )
 class Node(models.Model): ...
 ```
+
+> **Do not reach for `on_delete=None` here.** The `is_active` flip is performed
+> by a `BEFORE DELETE` trigger *inside the database* — the trigger returns
+> `NULL`, cancelling the row delete. Django only ever issued a `DELETE`, so it
+> fires `post_delete` and **never** `post_save`. Suppressing the delete receiver
+> therefore drops the soft delete from the stream entirely, and a projection
+> replayed from that stream shows the node active forever — strictly worse than
+> the phantom hard delete.
+
+`on_delete=None` is the right choice for a different shape: a model that
+soft-deletes in *Python* (a `delete()` override that calls `save()`, so the flip
+already arrives as an ordinary `post_save` update), or one whose deletes are
+simply not worth streaming.
 
 `on_delete` accepts `"delete"` (the default), `"update"`, or `None` (register no
 `post_delete` receiver at all). `delete_to_dataclass` replaces `to_dataclass`

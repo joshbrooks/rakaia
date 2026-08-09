@@ -11,15 +11,19 @@ The three findings from integrating rakaia as formkit-ninja's audit log
    soft-delete model the row is still there.
 """
 
+import contextlib
 import datetime as dt
+import json
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
 from django.core import serializers
+from django.db import connection, models
 from django.db.models.signals import post_save
 
+from django_rakaia import channels_signals
 from django_rakaia.decorators import create_stream_event, stream_model
 from django_rakaia.models import Stream, StreamEvent
 from tests.test_django_rakaia.models import ArchivedDoc, Area, Measure, SoftDeleteDoc
@@ -28,6 +32,35 @@ from tests.test_django_rakaia.models import ArchivedDoc, Area, Measure, SoftDele
 def _entries(stream_id: str):
     stream = Stream.objects.filter(stream_id=stream_id).first()
     return list(stream.entries.order_by("offset")) if stream else []
+
+
+@contextlib.contextmanager
+def db_level_soft_delete(model_cls: type[models.Model]):
+    """Emulate ``pgtrigger.SoftDelete`` for the duration of the block.
+
+    pgtrigger installs a ``BEFORE DELETE`` trigger that flips ``is_active`` and
+    returns ``NULL``, cancelling the row delete. SQLite's equivalent is the same
+    ``UPDATE`` followed by ``RAISE(IGNORE)``, which abandons the statement that
+    fired the trigger. Either way the row survives, the delete is performed
+    entirely inside the database, and Django — which issued a plain ``DELETE``
+    and never inspects the row count — still fires ``post_delete`` and never
+    ``post_save``. That asymmetry is the whole of issue #80 item 3.
+    """
+    table = model_cls._meta.db_table
+    trigger = f"{table}_emulated_soft_delete"
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE TRIGGER {trigger} BEFORE DELETE ON {table} "
+            f"BEGIN "
+            f"UPDATE {table} SET is_active = 0 WHERE id = OLD.id; "
+            f"SELECT RAISE(IGNORE); "
+            f"END"
+        )
+    try:
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 
 
 @pytest.mark.django_db
@@ -141,6 +174,96 @@ class TestJsonEncoding:
         assert stored["amount"] == "3.25"
         assert stored["recorded_at"].startswith("2026-08-09T00:00:00")
 
+    def test_in_memory_event_carries_the_encoded_payload(self):
+        """The field encoder only covers the INSERT.
+
+        ``StreamEvent.data``'s ``DjangoJSONEncoder`` never writes the encoded
+        form back onto the instance, and the SSE fan-out broadcasts that
+        in-memory object — so the payload has to be primitives before it is
+        handed to ``StreamEvent.objects.create``, not just on the way to disk.
+        """
+        measure = Measure.objects.create(ref=uuid.uuid4(), amount=Decimal("3.25"))
+
+        event = create_stream_event(
+            stream_paths="measure:events",
+            to_dataclass=lambda obj: MeasureData(
+                ref=obj.ref,
+                amount=obj.amount,
+                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+            ),
+            instance=measure,
+            action="create",
+        )
+
+        # No refetch — this is the object the signal receivers see.
+        assert event.data["ref"] == str(measure.ref)
+        json.dumps(event.data)
+
+    def test_sse_broadcast_of_a_django_typed_payload_does_not_raise(self, monkeypatch):
+        """The real crash path: ``handle_stream_entry_created`` broadcasts the
+        in-memory payload from inside the consumer's own ``post_save``.
+
+        A raw ``UUID`` there takes down the save being audited — msgpack under
+        ``channels_redis``, ``json.dumps`` under the SSE view.
+        """
+        sent: list[dict] = []
+
+        class RecordingLayer:
+            async def group_send(self, group, message):  # noqa: ARG002
+                sent.append(message)
+
+        monkeypatch.setattr(
+            channels_signals, "get_channel_layer", lambda: RecordingLayer()
+        )
+        measure = Measure.objects.create(ref=uuid.uuid4(), amount=Decimal("3.25"))
+
+        create_stream_event(
+            stream_paths="measure:sse",
+            to_dataclass=lambda obj: MeasureData(
+                ref=obj.ref,
+                amount=obj.amount,
+                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+            ),
+            instance=measure,
+            action="create",
+        )
+
+        assert sent, "the SSE receiver did not fire"
+        for message in sent:
+            json.dumps(message)  # what the SSE view does
+        assert sent[-1]["event"]["data"]["ref"] == str(measure.ref)
+
+    def test_raw_stream_entry_save_is_not_broadcast(self, monkeypatch):
+        """Fixture rows are replayed history — they must not reach subscribers.
+
+        The dereferences in the receiver (``instance.stream``, ``instance.event``)
+        are also separate queries that raise mid-``loaddata`` when the parent
+        rows have not been restored yet.
+        """
+        sent: list[dict] = []
+
+        class RecordingLayer:
+            async def group_send(self, group, message):  # noqa: ARG002
+                sent.append(message)
+
+        monkeypatch.setattr(
+            channels_signals, "get_channel_layer", lambda: RecordingLayer()
+        )
+        area = Area.objects.create(name="Fixture Area")
+        entry = _entries(f"area:{area.id}:projects")[0]
+        sent.clear()
+
+        post_save.send(
+            sender=type(entry),
+            instance=entry,
+            created=True,
+            raw=True,
+            using="default",
+            update_fields=None,
+        )
+
+        assert sent == [], "a fixture row was broadcast to subscribers"
+
 
 @pytest.mark.django_db
 class TestSoftDeleteAwareDelete:
@@ -160,13 +283,39 @@ class TestSoftDeleteAwareDelete:
 
         assert [e.event.event_type for e in _entries(stream_id)] == ["create"]
 
-    def test_on_delete_none_still_streams_the_soft_delete_update(self):
-        """The ``is_active`` flip a soft delete really performs is an update."""
-        doc = SoftDeleteDoc.objects.create(name="Survivor")
-        stream_id = f"softdeletedoc:{doc.id}:events"
+    def test_db_level_soft_delete_with_on_delete_none_streams_nothing(self):
+        """The trap: ``on_delete=None`` loses a DB-level soft delete entirely.
 
-        doc.is_active = False
-        doc.save()
+        Under a real soft-delete trigger the flip happens inside the database,
+        so Django fires only ``post_delete``. Suppressing that receiver leaves
+        the stream with no record of the delete at all — a projection replayed
+        from it shows the row active forever. ``on_delete=None`` is for models
+        that soft-delete in Python (where ``post_save`` really does carry the
+        flip), not for this shape.
+        """
+        doc = SoftDeleteDoc.objects.create(name="Survivor")
+        pk, stream_id = doc.pk, f"softdeletedoc:{doc.id}:events"
+
+        with db_level_soft_delete(SoftDeleteDoc):
+            doc.delete()
+
+        survivor = SoftDeleteDoc.objects.get(pk=pk)
+        assert survivor.is_active is False, "trigger did not perform the flip"
+        assert [e.event.event_type for e in _entries(stream_id)] == ["create"], (
+            "post_save fired after a DB-level soft delete — it does not; the "
+            "premise of the on_delete=None guidance would be sound if it did"
+        )
+
+    def test_db_level_soft_delete_with_on_delete_update_records_the_flip(self):
+        """``on_delete="update"`` is what actually captures a DB-level soft delete."""
+        doc = ArchivedDoc.objects.create(name="Archivable")
+        pk, stream_id = doc.pk, f"archiveddoc:{doc.id}:events"
+
+        with db_level_soft_delete(ArchivedDoc):
+            doc.delete()
+
+        survivor = ArchivedDoc.objects.get(pk=pk)
+        assert survivor.is_active is False
 
         entries = _entries(stream_id)
         assert [e.event.event_type for e in entries] == ["create", "update"]
