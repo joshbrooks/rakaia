@@ -101,7 +101,46 @@ is not yet tagged in a release.
   recipe** that runs the scripted demos end-to-end.
   → [`docs/whats-new.md`](docs/whats-new.md).
 
+### Fixed
+
+- **`@stream_model` no longer appends phantom events for fixture loads** (#80).
+  `handle_post_save` now honours Django's `raw` kwarg, so `manage.py loaddata`
+  and `serialized_rollback=True` test restores no longer write one bogus
+  `create`/`update` event per fixture row (multiplying on every restore), and
+  can no longer crash mid-`loaddata` on a raw instance whose foreign-key rows
+  are not loaded yet.
+
+- **Event payloads are JSON-encoded end to end** (#80). A payload containing a
+  `UUID`, `datetime`, or `Decimal` used to raise `TypeError` at insert time —
+  from inside the consumer's `post_save`, i.e. crashing the very save being
+  audited — forcing every transformer to pre-stringify. `StreamEvent.data` and
+  `.metadata` now use `DjangoJSONEncoder`, and `create_stream_event` encodes the
+  payload before the insert so the in-memory event carries the same primitives
+  the row does — the SSE fan-out broadcasts that in-memory object, and a raw
+  `UUID` there fails just as hard (msgpack under `channels_redis`, `json.dumps`
+  under the SSE view). Consumers can now hand model field values straight
+  through. Python-side only: the accompanying migration (`0006`) is a no-op on
+  the schema.
+
+- **Channels SSE receivers honour `raw`** (#80). `handle_stream_event_created`
+  and `handle_stream_entry_created` no longer broadcast phantom frames for rows
+  restored by `loaddata`/`serialized_rollback`, nor dereference `instance.stream`
+  / `instance.event` mid-load when those parent rows are not restored yet.
+
 ### Changed
+
+- **`@stream_model` takes `on_delete=` and `delete_to_dataclass=`** (#80), for
+  soft-delete models. Under `pgtrigger.SoftDelete` a `DELETE` becomes `UPDATE
+  is_active=false` and the row survives, but Django still fires `post_delete` —
+  so the stream recorded a hard delete that never happened, with a stale
+  pre-delete payload. Use `on_delete="update"` to emit the update that actually
+  occurred, with `delete_to_dataclass=` supplying the post-delete payload — the
+  trigger performs the flip inside the database, so `post_delete` is the *only*
+  signal Django fires and it is the one place the soft delete can be caught.
+  `on_delete=None` registers no `post_delete` receiver at all, for models that
+  soft-delete in Python or whose deletes are not worth streaming. The default
+  stays `on_delete="delete"`. →
+  [`docs/django-integration.md`](docs/django-integration.md).
 
 - **`skip_unchanged` compares through the field's canonical form, not raw `!=`**
   (P4). The executor's opt-in skip path now normalises both the stored value and

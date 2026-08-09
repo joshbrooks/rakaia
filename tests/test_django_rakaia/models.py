@@ -202,6 +202,66 @@ class Project(models.Model):
         return self.created_by_id
 
 
+@dataclass
+class DocData:
+    """Dataclass for streaming the soft-delete fixture models."""
+
+    id: int
+    name: str
+    is_active: bool
+
+
+@stream_model(
+    stream_paths=lambda instance: f"softdeletedoc:{instance.id}:events",
+    to_dataclass=lambda instance: DocData(
+        id=instance.id, name=instance.name, is_active=instance.is_active
+    ),
+    on_delete=None,
+)
+class SoftDeleteDoc(models.Model):
+    """Fixture for ``stream_model(on_delete=None)`` — issue #80 item 3.
+
+    Suppression: no ``post_delete`` receiver is registered at all. Appropriate
+    for a model that soft-deletes in Python (a ``delete()`` override calling
+    ``save()``, so the flip already arrives through ``post_save``) or one whose
+    deletes are not worth streaming. Under a *database-level* soft delete it is
+    a trap — the flip never reaches the stream; see
+    ``test_db_level_soft_delete_with_on_delete_none_streams_nothing``.
+    """
+
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+@stream_model(
+    stream_paths=lambda instance: f"archiveddoc:{instance.id}:events",
+    to_dataclass=lambda instance: DocData(
+        id=instance.id, name=instance.name, is_active=instance.is_active
+    ),
+    on_delete="update",
+    delete_to_dataclass=lambda instance: DocData(
+        id=instance.id, name=instance.name, is_active=False
+    ),
+)
+class ArchivedDoc(models.Model):
+    """Fixture for ``stream_model(on_delete="update", delete_to_dataclass=...)``.
+
+    The other half of issue #80 item 3: instead of suppressing the event, emit
+    the ``update`` that actually happened, with a payload the delete hook
+    corrects to the post-soft-delete state (``is_active=False``) rather than the
+    stale in-memory snapshot Django hands ``post_delete``.
+    """
+
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 class Alert(models.Model):
     """Quality-flag / alert projection row — the rakaia analogue of
     FormKit-Ninja's ``Flag`` on a ``SeparatedSubmission``.

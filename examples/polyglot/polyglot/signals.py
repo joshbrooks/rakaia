@@ -47,6 +47,10 @@ def _to_payload(obj: models.Model) -> TranslationPayload:
 def _translatable_saved(
     sender, instance: Translatable, created: bool, **kwargs
 ) -> None:
+    # Hand-wired receivers do not get `@stream_model`'s `raw` guard — without
+    # this, every `loaddata` row appends a phantom event (issue #80).
+    if kwargs.get("raw"):
+        return
     create_stream_event(
         stream_paths=[f"translations:{instance.langcode}"],
         to_dataclass=_to_payload,

@@ -168,6 +168,72 @@ Every `Project.save()` emits a single `StreamEvent` plus one `StreamEntry`
 per stream returned by `stream_paths`. Deletes emit an event with
 `event_type="delete"`.
 
+Saves made with `raw=True` — `manage.py loaddata`, test databases restored via
+`serialized_rollback=True` — are **ignored**. Fixture rows are replayed history,
+not new facts; appending them would inflate the stream on every restore, and a
+raw instance can reference foreign-key rows that have not been loaded yet.
+
+### Payload types
+
+`StreamEvent.data` is encoded with `DjangoJSONEncoder`, so a payload may carry
+`UUID`, `datetime`/`date`, and `Decimal` values straight off the model — they
+land as strings. No pre-stringifying in the transformer; a `TypeError` at insert
+time would otherwise be raised from inside `post_save` and take down the save
+being audited.
+
+Datetimes are the one lossy case. `DjangoJSONEncoder` truncates — does not round
+— to millisecond precision, and emits no fractional part at all when
+`microsecond` is 0:
+
+| model value | payload string |
+| --- | --- |
+| `…12:30:00.123456+00:00` | `"2026-08-09T12:30:00.123Z"` |
+| `…12:30:00.123999+00:00` | `"2026-08-09T12:30:00.123Z"` |
+| `…12:30:00.000000+00:00` | `"2026-08-09T12:30:00Z"` |
+
+Django stores microseconds, so a payload timestamp will **not** compare equal to
+the column it came from. That matters in two places: comparing a payload field
+against a source row, and `merge_replay(order_key=...)` pointed at a payload
+datetime, where two events inside the same millisecond now tie and fall through
+to the `(stream_path, offset)` tiebreak. Prefer the `ENVELOPE_TS` order key,
+which reads the `event_ts` column instead. If you need full precision in the
+payload, format the value explicitly in `to_dataclass`.
+
+### Soft-delete models
+
+`pgtrigger.SoftDelete` rewrites a `DELETE` into `UPDATE is_active=false`, so the
+row survives — but Django still fires `post_delete`. The default behaviour would
+record a hard delete that never happened, snapshotting the stale pre-delete
+state. Emit the update that actually occurred, with a payload describing the
+state the row ended up in rather than the one Django hands `post_delete`:
+
+```python
+@stream_model(
+    stream_paths=...,
+    to_dataclass=to_node_data,
+    on_delete="update",
+    delete_to_dataclass=lambda obj: NodeData(id=obj.id, is_active=False),
+)
+class Node(models.Model): ...
+```
+
+> **Do not reach for `on_delete=None` here.** The `is_active` flip is performed
+> by a `BEFORE DELETE` trigger *inside the database* — the trigger returns
+> `NULL`, cancelling the row delete. Django only ever issued a `DELETE`, so it
+> fires `post_delete` and **never** `post_save`. Suppressing the delete receiver
+> therefore drops the soft delete from the stream entirely, and a projection
+> replayed from that stream shows the node active forever — strictly worse than
+> the phantom hard delete.
+
+`on_delete=None` is the right choice for a different shape: a model that
+soft-deletes in *Python* (a `delete()` override that calls `save()`, so the flip
+already arrives as an ordinary `post_save` update), or one whose deletes are
+simply not worth streaming.
+
+`on_delete` accepts `"delete"` (the default), `"update"`, or `None` (register no
+`post_delete` receiver at all). `delete_to_dataclass` replaces `to_dataclass`
+for the delete signal only, and requires `on_delete` to be set.
+
 ## Manual event creation
 
 If you can't decorate the model (e.g. it's `auth.User`), call
@@ -192,6 +258,8 @@ User = get_user_model()
 
 @receiver(post_save, sender=User)
 def emit_user_event(sender, instance, created, **kwargs):
+    if kwargs.get("raw"):  # fixture load — replayed history, not a new fact
+        return
     create_stream_event(
         stream_paths=f"user:{instance.id}:activity",
         to_dataclass=lambda obj: UserData(id=obj.id, username=obj.username),
@@ -199,6 +267,12 @@ def emit_user_event(sender, instance, created, **kwargs):
         action="create" if created else "update",
     )
 ```
+
+The `raw` guard is **yours to write here.** `@stream_model` applies it for you;
+a hand-wired receiver does not get it, and `create_stream_event` never sees the
+signal kwargs. Without the guard this handler appends a phantom event per
+fixture row on every `loaddata` — and `auth.User`, the model that drives you to
+the manual path in the first place, is the one most likely to be in a dump.
 
 ## Real-time SSE
 
