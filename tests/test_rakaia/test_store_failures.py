@@ -192,6 +192,40 @@ class TestFailureBecomesStatus:
         assert r.status_code == 409
 
     @pytest.mark.asyncio
+    async def test_seq_compares_numerically_not_textually(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Stream-Seq 10 follows 9.
+
+        The header used to reach the store unparsed, so `opts.seq <=
+        stream.last_seq` compared text and "10" < "9" made seq=10 a conflict.
+        Every producer broke on reaching double digits.
+        """
+        await client.put("/s", headers={"content-type": "text/plain"})
+        first = await client.post(
+            "/s",
+            content=b"a",
+            headers={"content-type": "text/plain", "stream-seq": "9"},
+        )
+        second = await client.post(
+            "/s",
+            content=b"b",
+            headers={"content-type": "text/plain", "stream-seq": "10"},
+        )
+        assert first.status_code in (200, 204)
+        assert second.status_code in (200, 204), "seq=10 must follow seq=9"
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_seq_is_400(self, client: httpx.AsyncClient) -> None:
+        await client.put("/s", headers={"content-type": "text/plain"})
+        r = await client.post(
+            "/s",
+            content=b"a",
+            headers={"content-type": "text/plain", "stream-seq": "not-a-number"},
+        )
+        assert r.status_code == 400
+
+    @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, client: httpx.AsyncClient) -> None:
         await client.put("/s", headers={"content-type": "application/json"})
         r = await client.post(

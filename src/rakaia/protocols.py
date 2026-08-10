@@ -128,6 +128,90 @@ class WritableStore(ReadableStore, Protocol):
 
 
 @runtime_checkable
+class StreamServerStore(WritableStore, Protocol):
+    """A store that can back a Durable Streams **protocol server**.
+
+    `WritableStore` is what `replay()` and projections need. This is the wider
+    surface `rakaia.handler.create_app` needs: everything in `WritableStore`,
+    plus the protocol lifecycle — producer epoch/seq fencing, close, the TTL
+    sliding window, long-poll, and response formatting.
+
+    Until this existed `create_app` was typed against the concrete in-memory
+    `StreamStore`, so the durable store could not back the server no matter
+    what it implemented — which is why the Django integration grew a second,
+    partial implementation of the protocol instead of reusing this one. Two
+    adapters satisfy it: the in-memory `StreamStore` and `DjangoStreamStore`.
+
+    Failures are the named ones in `rakaia.types` (`StreamNotFound`,
+    `SequenceConflict`, …); a server maps them to statuses by type, so an
+    implementation raising a bare `ValueError` will surface as a 500.
+
+    The shared conformance suite for this surface is
+    `tests/server_store_contract.py`.
+    """
+
+    def get(self, path: str) -> Any:
+        """The stream at `path`, or `None` if absent or expired."""
+        ...
+
+    def touch(self, path: str) -> None:
+        """Extend the TTL sliding window for `path`. No-op if absent or if the
+        stream has no TTL. Used for activity that doesn't otherwise mutate the
+        stream, such as a caught-up `GET ?offset=now`."""
+        ...
+
+    def delete(self, path: str) -> bool:
+        """Delete the stream, cancelling any pending long-polls. Returns whether
+        it existed. Offsets stay globally monotonic across delete+recreate: a
+        recreated path resumes numbering above the retired high mark."""
+        ...
+
+    def format_response(self, path: str, messages: list[Any]) -> bytes:
+        """Render `messages` as the response body for `path`.
+
+        Content-type aware: a JSON-mode stream yields one JSON array, anything
+        else the concatenated payloads.
+        """
+        ...
+
+    async def append_with_producer(
+        self, path: str, data: bytes, options: Any = None
+    ) -> Any:
+        """Append under producer fencing, serialized per `(path, producer_id)`.
+
+        The result carries a `ProducerValidationResult` when the write was
+        refused (stale epoch, sequence gap, duplicate, closed stream) rather
+        than raising — those are protocol outcomes with their own statuses and
+        headers, not failures.
+        """
+        ...
+
+    def close_stream(self, path: str) -> Any:
+        """Close `path`, returning a `CloseResult` (or `None` if absent).
+
+        Idempotent: closing an already-closed stream reports the same final
+        offset rather than failing.
+        """
+        ...
+
+    async def close_stream_with_producer(self, path: str, options: Any = None) -> Any:
+        """Close `path` under producer fencing. Same fencing outcomes as
+        `append_with_producer`, same idempotence as `close_stream`."""
+        ...
+
+    async def wait_for_messages(
+        self, path: str, offset: str, timeout: float
+    ) -> tuple[list[Any], bool]:
+        """Long-poll: wait up to `timeout` seconds for messages after `offset`.
+
+        Returns `(messages, up_to_date)`. Returns immediately if messages are
+        already available or the stream closes; returns an empty list on
+        timeout. Raises `StreamNotFound` if the stream is absent.
+        """
+        ...
+
+
+@runtime_checkable
 class CursorStore(ReadableStore, Protocol):
     """A `ReadableStore` that also exposes its current head offset — what a
     subscriber (`poll()`) needs to detect new messages and a rewound log."""
