@@ -14,6 +14,18 @@ is not yet tagged in a release.
 
 ### Added
 
+- **Named store failures.** A store now raises one of `StreamNotFound`,
+  `StreamConfigConflict`, `SequenceConflict`, `ContentTypeMismatch`,
+  `InvalidJson` or `EmptyJsonArray` (all exported from `rakaia`) instead of a
+  bare `ValueError`/`KeyError`, and the ASGI server maps them to a status by
+  type via `rakaia.handler.STORE_FAILURE_STATUS`. Previously the server picked
+  the status by matching English in `str(e)`, so rewording a message in
+  `store.py` silently turned a 4xx into an unhandled 500 — and any other store
+  implementation had to reproduce five exact strings to behave the same. Each
+  failure subclasses the builtin it replaced, so existing `except ValueError` /
+  `except KeyError` code and tests are unaffected. A new failure type without a
+  status now fails the suite rather than 500ing at runtime.
+
 - **`PreloadedProjectionReader` — bulk-fetch a verification sweep.**
   `diff_effects_against_rows` does one `reader.get` per effect (one round-trip
   each), which is thousands of round-trips on a full reconcile. Pass the same

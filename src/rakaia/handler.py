@@ -49,12 +49,37 @@ from .types import (
     STREAM_TTL_HEADER,
     VALID_OFFSET_PATTERN,
     AppendOptions,
+    ContentTypeMismatch,
+    EmptyJsonArray,
+    InvalidJson,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
     ProducerSequenceGap,
     ProducerStaleEpoch,
     ProducerStreamClosed,
+    SequenceConflict,
+    StreamConfigConflict,
+    StreamError,
+    StreamNotFound,
 )
+
+# How a store failure becomes a response. A store raises one of the named
+# failures in `.types`; this is the whole mapping. Anything not in here — a
+# store raising a bare ValueError, say — propagates and becomes a 500, which is
+# the same as before, except the decision is now made by type rather than by
+# matching English in the exception message (a reworded f-string used to turn a
+# 4xx into a 500 silently).
+STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
+    StreamNotFound: (404, b"Stream not found"),
+    StreamConfigConflict: (
+        409,
+        b"Stream already exists with different configuration",
+    ),
+    SequenceConflict: (409, b"Sequence conflict"),
+    ContentTypeMismatch: (409, b"Content-type mismatch"),
+    InvalidJson: (400, b"Invalid JSON"),
+    EmptyJsonArray: (400, b"Empty arrays are not allowed"),
+}
 
 # Header names used in responses (title case for HTTP convention)
 STREAM_OFFSET_HEADER_RESP = "Stream-Next-Offset"
@@ -211,33 +236,12 @@ def create_app(
                 await _handle_delete(path, send, actual_store, cors_headers)
             else:
                 await _send_error(send, 405, b"Method not allowed", cors_headers)
-        except KeyError as e:
-            msg = str(e)
-            if "not found" in msg.lower():
-                await _send_error(send, 404, b"Stream not found", cors_headers)
-            else:
+        except StreamError as e:
+            mapped = STORE_FAILURE_STATUS.get(type(e))
+            if mapped is None:
                 raise
-        except ValueError as e:
-            msg = str(e)
-            if "already exists with different configuration" in msg:
-                await _send_error(
-                    send,
-                    409,
-                    b"Stream already exists with different configuration",
-                    cors_headers,
-                )
-            elif "Sequence conflict" in msg:
-                await _send_error(send, 409, b"Sequence conflict", cors_headers)
-            elif "Content-type mismatch" in msg:
-                await _send_error(send, 409, b"Content-type mismatch", cors_headers)
-            elif "Invalid JSON" in msg:
-                await _send_error(send, 400, b"Invalid JSON", cors_headers)
-            elif "Empty arrays are not allowed" in msg:
-                await _send_error(
-                    send, 400, b"Empty arrays are not allowed", cors_headers
-                )
-            else:
-                raise
+            status, body = mapped
+            await _send_error(send, status, body, cors_headers)
 
     return app
 
