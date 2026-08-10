@@ -16,10 +16,20 @@ from .models import StreamEntry, StreamEvent
 def _sanitize_group_name(name: str) -> str:
     """Sanitize a group name for the channel layer.
 
-    Channel layer group names only allow ASCII alphanumerics,
-    hyphens, underscores, and periods. Replace colons with periods.
+    Channel layer group names allow only ASCII alphanumerics, hyphens,
+    underscores and periods, and must be under 100 characters. Anything else
+    becomes a period.
+
+    This used to replace colons only, which was enough while every stream id
+    looked like `user:1:projects`. A protocol-server path is `/orders`, and the
+    slash raised `TypeError` from inside `post_save` — i.e. an append over HTTP
+    failed at the broadcast, after the write. Names are truncated from the
+    right so the distinguishing tail of a long path survives.
     """
-    return name.replace(":", ".")
+    cleaned = "".join(
+        c if (c.isascii() and (c.isalnum() or c in "-_.")) else "." for c in name
+    )
+    return cleaned[-99:]
 
 
 @receiver(post_save, sender=StreamEvent)

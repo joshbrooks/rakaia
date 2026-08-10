@@ -68,6 +68,7 @@ from rakaia.types import (
     StreamMessage,
     StreamNotFound,
 )
+from rakaia.types import Stream as ProtocolStream
 
 from .models import (
     Stream,
@@ -753,15 +754,44 @@ class DjangoStreamStore:
             )
         return int(offset)
 
-    def get(self, path: str) -> Stream | None:
-        """Return the stream row, or None if absent or expired.
+    async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a synchronous store call for an async server, in a thread.
 
-        The row carries everything a protocol server reads off a stream —
-        `current_offset`, `closed`, `content_type`, `ttl_seconds`,
-        `expires_at`, `last_seq` — under the same names as the in-memory
-        `rakaia.types.Stream`.
+        Django raises `SynchronousOnlyOperation` on any ORM access from an
+        async context, so every sync call the protocol server makes has to
+        cross into a thread. `thread_sensitive=True` keeps them all on the same
+        one, which is what makes them share a transaction and a connection.
         """
-        return self._get_if_not_expired(path)
+        return await sync_to_async(fn, thread_sensitive=True)(*args, **kwargs)
+
+    def get(self, path: str) -> ProtocolStream | None:
+        """Return a snapshot of the stream's metadata, or None if absent.
+
+        Deliberately **not** the ORM row. A protocol server is async, and an
+        ORM row is lazy: reading `stream.current_offset` off it would issue a
+        query at attribute access, outside the `run_sync` bridge, which Django
+        refuses from an async context. Everything the server reads is resolved
+        here, inside the sync call, and handed over inert.
+
+        Returns a `rakaia.types.Stream` — the same type the in-memory store
+        returns — carrying metadata only. `messages` stays empty: read the
+        stream with `read()`.
+        """
+        row = self._get_if_not_expired(path)
+        if row is None:
+            return None
+        return ProtocolStream(
+            path=row.stream_id,
+            content_type=row.content_type,
+            current_offset=row.current_offset,
+            last_seq=row.last_seq,
+            ttl_seconds=row.ttl_seconds,
+            expires_at=row.expires_at,
+            created_at=row.created_at.timestamp() if row.created_at else 0.0,
+            last_activity_at=row.last_activity_at,
+            closed=row.closed,
+            closed_by=row.closed_by,
+        )
 
     def has(self, path: str) -> bool:
         return self._get_if_not_expired(path) is not None

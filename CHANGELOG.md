@@ -161,6 +161,19 @@ is not yet tagged in a release.
   `StreamEvent` called `.get()` on `data` unconditionally, so an append
   carrying a JSON array, string or number raised `AttributeError` — failing the
   append *after* the write had landed.
+- **The offset pattern rejected the durable store's own offsets.**
+  `VALID_OFFSET_PATTERN` accepted only the in-memory store's compound
+  `{seq}_{byte}` form, so once the durable store backed the protocol server
+  every resume read (`GET ?offset=…`) 400'd on an offset the server had just
+  issued. It now accepts a plain integer too. The protocol makes offsets opaque,
+  not identically formatted (§6).
+
+- **Channel group names broke on any stream id containing a slash.** The
+  sanitizer replaced colons only, which sufficed while ids looked like
+  `user:1:projects`; a protocol path is `/orders`, and the slash raised
+  `TypeError` from inside `post_save` — an append over HTTP failed at the
+  broadcast, after the write had landed. Anything outside the channel layer's
+  allowed set is now replaced, and over-long names are truncated.
 
 - **Stream-Seq was compared as text, not as a number.** The header reached the
   store unparsed, so the conflict check `opts.seq <= stream.last_seq` compared
@@ -192,6 +205,24 @@ is not yet tagged in a release.
   and `handle_stream_entry_created` no longer broadcast phantom frames for rows
   restored by `loaddata`/`serialized_rollback`, nor dereference `instance.stream`
   / `instance.event` mid-load when those parent rows are not restored yet.
+
+### Removed
+
+- **BREAKING — `django_rakaia.protocol_views` is gone.** It was a second,
+  partial implementation of the Durable Streams protocol that did not use
+  `DjangoStreamStore`, and it disagreed with the real one on nearly everything
+  the protocol specifies: it routed by verb-in-path (`/streams/x/append`)
+  rather than by HTTP method, returned newline-delimited JSON rather than a JSON
+  array, dropped the envelope, and had no producer fencing, close, TTL,
+  long-poll, ETag or CORS at all. It also carried two live defects — a
+  handler-issued offset passed validation and then silently read the wrong
+  window, and `?offset=now` returned the entire stream instead of nothing.
+
+  Serve the protocol over the database by mounting `rakaia.create_app` — the
+  same implementation the standalone server runs — via
+  `django_rakaia.integration.get_asgi_app()` in `asgi.py`. It is an ASGI app,
+  not a Django view, so it does not go in `urls.py`.
+  → [`docs/django-integration.md`](docs/django-integration.md#protocol-http-api).
 
 ### Changed
 

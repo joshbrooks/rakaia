@@ -46,15 +46,21 @@ SSE_CLOSED_FIELD = "streamClosed"
 # Offset format: zero-padded 16-digit numbers separated by underscore
 INITIAL_OFFSET = "0000000000000000_0000000000000000"
 
-# Canonical offset-validation pattern: a `{digits}_{digits}` token, or the
-# sentinels `-1` (stream start) / `now` (current tail). This is the ONE source of
-# truth every offset producer/validator imports — the in-memory `StreamStore`,
-# the standalone `handler` ASGI server, and the Django `protocol_views`. Servers
-# may still emit *different* offset formats (the protocol mandates opacity, not
-# one format — §6; see #49 / `tests/store_contract.py`), but they must all agree
-# on what a syntactically valid offset looks like, so validation can't silently
-# drift apart via copy-paste (issue #41).
-VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+_\d+)$")
+# Canonical offset-validation pattern: an opaque digit token — `{digits}` or
+# `{digits}_{digits}` — or the sentinels `-1` (stream start) / `now` (current
+# tail).
+#
+# Both documented offset formats must pass: the in-memory `StreamStore` emits
+# the compound `{seq}_{byte}` form, the durable `DjangoStreamStore` a
+# zero-padded integer. The pattern previously accepted only the compound form,
+# which was invisible while the server could only ever be handed the in-memory
+# store — the moment the durable store backed it, every resume read (`GET
+# ?offset=…`) 400'd on an offset the server itself had just issued.
+#
+# This is a syntactic guard against junk in a URL, nothing more. The protocol
+# mandates that offsets are opaque, not that they share one format (§6), so
+# meaning belongs to the store that issued it (#49, #41).
+VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+(_\d+)?)$")
 
 # Default port for standalone servers
 DEFAULT_PORT = 4437
