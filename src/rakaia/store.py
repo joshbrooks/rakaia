@@ -20,18 +20,15 @@ from .json_mode import (
     normalize_content_type,
     process_json_append,
 )
+from .producer import is_producer_state_expired, validate_producer
 from .types import (
     INITIAL_OFFSET,
-    PRODUCER_STATE_TTL_SECONDS,
     AppendOptions,
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
     ProducerAccepted,
     ProducerDuplicate,
-    ProducerInvalidEpochSeq,
-    ProducerSequenceGap,
-    ProducerStaleEpoch,
     ProducerStreamClosed,
     ProducerValidationResult,
     SequenceConflict,
@@ -574,61 +571,20 @@ class StreamStore:
         epoch: int,
         seq: int,
     ) -> ProducerValidationResult:
-        """
-        Validate producer state WITHOUT mutating.
+        """Validate producer state WITHOUT mutating.
 
-        Returns proposed state to commit after successful append.
+        The rules themselves live in `.producer` so this store and the durable
+        `DjangoStreamStore` decide identically; all this does is supply the
+        last known state and drop it if it has aged out.
         """
-        # Clean up expired producers
         self._cleanup_expired_producers(stream)
-
-        now = time.time()
-        state = stream.producers.get(producer_id)
-
-        # New producer
-        if state is None:
-            if seq != 0:
-                return ProducerSequenceGap(expected_seq=0, received_seq=seq)
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=True,
-                producer_id=producer_id,
-                proposed_state=ProducerState(epoch=epoch, last_seq=0, last_updated=now),
-            )
-
-        # Epoch validation
-        if epoch < state.epoch:
-            return ProducerStaleEpoch(current_epoch=state.epoch)
-
-        if epoch > state.epoch:
-            if seq != 0:
-                return ProducerInvalidEpochSeq()
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=True,
-                producer_id=producer_id,
-                proposed_state=ProducerState(epoch=epoch, last_seq=0, last_updated=now),
-            )
-
-        # Same epoch: sequence validation
-        if seq <= state.last_seq:
-            return ProducerDuplicate(last_seq=state.last_seq)
-
-        if seq == state.last_seq + 1:
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=False,
-                producer_id=producer_id,
-                proposed_state=ProducerState(
-                    epoch=epoch, last_seq=seq, last_updated=now
-                ),
-            )
-
-        # Sequence gap
-        return ProducerSequenceGap(expected_seq=state.last_seq + 1, received_seq=seq)
+        return validate_producer(
+            stream.producers.get(producer_id),
+            producer_id,
+            epoch,
+            seq,
+            time.time(),
+        )
 
     def _commit_producer_state(
         self, stream: Stream, result: ProducerValidationResult
@@ -645,7 +601,7 @@ class StreamStore:
         expired = [
             pid
             for pid, state in stream.producers.items()
-            if now - state.last_updated > PRODUCER_STATE_TTL_SECONDS
+            if is_producer_state_expired(state, now)
         ]
         for pid in expired:
             del stream.producers[pid]

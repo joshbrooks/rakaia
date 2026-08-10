@@ -14,6 +14,26 @@ is not yet tagged in a release.
 
 ### Added
 
+- **`StreamServerStore` — the protocol-server store surface, named.** `create_app`
+  was typed against the concrete in-memory `StreamStore`, so nothing else could
+  back the protocol server. The new protocol (exported from `rakaia`) covers the
+  twelve methods the server actually calls, and `create_app` is typed against it.
+
+- **`DjangoStreamStore` now backs a protocol server.** It implements the whole
+  `StreamServerStore` surface — producer epoch/seq fencing, stream close, the TTL
+  sliding window, long-poll and response formatting — so `rakaia.create_app` can
+  serve the Durable Streams protocol directly off the database. Both stores are
+  held to one shared conformance suite (`tests/server_store_contract.py`, 28
+  cases each), and the fencing rules live in a single pure module
+  (`rakaia.producer`) that both call, so the two cannot drift apart.
+
+  This closes what `tests/store_contract.py` previously called "genuine,
+  permanent architectural divergences": conflict detection on `create`, stream
+  close, Stream-Seq and producer fencing were all documented as concerns the
+  durable store would never model. It models them now. The only remaining
+  backend-specific behaviour is the offset *format*, which the protocol leaves
+  open (§6).
+
 - **Named store failures.** A store now raises one of `StreamNotFound`,
   `StreamConfigConflict`, `SequenceConflict`, `ContentTypeMismatch`,
   `InvalidJson`, `EmptyJsonArray` or `InvalidOffset` (all exported from
@@ -117,6 +137,13 @@ is not yet tagged in a release.
 
 ### Fixed
 
+- **Stream-Seq was compared as text, not as a number.** The header reached the
+  store unparsed, so the conflict check `opts.seq <= stream.last_seq` compared
+  strings: sending `Stream-Seq: 10` after `9` was rejected with a 409, because
+  `"10" < "9"` lexicographically. Every producer broke on reaching double
+  digits. The header is now parsed strictly (400 on a non-integer, matching the
+  producer headers) and both fields are typed `int | None`.
+
 - **`@stream_model` no longer appends phantom events for fixture loads** (#80).
   `handle_post_save` now honours Django's `raw` kwarg, so `manage.py loaddata`
   and `serialized_rollback=True` test restores no longer write one bogus
@@ -142,6 +169,24 @@ is not yet tagged in a release.
   / `instance.event` mid-load when those parent rows are not restored yet.
 
 ### Changed
+
+- **BREAKING — `DjangoStreamStore.append` and `.append_many` return
+  `AppendResult`,** not the `StreamEntry` row (and a list of them). This is what
+  lets one protocol server implementation run on either store. The message is at
+  `result.message`; a closed stream reports `result.stream_closed` instead of
+  writing. Reach for the ORM rows via `read()` or the models directly.
+
+- **BREAKING — `DjangoStreamStore.create` validates its configuration.** It
+  records `content_type` / `ttl_seconds` / `expires_at` / `closed`, so a
+  re-`create` with a *different* configuration now raises `StreamConfigConflict`
+  where it previously ignored the mismatch silently. Re-creating with matching
+  configuration is still idempotent.
+
+  Both changes need the accompanying migration (`0007`), which adds the
+  lifecycle columns to `Stream` and the `StreamProducer` table.
+
+- **BREAKING — `AppendOptions.seq` and `Stream.last_seq` are `int | None`,** not
+  `str | None`. See the Stream-Seq fix under Fixed.
 
 - **`@stream_model` takes `on_delete=` and `delete_to_dataclass=`** (#80), for
   soft-delete models. Under `pgtrigger.SoftDelete` a `DELETE` becomes `UPDATE

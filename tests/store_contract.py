@@ -9,26 +9,18 @@ and provide a `store` fixture returning a fresh, empty store. See ADR 0002 / #36
 This module is intentionally not named `test_*`, so pytest does not collect it
 directly; only the backend subclasses run it.
 
-Out of contract scope (backend-specific, deliberately not asserted here):
-`create()` conflict detection (the in-memory `StreamStore` raises `ValueError`
-on re-create with a different content_type/ttl; `DjangoStreamStore` has no such
-concept — its `Stream` model has no content_type/ttl/closed columns at all —
-and permanently ignores extra kwargs instead of raising), stream close /
-Stream-Seq / producer fencing (same story: no `closed` concept on the durable
-side), and the exact offset *format* (compound `{seq}_{byte}` vs zero-padded
-int). These are genuine, permanent architectural divergences, not gaps to
-close — asserting one behaviour for both here would contradict the point of a
-shared contract, and a producer that depends on in-memory conflict-rejection
-or closed-stream signalling is relying on protocol-server behaviour ADR 0002
-explicitly excludes from `WritableStore` (see `src/rakaia/protocols.py`).
-Each divergence is pinned in that backend's own suite instead:
-- in-memory: `tests/test_rakaia/test_store.py::
-  test_create_conflicting_content_type_raises`,
-  `test_create_conflicting_ttl_raises`, `test_seq_conflict_raises`,
-  `test_append_to_closed_stream_returns_stream_closed`.
-- Django: `tests/test_django_rakaia/test_django_store.py::
-  test_create_ignores_conflicting_kwargs_instead_of_raising`,
-  `test_append_has_no_closed_stream_concept`.
+Scope note. This file used to declare `create()` conflict detection, stream
+close, Stream-Seq and producer fencing "genuine, permanent architectural
+divergences, not gaps to close", on the grounds that the durable `Stream` model
+had no content_type/ttl/closed columns and never would. That is no longer true:
+the durable store now backs a protocol server, so it models all of them, and
+both stores are held to them by `tests/server_store_contract.py`. They are out
+of scope *here* only because they belong to the protocol-server surface
+(`StreamServerStore`), not the framework one (`WritableStore`) — a different
+contract, not an absent one.
+
+What remains genuinely backend-specific is the offset *format* (compound
+`{seq}_{byte}` vs zero-padded int).
 
 The offset **format** stays backend-specific (the compound `{seq}_{byte}` vs
 zero-padded int divergence above) — the protocol mandates opacity, not one

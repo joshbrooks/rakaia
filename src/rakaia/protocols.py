@@ -60,14 +60,14 @@ class WritableStore(ReadableStore, Protocol):
     registry rely on: create a stream, append enveloped events, check existence,
     and read them back (inherited from `ReadableStore`). It deliberately excludes
     the Durable Streams **protocol-server** lifecycle (producer epoch/seq
-    fencing, close, TTL, long-poll/`wait_for_messages`); those live on the
-    standalone server's store and are not required to back `replay()`/projections.
+    fencing, close, TTL, long-poll/`wait_for_messages`), which is not required to
+    back `replay()`/projections. That lifecycle is `StreamServerStore` below.
     See ADR 0002.
 
-    Return types are intentionally loose (`Any`): the in-memory `StreamStore`
-    returns rich protocol types (`Stream`/`AppendResult`) while `DjangoStreamStore`
-    returns ORM rows (`StreamEntry`). What both guarantee is the read-back
-    behaviour exercised by the shared conformance suite (`tests/store_contract.py`).
+    Return types stay loose (`Any`) so a backend can return whatever suits it;
+    both current stores return `AppendResult` from `append`. What they guarantee
+    is the read-back behaviour exercised by the shared conformance suite
+    (`tests/store_contract.py`).
     """
 
     def has(self, path: str) -> bool:
@@ -88,24 +88,11 @@ class WritableStore(ReadableStore, Protocol):
     def append(self, path: str, data: bytes, options: Any = None) -> Any:
         """Append one (optionally enveloped) event to `path`.
 
-        Three possible outcomes, only the first of which is guaranteed across
-        every backend:
-
-        - Raises `KeyError` if the stream does not exist (create it first) —
-          the one guaranteed exception every `WritableStore` must raise.
-        - May raise `ValueError` for a backend's own validation (the in-memory
-          `StreamStore` raises this on a content-type or Stream-Seq conflict);
-          `DjangoStreamStore` has no such concept and never raises it.
-        - May return normally with a closed-stream signal instead of raising
-          (the in-memory `StreamStore`'s `AppendResult.stream_closed=True`,
-          with `message=None`, when appending to a closed stream);
-          `DjangoStreamStore` has no closed-stream concept and never signals
-          this.
-
-        Depend only on the `KeyError` here; treat the `ValueError` and
-        `stream_closed=True` cases as backend-specific, not part of the
-        `WritableStore` contract (see `tests/store_contract.py` for what is and
-        isn't asserted across backends).
+        Raises `StreamNotFound` (a `KeyError`) if the stream does not exist —
+        the one exception every `WritableStore` must raise. A store that also
+        implements `StreamServerStore` has further outcomes (closed stream,
+        content-type and Stream-Seq conflicts); those belong to that contract,
+        and both current stores share them.
 
         The envelope — `label` and `metadata` on `options` (an `AppendOptions`) —
         is recorded and read back by `read`; ambient `provenance()` merges under
@@ -118,7 +105,7 @@ class WritableStore(ReadableStore, Protocol):
         result per item in input order.
 
         Semantically identical to calling `append` once per item — same
-        `KeyError`-if-missing guarantee and same per-event envelope handling —
+        `StreamNotFound`-if-missing guarantee and same per-event envelope handling —
         but a backend may collapse the batch into a single transaction (the
         durable `DjangoStreamStore` does, which is the point). An empty batch is
         a no-op returning `[]`. Result element types stay backend-specific and

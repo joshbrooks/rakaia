@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.db.models.query import QuerySet
 
-from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.django_store import DjangoStreamStore, format_offset
 from django_rakaia.models import (
     Stream,
     StreamEntry,
@@ -20,7 +20,7 @@ from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.store import StreamStore
-from rakaia.types import AppendOptions
+from rakaia.types import AppendOptions, SequenceConflict, StreamConfigConflict
 
 
 @pytest.mark.django_db
@@ -95,37 +95,49 @@ class TestDjangoStreamStore:
         assert store.has("s") is True
         assert set(store.list_paths()) == {"s", "t"}
 
-    def test_create_ignores_conflicting_kwargs_instead_of_raising(self):
-        # Deliberate divergence from the in-memory StreamStore (see its
-        # test_create_conflicting_content_type_raises /
-        # test_create_conflicting_ttl_raises): the Django Stream model has no
-        # content_type/ttl/closed columns at all, so there is no config to
-        # conflict on. `create()` re-`create`d with different kwargs silently
-        # ignores them rather than raising ValueError — this pins that
-        # behaviour so a future caller relying on in-memory-style
-        # conflict-rejection sees a failing test instead of a silent no-op.
+    def test_create_conflicting_config_raises(self):
+        # This used to assert the opposite: the durable Stream model had no
+        # content_type/ttl/closed columns, so there was no stored config to
+        # conflict on and a re-create with different kwargs silently ignored
+        # them. Now that the store backs a protocol server it records its
+        # configuration, and matches the in-memory store.
         store = DjangoStreamStore()
         store.create("s", content_type="application/json")
-        # No ValueError, and the extra kwargs leave no trace to conflict on.
-        again = store.create("s", content_type="text/plain")
+        with pytest.raises(StreamConfigConflict):
+            store.create("s", content_type="text/plain")
         assert Stream.objects.filter(stream_id="s").count() == 1
-        assert again.stream_id == "s"
 
-    def test_append_has_no_closed_stream_concept(self):
-        # Deliberate divergence from the in-memory StreamStore (see its
-        # test_append_to_closed_stream_returns_stream_closed /
-        # test_seq_conflict_raises): DjangoStreamStore does not model stream
-        # closing or Stream-Seq/producer fencing (module docstring — those are
-        # live-protocol-server concerns, out of scope for the durable
-        # event-sourcing store). There is nothing to close and no seq option
-        # honoured, so repeated appends never raise ValueError and never
-        # report stream_closed — appends just keep succeeding.
+    def test_create_is_idempotent_for_matching_config(self):
+        store = DjangoStreamStore()
+        first = store.create("s", content_type="application/json", ttl_seconds=60)
+        again = store.create("s", content_type="application/json", ttl_seconds=60)
+        assert first.pk == again.pk
+        assert Stream.objects.filter(stream_id="s").count() == 1
+
+    def test_append_to_closed_stream_reports_stream_closed(self):
+        # Also previously asserted the opposite — there was no `closed` column,
+        # so appends to a "closed" stream just kept succeeding.
         store = DjangoStreamStore()
         store.create("s")
-        first = store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
-        second = store.append("s", b'{"id": 2}', AppendOptions(seq="5"))
-        assert first.event.data == {"id": 1}
-        assert second.event.data == {"id": 2}
+        store.close_stream("s")
+        result = store.append("s", b'{"id": 1}')
+        assert result.stream_closed is True
+        assert result.message is None
+
+    def test_seq_conflict_raises(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        with pytest.raises(SequenceConflict):
+            store.append("s", b'{"id": 2}', AppendOptions(seq=5))
+
+    def test_seq_compares_numerically(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(seq=9))
+        # 10 follows 9. Compared as text it would not.
+        result = store.append("s", b'{"id": 2}', AppendOptions(seq=10))
+        assert result.message is not None
 
     def test_get_current_offset(self):
         store = DjangoStreamStore()
@@ -209,8 +221,12 @@ class TestDjangoStreamStore:
             ]
 
         assert rows("bulk") == rows("loop")
-        # Entries returned in input order, offsets contiguous from 1.
-        assert [e.offset for e in returned] == [1, 2, 3]
+        # Results returned in input order, offsets contiguous from 1.
+        assert [r.message.offset for r in returned] == [
+            format_offset(1),
+            format_offset(2),
+            format_offset(3),
+        ]
         assert [
             json.loads(store.read("bulk")[0][i].data.decode()) for i in range(3)
         ] == [
