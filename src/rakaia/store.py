@@ -145,7 +145,7 @@ class StreamStore:
         If the stream already exists with matching config, returns it (idempotent).
 
         Raises:
-            ValueError: If stream exists with different config.
+            StreamConfigConflict: If stream exists with different config.
         """
         existing = self._get_if_not_expired(path)
         if existing is not None:
@@ -237,8 +237,9 @@ class StreamStore:
         producer validation, and stream closure.
 
         Raises:
-            KeyError: If stream doesn't exist or is expired.
-            ValueError: If JSON is invalid, content-type mismatches, or seq conflict.
+            StreamNotFound: If stream doesn't exist or is expired.
+            InvalidJson / EmptyJsonArray: If the payload fails JSON-mode checks.
+            ContentTypeMismatch / SequenceConflict: On the respective conflict.
         """
         opts = options or AppendOptions()
         stream = self._get_if_not_expired(path)
@@ -359,9 +360,10 @@ class StreamStore:
         self,
         path: str,
         data: bytes,
-        options: AppendOptions,
+        options: AppendOptions | None = None,
     ) -> AppendResult:
         """Append with producer serialization for concurrent request handling."""
+        options = options or AppendOptions()
         if not options.producer_id:
             return self.append(path, data, options)
 
@@ -475,7 +477,7 @@ class StreamStore:
         Returns (messages, up_to_date).
 
         Raises:
-            KeyError: If stream doesn't exist or is expired.
+            StreamNotFound: If stream doesn't exist or is expired.
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
@@ -525,7 +527,7 @@ class StreamStore:
         Returns (messages, timed_out, stream_closed).
 
         Raises:
-            KeyError: If stream doesn't exist.
+            StreamNotFound: If stream doesn't exist.
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
