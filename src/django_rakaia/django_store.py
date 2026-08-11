@@ -60,6 +60,7 @@ from rakaia.types import (
     ContentTypeMismatch,
     InvalidOffset,
     ProducerAccepted,
+    ProducerDuplicate,
     ProducerState,
     ProducerStreamClosed,
     ProducerValidationResult,
@@ -188,14 +189,27 @@ class DjangoStreamStore:
                 )
             except ValueError:
                 return False
-            if now > expires.replace(tzinfo=timezone.utc).timestamp():
+            # A naive timestamp is taken as UTC; a parsed offset is kept, not
+            # overwritten (`replace(tzinfo=...)` would silently discard it).
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if now > expires.timestamp():
                 return True
 
         return False
 
-    def _get_if_not_expired(self, path: str) -> Stream | None:
-        """The live stream at `path`, deleting it first if it has expired."""
-        stream = Stream.objects.filter(stream_id=path).first()
+    def _get_if_not_expired(
+        self, path: str, *, for_update: bool = False
+    ) -> Stream | None:
+        """The live stream at `path`, deleting it first if it has expired.
+
+        `for_update` locks the stream row for the enclosing transaction, so a
+        writer's closed/Stream-Seq/producer checks and its write are one
+        atomic step against concurrent writers. Only valid inside
+        `transaction.atomic()`; a no-op on backends without row locks (SQLite).
+        """
+        qs = Stream.objects.select_for_update() if for_update else Stream.objects
+        stream = qs.filter(stream_id=path).first()
         if stream is None:
             return None
         if self._is_expired(stream):
@@ -203,11 +217,21 @@ class DjangoStreamStore:
             return None
         return stream
 
-    def _require(self, path: str) -> Stream:
-        stream = self._get_if_not_expired(path)
+    def _require(self, path: str, *, for_update: bool = False) -> Stream:
+        stream = self._get_if_not_expired(path, for_update=for_update)
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
         return stream
+
+    def _reap_if_expired(self, path: str) -> None:
+        """Expire-and-delete `path` now, outside any write transaction.
+
+        The write paths call this before opening `transaction.atomic()`:
+        `_require`'s expiry delete *inside* the transaction is rolled back by
+        the very `StreamNotFound` unwind that reports it, so the write path
+        would otherwise never actually reap.
+        """
+        self._get_if_not_expired(path)
 
     @staticmethod
     def _touch(stream: Stream) -> None:
@@ -242,34 +266,45 @@ class DjangoStreamStore:
         in-memory store. (Before the lifecycle columns existed this store had
         nowhere to record a configuration, so it accepted any re-create
         silently — that divergence is now closed.)
-        """
-        existing = self._get_if_not_expired(path)
-        if existing is not None:
-            same = (
-                normalize_content_type(content_type)
-                == normalize_content_type(existing.content_type)
-                and ttl_seconds == existing.ttl_seconds
-                and expires_at == existing.expires_at
-                and closed == existing.closed
-            )
-            if same:
-                return existing
-            raise StreamConfigConflict(
-                f"Stream already exists with different configuration: {path}"
-            )
 
-        now = time.time()
-        stream = Stream.objects.create(
-            stream_id=path,
-            content_type=content_type,
-            ttl_seconds=ttl_seconds,
-            expires_at=expires_at,
-            last_activity_at=now,
-            closed=closed,
-        )
-        if initial_data:
-            self._write(stream, initial_data, AppendOptions(), is_initial_create=True)
-        return stream
+        Runs in a transaction, like every other write path: `initial_data`
+        routes through offset allocation, whose `select_for_update()` demands
+        one on Postgres. SQLite has no row locks, so a missing transaction
+        here is invisible to the test suite but a guaranteed 500 in
+        production — hence the contract's create-with-body case and this
+        comment. Do not unwrap it.
+        """
+        self._reap_if_expired(path)
+        with transaction.atomic():
+            existing = self._get_if_not_expired(path)
+            if existing is not None:
+                same = (
+                    normalize_content_type(content_type)
+                    == normalize_content_type(existing.content_type)
+                    and ttl_seconds == existing.ttl_seconds
+                    and expires_at == existing.expires_at
+                    and closed == existing.closed
+                )
+                if same:
+                    return existing
+                raise StreamConfigConflict(
+                    f"Stream already exists with different configuration: {path}"
+                )
+
+            now = time.time()
+            stream = Stream.objects.create(
+                stream_id=path,
+                content_type=content_type,
+                ttl_seconds=ttl_seconds,
+                expires_at=expires_at,
+                last_activity_at=now,
+                closed=closed,
+            )
+            if initial_data:
+                self._write(
+                    stream, initial_data, AppendOptions(), is_initial_create=True
+                )
+            return stream
 
     def close_stream(self, path: str) -> CloseResult | None:
         """Close the stream. `None` if it does not exist.
@@ -310,12 +345,17 @@ class DjangoStreamStore:
     def _close_with_producer_sync(
         self, path: str, producer_id: str, epoch: int, seq: int
     ) -> CloseResult | None:
+        self._reap_if_expired(path)
         with transaction.atomic():
-            stream = self._get_if_not_expired(path)
+            stream = self._get_if_not_expired(path, for_update=True)
             if stream is None:
                 return None
 
             if stream.closed:
+                # Mirror the in-memory store: an already-closed stream is
+                # reported, never re-closed — a different producer's close must
+                # not overwrite `closed_by`, which is what makes a retry of the
+                # *original* closing tuple recognisable as a duplicate.
                 by = stream.closed_by
                 if by is not None and (by.producer_id, by.epoch, by.seq) == (
                     producer_id,
@@ -323,8 +363,15 @@ class DjangoStreamStore:
                     seq,
                 ):
                     return CloseResult(
-                        final_offset=stream.current_offset, already_closed=True
+                        final_offset=stream.current_offset,
+                        already_closed=True,
+                        producer_result=ProducerDuplicate(last_seq=seq),
                     )
+                return CloseResult(
+                    final_offset=stream.current_offset,
+                    already_closed=True,
+                    producer_result=ProducerStreamClosed(),
+                )
 
             result = self._validate_producer(stream, producer_id, epoch, seq)
             if not isinstance(result, ProducerAccepted):
@@ -372,10 +419,13 @@ class DjangoStreamStore:
         - Returns `AppendResult(stream_closed=True, message=None)` if closed.
         - Raises `ContentTypeMismatch` / `SequenceConflict` / `InvalidJson` /
           `EmptyJsonArray` for the corresponding failures.
+        - Honours `options.close`: the append and the close are one atomic
+          step, and the result reports `stream_closed=True`.
         """
         opts = options if options is not None else AppendOptions()
+        self._reap_if_expired(path)
         with transaction.atomic():
-            stream = self._require(path)
+            stream = self._require(path, for_update=True)
 
             if stream.closed:
                 return AppendResult(message=None, stream_closed=True)
@@ -388,11 +438,16 @@ class DjangoStreamStore:
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
                 stream.save(update_fields=["last_seq"])
+            close = bool(getattr(opts, "close", False))
+            if close:
+                self._close_from_append(stream, opts)
             self._touch(stream)
             # A JSON-mode array append writes several messages; the result
             # carries the last, whose offset is the stream's new head — which
             # is what a caller resumes from.
-            return AppendResult(message=messages[-1] if messages else None)
+            return AppendResult(
+                message=messages[-1] if messages else None, stream_closed=close
+            )
 
     # =========================================================================
     # Append helpers
@@ -416,6 +471,25 @@ class DjangoStreamStore:
         seq = getattr(opts, "seq", None)
         if seq is not None and stream.last_seq is not None and seq <= stream.last_seq:
             raise SequenceConflict(f"Sequence conflict: {seq} <= {stream.last_seq}")
+
+    @staticmethod
+    def _close_from_append(stream: Stream, opts: Any) -> None:
+        """Close the stream as the final step of an append (`Stream-Closed: true`).
+
+        Records the closing producer tuple when there is one, exactly as the
+        in-memory store does, so a retried close-with-body is recognisable as a
+        duplicate.
+        """
+        stream.closed = True
+        stream.closed_at = time.time()
+        fields = ["closed", "closed_at"]
+        producer_id = getattr(opts, "producer_id", None)
+        if producer_id is not None:
+            stream.closed_by_producer_id = producer_id
+            stream.closed_by_epoch = getattr(opts, "producer_epoch", None) or 0
+            stream.closed_by_seq = getattr(opts, "producer_seq", None) or 0
+            fields += ["closed_by_producer_id", "closed_by_epoch", "closed_by_seq"]
+        stream.save(update_fields=fields)
 
     @staticmethod
     def _payloads_for(
@@ -560,8 +634,16 @@ class DjangoStreamStore:
         if producer_id is None or epoch is None or seq is None:
             return self.append(path, data, opts)
 
+        self._reap_if_expired(path)
         with transaction.atomic():
-            stream = self._require(path)
+            # The row lock is what makes fencing fence: validation reads the
+            # producer's last state, and two concurrent retries of the same
+            # (producer_id, epoch, seq) that both read before either commits
+            # would both be accepted — the exact duplicate write the fencing
+            # exists to prevent. Serialized on the stream row, the loser
+            # re-reads the winner's committed state. (The in-memory store's
+            # per-producer asyncio.Lock is this lock's in-process analogue.)
+            stream = self._require(path, for_update=True)
 
             result = self._validate_producer(stream, producer_id, epoch, seq)
 
@@ -587,9 +669,14 @@ class DjangoStreamStore:
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
                 stream.save(update_fields=["last_seq"])
+            close = bool(getattr(opts, "close", False))
+            if close:
+                self._close_from_append(stream, opts)
             self._touch(stream)
             return AppendResult(
-                message=messages[-1] if messages else None, producer_result=result
+                message=messages[-1] if messages else None,
+                producer_result=result,
+                stream_closed=close,
             )
 
     def append_many(
@@ -626,13 +713,44 @@ class DjangoStreamStore:
         for a missing stream). A non-empty batch raises ``StreamNotFound`` if
         the stream does not exist, like :meth:`append`, and returns one
         ``AppendResult`` per item in input order.
+
+        The rest of :meth:`append`'s semantics hold per item too: a closed
+        stream refuses every item with ``stream_closed=True``; per-item
+        ``content_type`` and ``seq`` are validated (the whole batch, before any
+        row is written — a conflict raises and writes nothing); and an item
+        with ``close=True`` closes the stream, refusing the items after it,
+        exactly as a loop of ``append`` would.
         """
         items = list(events)
         if not items:
             return []
 
+        self._reap_if_expired(path)
         with transaction.atomic():
-            stream = self._require(path)
+            stream = self._require(path, for_update=True)
+
+            if stream.closed:
+                return [AppendResult(message=None, stream_closed=True) for _ in items]
+
+            # Validate before writing, exactly as a loop of `append` would:
+            # per-item content type, and a sequentially advancing Stream-Seq.
+            # The batch is cut at the first item that closes the stream; items
+            # after it observe the closed stream and are refused, not written.
+            last_seq = stream.last_seq
+            cut = len(items)
+            for i, (_data, options) in enumerate(items):
+                self._check_content_type(stream, options)
+                seq = getattr(options, "seq", None)
+                if seq is not None:
+                    if last_seq is not None and seq <= last_seq:
+                        raise SequenceConflict(
+                            f"Sequence conflict: {seq} <= {last_seq}"
+                        )
+                    last_seq = seq
+                if getattr(options, "close", False):
+                    cut = i + 1
+                    break
+            written, refused = items[:cut], items[cut:]
 
             # Mirror `append`'s per-event envelope mapping and payload encoding.
             # `merge_provenance` is evaluated per item so ambient provenance is
@@ -640,7 +758,7 @@ class DjangoStreamStore:
             # here: this surface promises one result per input item, and an
             # event-sourcing batch item is one event whose payload may well be a
             # list.
-            encoded = [encode_payload(data, stream.content_type) for data, _ in items]
+            encoded = [encode_payload(data, stream.content_type) for data, _ in written]
             stream_events = [
                 StreamEvent(
                     data=value,
@@ -651,7 +769,7 @@ class DjangoStreamStore:
                     payload_encoding=encoding,
                 )
                 for (_data, options), (value, encoding) in zip(
-                    items, encoded, strict=True
+                    written, encoded, strict=True
                 )
             ]
             StreamEvent.objects.bulk_create(stream_events)
@@ -662,6 +780,15 @@ class DjangoStreamStore:
                 for i, event in enumerate(stream_events)
             ]
             StreamEntry.objects.bulk_create(entries)
+
+            if last_seq != stream.last_seq:
+                stream.last_seq = last_seq
+                stream.save(update_fields=["last_seq"])
+            closing = cut < len(items) or bool(
+                written and getattr(written[-1][1], "close", False)
+            )
+            if closing:
+                self._close_from_append(stream, written[-1][1])
             self._touch(stream)
             return [
                 AppendResult(
@@ -680,10 +807,13 @@ class DjangoStreamStore:
                             else event.event_type
                         ),
                         metadata=event.metadata or None,
-                    )
+                    ),
+                    stream_closed=bool(getattr(options, "close", False)),
                 )
-                for event, entry in zip(stream_events, entries, strict=True)
-            ]
+                for (_data, options), event, entry in zip(
+                    written, stream_events, entries, strict=True
+                )
+            ] + [AppendResult(message=None, stream_closed=True) for _ in refused]
 
     def read(
         self, path: str, offset: str | None = None
@@ -780,11 +910,13 @@ class DjangoStreamStore:
         """Render `messages` as the response body for `path`.
 
         A JSON-mode stream yields one JSON array; anything else the payloads
-        concatenated.
+        concatenated. Raises `StreamNotFound` for an absent or expired stream,
+        matching the in-memory store — returning `b""` here would silently
+        drop the JSON-array framing on the expiry race instead of failing.
         """
-        stream = self._get_if_not_expired(path)
+        stream = self._require(path)
         concatenated = b"".join(m.data for m in messages)
-        if stream is not None and is_json_content_type(stream.content_type):
+        if is_json_content_type(stream.content_type):
             # Stored payloads are standalone JSON documents; the shared
             # formatter expects the store's comma-separated concatenation.
             joined = b",".join(m.data for m in messages)
@@ -804,10 +936,17 @@ class DjangoStreamStore:
         in this one would never observe.
         """
         deadline = time.monotonic() + timeout_seconds
+        entered = False
         while True:
             stream = await sync_to_async(self._get_if_not_expired)(path)
             if stream is None:
-                raise StreamNotFound(f"Stream not found: {path}")
+                if not entered:
+                    raise StreamNotFound(f"Stream not found: {path}")
+                # The stream expired mid-wait. The in-memory store reports
+                # that as an ordinary timeout, not an error — a client that
+                # was legitimately waiting should not get a 404 for it.
+                return [], True, False
+            entered = True
 
             messages = await sync_to_async(self._read_since)(stream, offset)
             if messages:
@@ -835,8 +974,12 @@ class DjangoStreamStore:
         stale subscriber cursor reads as ``caught_up`` rather than a spurious
         ``rewound`` (#34, Defect #2). Mirrors ``Stream.get_next_offset``'s
         ``max(entries, watermark)`` so allocation and tail-reporting agree.
+
+        An expired stream reports ``None`` exactly as an absent one does — the
+        in-memory store behaves the same, and every other read on this store
+        applies the expiry check.
         """
-        stream = Stream.objects.filter(stream_id=path).first()
+        stream = self._get_if_not_expired(path)
         if stream is None:
             return None
         entries_max = stream.entries.aggregate(max_offset=Max("offset"))["max_offset"]

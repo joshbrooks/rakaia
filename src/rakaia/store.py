@@ -90,7 +90,11 @@ class StreamStore:
                 expires = datetime.fromisoformat(
                     stream.expires_at.replace("Z", "+00:00")
                 )
-                if now > expires.replace(tzinfo=timezone.utc).timestamp():
+                # A naive timestamp is taken as UTC; a parsed offset is kept,
+                # not overwritten (`replace(tzinfo=...)` would discard it).
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if now > expires.timestamp():
                     return True
             except ValueError:
                 # A malformed Stream-Expires-At can't be evaluated, so the
@@ -353,8 +357,41 @@ class StreamStore:
         :meth:`append` per item, preserving every append semantic
         (producer/seq/close validation, TTL touch, long-poll notification). An
         empty batch returns ``[]``.
+
+        A content-type or Stream-Seq conflict anywhere in the batch refuses
+        the whole batch before anything is written. The durable store's single
+        transaction can only be all-or-nothing on a conflict, and the two
+        stores must agree — a plain loop here would leave the prefix written.
         """
-        return [self.append(path, data, options) for data, options in events]
+        items = list(events)
+        if not items:
+            return []
+        stream = self._get_if_not_expired(path)
+        if stream is not None and not stream.closed:
+            last_seq = stream.last_seq
+            for _data, options in items:
+                opts = options or AppendOptions()
+                if (
+                    opts.content_type
+                    and stream.content_type
+                    and normalize_content_type(opts.content_type)
+                    != normalize_content_type(stream.content_type)
+                ):
+                    raise ContentTypeMismatch(
+                        f"Content-type mismatch: expected "
+                        f"{stream.content_type}, got {opts.content_type}"
+                    )
+                if opts.seq is not None:
+                    if last_seq is not None and opts.seq <= last_seq:
+                        raise SequenceConflict(
+                            f"Sequence conflict: {opts.seq} <= {last_seq}"
+                        )
+                    last_seq = opts.seq
+                if opts.close:
+                    # Items after a close observe the closed stream and are
+                    # refused, not validated.
+                    break
+        return [self.append(path, data, options) for data, options in items]
 
     async def append_with_producer(
         self,

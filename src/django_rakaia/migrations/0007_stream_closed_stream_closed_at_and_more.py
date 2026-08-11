@@ -4,6 +4,18 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
+def seed_last_activity(apps, _schema_editor):
+    """Anchor pre-existing streams' TTL window on their creation time.
+
+    The column default of 0.0 means "last active at the epoch": setting a TTL
+    on a stream created before this migration would expire it instantly.
+    """
+    Stream = apps.get_model("django_rakaia", "Stream")
+    for stream in Stream.objects.all().iterator():
+        stream.last_activity_at = stream.created_at.timestamp()
+        stream.save(update_fields=["last_activity_at"])
+
+
 class Migration(migrations.Migration):
     dependencies = [
         ("django_rakaia", "0006_alter_streamevent_data_alter_streamevent_metadata"),
@@ -95,4 +107,5 @@ class Migration(migrations.Migration):
                 "unique_together": {("stream", "producer_id")},
             },
         ),
+        migrations.RunPython(seed_last_activity, migrations.RunPython.noop),
     ]
