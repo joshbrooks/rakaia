@@ -64,6 +64,61 @@ PRODUCER_STATE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 # =============================================================================
+# Store failures
+# =============================================================================
+#
+# The closed set of failures a store raises and a protocol server maps to a
+# status. Before these existed the mapping was a chain of substring tests over
+# `str(e)` in `handler.py`, so an f-string reworded in `store.py` silently
+# turned a 4xx into an unhandled 500 — and any other store implementation had
+# to reproduce five exact English strings to get the same statuses. Naming them
+# makes the mapping a lookup and the contract something a store can be tested
+# against.
+#
+# Each subclasses the builtin it replaced (`KeyError` / `ValueError`), so code
+# and tests that caught those keep working.
+
+
+class StreamError(Exception):
+    """Base for store failures a protocol server maps to a status."""
+
+
+class StreamNotFound(StreamError, KeyError):
+    """The stream does not exist, or has expired."""
+
+
+class StreamConfigConflict(StreamError, ValueError):
+    """A create names an existing stream with a different configuration."""
+
+
+class SequenceConflict(StreamError, ValueError):
+    """An append's `Stream-Seq` is not above the stream's last seq."""
+
+
+class ContentTypeMismatch(StreamError, ValueError):
+    """An append's content type disagrees with the stream's."""
+
+
+class InvalidJson(StreamError, ValueError):
+    """A JSON-mode payload did not parse."""
+
+
+class EmptyJsonArray(StreamError, ValueError):
+    """A JSON-mode append carried an empty array."""
+
+
+class InvalidOffset(StreamError, ValueError):
+    """An offset is syntactically valid but not one this store can read.
+
+    `VALID_OFFSET_PATTERN` is a syntactic guard shared by every server; it
+    cannot tell whether a given token is an offset *this* store issued, because
+    the protocol makes offsets opaque rather than uniform (§6). A store that
+    cannot interpret the token must say so, rather than parse it into some
+    other position and read the wrong window.
+    """
+
+
+# =============================================================================
 # Data structures
 # =============================================================================
 

@@ -84,6 +84,10 @@ from .types import (
     AppendResult,
     ClosedBy,
     CloseResult,
+    ContentTypeMismatch,
+    EmptyJsonArray,
+    InvalidJson,
+    InvalidOffset,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -92,8 +96,12 @@ from .types import (
     ProducerState,
     ProducerStreamClosed,
     ProducerValidationResult,
+    SequenceConflict,
     Stream,
+    StreamConfigConflict,
+    StreamError,
     StreamMessage,
+    StreamNotFound,
 )
 
 __version__ = "0.1.0"
@@ -139,6 +147,15 @@ __all__ = [
     "ProducerInvalidEpochSeq",
     "ProducerSequenceGap",
     "ProducerStreamClosed",
+    # Store failures (each subclasses the builtin it replaced)
+    "StreamError",
+    "StreamNotFound",
+    "StreamConfigConflict",
+    "SequenceConflict",
+    "ContentTypeMismatch",
+    "InvalidJson",
+    "EmptyJsonArray",
+    "InvalidOffset",
     # Cursor
     "calculate_cursor",
     "generate_response_cursor",

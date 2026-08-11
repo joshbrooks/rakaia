@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .types import EmptyJsonArray, InvalidJson
+
 
 def normalize_content_type(content_type: str | None) -> str:
     """
@@ -50,14 +52,14 @@ def process_json_append(data: bytes, is_initial_create: bool = False) -> bytes:
     try:
         parsed: Any = json.loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise ValueError(f"Invalid JSON: {e}") from e
+        raise InvalidJson(f"Invalid JSON: {e}") from e
 
     if isinstance(parsed, list):
         if len(parsed) == 0:
             if is_initial_create:
                 # Empty array on create = empty stream, no data to store
                 return b""
-            raise ValueError("Empty arrays are not allowed in append operations")
+            raise EmptyJsonArray("Empty arrays are not allowed in append operations")
 
         # Flatten one level: each element becomes a separate message
         # Store as individual JSON values with trailing commas

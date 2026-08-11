@@ -26,6 +26,7 @@ from .types import (
     AppendOptions,
     AppendResult,
     CloseResult,
+    ContentTypeMismatch,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -33,8 +34,11 @@ from .types import (
     ProducerStaleEpoch,
     ProducerStreamClosed,
     ProducerValidationResult,
+    SequenceConflict,
     Stream,
+    StreamConfigConflict,
     StreamMessage,
+    StreamNotFound,
 )
 
 # NB: this module generates offsets (the `{seq}_{byte}` format) but never
@@ -139,7 +143,7 @@ class StreamStore:
         If the stream already exists with matching config, returns it (idempotent).
 
         Raises:
-            ValueError: If stream exists with different config.
+            StreamConfigConflict: If stream exists with different config.
         """
         existing = self._get_if_not_expired(path)
         if existing is not None:
@@ -153,7 +157,7 @@ class StreamStore:
 
             if ct_matches and ttl_matches and expires_matches and closed_matches:
                 return existing
-            raise ValueError(
+            raise StreamConfigConflict(
                 f"Stream already exists with different configuration: {path}"
             )
 
@@ -231,13 +235,14 @@ class StreamStore:
         producer validation, and stream closure.
 
         Raises:
-            KeyError: If stream doesn't exist or is expired.
-            ValueError: If JSON is invalid, content-type mismatches, or seq conflict.
+            StreamNotFound: If stream doesn't exist or is expired.
+            InvalidJson / EmptyJsonArray: If the payload fails JSON-mode checks.
+            ContentTypeMismatch / SequenceConflict: On the respective conflict.
         """
         opts = options or AppendOptions()
         stream = self._get_if_not_expired(path)
         if stream is None:
-            raise KeyError(f"Stream not found: {path}")
+            raise StreamNotFound(f"Stream not found: {path}")
 
         # Check if stream is closed
         if stream.closed:
@@ -262,7 +267,7 @@ class StreamStore:
             provided = normalize_content_type(opts.content_type)
             stream_ct = normalize_content_type(stream.content_type)
             if provided != stream_ct:
-                raise ValueError(
+                raise ContentTypeMismatch(
                     f"Content-type mismatch: expected {stream.content_type}, "
                     f"got {opts.content_type}"
                 )
@@ -286,7 +291,9 @@ class StreamStore:
             and stream.last_seq is not None
             and opts.seq <= stream.last_seq
         ):
-            raise ValueError(f"Sequence conflict: {opts.seq} <= {stream.last_seq}")
+            raise SequenceConflict(
+                f"Sequence conflict: {opts.seq} <= {stream.last_seq}"
+            )
 
         # Append the data (may raise for invalid JSON). Provenance is merged
         # here at the public-append boundary — not in _append_to_stream — so a
@@ -467,11 +474,11 @@ class StreamStore:
         Returns (messages, up_to_date).
 
         Raises:
-            KeyError: If stream doesn't exist or is expired.
+            StreamNotFound: If stream doesn't exist or is expired.
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
-            raise KeyError(f"Stream not found: {path}")
+            raise StreamNotFound(f"Stream not found: {path}")
 
         # A read extends the sliding TTL window.
         self._touch(stream)
@@ -493,7 +500,7 @@ class StreamStore:
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
-            raise KeyError(f"Stream not found: {path}")
+            raise StreamNotFound(f"Stream not found: {path}")
 
         # Concatenate all message data
         concatenated = b"".join(m.data for m in messages)
@@ -515,11 +522,11 @@ class StreamStore:
         Returns (messages, timed_out, stream_closed).
 
         Raises:
-            KeyError: If stream doesn't exist.
+            StreamNotFound: If stream doesn't exist.
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
-            raise KeyError(f"Stream not found: {path}")
+            raise StreamNotFound(f"Stream not found: {path}")
 
         # Check for existing messages first
         messages, _ = self.read(path, offset)

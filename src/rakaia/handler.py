@@ -49,12 +49,56 @@ from .types import (
     STREAM_TTL_HEADER,
     VALID_OFFSET_PATTERN,
     AppendOptions,
+    ContentTypeMismatch,
+    EmptyJsonArray,
+    InvalidJson,
+    InvalidOffset,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
     ProducerSequenceGap,
     ProducerStaleEpoch,
     ProducerStreamClosed,
+    SequenceConflict,
+    StreamConfigConflict,
+    StreamError,
+    StreamNotFound,
 )
+
+# How a store failure becomes a response. A store raises one of the named
+# failures in `.types`; this is the whole mapping. Anything not in here — a
+# store raising a bare ValueError, say — propagates and becomes a 500, which is
+# the same as before, except the decision is now made by type rather than by
+# matching English in the exception message (a reworded f-string used to turn a
+# 4xx into a 500 silently).
+STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
+    StreamNotFound: (404, b"Stream not found"),
+    StreamConfigConflict: (
+        409,
+        b"Stream already exists with different configuration",
+    ),
+    SequenceConflict: (409, b"Sequence conflict"),
+    ContentTypeMismatch: (409, b"Content-type mismatch"),
+    InvalidJson: (400, b"Invalid JSON"),
+    EmptyJsonArray: (400, b"Empty arrays are not allowed"),
+    InvalidOffset: (400, b"Invalid offset"),
+}
+
+
+def _status_for(failure: BaseException) -> tuple[int, bytes] | None:
+    """The response for a store failure, or `None` to let it propagate.
+
+    Resolved along the MRO rather than by exact type, so a store that
+    specializes a failure — `class ShardNotFound(StreamNotFound)` in some other
+    backend — inherits its status instead of falling through to a 500. The
+    closed-set test only sees subclasses that happen to be imported, so exact
+    lookup would leave that hole open for anything defined downstream.
+    """
+    for cls in type(failure).__mro__:
+        mapped = STORE_FAILURE_STATUS.get(cls)  # type: ignore[arg-type]
+        if mapped is not None:
+            return mapped
+    return None
+
 
 # Header names used in responses (title case for HTTP convention)
 STREAM_OFFSET_HEADER_RESP = "Stream-Next-Offset"
@@ -211,33 +255,12 @@ def create_app(
                 await _handle_delete(path, send, actual_store, cors_headers)
             else:
                 await _send_error(send, 405, b"Method not allowed", cors_headers)
-        except KeyError as e:
-            msg = str(e)
-            if "not found" in msg.lower():
-                await _send_error(send, 404, b"Stream not found", cors_headers)
-            else:
+        except StreamError as e:
+            mapped = _status_for(e)
+            if mapped is None:
                 raise
-        except ValueError as e:
-            msg = str(e)
-            if "already exists with different configuration" in msg:
-                await _send_error(
-                    send,
-                    409,
-                    b"Stream already exists with different configuration",
-                    cors_headers,
-                )
-            elif "Sequence conflict" in msg:
-                await _send_error(send, 409, b"Sequence conflict", cors_headers)
-            elif "Content-type mismatch" in msg:
-                await _send_error(send, 409, b"Content-type mismatch", cors_headers)
-            elif "Invalid JSON" in msg:
-                await _send_error(send, 400, b"Invalid JSON", cors_headers)
-            elif "Empty arrays are not allowed" in msg:
-                await _send_error(
-                    send, 400, b"Empty arrays are not allowed", cors_headers
-                )
-            else:
-                raise
+            status, body = mapped
+            await _send_error(send, status, body, cors_headers)
 
     return app
 
@@ -695,6 +718,11 @@ async def _handle_sse(
         )
         sse_headers["Stream-Sse-Data-Encoding"] = "base64"
 
+    # The first read runs before the response starts: a StreamError here (bad
+    # offset, vanished stream) must surface as its mapped 4xx, which is
+    # impossible once http.response.start has been sent.
+    pending_read: tuple[Any, bool] | None = store.read(path, initial_offset)
+
     await start_streaming_response(send, 200, sse_headers)
 
     current_offset = initial_offset
@@ -702,10 +730,14 @@ async def _handle_sse(
 
     while True:
         # Read messages from offset
-        try:
-            messages, up_to_date = store.read(path, current_offset)
-        except KeyError:
-            break
+        if pending_read is not None:
+            messages, up_to_date = pending_read
+            pending_read = None
+        else:
+            try:
+                messages, up_to_date = store.read(path, current_offset)
+            except (KeyError, StreamError):
+                break
 
         current_stream = store.get(path)
         if current_stream is None:
@@ -786,7 +818,7 @@ async def _handle_sse(
                 ) = await store.wait_for_messages(
                     path, current_offset, opts.long_poll_timeout
                 )
-            except KeyError:
+            except (KeyError, StreamError):
                 break
 
             if stream_closed:
