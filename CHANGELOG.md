@@ -16,8 +16,10 @@ is not yet tagged in a release.
 
 - **`StreamServerStore` — the protocol-server store surface, named.** `create_app`
   was typed against the concrete in-memory `StreamStore`, so nothing else could
-  back the protocol server. The new protocol (exported from `rakaia`) covers the
-  twelve methods the server actually calls, and `create_app` is typed against it.
+  back the protocol server. The new protocol (exported from `rakaia`) covers
+  the full surface the server actually calls — the protocol lifecycle methods
+  it declares itself plus the framework read/write methods inherited from
+  `WritableStore` — and `create_app` is typed against it.
 
 - **`DjangoStreamStore` now backs a protocol server.** It implements the whole
   `StreamServerStore` surface — producer epoch/seq fencing, stream close, the TTL
