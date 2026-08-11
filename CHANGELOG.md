@@ -23,9 +23,19 @@ is not yet tagged in a release.
   `StreamServerStore` surface — producer epoch/seq fencing, stream close, the TTL
   sliding window, long-poll and response formatting — so `rakaia.create_app` can
   serve the Durable Streams protocol directly off the database. Both stores are
-  held to one shared conformance suite (`tests/server_store_contract.py`, 28
-  cases each), and the fencing rules live in a single pure module
-  (`rakaia.producer`) that both call, so the two cannot drift apart.
+  held to one shared conformance suite (`tests/server_store_contract.py`), and
+  the fencing rules live in a single pure module (`rakaia.producer`) that both
+  call, so the two cannot drift apart.
+
+  It also holds the payloads the protocol allows but a JSON column does not.
+  A stream may declare **any** content type; `text/plain`, `text/csv` and
+  binary bodies are stored verbatim (base64 when not valid UTF-8) and read back
+  byte for byte, recorded by a new `StreamEvent.payload_encoding` column.
+  Streams with no declared content type keep storing parsed JSON exactly as
+  before, which is what `replay()`, the admin and the channel-layer signals
+  read. In JSON mode a top-level array is flattened one level on append, as the
+  protocol specifies and the in-memory store already did — `[a, b]` is two
+  messages, not one message that is an array.
 
   This closes what `tests/store_contract.py` previously called "genuine,
   permanent architectural divergences": conflict detection on `create`, stream
@@ -136,6 +146,21 @@ is not yet tagged in a release.
   → [`docs/whats-new.md`](docs/whats-new.md).
 
 ### Fixed
+
+- **A store now refuses an offset it did not issue.** Both stores accepted the
+  other's offset format and resolved it to an unrelated position instead of
+  failing: `int("0_5")` is `5` in Python, so the durable store read the wrong
+  window, while the in-memory store's lexicographic comparison put a plain
+  integer above every offset it emits, so a resume returned nothing and
+  reported the client up to date. Either way a resume silently skipped
+  messages. Both now raise `InvalidOffset` (400). `VALID_OFFSET_PATTERN` cannot
+  make this call — offsets are opaque, not uniform (§6), so only the issuing
+  store knows its own.
+
+- **A non-dict event payload crashed the channel-layer signal.** `post_save` on
+  `StreamEvent` called `.get()` on `data` unconditionally, so an append
+  carrying a JSON array, string or number raised `AttributeError` — failing the
+  append *after* the write had landed.
 
 - **Stream-Seq was compared as text, not as a number.** The header reached the
   store unparsed, so the conflict check `opts.seq <= stream.last_seq` compared

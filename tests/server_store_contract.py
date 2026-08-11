@@ -56,6 +56,41 @@ class ServerStoreContract:
 
         assert isinstance(store, StreamServerStore)
 
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "get",
+            "touch",
+            "delete",
+            "format_response",
+            "append_with_producer",
+            "close_stream",
+            "close_stream_with_producer",
+            "wait_for_messages",
+        ],
+    )
+    def test_takes_the_arguments_the_protocol_declares(self, store, method):
+        """`isinstance` above only checks that the *names* exist.
+
+        A `runtime_checkable` Protocol does not compare signatures, so a store
+        can satisfy it while taking arguments the server does not pass — which
+        is how `close_stream_with_producer` came to be declared one way and
+        implemented another in both stores at once.
+        """
+        import inspect
+
+        from rakaia.protocols import StreamServerStore
+
+        def params(obj):
+            sig = inspect.signature(getattr(obj, method))
+            return [p for p in sig.parameters if p != "self"]
+
+        declared, actual = params(StreamServerStore), params(store)
+        assert declared == actual, (
+            f"StreamServerStore.{method}{tuple(declared)} does not match "
+            f"{type(store).__name__}.{method}{tuple(actual)}"
+        )
+
     def test_get_exposes_what_a_server_reads(self, store):
         """A server reads exactly these six off a stream."""
         store.create("s", content_type="text/plain", ttl_seconds=60)
@@ -287,3 +322,102 @@ class ServerStoreContract:
         import json
 
         assert json.loads(body) == [{"id": 1}, {"id": 2}]
+
+    def test_a_json_array_append_flattens_into_separate_messages(self, store):
+        """`[a, b]` is two messages, not one message that is an array.
+
+        The protocol flattens a top-level array one level on append. A store
+        that keeps the array whole reads back a different shape and, for the
+        durable store, hands a *list* to everything expecting an event object.
+        """
+        import json
+
+        store.create("s", content_type="application/json")
+        store.append("s", b'[{"id": 1}, {"id": 2}]')
+        messages, _ = store.read("s")
+        assert json.loads(store.format_response("s", messages)) == [
+            {"id": 1},
+            {"id": 2},
+        ]
+
+    def test_an_empty_json_array_is_refused_on_append(self, store):
+        from rakaia.types import EmptyJsonArray
+
+        store.create("s", content_type="application/json")
+        with pytest.raises(EmptyJsonArray):
+            store.append("s", b"[]")
+
+    def test_malformed_json_is_refused_before_anything_is_written(self, store):
+        from rakaia.types import InvalidJson
+
+        store.create("s", content_type="application/json")
+        with pytest.raises(InvalidJson):
+            store.append("s", b"{not json")
+        messages, _ = store.read("s")
+        assert messages == [], "a refused append must not leave a message behind"
+
+    # =========================================================================
+    # Content types other than JSON
+    # =========================================================================
+    #
+    # The protocol lets a stream declare any content type; only
+    # `application/json` turns on JSON mode. A store that assumes every payload
+    # is JSON crashes on the rest — as a 500, since a `json.JSONDecodeError` is
+    # not one of the named store failures.
+
+    def test_a_text_stream_round_trips_its_payload(self, store):
+        store.create("s", content_type="text/plain")
+        store.append("s", b"hello")
+        messages, _ = store.read("s")
+        assert [m.data for m in messages] == [b"hello"]
+
+    def test_a_text_stream_is_not_reformatted_as_json(self, store):
+        """Text that happens to be JSON is still text, byte for byte."""
+        store.create("s", content_type="text/plain")
+        store.append("s", b'{"a":  1}')
+        messages, _ = store.read("s")
+        assert [m.data for m in messages] == [b'{"a":  1}']
+
+    def test_a_text_stream_formats_as_the_concatenated_payloads(self, store):
+        store.create("s", content_type="text/csv")
+        store.append("s", b"a,b\n")
+        store.append("s", b"c,d\n")
+        messages, _ = store.read("s")
+        assert store.format_response("s", messages) == b"a,b\nc,d\n"
+
+    def test_a_binary_payload_round_trips(self, store):
+        """Bytes that are not valid UTF-8 must survive too."""
+        payload = b"\x89PNG\r\n\x1a\n\xff\xfe"
+        store.create("s", content_type="application/octet-stream")
+        store.append("s", payload)
+        messages, _ = store.read("s")
+        assert [m.data for m in messages] == [payload]
+
+    # =========================================================================
+    # Offsets
+    # =========================================================================
+
+    def test_reading_from_a_foreign_offset_is_refused(self, store):
+        """An offset this store did not issue must fail, not resolve to some
+        other position.
+
+        `VALID_OFFSET_PATTERN` is a shared *syntactic* guard and cannot tell
+        whose offset a token is — the protocol makes them opaque, not uniform
+        (§6). A store that parses one leniently silently returns the wrong
+        window: `int("0_5")` is 5 in Python, so the in-memory store's compound
+        offset reads as an unrelated position rather than an error.
+        """
+        from rakaia.types import InvalidOffset
+
+        store.create("s", content_type="application/json")
+        store.append("s", b'{"id": 1}')
+        messages, _ = store.read("s")
+        head = messages[-1].offset
+
+        with pytest.raises(InvalidOffset):
+            store.read("s", _foreign_offset(head))
+
+
+def _foreign_offset(own_offset: str) -> str:
+    """An offset in the *other* store's format, to hand to this one."""
+    return "1_00000000000000000005" if "_" not in own_offset else "5"

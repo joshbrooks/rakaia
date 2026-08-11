@@ -11,7 +11,12 @@ cannot support.
 It is **JSON-oriented**: `append` expects JSON-encodable bytes and stores the
 decoded object in `StreamEvent.data` (a `JSONField`); `read` re-encodes it to
 bytes. `replay()` only needs the decoded event, so an exact byte round-trip is
-not required.
+not required there.
+
+A protocol stream, though, may declare any content type at all, so a payload
+that is not JSON is stored as text — or base64, if it is not valid UTF-8 —
+and marked with `StreamEvent.payload_encoding`, which `read` inverts. Those
+payloads *do* round-trip byte for byte. See `encode_payload`.
 
 Scope: the whole `rakaia.StreamServerStore` surface. As well as the
 event-sourcing read/emit path, it implements the protocol lifecycle — producer
@@ -28,7 +33,9 @@ single pure module (`rakaia.producer`) that both call, so the two cannot drift.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -51,6 +58,7 @@ from rakaia.types import (
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
+    InvalidOffset,
     ProducerAccepted,
     ProducerState,
     ProducerStreamClosed,
@@ -79,10 +87,64 @@ _APPEND_EVENT_TYPE = "append"
 # padding is transparent to filtering.
 _OFFSET_WIDTH = 20
 
+# This store's offsets, and nothing else. See `DjangoStreamStore._parse_offset`.
+_PLAIN_INTEGER_OFFSET = re.compile(r"^\d+$")
+
 
 def format_offset(value: int) -> str:
     """Render an integer offset as the protocol's opaque, sortable string."""
     return f"{value:0{_OFFSET_WIDTH}d}"
+
+
+# `StreamEvent.payload_encoding` values. `None` means the event's `data` is the
+# payload as a JSON value — the event-sourcing shape, and what every row written
+# before this column holds.
+_ENCODING_TEXT = "utf-8"
+_ENCODING_BASE64 = "base64"
+
+
+def encode_payload(payload: bytes, content_type: str | None) -> tuple[Any, str | None]:
+    """Render one payload for storage as `(data, payload_encoding)`.
+
+    A protocol stream may declare any content type, but `StreamEvent.data` is a
+    JSON column, so a body that is not JSON has to be held as a JSON string and
+    marked as such. Three cases, in the order they are decided:
+
+    - **A declared non-JSON content type** (`text/plain`, `text/csv`, …) is
+      stored verbatim as text, or base64 if it is not valid UTF-8. Never parsed,
+      so the bytes come back exactly as they went in — a text stream that
+      happens to contain JSON is still text, and is not silently reformatted.
+    - **No declared content type** keeps the event-sourcing behaviour: the body
+      is parsed and stored as a JSON value. This is the shape `replay()`, the
+      admin and the channel-layer signals all read, so it cannot change. A body
+      that will not parse falls back to the raw form rather than failing — that
+      path used to raise `json.JSONDecodeError` straight through the server as
+      a 500.
+    - **JSON mode** is handled by the caller, which validates and flattens
+      first; each element arrives here already parsed.
+    """
+    if content_type is not None and not is_json_content_type(content_type):
+        return _encode_raw(payload)
+    try:
+        return json.loads(payload), None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _encode_raw(payload)
+
+
+def _encode_raw(payload: bytes) -> tuple[str, str]:
+    try:
+        return payload.decode("utf-8"), _ENCODING_TEXT
+    except UnicodeDecodeError:
+        return base64.b64encode(payload).decode("ascii"), _ENCODING_BASE64
+
+
+def decode_payload(data: Any, payload_encoding: str | None) -> bytes:
+    """The payload bytes for a stored event — the inverse of `encode_payload`."""
+    if payload_encoding == _ENCODING_TEXT:
+        return str(data).encode("utf-8")
+    if payload_encoding == _ENCODING_BASE64:
+        return base64.b64decode(str(data))
+    return json.dumps(data).encode("utf-8")
 
 
 # Long-poll poll interval. The in-memory store wakes waiters with an
@@ -321,13 +383,16 @@ class DjangoStreamStore:
             self._check_content_type(stream, opts)
             self._check_seq(stream, opts)
 
-            message = self._write(stream, data, opts)
+            messages = self._write(stream, data, opts)
 
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
                 stream.save(update_fields=["last_seq"])
             self._touch(stream)
-            return AppendResult(message=message)
+            # A JSON-mode array append writes several messages; the result
+            # carries the last, whose offset is the stream's new head — which
+            # is what a caller resumes from.
+            return AppendResult(message=messages[-1] if messages else None)
 
     # =========================================================================
     # Append helpers
@@ -352,6 +417,34 @@ class DjangoStreamStore:
         if seq is not None and stream.last_seq is not None and seq <= stream.last_seq:
             raise SequenceConflict(f"Sequence conflict: {seq} <= {stream.last_seq}")
 
+    @staticmethod
+    def _payloads_for(
+        stream: Stream, data: bytes, *, is_initial_create: bool
+    ) -> list[tuple[Any, str | None]]:
+        """The stored payloads one append produces, in order.
+
+        Usually one. In JSON mode an array append produces one per element:
+        the protocol flattens a top-level array so that `[a, b]` is two
+        messages, not one message that happens to be an array — the same
+        one-level flatten `rakaia.json_mode.process_json_append` performs for
+        the in-memory store. Storing the array whole would also hand a *list*
+        to everything that reads `StreamEvent.data` expecting an object.
+
+        Validation happens here, before any row is written, so a malformed body
+        raises `InvalidJson` / `EmptyJsonArray` rather than leaving a partial
+        append behind.
+        """
+        if not is_json_content_type(stream.content_type):
+            return [encode_payload(data, stream.content_type)]
+
+        processed = process_json_append(data, is_initial_create=is_initial_create)
+        if not processed:
+            # An empty array on create: a stream with no messages yet.
+            return []
+        parsed = json.loads(data)
+        elements = parsed if isinstance(parsed, list) else [parsed]
+        return [(element, None) for element in elements]
+
     def _write(
         self,
         stream: Stream,
@@ -359,40 +452,50 @@ class DjangoStreamStore:
         opts: Any,
         *,
         is_initial_create: bool = False,
-    ) -> StreamMessage:
-        """Persist one event and return it in protocol shape.
+    ) -> list[StreamMessage]:
+        """Persist one append and return its messages in protocol shape.
 
-        In JSON mode the payload is validated first, so a malformed body fails
-        before anything is written.
+        One message per stored payload — more than one only for a JSON-mode
+        array append (see `_payloads_for`). The envelope on `opts` is copied
+        onto each, as the in-memory store does when it flattens.
         """
-        if is_json_content_type(stream.content_type):
-            process_json_append(data, is_initial_create=is_initial_create)
+        payloads = self._payloads_for(stream, data, is_initial_create=is_initial_create)
+        if not payloads:
+            return []
 
         label = getattr(opts, "label", "") or ""
         metadata = merge_provenance(getattr(opts, "metadata", None))
         event_ts = getattr(opts, "event_ts", None)
 
-        event = StreamEvent.objects.create(
-            data=json.loads(data),
-            event_type=label or _APPEND_EVENT_TYPE,
-            metadata=metadata or {},
-            event_ts=event_ts,
-        )
-        entry = StreamEntry.objects.create(
-            stream=stream,
-            event=event,
-            offset=stream.get_next_offset(),
-        )
-        return StreamMessage(
-            data=json.dumps(event.data).encode("utf-8"),
-            offset=format_offset(entry.offset),
-            timestamp=entry.created_at.timestamp(),
-            event_ts=(
-                event_ts if event_ts is not None else entry.created_at.timestamp()
-            ),
-            label=label,
-            metadata=metadata or None,
-        )
+        messages: list[StreamMessage] = []
+        for value, encoding in payloads:
+            event = StreamEvent.objects.create(
+                data=value,
+                event_type=label or _APPEND_EVENT_TYPE,
+                metadata=metadata or {},
+                event_ts=event_ts,
+                payload_encoding=encoding,
+            )
+            entry = StreamEntry.objects.create(
+                stream=stream,
+                event=event,
+                offset=stream.get_next_offset(),
+            )
+            messages.append(
+                StreamMessage(
+                    data=decode_payload(event.data, encoding),
+                    offset=format_offset(entry.offset),
+                    timestamp=entry.created_at.timestamp(),
+                    event_ts=(
+                        event_ts
+                        if event_ts is not None
+                        else entry.created_at.timestamp()
+                    ),
+                    label=label,
+                    metadata=metadata or None,
+                )
+            )
+        return messages
 
     # =========================================================================
     # Producer fencing
@@ -479,13 +582,15 @@ class DjangoStreamStore:
             self._check_content_type(stream, opts)
             self._check_seq(stream, opts)
 
-            message = self._write(stream, data, opts)
+            messages = self._write(stream, data, opts)
             self._commit_producer(stream, result)
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
                 stream.save(update_fields=["last_seq"])
             self._touch(stream)
-            return AppendResult(message=message, producer_result=result)
+            return AppendResult(
+                message=messages[-1] if messages else None, producer_result=result
+            )
 
     def append_many(
         self, path: str, events: Iterable[tuple[bytes, Any]]
@@ -529,17 +634,25 @@ class DjangoStreamStore:
         with transaction.atomic():
             stream = self._require(path)
 
-            # Mirror `append`'s per-event envelope mapping. `merge_provenance`
-            # is evaluated per item so ambient provenance is captured for each.
+            # Mirror `append`'s per-event envelope mapping and payload encoding.
+            # `merge_provenance` is evaluated per item so ambient provenance is
+            # captured for each. Unlike `append`, a JSON array is *not* flattened
+            # here: this surface promises one result per input item, and an
+            # event-sourcing batch item is one event whose payload may well be a
+            # list.
+            encoded = [encode_payload(data, stream.content_type) for data, _ in items]
             stream_events = [
                 StreamEvent(
-                    data=json.loads(data),
+                    data=value,
                     event_type=(getattr(options, "label", "") or "")
                     or _APPEND_EVENT_TYPE,
                     metadata=merge_provenance(getattr(options, "metadata", None)) or {},
                     event_ts=getattr(options, "event_ts", None),
+                    payload_encoding=encoding,
                 )
-                for data, options in items
+                for (_data, options), (value, encoding) in zip(
+                    items, encoded, strict=True
+                )
             ]
             StreamEvent.objects.bulk_create(stream_events)
 
@@ -553,7 +666,7 @@ class DjangoStreamStore:
             return [
                 AppendResult(
                     message=StreamMessage(
-                        data=json.dumps(event.data).encode("utf-8"),
+                        data=decode_payload(event.data, event.payload_encoding),
                         offset=format_offset(entry.offset),
                         timestamp=entry.created_at.timestamp(),
                         event_ts=(
@@ -579,18 +692,28 @@ class DjangoStreamStore:
 
         With no `offset`, returns every message; with one, returns the messages
         strictly after it. Raises `StreamNotFound` if the stream does not exist
-        or has expired. A read extends the sliding TTL window.
+        or has expired, and `InvalidOffset` if the offset is not one this store
+        issued. A read extends the sliding TTL window.
         """
         stream = self._require(path)
         self._touch(stream)
+        return self._read_since(stream, offset), True
 
+    def _read_since(
+        self, stream: Stream, offset: str | None = None
+    ) -> list[StreamMessage]:
+        """The messages after `offset`, without extending the TTL window.
+
+        Split out from `read` so long-poll can check for new messages on every
+        tick without writing `last_activity_at` on every tick with it.
+        """
         entries = stream.entries.select_related("event").order_by("offset")
         if offset not in (None, "", "-1"):
-            entries = entries.filter(offset__gt=int(offset))  # type: ignore[arg-type]
+            entries = entries.filter(offset__gt=self._parse_offset(offset))
 
-        messages = [
+        return [
             StreamMessage(
-                data=json.dumps(entry.event.data).encode("utf-8"),
+                data=decode_payload(entry.event.data, entry.event.payload_encoding),
                 offset=format_offset(entry.offset),
                 timestamp=entry.created_at.timestamp(),
                 # Logical envelope ts if the producer set one, else the append
@@ -609,7 +732,26 @@ class DjangoStreamStore:
             )
             for entry in entries
         ]
-        return messages, True
+
+    @staticmethod
+    def _parse_offset(offset: str) -> int:
+        """The entry offset `offset` denotes, for this store's own format.
+
+        Strict on purpose. `int()` alone would accept far more than this store
+        ever issues — it treats underscores as digit separators, so the
+        in-memory store's compound `{seq}_{byte}` offset parses cleanly into an
+        unrelated number, and a resume read would quietly return the wrong
+        window instead of failing. `VALID_OFFSET_PATTERN` cannot catch that
+        either: it is a shared syntactic guard, and the protocol makes offsets
+        opaque rather than uniform (§6), so only the issuing store can say
+        whether a token is one of its own.
+        """
+        if not _PLAIN_INTEGER_OFFSET.match(offset):
+            raise InvalidOffset(
+                f"Not an offset this store issued: {offset!r}. Durable-store "
+                f"offsets are plain integers."
+            )
+        return int(offset)
 
     def get(self, path: str) -> Stream | None:
         """Return the stream row, or None if absent or expired.
@@ -663,13 +805,18 @@ class DjangoStreamStore:
         """
         deadline = time.monotonic() + timeout_seconds
         while True:
-            messages, _ = await sync_to_async(self.read)(path, offset)
-            if messages:
-                return messages, False, False
-
             stream = await sync_to_async(self._get_if_not_expired)(path)
             if stream is None:
                 raise StreamNotFound(f"Stream not found: {path}")
+
+            messages = await sync_to_async(self._read_since)(stream, offset)
+            if messages:
+                # The TTL window is extended once, on the way out — not on
+                # every tick. Polling through `read` wrote `last_activity_at`
+                # 20 times a second for each waiter on a stream with a TTL.
+                await sync_to_async(self._touch)(stream)
+                return messages, False, False
+
             if stream.closed:
                 return [], False, True
 

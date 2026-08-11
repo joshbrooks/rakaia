@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from .types import (
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
+    InvalidOffset,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerStreamClosed,
@@ -44,6 +46,9 @@ from .types import (
 # `protocol_views`), which share the one pattern from `.types` (#41).
 
 _log = logging.getLogger("rakaia.store")
+
+# This store's offsets, and nothing else. See `StreamStore._check_offset`.
+_COMPOUND_OFFSET = re.compile(r"^\d+_\d+$")
 
 
 class StreamStore:
@@ -482,6 +487,8 @@ class StreamStore:
         if not offset or offset == "-1":
             return list(stream.messages), True
 
+        self._check_offset(offset)
+
         # Find messages after the given offset (lexicographic comparison)
         idx = self._find_offset_index(stream, offset)
         if idx == -1:
@@ -660,6 +667,24 @@ class StreamStore:
         stream.current_offset = new_offset
 
         return message
+
+    @staticmethod
+    def _check_offset(offset: str) -> None:
+        """Reject an offset this store did not issue.
+
+        Offsets here are compound `{seq}_{byte}` tokens and are compared
+        lexicographically, which quietly does the wrong thing with a foreign
+        one: the durable store's plain integer sorts *above* every offset this
+        store emits, so a resume read returns nothing and the client is told it
+        is up to date, having skipped the whole stream. The protocol makes
+        offsets opaque rather than uniform (§6), so only the issuing store can
+        judge — `VALID_OFFSET_PATTERN` accepts both formats by design.
+        """
+        if not _COMPOUND_OFFSET.match(offset):
+            raise InvalidOffset(
+                f"Not an offset this store issued: {offset!r}. In-memory-store "
+                f"offsets have the compound {{seq}}_{{byte}} form."
+            )
 
     def _find_offset_index(self, stream: Stream, offset: str) -> int:
         """Find first message with offset > given offset (lexicographic)."""

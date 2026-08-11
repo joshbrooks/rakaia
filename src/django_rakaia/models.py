@@ -193,9 +193,12 @@ class StreamProducer(models.Model):
     server uses this row to reject a stale epoch, spot a sequence gap, and
     recognise a retry as a duplicate rather than writing it twice.
 
-    Rows are expired lazily on read (see `PRODUCER_STATE_TTL_SECONDS`), matching
-    the in-memory store's cleanup, so an abandoned producer id does not pin
-    state forever.
+    State older than `PRODUCER_STATE_TTL_SECONDS` is *ignored* on read, matching
+    the in-memory store: an abandoned producer id does not fence a later one
+    out, and a returning producer starts fresh at seq 0. The row itself is not
+    deleted — unlike the in-memory store's dict, this table keeps one row per
+    `(stream, producer_id)` ever seen, until the stream is. Prune it if a
+    workload churns through producer ids.
     """
 
     stream = models.ForeignKey(
@@ -252,6 +255,24 @@ class StreamEvent(models.Model):
     producer (`AppendOptions.event_ts`). `null` when the producer didn't set one,
     in which case the store surfaces the append time (`created_at`) instead. This
     is the deterministic merge key, kept distinct from transport time."""
+    payload_encoding = models.CharField(max_length=16, null=True, blank=True)
+    """How to turn `data` back into the payload bytes the producer appended.
+
+    `null` — `data` **is** the payload, as a JSON value; the bytes are
+    `json.dumps(data)`. This is every event written by the event-sourcing path
+    (`@stream_model`, `append_many`, any stream with no declared content type),
+    and every row that predates this column.
+
+    `"utf-8"` / `"base64"` — `data` is a JSON *string* holding a payload that is
+    not JSON at all: the text of a `text/plain`/`text/csv` stream, or base64 for
+    bytes that are not valid UTF-8. A protocol stream may declare any content
+    type, so the store has to be able to hold a non-JSON body without either
+    losing it or crashing on `json.loads`.
+
+    Recorded per event rather than inferred from the stream's content type,
+    which can be absent, and from a payload's shape, which can be forged: a
+    JSON-mode stream may legitimately contain any object, including one shaped
+    like a marker."""
 
     class Meta:
         db_table = "rakaia_streamevent"

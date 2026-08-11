@@ -20,7 +20,9 @@ of scope *here* only because they belong to the protocol-server surface
 contract, not an absent one.
 
 What remains genuinely backend-specific is the offset *format* (compound
-`{seq}_{byte}` vs zero-padded int).
+`{seq}_{byte}` vs zero-padded int) — and, because of it, each store rejects the
+other's offsets with `InvalidOffset` rather than resolving them to some
+position of its own.
 
 The offset **format** stays backend-specific (the compound `{seq}_{byte}` vs
 zero-padded int divergence above) — the protocol mandates opacity, not one

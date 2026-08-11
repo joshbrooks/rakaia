@@ -60,6 +60,11 @@ class Migration(migrations.Migration):
             name="ttl_seconds",
             field=models.IntegerField(blank=True, null=True),
         ),
+        migrations.AddField(
+            model_name="streamevent",
+            name="payload_encoding",
+            field=models.CharField(blank=True, max_length=16, null=True),
+        ),
         migrations.CreateModel(
             name="StreamProducer",
             fields=[
