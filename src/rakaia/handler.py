@@ -32,6 +32,7 @@ from ._asgi import (
 )
 from .cursor import CursorOptions, generate_response_cursor
 from .json_mode import is_json_content_type
+from .protocols import StreamServerStore
 from .store import StreamStore
 from .types import (
     PRODUCER_EPOCH_HEADER,
@@ -45,6 +46,7 @@ from .types import (
     SSE_UP_TO_DATE_FIELD,
     STREAM_CLOSED_HEADER,
     STREAM_EXPIRES_AT_HEADER,
+    STREAM_SEQ_HEADER,
     STREAM_SSE_DATA_ENCODING_HEADER,
     STREAM_TTL_HEADER,
     VALID_OFFSET_PATTERN,
@@ -171,7 +173,7 @@ class ServerOptions:
 
 
 def create_app(
-    store: StreamStore | None = None,
+    store: StreamServerStore | None = None,
     options: ServerOptions | None = None,
 ) -> Any:
     """
@@ -275,7 +277,7 @@ async def _handle_create(
     scope: Scope,
     receive: Receive,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
     content_type = get_header(scope, "content-type")
@@ -376,7 +378,7 @@ async def _handle_create(
 async def _handle_head(
     path: str,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
     stream = store.get(path)
@@ -458,7 +460,7 @@ async def _handle_read(
     scope: Scope,
     receive: Receive,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     opts: ServerOptions,
     cors: dict[str, str],
 ) -> None:
@@ -700,7 +702,7 @@ async def _handle_sse(
     _scope: Scope,
     _receive: Receive,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     opts: ServerOptions,
     cors: dict[str, str],
 ) -> None:
@@ -944,11 +946,22 @@ async def _handle_append(
     scope: Scope,
     receive: Receive,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
     content_type = get_header(scope, "content-type")
-    seq = get_header(scope, "stream-seq")
+    # Stream-Seq is a number, and must be parsed as one. It used to be passed
+    # through as the raw header string, so the store's `opts.seq <=
+    # stream.last_seq` compared text: seq=10 after seq=9 was rejected as a
+    # conflict, because "10" < "9" lexicographically. Any producer reaching
+    # double digits started failing.
+    seq_str = get_header(scope, STREAM_SEQ_HEADER)
+    seq: int | None = None
+    if seq_str is not None:
+        if not STRICT_INTEGER_PATTERN.match(seq_str):
+            await _send_error(send, 400, b"Invalid Stream-Seq", cors)
+            return
+        seq = int(seq_str)
     closed_header = get_header(scope, STREAM_CLOSED_HEADER)
     close_stream = closed_header == "true"
 
@@ -1180,7 +1193,7 @@ async def _handle_append(
 async def _handle_delete(
     path: str,
     send: Send,
-    store: StreamStore,
+    store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
     if not store.has(path):

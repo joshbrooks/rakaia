@@ -84,6 +84,8 @@ class WritableStore(ReadableStore, Protocol):
         their own richer signatures — deliberately *not* on this protocol, so a
         backend that ignores such an option (e.g. `DjangoStreamStore`) can't be
         called with it through the `WritableStore` type and silently no-op.
+        `StreamServerStore` widens this with the full option set, which every
+        server store must honour.
         """
         ...
 
@@ -127,6 +129,119 @@ class WritableStore(ReadableStore, Protocol):
         durable `DjangoStreamStore` does, which is the point). An empty batch is
         a no-op returning `[]`. Result element types stay backend-specific and
         loose, exactly as `append`'s do.
+        """
+        ...
+
+
+@runtime_checkable
+class StreamServerStore(WritableStore, Protocol):
+    """A store that can back a Durable Streams **protocol server**.
+
+    `WritableStore` is what `replay()` and projections need. This is the wider
+    surface `rakaia.handler.create_app` needs: everything in `WritableStore`,
+    plus the protocol lifecycle — producer epoch/seq fencing, close, the TTL
+    sliding window, long-poll, and response formatting.
+
+    Until this existed `create_app` was typed against the concrete in-memory
+    `StreamStore`, so the durable store could not back the server no matter
+    what it implemented — which is why the Django integration grew a second,
+    partial implementation of the protocol instead of reusing this one. Two
+    adapters satisfy it: the in-memory `StreamStore` and `DjangoStreamStore`.
+
+    Failures are the named ones in `rakaia.types` (`StreamNotFound`,
+    `SequenceConflict`, …); a server maps them to statuses by type, so an
+    implementation raising a bare `ValueError` will surface as a 500.
+
+    The shared conformance suite for this surface is
+    `tests/server_store_contract.py`.
+    """
+
+    def create(
+        self,
+        path: str,
+        *,
+        content_type: str | None = None,
+        ttl_seconds: int | None = None,
+        expires_at: str | None = None,
+        initial_data: bytes | None = None,
+        closed: bool = False,
+    ) -> Any:
+        """Idempotently create the stream at `path`, with protocol options.
+
+        Widens `WritableStore.create` — which deliberately declares only
+        `path`, so framework callers can't pass options a backend ignores. A
+        protocol server *does* pass them (`PUT` carries content type, TTL,
+        expiry, an initial body, and `Stream-Closed`), so a server store must
+        accept the full keyword surface. Raises `StreamConfigConflict` if the
+        stream exists with a different configuration.
+        """
+        ...
+
+    def get(self, path: str) -> Any:
+        """The stream at `path`, or `None` if absent or expired."""
+        ...
+
+    def touch(self, path: str) -> None:
+        """Extend the TTL sliding window for `path`. No-op if absent or if the
+        stream has no TTL. Used for activity that doesn't otherwise mutate the
+        stream, such as a caught-up `GET ?offset=now`."""
+        ...
+
+    def delete(self, path: str) -> bool:
+        """Delete the stream, cancelling any pending long-polls. Returns whether
+        it existed. Offsets stay globally monotonic across delete+recreate: a
+        recreated path resumes numbering above the retired high mark."""
+        ...
+
+    def format_response(self, path: str, messages: list[Any]) -> bytes:
+        """Render `messages` as the response body for `path`.
+
+        Content-type aware: a JSON-mode stream yields one JSON array, anything
+        else the concatenated payloads.
+        """
+        ...
+
+    async def append_with_producer(
+        self, path: str, data: bytes, options: Any = None
+    ) -> Any:
+        """Append under producer fencing, serialized per `(path, producer_id)`.
+
+        The result carries a `ProducerValidationResult` when the write was
+        refused (stale epoch, sequence gap, duplicate, closed stream) rather
+        than raising — those are protocol outcomes with their own statuses and
+        headers, not failures.
+        """
+        ...
+
+    def close_stream(self, path: str) -> Any:
+        """Close `path`, returning a `CloseResult` (or `None` if absent).
+
+        Idempotent: closing an already-closed stream reports the same final
+        offset rather than failing.
+        """
+        ...
+
+    async def close_stream_with_producer(
+        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
+    ) -> Any:
+        """Close `path` under producer fencing. Same fencing outcomes as
+        `append_with_producer`, same idempotence as `close_stream`.
+
+        The tuple is passed as three arguments rather than on an
+        `AppendOptions`, unlike `append_with_producer` — a close carries no
+        body and no envelope, so there is nothing else for an options object to
+        hold. A server calls this only when all three are present.
+        """
+        ...
+
+    async def wait_for_messages(
+        self, path: str, offset: str, timeout_seconds: float
+    ) -> tuple[list[Any], bool, bool]:
+        """Long-poll: wait up to `timeout_seconds` for messages after `offset`.
+
+        Returns `(messages, timed_out, stream_closed)`. Returns immediately if
+        messages are already available or the stream is closed; returns an
+        empty list on timeout. Raises `StreamNotFound` if the stream is absent.
         """
         ...
 
