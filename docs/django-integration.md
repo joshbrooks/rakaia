@@ -41,7 +41,6 @@ from django.urls import include, path
 
 urlpatterns = [
     path("streams/", include("django_rakaia.urls", namespace="django_rakaia")),
-    path("protocol/", include("django_rakaia.protocol_views", namespace="protocol")),
 ]
 ```
 
@@ -101,7 +100,7 @@ The chosen store is cached one-per-backend for the process.
 | Persistence | In memory, lost on restart | In your database |
 | Survives across processes | No | Yes |
 | `manage.py replay <stream>` | Only within the emitting process | Yes, any process |
-| Live-protocol extras (long-poll, producer epochs, stream close) | Yes | Not implemented — event-sourcing read/emit path only |
+| Live-protocol extras (long-poll, producer epochs, stream close) | Yes | Yes — the full `StreamServerStore` surface |
 
 ### Migration path (in-memory → durable)
 
@@ -300,20 +299,46 @@ new events as they arrive via the channel layer.
 
 ## Protocol HTTP API
 
-`django_rakaia.protocol_views` exposes the full Durable Streams HTTP API
-backed by the database models. Mount it under any prefix:
+Serve the Durable Streams protocol off the database by mounting rakaia's ASGI
+application over the durable store. It is an ASGI app, not a Django view, so it
+is mounted in `asgi.py` rather than in `urls.py`:
 
 ```python
-path("protocol/", include("django_rakaia.protocol_views", namespace="protocol")),
+# asgi.py
+from django.core.asgi import get_asgi_application
+from django_rakaia.integration import get_asgi_app
+
+django_app = get_asgi_application()
+protocol_app = get_asgi_app()  # create_app() over the configured store
+
+
+async def application(scope, receive, send):
+    if scope["type"] == "http" and scope["path"].startswith("/protocol/"):
+        scope = {**scope, "path": scope["path"][len("/protocol") :]}
+        return await protocol_app(scope, receive, send)
+    return await django_app(scope, receive, send)
 ```
 
-| Method | URL                                                  |
-|--------|------------------------------------------------------|
-| PUT    | `/protocol/streams/<stream_path>/create`             |
-| POST   | `/protocol/streams/<stream_path>/append`             |
-| GET    | `/protocol/streams/<stream_path>/read?offset=...`    |
-| GET    | `/protocol/streams/<stream_path>/sse?cursor=...`     |
-| HEAD   | `/protocol/streams/<stream_path>/metadata`           |
+Set `RAKAIA_STORE = "durable"` so `get_asgi_app()` picks up `DjangoStreamStore`.
+
+Routing is by **HTTP method on the stream path**, as the protocol specifies:
+
+| Method | URL                              | Meaning                     |
+|--------|----------------------------------|-----------------------------|
+| PUT    | `/protocol/<stream_path>`        | create                      |
+| POST   | `/protocol/<stream_path>`        | append (or close)           |
+| GET    | `/protocol/<stream_path>?offset=`| read, long-poll, or SSE     |
+| HEAD   | `/protocol/<stream_path>`        | metadata                    |
+| DELETE | `/protocol/<stream_path>`        | delete                      |
+
+This is the same implementation the standalone server runs, so producer
+epoch/seq fencing, close, TTL, long-poll, ETag/304 and CORS all behave
+identically on either store.
+
+> **Changed.** This used to be `django_rakaia.protocol_views`, a separate
+> implementation with verb-in-path URLs (`/streams/x/append`), newline-delimited
+> read responses, and no fencing, close, TTL or long-poll. It has been removed;
+> see the changelog for the migration.
 
 The semantics follow the [protocol specification](protocol.md).
 

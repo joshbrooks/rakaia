@@ -13,6 +13,7 @@ import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import Any
 
 from .context import merge_provenance
 from .json_mode import (
@@ -42,8 +43,8 @@ from .types import (
 
 # NB: this module generates offsets (the `{seq}_{byte}` format) but never
 # *validates* them, so it deliberately does not import `VALID_OFFSET_PATTERN`.
-# Offset validation lives in the two protocol servers (`handler` /
-# `protocol_views`), which share the one pattern from `.types` (#41).
+# Offset validation lives in the protocol server (`handler`), which uses the
+# one pattern from `.types` (#41).
 
 _log = logging.getLogger("rakaia.store")
 
@@ -193,6 +194,15 @@ class StreamStore:
 
         self._streams[path] = stream
         return stream
+
+    async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a synchronous store call for an async server.
+
+        In-memory work is immediate, so this calls straight through — no thread
+        hop, no executor. The durable store overrides this because a database
+        cannot be touched from an async context.
+        """
+        return fn(*args, **kwargs)
 
     def get(self, path: str) -> Stream | None:
         """Get a stream by path. Returns None if not found or expired."""

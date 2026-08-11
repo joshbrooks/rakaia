@@ -328,3 +328,19 @@ class TestFailureBecomesStatus:
             store.read = _rejects  # type: ignore[method-assign]
             r = await ac.get("/s", params={"offset": "0_0", "live": "sse"})
             assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_sse_with_a_foreign_offset_is_400(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """The unpatched end-to-end case: `?offset=42&live=sse` on a store
+        whose offsets are compound.
+
+        `VALID_OFFSET_PATTERN` now admits plain integers (they are the durable
+        store's format), so the syntactic guard no longer rejects this before
+        the store does — the store's `InvalidOffset` must come back as a 400,
+        not crash an already-started SSE response.
+        """
+        await client.put("/s")
+        r = await client.get("/s", params={"offset": "42", "live": "sse"})
+        assert r.status_code == 400

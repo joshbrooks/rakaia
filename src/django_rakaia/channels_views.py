@@ -73,8 +73,20 @@ async def stream_events_sse(_request: Any, stream_id: str) -> Any:
             # Wait for new events from channel layer
             while True:
                 message = await channel_layer.receive(channel)
-                # Extract the payload (exclude the 'type' key used by channel layer)
-                payload = {k: v for k, v in message.items() if k != "type"}
+                # Group names sanitize many-to-one ("a/b" and "a.b" share a
+                # group, as do long ids truncated to their last 99 chars), so
+                # membership alone doesn't prove the event is this stream's —
+                # filter on the exact id in the payload. A message without one
+                # predates the field; forward it rather than dropping live
+                # traffic during a rolling deploy.
+                sender = message.get("stream_id")
+                if sender is not None and sender != stream_id:
+                    continue
+                # Extract the payload (exclude the channel-layer 'type' and the
+                # routing-only 'stream_id', keeping the client-visible shape)
+                payload = {
+                    k: v for k, v in message.items() if k not in ("type", "stream_id")
+                }
                 event = payload.get("event") or {}
                 offset = event.get("offset")
                 prefix = f"id: {offset}\n" if offset is not None else ""

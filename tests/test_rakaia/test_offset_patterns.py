@@ -18,11 +18,21 @@ class TestValidOffsetPattern:
     def test_accepts_canonical_and_sentinels(self, value: str) -> None:
         assert VALID_OFFSET_PATTERN.match(value)
 
+    @pytest.mark.parametrize("value", ["1", "00000000000000000001", "42"])
+    def test_accepts_the_durable_stores_plain_integer_format(self, value: str) -> None:
+        """A bare integer is `DjangoStreamStore`'s offset format.
+
+        This used to be asserted as malformed, which was harmless only while
+        the server could not be handed that store. Once it could, every resume
+        read 400'd on an offset the server had just issued itself. The protocol
+        makes offsets opaque, not one format (§6).
+        """
+        assert VALID_OFFSET_PATTERN.match(value)
+
     @pytest.mark.parametrize(
         "value",
         [
             "",
-            "1",  # bare seq without byte component
             "1_",  # missing byte
             "_1",  # missing seq
             "1_2_3",  # too many components

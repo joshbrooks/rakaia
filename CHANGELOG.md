@@ -163,6 +163,22 @@ is not yet tagged in a release.
   `StreamEvent` called `.get()` on `data` unconditionally, so an append
   carrying a JSON array, string or number raised `AttributeError` — failing the
   append *after* the write had landed.
+- **The offset pattern rejected the durable store's own offsets.**
+  `VALID_OFFSET_PATTERN` accepted only the in-memory store's compound
+  `{seq}_{byte}` form, so once the durable store backed the protocol server
+  every resume read (`GET ?offset=…`) 400'd on an offset the server had just
+  issued. It now accepts a plain integer too. The protocol makes offsets opaque,
+  not identically formatted (§6), so this is a syntactic guard against junk in a
+  URL and nothing more — deciding whether a token is *this* store's offset is
+  the store's job, and each now raises `InvalidOffset` for the other's (400)
+  rather than reading from whatever position it parses to.
+
+- **Channel group names broke on any stream id containing a slash.** The
+  sanitizer replaced colons only, which sufficed while ids looked like
+  `user:1:projects`; a protocol path is `/orders`, and the slash raised
+  `TypeError` from inside `post_save` — an append over HTTP failed at the
+  broadcast, after the write had landed. Anything outside the channel layer's
+  allowed set is now replaced, and over-long names are truncated.
 
 - **Stream-Seq was compared as text, not as a number.** The header reached the
   store unparsed, so the conflict check `opts.seq <= stream.last_seq` compared
@@ -195,6 +211,24 @@ is not yet tagged in a release.
   restored by `loaddata`/`serialized_rollback`, nor dereference `instance.stream`
   / `instance.event` mid-load when those parent rows are not restored yet.
 
+### Removed
+
+- **BREAKING — `django_rakaia.protocol_views` is gone.** It was a second,
+  partial implementation of the Durable Streams protocol that did not use
+  `DjangoStreamStore`, and it disagreed with the real one on nearly everything
+  the protocol specifies: it routed by verb-in-path (`/streams/x/append`)
+  rather than by HTTP method, returned newline-delimited JSON rather than a JSON
+  array, dropped the envelope, and had no producer fencing, close, TTL,
+  long-poll, ETag or CORS at all. It also carried two live defects — a
+  handler-issued offset passed validation and then silently read the wrong
+  window, and `?offset=now` returned the entire stream instead of nothing.
+
+  Serve the protocol over the database by mounting `rakaia.create_app` — the
+  same implementation the standalone server runs — via
+  `django_rakaia.integration.get_asgi_app()` in `asgi.py`. It is an ASGI app,
+  not a Django view, so it does not go in `urls.py`.
+  → [`docs/django-integration.md`](docs/django-integration.md#protocol-http-api).
+
 ### Changed
 
 - **BREAKING — `DjangoStreamStore.append` and `.append_many` return
@@ -214,6 +248,15 @@ is not yet tagged in a release.
 
 - **BREAKING — `AppendOptions.seq` and `Stream.last_seq` are `int | None`,** not
   `str | None`. See the Stream-Seq fix under Fixed.
+
+- **BREAKING — `StreamServerStore` requires `run_sync`.** The protocol server
+  is async but most of the store surface is synchronous, and how that sync work
+  runs is the store's business: the in-memory store calls straight through,
+  while `DjangoStreamStore` hands it to a thread (the ORM refuses async-context
+  access). The server now routes every sync store call through
+  `store.run_sync(fn, *args)`, so a third-party `StreamServerStore`
+  implementation must provide it — subclassing either shipped store, or
+  defining the one-line pass-through, satisfies the contract.
 
 - **`@stream_model` takes `on_delete=` and `delete_to_dataclass=`** (#80), for
   soft-delete models. Under `pgtrigger.SoftDelete` a `DELETE` becomes `UPDATE

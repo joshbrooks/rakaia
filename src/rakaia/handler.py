@@ -109,7 +109,8 @@ STREAM_UP_TO_DATE_HEADER_RESP = "Stream-Up-To-Date"
 STREAM_CLOSED_HEADER_RESP = "Stream-Closed"
 
 # `VALID_OFFSET_PATTERN` is imported from `.types` (the single source of truth,
-# #41) so this server and the Django `protocol_views` validate offsets identically.
+# #41). It is a syntactic guard only — an offset's meaning belongs to the store
+# that issued it, and the two stores use different formats.
 
 # Strict integer pattern for producer headers
 STRICT_INTEGER_PATTERN = re.compile(r"^\d+$")
@@ -182,8 +183,10 @@ def create_app(
     Usage:
         app = create_app()
         # Run with: uvicorn rakaia:app --port 4437
-        # Mount in Django: path("streams/", app)
-        # Mount in FastAPI: fastapi_app.mount("/streams", app)
+        # Mount in FastAPI: fastapi_app.mount("/streams", app)  (strips the prefix)
+        # Mount in Django: dispatch on scope["path"] in asgi.py and strip the
+        # prefix yourself — URLRouter/path() does not strip it, so the stream
+        # id would keep the mount prefix. See django_rakaia.integration.get_asgi_app.
     """
     actual_store = store or StreamStore()
     opts = options or ServerOptions()
@@ -322,10 +325,11 @@ async def _handle_create(
     # Read body
     body = await read_body(receive)
 
-    is_new = not store.has(path)
+    is_new = not await store.run_sync(store.has, path)
 
     # Create stream (may raise ValueError for config mismatch)
-    store.create(
+    await store.run_sync(
+        store.create,
         path,
         content_type=content_type,
         ttl_seconds=ttl_seconds,
@@ -334,7 +338,7 @@ async def _handle_create(
         closed=create_closed,
     )
 
-    stream = store.get(path)
+    stream = await store.run_sync(store.get, path)
     assert stream is not None
 
     headers: dict[str, str] = {
@@ -381,7 +385,7 @@ async def _handle_head(
     store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
-    stream = store.get(path)
+    stream = await store.run_sync(store.get, path)
     if stream is None:
         await _send_error(send, 404, b"", cors)
         return
@@ -464,7 +468,7 @@ async def _handle_read(
     opts: ServerOptions,
     cors: dict[str, str],
 ) -> None:
-    stream = store.get(path)
+    stream = await store.run_sync(store.get, path)
     if stream is None:
         await _send_error(send, 404, b"Stream not found", cors)
         return
@@ -509,7 +513,7 @@ async def _handle_read(
     # For regular GET, return 200 with empty body. For long-poll, fall through to wait.
     if offset == "now" and live != "long-poll":
         # A catch-up read extends the sliding TTL window.
-        store.touch(path)
+        await store.run_sync(store.touch, path)
         headers: dict[str, str] = {
             **cors,
             STREAM_OFFSET_HEADER_RESP: stream.current_offset,
@@ -527,7 +531,7 @@ async def _handle_read(
         return
 
     # Read current messages
-    messages, up_to_date = store.read(path, effective_offset)
+    messages, up_to_date = await store.run_sync(store.read, path, effective_offset)
 
     # Long-poll: wait if caught up and no messages
     client_caught_up = False
@@ -585,7 +589,7 @@ async def _handle_read(
                 STREAM_UP_TO_DATE_HEADER_RESP: "true",
                 STREAM_CURSOR_HEADER_RESP: resp_cursor,
             }
-            current_stream = store.get(path)
+            current_stream = await store.run_sync(store.get, path)
             if current_stream and current_stream.closed:
                 timeout_headers[STREAM_CLOSED_HEADER_RESP] = "true"
 
@@ -615,7 +619,7 @@ async def _handle_read(
         headers[STREAM_UP_TO_DATE_HEADER_RESP] = "true"
 
     # Stream-Closed when closed, at tail, and up-to-date
-    current_stream = store.get(path)
+    current_stream = await store.run_sync(store.get, path)
     client_at_tail = (
         current_stream is not None and response_offset == current_stream.current_offset
     )
@@ -640,7 +644,7 @@ async def _handle_read(
         return
 
     # Format response
-    response_data = store.format_response(path, messages)
+    response_data = await store.run_sync(store.format_response, path, messages)
     await send_response(send, 200, headers, response_data)
 
 
@@ -723,7 +727,9 @@ async def _handle_sse(
     # The first read runs before the response starts: a StreamError here (bad
     # offset, vanished stream) must surface as its mapped 4xx, which is
     # impossible once http.response.start has been sent.
-    pending_read: tuple[Any, bool] | None = store.read(path, initial_offset)
+    pending_read: tuple[Any, bool] | None = await store.run_sync(
+        store.read, path, initial_offset
+    )
 
     await start_streaming_response(send, 200, sse_headers)
 
@@ -737,11 +743,13 @@ async def _handle_sse(
             pending_read = None
         else:
             try:
-                messages, up_to_date = store.read(path, current_offset)
+                messages, up_to_date = await store.run_sync(
+                    store.read, path, current_offset
+                )
             except (KeyError, StreamError):
                 break
 
-        current_stream = store.get(path)
+        current_stream = await store.run_sync(store.get, path)
         if current_stream is None:
             break
 
@@ -758,7 +766,9 @@ async def _handle_sse(
                 if use_base64:
                     data_payload = base64.b64encode(message.data).decode()
                 elif is_json_stream:
-                    json_bytes = store.format_response(path, [message])
+                    json_bytes = await store.run_sync(
+                        store.format_response, path, [message]
+                    )
                     data_payload = json_bytes.decode("utf-8")
                 else:
                     data_payload = message.data.decode("utf-8")
@@ -837,7 +847,7 @@ async def _handle_sse(
             if timed_out:
                 # Keep-alive control event
                 keep_cursor = generate_response_cursor(cursor, opts.cursor_options)
-                stream_after = store.get(path)
+                stream_after = await store.run_sync(store.get, path)
                 if stream_after and stream_after.closed:
                     closed_data: dict[str, str | bool] = {
                         SSE_OFFSET_FIELD: current_offset,
@@ -1029,7 +1039,7 @@ async def _handle_append(
                 )
                 return
             if isinstance(pr, ProducerStreamClosed):
-                s = store.get(path)
+                s = await store.run_sync(store.get, path)
                 await _send_error(
                     send,
                     409,
@@ -1057,7 +1067,7 @@ async def _handle_append(
             return
         else:
             # Simple close without producer
-            close_result = store.close_stream(path)
+            close_result = await store.run_sync(store.close_stream, path)
             if close_result is None:
                 await _send_error(send, 404, b"Stream not found", cors)
                 return
@@ -1095,13 +1105,13 @@ async def _handle_append(
     if producer_id is not None:
         result = await store.append_with_producer(path, body, append_opts)
     else:
-        result = store.append(path, body, append_opts)
+        result = await store.run_sync(store.append, path, body, append_opts)
 
     # Handle closed stream
     if result.stream_closed and result.message is None:
         pr = result.producer_result
         if isinstance(pr, ProducerDuplicate):
-            s = store.get(path)
+            s = await store.run_sync(store.get, path)
             await send_response(
                 send,
                 204,
@@ -1115,7 +1125,7 @@ async def _handle_append(
             )
             return
 
-        s = store.get(path)
+        s = await store.run_sync(store.get, path)
         await _send_error(
             send,
             409,
@@ -1196,11 +1206,11 @@ async def _handle_delete(
     store: StreamServerStore,
     cors: dict[str, str],
 ) -> None:
-    if not store.has(path):
+    if not await store.run_sync(store.has, path):
         await _send_error(send, 404, b"Stream not found", cors)
         return
 
-    store.delete(path)
+    await store.run_sync(store.delete, path)
     await send_response(send, 204, cors)
 
 

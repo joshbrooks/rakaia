@@ -141,6 +141,20 @@ class StreamServerStore(WritableStore, Protocol):
     `tests/server_store_contract.py`.
     """
 
+    async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run one of this store's synchronous calls from async code.
+
+        A protocol server is an async application, but most of this surface is
+        synchronous. How that sync work should be run is the store's business,
+        not the server's: an in-memory store just calls through, while a store
+        on a database must hand the work to a thread — Django, for one, refuses
+        ORM access from an async context outright.
+
+        Naming it here is what lets one server drive both. The server never
+        calls a sync store method directly; it calls it through this.
+        """
+        ...
+
     def create(
         self,
         path: str,
