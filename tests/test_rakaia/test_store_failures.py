@@ -21,6 +21,7 @@ from rakaia.types import (
     ContentTypeMismatch,
     EmptyJsonArray,
     InvalidJson,
+    InvalidOffset,
     SequenceConflict,
     StreamConfigConflict,
     StreamError,
@@ -168,6 +169,27 @@ class TestFailureBecomesStatus:
         assert (await client.get("/nope")).status_code == 404
 
     @pytest.mark.asyncio
+    async def test_stream_not_found_from_read_is_404(self) -> None:
+        """`StreamNotFound` raised by the store itself, past the has() guard.
+
+        `test_missing_stream_is_404` never reaches the store — the handler's
+        own absent-stream check answers first. This one creates the stream over
+        HTTP (the handler keys streams by the full request path, "/s") so the
+        failure genuinely travels store → mapping → status.
+        """
+        store = StreamStore()
+        app = create_app(store=store)
+
+        def _gone(*_args: object, **_kwargs: object) -> None:
+            raise StreamNotFound("raised by the store, not the handler")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            await ac.put("/s")
+            store.read = _gone  # type: ignore[method-assign]
+            assert (await ac.get("/s")).status_code == 404
+
+    @pytest.mark.asyncio
     async def test_config_conflict_is_409(self, client: httpx.AsyncClient) -> None:
         await client.put("/s", headers={"content-type": "text/plain"})
         r = await client.put("/s", headers={"content-type": "application/json"})
@@ -219,8 +241,32 @@ class TestFailureBecomesStatus:
         def _reworded(*_args: object, **_kwargs: object) -> None:
             raise StreamNotFound("wholly different wording")
 
-        store.read = _reworded  # type: ignore[method-assign]
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            store.create("s")
+            # Create over HTTP — the handler keys streams by the full request
+            # path ("/s"), so store.create("s") would leave the handler's
+            # absent-stream 404 to answer before the patched read ever ran.
+            await ac.put("/s")
+            store.read = _reworded  # type: ignore[method-assign]
             assert (await ac.get("/s")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_sse_store_failure_is_a_status_not_a_crash(self) -> None:
+        """A StreamError from the first SSE read must answer with its status.
+
+        The streaming 200 used to start before the first read, so a failure
+        there could only unwind into a second ``http.response.start`` — under a
+        real server, a crashed connection instead of a 400.
+        """
+        store = StreamStore()
+        app = create_app(store=store)
+
+        def _rejects(*_args: object, **_kwargs: object) -> None:
+            raise InvalidOffset("offset belongs to no message")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            await ac.put("/s")
+            store.read = _rejects  # type: ignore[method-assign]
+            r = await ac.get("/s", params={"offset": "0_0", "live": "sse"})
+            assert r.status_code == 400
