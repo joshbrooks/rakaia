@@ -21,6 +21,7 @@ from rakaia.types import (
     ContentTypeMismatch,
     EmptyJsonArray,
     InvalidJson,
+    InvalidOffset,
     SequenceConflict,
     StreamConfigConflict,
     StreamError,
@@ -168,6 +169,27 @@ class TestFailureBecomesStatus:
         assert (await client.get("/nope")).status_code == 404
 
     @pytest.mark.asyncio
+    async def test_stream_not_found_from_read_is_404(self) -> None:
+        """`StreamNotFound` raised by the store itself, past the has() guard.
+
+        `test_missing_stream_is_404` never reaches the store — the handler's
+        own absent-stream check answers first. This one creates the stream over
+        HTTP (the handler keys streams by the full request path, "/s") so the
+        failure genuinely travels store → mapping → status.
+        """
+        store = StreamStore()
+        app = create_app(store=store)
+
+        def _gone(*_args: object, **_kwargs: object) -> None:
+            raise StreamNotFound("raised by the store, not the handler")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            await ac.put("/s")
+            store.read = _gone  # type: ignore[method-assign]
+            assert (await ac.get("/s")).status_code == 404
+
+    @pytest.mark.asyncio
     async def test_config_conflict_is_409(self, client: httpx.AsyncClient) -> None:
         await client.put("/s", headers={"content-type": "text/plain"})
         r = await client.put("/s", headers={"content-type": "application/json"})
@@ -216,6 +238,30 @@ class TestFailureBecomesStatus:
         assert second.status_code in (200, 204), "seq=10 must follow seq=9"
 
     @pytest.mark.asyncio
+    async def test_seq_regression_across_digit_lengths_is_409(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Stream-Seq 9 after 10 is a conflict.
+
+        The other half of the numeric-parse fix: text comparison put "9" above
+        "10", so this regression was wrongly *accepted*. Without this test a
+        revert to string comparison would keep the sibling test green and only
+        lose this one.
+        """
+        await client.put("/s", headers={"content-type": "text/plain"})
+        await client.post(
+            "/s",
+            content=b"a",
+            headers={"content-type": "text/plain", "stream-seq": "10"},
+        )
+        r = await client.post(
+            "/s",
+            content=b"b",
+            headers={"content-type": "text/plain", "stream-seq": "9"},
+        )
+        assert r.status_code == 409
+
+    @pytest.mark.asyncio
     async def test_non_numeric_seq_is_400(self, client: httpx.AsyncClient) -> None:
         await client.put("/s", headers={"content-type": "text/plain"})
         r = await client.post(
@@ -253,8 +299,32 @@ class TestFailureBecomesStatus:
         def _reworded(*_args: object, **_kwargs: object) -> None:
             raise StreamNotFound("wholly different wording")
 
-        store.read = _reworded  # type: ignore[method-assign]
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            store.create("s")
+            # Create over HTTP — the handler keys streams by the full request
+            # path ("/s"), so store.create("s") would leave the handler's
+            # absent-stream 404 to answer before the patched read ever ran.
+            await ac.put("/s")
+            store.read = _reworded  # type: ignore[method-assign]
             assert (await ac.get("/s")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_sse_store_failure_is_a_status_not_a_crash(self) -> None:
+        """A StreamError from the first SSE read must answer with its status.
+
+        The streaming 200 used to start before the first read, so a failure
+        there could only unwind into a second ``http.response.start`` — under a
+        real server, a crashed connection instead of a 400.
+        """
+        store = StreamStore()
+        app = create_app(store=store)
+
+        def _rejects(*_args: object, **_kwargs: object) -> None:
+            raise InvalidOffset("offset belongs to no message")
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            await ac.put("/s")
+            store.read = _rejects  # type: ignore[method-assign]
+            r = await ac.get("/s", params={"offset": "0_0", "live": "sse"})
+            assert r.status_code == 400

@@ -263,13 +263,18 @@ class TestDjangoStreamStore:
         locked = []
 
         def spy(qs, *args, **kwargs):
-            locked.append(True)
+            locked.append(qs.model.__name__)
             return original(qs, *args, **kwargs)
 
         with patch.object(QuerySet, "select_for_update", spy):
             store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])
 
-        assert len(locked) == 1, "append_many must lock the watermark exactly once"
+        # The stream-row lock (writer serialization for the closed/seq/fencing
+        # checks) is separate; what must not scale with the batch is the
+        # watermark lock.
+        assert locked.count("StreamOffsetWatermark") == 1, (
+            "append_many must lock the watermark exactly once"
+        )
 
     def test_append_many_interleaves_with_append_without_collision(self):
         # Interleaved append + append_many share the one offset-allocation path,
@@ -412,3 +417,51 @@ def test_get_store_returns_durable_when_setting_set(settings):
 
     settings.RAKAIA_STORE = "durable"
     assert isinstance(get_store(), DjangoStreamStore)
+
+
+@pytest.mark.django_db
+class TestExpiryReaping:
+    def test_a_refused_append_still_reaps_the_expired_row(self):
+        """The reap must run outside the write transaction.
+
+        `_require`'s expiry delete inside `transaction.atomic()` is rolled
+        back by the very `StreamNotFound` unwind that reports it — the write
+        path raised 404s forever without ever actually deleting the row.
+        """
+        import time
+
+        from rakaia.types import StreamNotFound
+
+        store = DjangoStreamStore()
+        store.create("s", ttl_seconds=0)
+        time.sleep(0.01)
+        with pytest.raises(StreamNotFound):
+            store.append("s", b'{"id": 1}')
+        assert not Stream.objects.filter(stream_id="s").exists()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_expiry_mid_long_poll_is_a_timeout_not_an_error():
+    """A stream that ages out under a waiting long-poll times out normally.
+
+    The in-memory store reports mid-wait expiry as an ordinary timeout; the
+    durable store raised `StreamNotFound`, which the handler turns into a 404
+    on a connection that was legitimately waiting.
+    """
+    import asyncio
+
+    from asgiref.sync import sync_to_async
+
+    store = DjangoStreamStore()
+    await sync_to_async(store.create)("s", ttl_seconds=3600)
+    head = await sync_to_async(store.get_current_offset)("s")
+
+    task = asyncio.ensure_future(store.wait_for_messages("s", head, 5.0))
+    await asyncio.sleep(0.3)  # let the poll loop observe the live stream first
+    await sync_to_async(Stream.objects.filter(stream_id="s").update)(
+        last_activity_at=0.0
+    )
+
+    messages, timed_out, closed = await asyncio.wait_for(task, timeout=5.0)
+    assert (messages, timed_out, closed) == ([], True, False)

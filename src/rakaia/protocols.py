@@ -47,7 +47,9 @@ class ReadableStore(Protocol):
 
         With no `offset`, returns every message; with an `offset`, returns the
         messages after it (offsets are opaque — see the class docstring). Raises
-        `KeyError` if the stream does not exist.
+        `StreamNotFound` (a `KeyError` subclass) if the stream does not exist.
+        A bare `KeyError` still satisfies the framework contract, but the HTTP
+        server maps only the named failure to a 404 — anything else is a 500.
         """
         ...
 
@@ -82,6 +84,8 @@ class WritableStore(ReadableStore, Protocol):
         their own richer signatures — deliberately *not* on this protocol, so a
         backend that ignores such an option (e.g. `DjangoStreamStore`) can't be
         called with it through the `WritableStore` type and silently no-op.
+        `StreamServerStore` widens this with the full option set, which every
+        server store must honour.
         """
         ...
 
@@ -148,6 +152,27 @@ class StreamServerStore(WritableStore, Protocol):
 
         Naming it here is what lets one server drive both. The server never
         calls a sync store method directly; it calls it through this.
+        """
+        ...
+
+    def create(
+        self,
+        path: str,
+        *,
+        content_type: str | None = None,
+        ttl_seconds: int | None = None,
+        expires_at: str | None = None,
+        initial_data: bytes | None = None,
+        closed: bool = False,
+    ) -> Any:
+        """Idempotently create the stream at `path`, with protocol options.
+
+        Widens `WritableStore.create` — which deliberately declares only
+        `path`, so framework callers can't pass options a backend ignores. A
+        protocol server *does* pass them (`PUT` carries content type, TTL,
+        expiry, an initial body, and `Stream-Closed`), so a server store must
+        accept the full keyword surface. Raises `StreamConfigConflict` if the
+        stream exists with a different configuration.
         """
         ...
 

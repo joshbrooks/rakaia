@@ -21,8 +21,11 @@ zero-padded int) — the protocol mandates opacity, not one format (§6).
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+from rakaia.protocols import StreamServerStore
 from rakaia.types import (
     AppendOptions,
     ContentTypeMismatch,
@@ -31,10 +34,44 @@ from rakaia.types import (
     ProducerInvalidEpochSeq,
     ProducerSequenceGap,
     ProducerStaleEpoch,
+    ProducerStreamClosed,
     SequenceConflict,
     StreamConfigConflict,
     StreamNotFound,
 )
+
+
+def _protocol_methods() -> list[str]:
+    """Every method the protocol declares, inherited ones included."""
+    return sorted(
+        name
+        for name in dir(StreamServerStore)
+        if not name.startswith("_")
+        and inspect.isfunction(getattr(StreamServerStore, name))
+    )
+
+
+def _calls_the_declaration_permits(sig):
+    """The extreme calls a declared signature allows: required-only and all-in.
+
+    Dummy values stand in for real arguments — `bind` checks shape, not types.
+    If both extremes bind on an implementation, everything between them does
+    too (parameters are independent once positional order is fixed).
+    """
+    minimal_args, minimal_kwargs = [], {}
+    maximal_args, maximal_kwargs = [], {}
+    for p in sig.parameters.values():
+        if p.name == "self":
+            continue
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            maximal_args.append(p.name)
+            if p.default is p.empty:
+                minimal_args.append(p.name)
+        elif p.kind is p.KEYWORD_ONLY:
+            maximal_kwargs[p.name] = p.name
+            if p.default is p.empty:
+                minimal_kwargs[p.name] = p.name
+    return [(minimal_args, minimal_kwargs), (maximal_args, maximal_kwargs)]
 
 
 class ServerStoreContract:
@@ -56,19 +93,7 @@ class ServerStoreContract:
 
         assert isinstance(store, StreamServerStore)
 
-    @pytest.mark.parametrize(
-        "method",
-        [
-            "get",
-            "touch",
-            "delete",
-            "format_response",
-            "append_with_producer",
-            "close_stream",
-            "close_stream_with_producer",
-            "wait_for_messages",
-        ],
-    )
+    @pytest.mark.parametrize("method", _protocol_methods())
     def test_takes_the_arguments_the_protocol_declares(self, store, method):
         """`isinstance` above only checks that the *names* exist.
 
@@ -76,20 +101,24 @@ class ServerStoreContract:
         can satisfy it while taking arguments the server does not pass — which
         is how `close_stream_with_producer` came to be declared one way and
         implemented another in both stores at once.
+
+        Checked with `Signature.bind` rather than name-list equality: every
+        call the declared signature permits must bind on the implementation.
+        That also covers the inherited methods (a name list skipped them), and
+        it allows a store to accept a *superset* — extra defaulted parameters
+        of its own — which is a valid way to satisfy a Protocol.
         """
-        import inspect
-
-        from rakaia.protocols import StreamServerStore
-
-        def params(obj):
-            sig = inspect.signature(getattr(obj, method))
-            return [p for p in sig.parameters if p != "self"]
-
-        declared, actual = params(StreamServerStore), params(store)
-        assert declared == actual, (
-            f"StreamServerStore.{method}{tuple(declared)} does not match "
-            f"{type(store).__name__}.{method}{tuple(actual)}"
-        )
+        impl = inspect.signature(getattr(store, method))
+        declared = inspect.signature(getattr(StreamServerStore, method))
+        for args, kwargs in _calls_the_declaration_permits(declared):
+            try:
+                impl.bind(*args, **kwargs)
+            except TypeError as e:
+                pytest.fail(
+                    f"StreamServerStore.{method} permits a call "
+                    f"{type(store).__name__} cannot take: "
+                    f"{method}(*{args}, **{kwargs}) — {e}"
+                )
 
     def test_get_exposes_what_a_server_reads(self, store):
         """A server reads exactly these six off a stream."""
@@ -121,6 +150,21 @@ class ServerStoreContract:
         store.create("s", content_type="text/plain")
         with pytest.raises(StreamConfigConflict):
             store.create("s", content_type="application/json")
+
+    def test_create_with_a_body_seeds_the_stream(self, store):
+        """`PUT` with a body creates and appends in one step.
+
+        This is also the durable store's only write path that ever ran outside
+        a transaction — invisible on SQLite (no row locks), a guaranteed
+        `TransactionManagementError` 500 on Postgres. The case exists so a
+        Postgres CI leg fails if the `transaction.atomic()` around create is
+        ever removed.
+        """
+        import json
+
+        store.create("s", content_type="application/json", initial_data=b'{"id": 1}')
+        messages, _ = store.read("s")
+        assert json.loads(store.format_response("s", messages)) == [{"id": 1}]
 
     # =========================================================================
     # Append
@@ -161,6 +205,80 @@ class ServerStoreContract:
         result = store.append("s", b'{"id": 2}', AppendOptions(seq=10))
         assert result.message is not None
 
+    def test_append_with_close_closes_the_stream(self, store):
+        """`Stream-Closed: true` on a POST with a body: append, then close.
+
+        The handler expresses this as `AppendOptions(close=True)`. A store
+        that ignores the flag hands the client a 204 implying the close
+        happened while the stream stays writable forever.
+        """
+        store.create("s")
+        result = store.append("s", b'{"id": 1}', AppendOptions(close=True))
+        assert result.stream_closed is True
+        assert result.message is not None, "the body is appended before the close"
+        assert store.get("s").closed is True
+        refused = store.append("s", b'{"id": 2}')
+        assert refused.stream_closed is True
+        assert refused.message is None
+
+    # =========================================================================
+    # Batch append
+    # =========================================================================
+
+    def test_append_many_to_a_closed_stream_refuses_every_item(self, store):
+        store.create("s")
+        store.close_stream("s")
+        results = store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])
+        assert all(r.stream_closed and r.message is None for r in results)
+        messages, _ = store.read("s")
+        assert messages == []
+
+    def test_append_many_validates_content_type_per_item(self, store):
+        store.create("s", content_type="text/plain")
+        with pytest.raises(ContentTypeMismatch):
+            store.append_many(
+                "s", [(b"ok", None), (b"no", AppendOptions(content_type="text/csv"))]
+            )
+        messages, _ = store.read("s")
+        assert messages == [], "a refused batch must write nothing"
+
+    def test_append_many_validates_seq_per_item(self, store):
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        with pytest.raises(SequenceConflict):
+            store.append_many("s", [(b'{"id": 2}', AppendOptions(seq=5))])
+
+    def test_append_many_advances_seq_like_a_loop_of_append(self, store):
+        store.create("s")
+        store.append_many(
+            "s",
+            [
+                (b'{"id": 1}', AppendOptions(seq=1)),
+                (b'{"id": 2}', AppendOptions(seq=2)),
+            ],
+        )
+        with pytest.raises(SequenceConflict):
+            store.append("s", b'{"id": 3}', AppendOptions(seq=2))
+
+    def test_append_many_close_item_refuses_the_rest(self, store):
+        """A batch is a loop of `append`: an item with `close=True` closes the
+        stream, and the items after it observe the closed stream."""
+        store.create("s")
+        results = store.append_many(
+            "s",
+            [
+                (b'{"id": 1}', None),
+                (b'{"id": 2}', AppendOptions(close=True)),
+                (b'{"id": 3}', None),
+            ],
+        )
+        assert results[0].message is not None and not results[0].stream_closed
+        assert results[1].message is not None and results[1].stream_closed
+        assert results[2].message is None and results[2].stream_closed
+        assert store.get("s").closed is True
+        messages, _ = store.read("s")
+        assert len(messages) == 2, "the item after the close must not be written"
+
     # =========================================================================
     # Close
     # =========================================================================
@@ -188,6 +306,28 @@ class ServerStoreContract:
         assert store.get("s").closed is False
         store.close_stream("s")
         assert store.get("s").closed is True
+
+    async def test_a_different_producer_cannot_reclose_a_closed_stream(self, store):
+        """An already-closed stream is reported, never re-closed.
+
+        Overwriting `closed_by` with the second producer's tuple would make a
+        retry of the *original* closing tuple unrecognisable as a duplicate —
+        the exact idempotence the tuple is recorded for.
+        """
+        await self._sync(store.create, "s")
+        await store.close_stream_with_producer("s", "p1", 0, 0)
+        result = await store.close_stream_with_producer("s", "p2", 0, 0)
+        assert result.already_closed is True
+        assert isinstance(result.producer_result, ProducerStreamClosed)
+        by = (await self._sync(store.get, "s")).closed_by
+        assert by is not None and by.producer_id == "p1", "closed_by must not move"
+
+    async def test_a_retried_closing_tuple_is_a_duplicate(self, store):
+        await self._sync(store.create, "s")
+        await store.close_stream_with_producer("s", "p", 0, 0)
+        again = await store.close_stream_with_producer("s", "p", 0, 0)
+        assert again.already_closed is True
+        assert isinstance(again.producer_result, ProducerDuplicate)
 
     # =========================================================================
     # Producer fencing
@@ -306,12 +446,34 @@ class ServerStoreContract:
         assert store.get("s") is None
         assert store.has("s") is False
 
+    def test_an_expired_stream_has_no_current_offset(self, store):
+        """Expiry applies to the head report exactly as to every other read."""
+        import time
+
+        store.create("s", ttl_seconds=0)
+        time.sleep(0.01)
+        assert store.get_current_offset("s") is None
+
+    def test_an_expired_stream_refuses_appends(self, store):
+        import time
+
+        store.create("s", ttl_seconds=0)
+        time.sleep(0.01)
+        with pytest.raises(StreamNotFound):
+            store.append("s", b'{"id": 1}')
+
     def test_touch_is_a_no_op_for_a_missing_stream(self, store):
         store.touch("nope")  # must not raise
 
     # =========================================================================
     # Response formatting
     # =========================================================================
+
+    def test_format_response_for_a_missing_stream_raises(self, store):
+        """Not `b""`: an empty body silently drops JSON-array framing on the
+        expiry race, where a failure names what actually happened."""
+        with pytest.raises(StreamNotFound):
+            store.format_response("nope", [])
 
     def test_json_mode_formats_one_array(self, store):
         store.create("s", content_type="application/json")
