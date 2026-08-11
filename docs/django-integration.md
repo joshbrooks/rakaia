@@ -100,7 +100,7 @@ The chosen store is cached one-per-backend for the process.
 | Persistence | In memory, lost on restart | In your database |
 | Survives across processes | No | Yes |
 | `manage.py replay <stream>` | Only within the emitting process | Yes, any process |
-| Live-protocol extras (long-poll, producer epochs, stream close) | Yes | Not implemented — event-sourcing read/emit path only |
+| Live-protocol extras (long-poll, producer epochs, stream close) | Yes | Yes — the full `StreamServerStore` surface |
 
 ### Migration path (in-memory → durable)
 

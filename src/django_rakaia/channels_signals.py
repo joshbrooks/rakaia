@@ -95,6 +95,11 @@ def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: A
     stream_id = instance.stream.stream_id
     message = {
         "type": "stream.event",
+        # The group name below is a lossy sanitization — distinct stream ids
+        # can share a group (every disallowed character becomes ".", and long
+        # names truncate). The payload carries the exact id so a consumer can
+        # filter out a group-mate's events instead of cross-delivering them.
+        "stream_id": stream_id,
         "event": {
             "id": instance.event.id,
             "offset": instance.offset,

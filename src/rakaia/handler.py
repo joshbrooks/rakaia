@@ -183,8 +183,10 @@ def create_app(
     Usage:
         app = create_app()
         # Run with: uvicorn rakaia:app --port 4437
-        # Mount in Django: path("streams/", app)
-        # Mount in FastAPI: fastapi_app.mount("/streams", app)
+        # Mount in FastAPI: fastapi_app.mount("/streams", app)  (strips the prefix)
+        # Mount in Django: dispatch on scope["path"] in asgi.py and strip the
+        # prefix yourself — URLRouter/path() does not strip it, so the stream
+        # id would keep the mount prefix. See django_rakaia.integration.get_asgi_app.
     """
     actual_store = store or StreamStore()
     opts = options or ServerOptions()

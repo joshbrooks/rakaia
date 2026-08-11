@@ -234,6 +234,53 @@ class TestChannelLayerSSEViews:
         assert len(chunks) == 1
         assert chunks[0]["event"]["data"] == {"live": True}
 
+    async def test_stream_sse_filters_out_a_group_mates_events(self):
+        """Distinct stream ids that sanitize alike must not cross-deliver.
+
+        Group names replace every disallowed character with "." — "a/b" and
+        "a.b" share the group "stream.a.b" — so the consumer filters on the
+        exact stream id carried in the payload, not on group membership.
+        """
+        from django_rakaia.channels_views import stream_events_sse
+
+        await Stream.objects.acreate(stream_id="a.b")
+
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get("/api/streams/a.b/sse/")
+        response = await stream_events_sse(request, "a.b")
+
+        channel_layer = get_channel_layer()
+        assert channel_layer is not None
+
+        async def push_events():
+            await asyncio.sleep(0.2)
+            # Both land in group "stream.a.b"; only the second is this
+            # stream's. Same shape the signal sends, stream_id included.
+            for sender, marker in (("a/b", "foreign"), ("a.b", "mine")):
+                await channel_layer.group_send(
+                    "stream.a.b",
+                    {
+                        "type": "stream.event",
+                        "stream_id": sender,
+                        "event": {
+                            "id": 1,
+                            "offset": 1,
+                            "event_type": "create",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "data": {"from": marker},
+                        },
+                    },
+                )
+
+        push_task = asyncio.create_task(push_events())
+        chunks = await _collect_payloads(response.streaming_content, count=1)
+        await push_task
+
+        assert chunks[0]["event"]["data"] == {"from": "mine"}
+        assert "stream_id" not in chunks[0], "routing field must not leak to clients"
+
     async def test_translation_sse_yields_translation_events(self):
         """Translation SSE view yields events from 'translations' group."""
         from django.test import RequestFactory

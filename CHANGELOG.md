@@ -16,8 +16,10 @@ is not yet tagged in a release.
 
 - **`StreamServerStore` — the protocol-server store surface, named.** `create_app`
   was typed against the concrete in-memory `StreamStore`, so nothing else could
-  back the protocol server. The new protocol (exported from `rakaia`) covers the
-  twelve methods the server actually calls, and `create_app` is typed against it.
+  back the protocol server. The new protocol (exported from `rakaia`) covers
+  the full surface the server actually calls — the protocol lifecycle methods
+  it declares itself plus the framework read/write methods inherited from
+  `WritableStore` — and `create_app` is typed against it.
 
 - **`DjangoStreamStore` now backs a protocol server.** It implements the whole
   `StreamServerStore` surface — producer epoch/seq fencing, stream close, the TTL
@@ -246,6 +248,15 @@ is not yet tagged in a release.
 
 - **BREAKING — `AppendOptions.seq` and `Stream.last_seq` are `int | None`,** not
   `str | None`. See the Stream-Seq fix under Fixed.
+
+- **BREAKING — `StreamServerStore` requires `run_sync`.** The protocol server
+  is async but most of the store surface is synchronous, and how that sync work
+  runs is the store's business: the in-memory store calls straight through,
+  while `DjangoStreamStore` hands it to a thread (the ORM refuses async-context
+  access). The server now routes every sync store call through
+  `store.run_sync(fn, *args)`, so a third-party `StreamServerStore`
+  implementation must provide it — subclassing either shipped store, or
+  defining the one-line pass-through, satisfies the contract.
 
 - **`@stream_model` takes `on_delete=` and `delete_to_dataclass=`** (#80), for
   soft-delete models. Under `pgtrigger.SoftDelete` a `DELETE` becomes `UPDATE
