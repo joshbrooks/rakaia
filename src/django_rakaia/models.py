@@ -13,6 +13,8 @@ from django.db import models
 from django.db.models import Max
 from django.utils import timezone
 
+from rakaia.types import ClosedBy
+
 DEFAULT_LANG = "en"
 
 
@@ -33,10 +35,44 @@ class Stream(models.Model):
     Attributes:
         stream_id: Unique identifier for the stream
         created_at: When the stream was first created
+
+    The lifecycle columns below (content type, TTL/expiry, closed, last_seq)
+    exist so this model can back a Durable Streams **protocol server**, not
+    only the event-sourcing read/emit path. They mirror the in-memory
+    `rakaia.types.Stream` field-for-field so one server implementation can run
+    on either store. Streams created purely for event-sourcing leave them at
+    their defaults and behave exactly as before.
     """
 
     stream_id = models.CharField(max_length=255, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- protocol lifecycle ---------------------------------------------
+    content_type = models.CharField(max_length=255, null=True, blank=True)
+    """Declared content type. A JSON content type puts the stream in JSON mode."""
+
+    ttl_seconds = models.IntegerField(null=True, blank=True)
+    """Sliding TTL window, anchored on `last_activity_at`."""
+
+    expires_at = models.CharField(max_length=64, null=True, blank=True)
+    """Absolute RFC 3339 expiry. Unlike `ttl_seconds`, does not slide."""
+
+    last_activity_at = models.FloatField(default=0.0)
+    """Unix time of the last TTL-extending activity (read/write/close)."""
+
+    last_seq = models.IntegerField(null=True, blank=True)
+    """Last `Stream-Seq` accepted, for writer coordination."""
+
+    closed = models.BooleanField(default=False)
+    """Whether the stream is closed to further appends."""
+
+    closed_at = models.FloatField(null=True, blank=True)
+
+    closed_by_producer_id = models.CharField(max_length=255, null=True, blank=True)
+    closed_by_epoch = models.IntegerField(null=True, blank=True)
+    closed_by_seq = models.IntegerField(null=True, blank=True)
+    """The producer tuple that closed the stream, so a retried close is
+    recognised as the same one and reported as idempotent rather than refused."""
 
     class Meta:
         db_table = "rakaia_stream"
@@ -44,6 +80,37 @@ class Stream(models.Model):
 
     def __str__(self) -> str:
         return self.stream_id
+
+    @property
+    def current_offset(self) -> str:
+        """The stream head, as the protocol's opaque offset string.
+
+        A property rather than a column: the high-water is already tracked
+        authoritatively by `StreamOffsetWatermark` (and survives delete +
+        recreate), so storing it again here would be a second source of truth
+        to keep in step. Named to match the in-memory `Stream.current_offset`,
+        which is what lets one protocol server read either.
+        """
+        from .django_store import format_offset
+
+        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+        watermark_high = (
+            StreamOffsetWatermark.objects.filter(stream_path=self.stream_id)
+            .values_list("high", flat=True)
+            .first()
+        )
+        return format_offset(max(entries_max or 0, watermark_high or 0))
+
+    @property
+    def closed_by(self) -> ClosedBy | None:
+        """The closing producer tuple, in the shape the protocol server expects."""
+        if self.closed_by_producer_id is None:
+            return None
+        return ClosedBy(
+            producer_id=self.closed_by_producer_id,
+            epoch=self.closed_by_epoch or 0,
+            seq=self.closed_by_seq or 0,
+        )
 
     def get_next_offset(self) -> int:
         """Calculate the next globally-monotonic offset for this stream.
@@ -118,6 +185,38 @@ class StreamOffsetWatermark(models.Model):
         return f"{self.stream_path}={self.high}"
 
 
+class StreamProducer(models.Model):
+    """Per-producer epoch and sequence state, for producer fencing.
+
+    The durable equivalent of the in-memory `Stream.producers` dict. A producer
+    identifies itself with `(Producer-Id, Producer-Epoch, Producer-Seq)`; the
+    server uses this row to reject a stale epoch, spot a sequence gap, and
+    recognise a retry as a duplicate rather than writing it twice.
+
+    State older than `PRODUCER_STATE_TTL_SECONDS` is *ignored* on read, matching
+    the in-memory store: an abandoned producer id does not fence a later one
+    out, and a returning producer starts fresh at seq 0. The row itself is not
+    deleted — unlike the in-memory store's dict, this table keeps one row per
+    `(stream, producer_id)` ever seen, until the stream is. Prune it if a
+    workload churns through producer ids.
+    """
+
+    stream = models.ForeignKey(
+        Stream, on_delete=models.CASCADE, related_name="producers"
+    )
+    producer_id = models.CharField(max_length=255)
+    epoch = models.IntegerField()
+    last_seq = models.IntegerField()
+    last_updated = models.FloatField()
+
+    class Meta:
+        db_table = "rakaia_streamproducer"
+        unique_together = [("stream", "producer_id")]
+
+    def __str__(self) -> str:
+        return f"{self.producer_id}@{self.epoch}:{self.last_seq}"
+
+
 class StreamEvent(models.Model):
     """
     An event containing data that can appear in one or more streams.
@@ -156,6 +255,24 @@ class StreamEvent(models.Model):
     producer (`AppendOptions.event_ts`). `null` when the producer didn't set one,
     in which case the store surfaces the append time (`created_at`) instead. This
     is the deterministic merge key, kept distinct from transport time."""
+    payload_encoding = models.CharField(max_length=16, null=True, blank=True)
+    """How to turn `data` back into the payload bytes the producer appended.
+
+    `null` — `data` **is** the payload, as a JSON value; the bytes are
+    `json.dumps(data)`. This is every event written by the event-sourcing path
+    (`@stream_model`, `append_many`, any stream with no declared content type),
+    and every row that predates this column.
+
+    `"utf-8"` / `"base64"` — `data` is a JSON *string* holding a payload that is
+    not JSON at all: the text of a `text/plain`/`text/csv` stream, or base64 for
+    bytes that are not valid UTF-8. A protocol stream may declare any content
+    type, so the store has to be able to hold a non-JSON body without either
+    losing it or crashing on `json.loads`.
+
+    Recorded per event rather than inferred from the stream's content type,
+    which can be absent, and from a payload's shape, which can be forged: a
+    JSON-mode stream may legitimately contain any object, including one shaped
+    like a marker."""
 
     class Meta:
         db_table = "rakaia_streamevent"

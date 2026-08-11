@@ -51,6 +51,7 @@ from .protocols import (
     CursorStore,
     ProjectionReader,
     ReadableStore,
+    StreamServerStore,
     WritableStore,
 )
 from .registry import (
@@ -118,6 +119,7 @@ __all__ = [
     # Extension protocols (storage / projection seams)
     "ReadableStore",
     "WritableStore",
+    "StreamServerStore",
     "CursorStore",
     "ProjectionReader",
     "provenance",

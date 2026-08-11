@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.db.models.query import QuerySet
 
-from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.django_store import DjangoStreamStore, format_offset
 from django_rakaia.models import (
     Stream,
     StreamEntry,
@@ -20,7 +20,7 @@ from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.store import StreamStore
-from rakaia.types import AppendOptions
+from rakaia.types import AppendOptions, SequenceConflict, StreamConfigConflict
 
 
 @pytest.mark.django_db
@@ -95,37 +95,49 @@ class TestDjangoStreamStore:
         assert store.has("s") is True
         assert set(store.list_paths()) == {"s", "t"}
 
-    def test_create_ignores_conflicting_kwargs_instead_of_raising(self):
-        # Deliberate divergence from the in-memory StreamStore (see its
-        # test_create_conflicting_content_type_raises /
-        # test_create_conflicting_ttl_raises): the Django Stream model has no
-        # content_type/ttl/closed columns at all, so there is no config to
-        # conflict on. `create()` re-`create`d with different kwargs silently
-        # ignores them rather than raising ValueError — this pins that
-        # behaviour so a future caller relying on in-memory-style
-        # conflict-rejection sees a failing test instead of a silent no-op.
+    def test_create_conflicting_config_raises(self):
+        # This used to assert the opposite: the durable Stream model had no
+        # content_type/ttl/closed columns, so there was no stored config to
+        # conflict on and a re-create with different kwargs silently ignored
+        # them. Now that the store backs a protocol server it records its
+        # configuration, and matches the in-memory store.
         store = DjangoStreamStore()
         store.create("s", content_type="application/json")
-        # No ValueError, and the extra kwargs leave no trace to conflict on.
-        again = store.create("s", content_type="text/plain")
+        with pytest.raises(StreamConfigConflict):
+            store.create("s", content_type="text/plain")
         assert Stream.objects.filter(stream_id="s").count() == 1
-        assert again.stream_id == "s"
 
-    def test_append_has_no_closed_stream_concept(self):
-        # Deliberate divergence from the in-memory StreamStore (see its
-        # test_append_to_closed_stream_returns_stream_closed /
-        # test_seq_conflict_raises): DjangoStreamStore does not model stream
-        # closing or Stream-Seq/producer fencing (module docstring — those are
-        # live-protocol-server concerns, out of scope for the durable
-        # event-sourcing store). There is nothing to close and no seq option
-        # honoured, so repeated appends never raise ValueError and never
-        # report stream_closed — appends just keep succeeding.
+    def test_create_is_idempotent_for_matching_config(self):
+        store = DjangoStreamStore()
+        first = store.create("s", content_type="application/json", ttl_seconds=60)
+        again = store.create("s", content_type="application/json", ttl_seconds=60)
+        assert first.pk == again.pk
+        assert Stream.objects.filter(stream_id="s").count() == 1
+
+    def test_append_to_closed_stream_reports_stream_closed(self):
+        # Also previously asserted the opposite — there was no `closed` column,
+        # so appends to a "closed" stream just kept succeeding.
         store = DjangoStreamStore()
         store.create("s")
-        first = store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
-        second = store.append("s", b'{"id": 2}', AppendOptions(seq="5"))
-        assert first.event.data == {"id": 1}
-        assert second.event.data == {"id": 2}
+        store.close_stream("s")
+        result = store.append("s", b'{"id": 1}')
+        assert result.stream_closed is True
+        assert result.message is None
+
+    def test_seq_conflict_raises(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        with pytest.raises(SequenceConflict):
+            store.append("s", b'{"id": 2}', AppendOptions(seq=5))
+
+    def test_seq_compares_numerically(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(seq=9))
+        # 10 follows 9. Compared as text it would not.
+        result = store.append("s", b'{"id": 2}', AppendOptions(seq=10))
+        assert result.message is not None
 
     def test_get_current_offset(self):
         store = DjangoStreamStore()
@@ -209,8 +221,12 @@ class TestDjangoStreamStore:
             ]
 
         assert rows("bulk") == rows("loop")
-        # Entries returned in input order, offsets contiguous from 1.
-        assert [e.offset for e in returned] == [1, 2, 3]
+        # Results returned in input order, offsets contiguous from 1.
+        assert [r.message.offset for r in returned] == [
+            format_offset(1),
+            format_offset(2),
+            format_offset(3),
+        ]
         assert [
             json.loads(store.read("bulk")[0][i].data.decode()) for i in range(3)
         ] == [
@@ -247,13 +263,18 @@ class TestDjangoStreamStore:
         locked = []
 
         def spy(qs, *args, **kwargs):
-            locked.append(True)
+            locked.append(qs.model.__name__)
             return original(qs, *args, **kwargs)
 
         with patch.object(QuerySet, "select_for_update", spy):
             store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])
 
-        assert len(locked) == 1, "append_many must lock the watermark exactly once"
+        # The stream-row lock (writer serialization for the closed/seq/fencing
+        # checks) is separate; what must not scale with the batch is the
+        # watermark lock.
+        assert locked.count("StreamOffsetWatermark") == 1, (
+            "append_many must lock the watermark exactly once"
+        )
 
     def test_append_many_interleaves_with_append_without_collision(self):
         # Interleaved append + append_many share the one offset-allocation path,
@@ -396,3 +417,51 @@ def test_get_store_returns_durable_when_setting_set(settings):
 
     settings.RAKAIA_STORE = "durable"
     assert isinstance(get_store(), DjangoStreamStore)
+
+
+@pytest.mark.django_db
+class TestExpiryReaping:
+    def test_a_refused_append_still_reaps_the_expired_row(self):
+        """The reap must run outside the write transaction.
+
+        `_require`'s expiry delete inside `transaction.atomic()` is rolled
+        back by the very `StreamNotFound` unwind that reports it — the write
+        path raised 404s forever without ever actually deleting the row.
+        """
+        import time
+
+        from rakaia.types import StreamNotFound
+
+        store = DjangoStreamStore()
+        store.create("s", ttl_seconds=0)
+        time.sleep(0.01)
+        with pytest.raises(StreamNotFound):
+            store.append("s", b'{"id": 1}')
+        assert not Stream.objects.filter(stream_id="s").exists()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_expiry_mid_long_poll_is_a_timeout_not_an_error():
+    """A stream that ages out under a waiting long-poll times out normally.
+
+    The in-memory store reports mid-wait expiry as an ordinary timeout; the
+    durable store raised `StreamNotFound`, which the handler turns into a 404
+    on a connection that was legitimately waiting.
+    """
+    import asyncio
+
+    from asgiref.sync import sync_to_async
+
+    store = DjangoStreamStore()
+    await sync_to_async(store.create)("s", ttl_seconds=3600)
+    head = await sync_to_async(store.get_current_offset)("s")
+
+    task = asyncio.ensure_future(store.wait_for_messages("s", head, 5.0))
+    await asyncio.sleep(0.3)  # let the poll loop observe the live stream first
+    await sync_to_async(Stream.objects.filter(stream_id="s").update)(
+        last_activity_at=0.0
+    )
+
+    messages, timed_out, closed = await asyncio.wait_for(task, timeout=5.0)
+    assert (messages, timed_out, closed) == ([], True, False)

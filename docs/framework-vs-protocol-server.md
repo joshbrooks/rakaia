@@ -35,7 +35,7 @@ store, projection execution, a DB-backed protocol server, and SSE.
 | Emit events from your models — `@stream_model` | `django_rakaia.decorators` | **Django** (ORM) |
 | Replay into DB tables — `effect_executor`, `projection_reader` | `django_rakaia` | **Django** (ORM) |
 | Provenance / actor capture on append | `django_rakaia.middleware` | **Django** |
-| Durable protocol HTTP server (DB-backed) | `django_rakaia.protocol_views` | **Django** (ORM) |
+| Durable protocol HTTP server (DB-backed) | `rakaia.create_app` over `DjangoStreamStore` (mount via `django_rakaia.integration.get_asgi_app`) | **Django** (ORM) |
 | Durable subscriber cursors — persisted watermarks | `django_rakaia.subscription` (`ConsumerCursor`) | **Django** (ORM) |
 | Admin browsing of streams/events | `django_rakaia.admin` | **Django** |
 | Real-time SSE broadcast | `django_rakaia.channels_signals`, `channels_views` | **Django + `channels`/`daphne`** — *optional*, see below |
@@ -101,13 +101,15 @@ Two divergences between the stores are **intentional and pinned**, not gaps:
   mandates opacity, not one format (§6). What *is* contract — and tested on both
   — is offset *behaviour*: opaque, lexicographically sortable, strictly
   increasing (#49, #55).
-- **`DjangoStreamStore` implements the framework store surface, not the
-  protocol-server one.** It satisfies `WritableStore` + `CursorStore`
-  (`create` / `append` / `read` / `has` / `get_current_offset`, plus the
-  `get` / `delete` / `list_paths` conveniences), but **not** the Tier-2
-  concerns — producer epoch/seq dedup, stream close, TTL, and long-poll are
-  deliberately absent, so a framework consumer must not depend on them from the
-  durable store.
+- **`DjangoStreamStore` implements both store surfaces.** It satisfies
+  `WritableStore` + `CursorStore` (the framework surface) *and*
+  `StreamServerStore` (the protocol-server surface: producer epoch/seq fencing,
+  stream close, TTL, long-poll, response formatting). Those Tier-2 concerns used
+  to be deliberately absent; they are present now, which is what lets
+  `rakaia.create_app` serve the protocol straight off the database. Both stores
+  are held to the same two contracts — `tests/store_contract.py` and
+  `tests/server_store_contract.py` — and the fencing rules are one shared pure
+  module (`rakaia.producer`), so the two implementations cannot drift.
 
 ## See also
 

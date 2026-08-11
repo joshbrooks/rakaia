@@ -30,7 +30,14 @@ def handle_stream_event_created(sender, instance, created, **kwargs):  # noqa: A
     # clients. See issue #80.
     if kwargs.get("raw"):
         return
-    if not created or not instance.data.get("translatable_id"):
+    # `data` is any JSON value, not necessarily an object: a protocol append can
+    # carry a list, a string or a number, and the durable store holds a
+    # non-JSON payload as a string. Only an object can be a translation event,
+    # and anything else used to raise `AttributeError` out of `post_save` — i.e.
+    # fail the append, after the write had landed.
+    if not created or not isinstance(instance.data, dict):
+        return
+    if not instance.data.get("translatable_id"):
         return
 
     channel_layer = get_channel_layer()

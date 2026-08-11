@@ -1,6 +1,6 @@
 # ADR 0002 — Name the framework ↔ protocol-server boundary; formalize the framework seams
 
-- **Status:** Proposed
+- **Status:** Accepted (items 2 and 5 landed; see the update note below)
 - **Date:** 2026-07-21
 - **Deciders:** rakaia maintainers
 - **Related:** [`django-integration.md`](../django-integration.md),
@@ -54,6 +54,23 @@ seam or to the unmarked Tier-1/Tier-2 boundary — not to a bug inside either ti
 
 The paradox: the **protocol** tier is more polished than the **framework**
 tier's *extension points*, even though the framework is the part people extend.
+
+## Update — 2026-08-11
+
+Items 2 and 5 have landed, and one premise of this ADR has changed.
+
+The ADR's context says "the store is really two interfaces, and only the read
+half is a protocol", and its alternatives defer a package split until "the
+durable store grows a real protocol-server implementation". Both are now
+addressed: `StreamServerStore` names the protocol-server half, and
+`DjangoStreamStore` implements it, held to `tests/server_store_contract.py`
+alongside the in-memory store.
+
+Note the ADR's trigger condition was already met when it was written —
+`django_rakaia.protocol_views` was a second, partial implementation of the
+protocol, recorded here only as "reportedly two HTTP protocol surfaces". With
+one implementation now able to run on either store, that duplicate is being
+removed rather than grown.
 
 ## Decision
 

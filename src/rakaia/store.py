@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -20,18 +21,16 @@ from .json_mode import (
     normalize_content_type,
     process_json_append,
 )
+from .producer import is_producer_state_expired, validate_producer
 from .types import (
     INITIAL_OFFSET,
-    PRODUCER_STATE_TTL_SECONDS,
     AppendOptions,
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
+    InvalidOffset,
     ProducerAccepted,
     ProducerDuplicate,
-    ProducerInvalidEpochSeq,
-    ProducerSequenceGap,
-    ProducerStaleEpoch,
     ProducerStreamClosed,
     ProducerValidationResult,
     SequenceConflict,
@@ -47,6 +46,9 @@ from .types import (
 # `protocol_views`), which share the one pattern from `.types` (#41).
 
 _log = logging.getLogger("rakaia.store")
+
+# This store's offsets, and nothing else. See `StreamStore._check_offset`.
+_COMPOUND_OFFSET = re.compile(r"^\d+_\d+$")
 
 
 class StreamStore:
@@ -88,7 +90,11 @@ class StreamStore:
                 expires = datetime.fromisoformat(
                     stream.expires_at.replace("Z", "+00:00")
                 )
-                if now > expires.replace(tzinfo=timezone.utc).timestamp():
+                # A naive timestamp is taken as UTC; a parsed offset is kept,
+                # not overwritten (`replace(tzinfo=...)` would discard it).
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if now > expires.timestamp():
                     return True
             except ValueError:
                 # A malformed Stream-Expires-At can't be evaluated, so the
@@ -351,8 +357,41 @@ class StreamStore:
         :meth:`append` per item, preserving every append semantic
         (producer/seq/close validation, TTL touch, long-poll notification). An
         empty batch returns ``[]``.
+
+        A content-type or Stream-Seq conflict anywhere in the batch refuses
+        the whole batch before anything is written. The durable store's single
+        transaction can only be all-or-nothing on a conflict, and the two
+        stores must agree — a plain loop here would leave the prefix written.
         """
-        return [self.append(path, data, options) for data, options in events]
+        items = list(events)
+        if not items:
+            return []
+        stream = self._get_if_not_expired(path)
+        if stream is not None and not stream.closed:
+            last_seq = stream.last_seq
+            for _data, options in items:
+                opts = options or AppendOptions()
+                if (
+                    opts.content_type
+                    and stream.content_type
+                    and normalize_content_type(opts.content_type)
+                    != normalize_content_type(stream.content_type)
+                ):
+                    raise ContentTypeMismatch(
+                        f"Content-type mismatch: expected "
+                        f"{stream.content_type}, got {opts.content_type}"
+                    )
+                if opts.seq is not None:
+                    if last_seq is not None and opts.seq <= last_seq:
+                        raise SequenceConflict(
+                            f"Sequence conflict: {opts.seq} <= {last_seq}"
+                        )
+                    last_seq = opts.seq
+                if opts.close:
+                    # Items after a close observe the closed stream and are
+                    # refused, not validated.
+                    break
+        return [self.append(path, data, options) for data, options in items]
 
     async def append_with_producer(
         self,
@@ -487,6 +526,8 @@ class StreamStore:
         if not offset or offset == "-1":
             return list(stream.messages), True
 
+        self._check_offset(offset)
+
         # Find messages after the given offset (lexicographic comparison)
         idx = self._find_offset_index(stream, offset)
         if idx == -1:
@@ -576,61 +617,20 @@ class StreamStore:
         epoch: int,
         seq: int,
     ) -> ProducerValidationResult:
-        """
-        Validate producer state WITHOUT mutating.
+        """Validate producer state WITHOUT mutating.
 
-        Returns proposed state to commit after successful append.
+        The rules themselves live in `.producer` so this store and the durable
+        `DjangoStreamStore` decide identically; all this does is supply the
+        last known state and drop it if it has aged out.
         """
-        # Clean up expired producers
         self._cleanup_expired_producers(stream)
-
-        now = time.time()
-        state = stream.producers.get(producer_id)
-
-        # New producer
-        if state is None:
-            if seq != 0:
-                return ProducerSequenceGap(expected_seq=0, received_seq=seq)
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=True,
-                producer_id=producer_id,
-                proposed_state=ProducerState(epoch=epoch, last_seq=0, last_updated=now),
-            )
-
-        # Epoch validation
-        if epoch < state.epoch:
-            return ProducerStaleEpoch(current_epoch=state.epoch)
-
-        if epoch > state.epoch:
-            if seq != 0:
-                return ProducerInvalidEpochSeq()
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=True,
-                producer_id=producer_id,
-                proposed_state=ProducerState(epoch=epoch, last_seq=0, last_updated=now),
-            )
-
-        # Same epoch: sequence validation
-        if seq <= state.last_seq:
-            return ProducerDuplicate(last_seq=state.last_seq)
-
-        if seq == state.last_seq + 1:
-            from .types import ProducerState
-
-            return ProducerAccepted(
-                is_new=False,
-                producer_id=producer_id,
-                proposed_state=ProducerState(
-                    epoch=epoch, last_seq=seq, last_updated=now
-                ),
-            )
-
-        # Sequence gap
-        return ProducerSequenceGap(expected_seq=state.last_seq + 1, received_seq=seq)
+        return validate_producer(
+            stream.producers.get(producer_id),
+            producer_id,
+            epoch,
+            seq,
+            time.time(),
+        )
 
     def _commit_producer_state(
         self, stream: Stream, result: ProducerValidationResult
@@ -647,7 +647,7 @@ class StreamStore:
         expired = [
             pid
             for pid, state in stream.producers.items()
-            if now - state.last_updated > PRODUCER_STATE_TTL_SECONDS
+            if is_producer_state_expired(state, now)
         ]
         for pid in expired:
             del stream.producers[pid]
@@ -706,6 +706,24 @@ class StreamStore:
         stream.current_offset = new_offset
 
         return message
+
+    @staticmethod
+    def _check_offset(offset: str) -> None:
+        """Reject an offset this store did not issue.
+
+        Offsets here are compound `{seq}_{byte}` tokens and are compared
+        lexicographically, which quietly does the wrong thing with a foreign
+        one: the durable store's plain integer sorts *above* every offset this
+        store emits, so a resume read returns nothing and the client is told it
+        is up to date, having skipped the whole stream. The protocol makes
+        offsets opaque rather than uniform (§6), so only the issuing store can
+        judge — `VALID_OFFSET_PATTERN` accepts both formats by design.
+        """
+        if not _COMPOUND_OFFSET.match(offset):
+            raise InvalidOffset(
+                f"Not an offset this store issued: {offset!r}. In-memory-store "
+                f"offsets have the compound {{seq}}_{{byte}} form."
+            )
 
     def _find_offset_index(self, stream: Stream, offset: str) -> int:
         """Find first message with offset > given offset (lexicographic)."""
