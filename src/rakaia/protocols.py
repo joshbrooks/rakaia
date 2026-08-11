@@ -194,19 +194,27 @@ class StreamServerStore(WritableStore, Protocol):
         """
         ...
 
-    async def close_stream_with_producer(self, path: str, options: Any = None) -> Any:
+    async def close_stream_with_producer(
+        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
+    ) -> Any:
         """Close `path` under producer fencing. Same fencing outcomes as
-        `append_with_producer`, same idempotence as `close_stream`."""
+        `append_with_producer`, same idempotence as `close_stream`.
+
+        The tuple is passed as three arguments rather than on an
+        `AppendOptions`, unlike `append_with_producer` — a close carries no
+        body and no envelope, so there is nothing else for an options object to
+        hold. A server calls this only when all three are present.
+        """
         ...
 
     async def wait_for_messages(
-        self, path: str, offset: str, timeout: float
-    ) -> tuple[list[Any], bool]:
-        """Long-poll: wait up to `timeout` seconds for messages after `offset`.
+        self, path: str, offset: str, timeout_seconds: float
+    ) -> tuple[list[Any], bool, bool]:
+        """Long-poll: wait up to `timeout_seconds` for messages after `offset`.
 
-        Returns `(messages, up_to_date)`. Returns immediately if messages are
-        already available or the stream closes; returns an empty list on
-        timeout. Raises `StreamNotFound` if the stream is absent.
+        Returns `(messages, timed_out, stream_closed)`. Returns immediately if
+        messages are already available or the stream is closed; returns an
+        empty list on timeout. Raises `StreamNotFound` if the stream is absent.
         """
         ...
 
