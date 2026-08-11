@@ -87,6 +87,7 @@ from .types import (
     ContentTypeMismatch,
     EmptyJsonArray,
     InvalidJson,
+    InvalidOffset,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -154,6 +155,7 @@ __all__ = [
     "ContentTypeMismatch",
     "InvalidJson",
     "EmptyJsonArray",
+    "InvalidOffset",
     # Cursor
     "calculate_cursor",
     "generate_response_cursor",

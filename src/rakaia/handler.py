@@ -52,6 +52,7 @@ from .types import (
     ContentTypeMismatch,
     EmptyJsonArray,
     InvalidJson,
+    InvalidOffset,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
     ProducerSequenceGap,
@@ -79,7 +80,25 @@ STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     ContentTypeMismatch: (409, b"Content-type mismatch"),
     InvalidJson: (400, b"Invalid JSON"),
     EmptyJsonArray: (400, b"Empty arrays are not allowed"),
+    InvalidOffset: (400, b"Invalid offset"),
 }
+
+
+def _status_for(failure: BaseException) -> tuple[int, bytes] | None:
+    """The response for a store failure, or `None` to let it propagate.
+
+    Resolved along the MRO rather than by exact type, so a store that
+    specializes a failure — `class ShardNotFound(StreamNotFound)` in some other
+    backend — inherits its status instead of falling through to a 500. The
+    closed-set test only sees subclasses that happen to be imported, so exact
+    lookup would leave that hole open for anything defined downstream.
+    """
+    for cls in type(failure).__mro__:
+        mapped = STORE_FAILURE_STATUS.get(cls)  # type: ignore[arg-type]
+        if mapped is not None:
+            return mapped
+    return None
+
 
 # Header names used in responses (title case for HTTP convention)
 STREAM_OFFSET_HEADER_RESP = "Stream-Next-Offset"
@@ -237,7 +256,7 @@ def create_app(
             else:
                 await _send_error(send, 405, b"Method not allowed", cors_headers)
         except StreamError as e:
-            mapped = STORE_FAILURE_STATUS.get(type(e))
+            mapped = _status_for(e)
             if mapped is None:
                 raise
             status, body = mapped

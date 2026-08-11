@@ -16,9 +16,11 @@ is not yet tagged in a release.
 
 - **Named store failures.** A store now raises one of `StreamNotFound`,
   `StreamConfigConflict`, `SequenceConflict`, `ContentTypeMismatch`,
-  `InvalidJson` or `EmptyJsonArray` (all exported from `rakaia`) instead of a
-  bare `ValueError`/`KeyError`, and the ASGI server maps them to a status by
-  type via `rakaia.handler.STORE_FAILURE_STATUS`. Previously the server picked
+  `InvalidJson`, `EmptyJsonArray` or `InvalidOffset` (all exported from
+  `rakaia`) instead of a bare `ValueError`/`KeyError`, and the ASGI server maps
+  them to a status by type via `rakaia.handler.STORE_FAILURE_STATUS` —
+  resolved along the MRO, so a backend that specializes a failure inherits its
+  status rather than falling through to a 500. Previously the server picked
   the status by matching English in `str(e)`, so rewording a message in
   `store.py` silently turned a 4xx into an unhandled 500 — and any other store
   implementation had to reproduce five exact strings to behave the same. Each

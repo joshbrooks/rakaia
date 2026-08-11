@@ -16,7 +16,7 @@ import pytest
 import pytest_asyncio
 
 from rakaia import StreamStore, create_app
-from rakaia.handler import STORE_FAILURE_STATUS
+from rakaia.handler import STORE_FAILURE_STATUS, _status_for
 from rakaia.types import (
     ContentTypeMismatch,
     EmptyJsonArray,
@@ -44,6 +44,17 @@ def _subclasses(cls: type) -> set[type]:
     return found
 
 
+def _rakaia_failures() -> set[type]:
+    """Every failure rakaia itself defines.
+
+    Restricted to this package because `__subclasses__` also sees failures
+    defined elsewhere — a downstream backend's, or one a test declares a few
+    lines below. Those are not rakaia's to map, and `_status_for` resolves them
+    along the MRO anyway; what must not gain a hole is the set shipped here.
+    """
+    return {c for c in _subclasses(StreamError) if c.__module__.startswith("rakaia.")}
+
+
 class TestFailureSetIsClosed:
     """The mapping is the contract — it may not silently gain a hole."""
 
@@ -54,7 +65,7 @@ class TestFailureSetIsClosed:
         `types.py`, forget the status, and the server would 500 on it. Now this
         fails instead.
         """
-        unmapped = _subclasses(StreamError) - set(STORE_FAILURE_STATUS)
+        unmapped = _rakaia_failures() - set(STORE_FAILURE_STATUS)
         assert unmapped == set(), (
             f"store failures with no status in STORE_FAILURE_STATUS: "
             f"{sorted(c.__name__ for c in unmapped)}"
@@ -63,6 +74,29 @@ class TestFailureSetIsClosed:
     def test_statuses_are_client_errors(self) -> None:
         for failure, (status, _body) in STORE_FAILURE_STATUS.items():
             assert 400 <= status < 500, f"{failure.__name__} maps to {status}"
+
+    def test_a_specialized_failure_inherits_its_parents_status(self) -> None:
+        """A store may narrow a failure; it must not thereby become a 500.
+
+        `test_every_failure_has_a_status` only sees subclasses that happen to
+        be imported, so it cannot police a failure defined in someone else's
+        backend package. Resolving along the MRO covers those too.
+        """
+
+        class ShardNotFound(StreamNotFound):
+            """As some other backend might define it."""
+
+        assert (
+            _status_for(ShardNotFound("gone")) == STORE_FAILURE_STATUS[StreamNotFound]
+        )
+
+    def test_an_unmapped_failure_still_propagates(self) -> None:
+        """The 500 path is deliberate, not an accident of the lookup."""
+
+        class Unmapped(StreamError):
+            pass
+
+        assert _status_for(Unmapped()) is None
 
 
 class TestCompatibility:

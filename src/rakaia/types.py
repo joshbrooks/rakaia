@@ -107,6 +107,17 @@ class EmptyJsonArray(StreamError, ValueError):
     """A JSON-mode append carried an empty array."""
 
 
+class InvalidOffset(StreamError, ValueError):
+    """An offset is syntactically valid but not one this store can read.
+
+    `VALID_OFFSET_PATTERN` is a syntactic guard shared by every server; it
+    cannot tell whether a given token is an offset *this* store issued, because
+    the protocol makes offsets opaque rather than uniform (§6). A store that
+    cannot interpret the token must say so, rather than parse it into some
+    other position and read the wrong window.
+    """
+
+
 # =============================================================================
 # Data structures
 # =============================================================================
