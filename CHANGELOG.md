@@ -166,7 +166,10 @@ is not yet tagged in a release.
   `{seq}_{byte}` form, so once the durable store backed the protocol server
   every resume read (`GET ?offset=…`) 400'd on an offset the server had just
   issued. It now accepts a plain integer too. The protocol makes offsets opaque,
-  not identically formatted (§6).
+  not identically formatted (§6), so this is a syntactic guard against junk in a
+  URL and nothing more — deciding whether a token is *this* store's offset is
+  the store's job, and each now raises `InvalidOffset` for the other's (400)
+  rather than reading from whatever position it parses to.
 
 - **Channel group names broke on any stream id containing a slash.** The
   sanitizer replaced colons only, which sufficed while ids looked like

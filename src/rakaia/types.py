@@ -59,7 +59,10 @@ INITIAL_OFFSET = "0000000000000000_0000000000000000"
 #
 # This is a syntactic guard against junk in a URL, nothing more. The protocol
 # mandates that offsets are opaque, not that they share one format (§6), so
-# meaning belongs to the store that issued it (#49, #41).
+# meaning belongs to the store that issued it (#49, #41). Accepting both formats
+# therefore means a store *will* be handed the other's: each rejects one it did
+# not issue with `InvalidOffset`, rather than reading from whichever position it
+# happens to parse to.
 VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+(_\d+)?)$")
 
 # Default port for standalone servers

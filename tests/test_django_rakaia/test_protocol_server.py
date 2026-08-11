@@ -117,9 +117,26 @@ class TestBugsTheDeletedImplementationHad:
         await client.post("/s", content=b'{"id": 1}', headers=JSON)
 
         caught_up = await client.get("/s?offset=now")
-        assert caught_up.status_code in (200, 204)
-        if caught_up.status_code == 200 and caught_up.content:
-            assert caught_up.json() == []
+        assert caught_up.status_code == 200
+        assert caught_up.json() == []
+
+    async def test_an_offset_from_the_other_store_is_a_400(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Not the wrong window, and not a 500.
+
+        `VALID_OFFSET_PATTERN` accepts both stores' formats — it has to, since
+        the protocol makes offsets opaque rather than uniform (§6) — so the
+        compound `{seq}_{byte}` form reaches a durable-backed server looking
+        perfectly valid. Python's `int()` would even parse it, treating the
+        underscore as a digit separator, and read from an unrelated position:
+        the same class of silent data loss the deleted implementation had.
+        """
+        await client.put("/s", headers=JSON)
+        await client.post("/s", content=b'{"id": 1}', headers=JSON)
+
+        refused = await client.get("/s?offset=0_5")
+        assert refused.status_code == 400
 
 
 class TestCapabilitiesTheDeletedImplementationLacked:
