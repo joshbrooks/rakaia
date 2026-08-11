@@ -47,7 +47,9 @@ class ReadableStore(Protocol):
 
         With no `offset`, returns every message; with an `offset`, returns the
         messages after it (offsets are opaque — see the class docstring). Raises
-        `KeyError` if the stream does not exist.
+        `StreamNotFound` (a `KeyError` subclass) if the stream does not exist.
+        A bare `KeyError` still satisfies the framework contract, but the HTTP
+        server maps only the named failure to a 404 — anything else is a 500.
         """
         ...
 
@@ -91,18 +93,20 @@ class WritableStore(ReadableStore, Protocol):
         Three possible outcomes, only the first of which is guaranteed across
         every backend:
 
-        - Raises `KeyError` if the stream does not exist (create it first) —
-          the one guaranteed exception every `WritableStore` must raise.
-        - May raise `ValueError` for a backend's own validation (the in-memory
-          `StreamStore` raises this on a content-type or Stream-Seq conflict);
-          `DjangoStreamStore` has no such concept and never raises it.
+        - Raises `StreamNotFound` (a `KeyError` subclass) if the stream does
+          not exist (create it first) — the one guaranteed exception every
+          `WritableStore` must raise.
+        - May raise a `ValueError`-based failure for a backend's own validation
+          (the in-memory `StreamStore` raises `ContentTypeMismatch` or
+          `SequenceConflict`); `DjangoStreamStore` has no such concept and
+          never raises it.
         - May return normally with a closed-stream signal instead of raising
           (the in-memory `StreamStore`'s `AppendResult.stream_closed=True`,
           with `message=None`, when appending to a closed stream);
           `DjangoStreamStore` has no closed-stream concept and never signals
           this.
 
-        Depend only on the `KeyError` here; treat the `ValueError` and
+        Depend only on the `StreamNotFound` here; treat the `ValueError` and
         `stream_closed=True` cases as backend-specific, not part of the
         `WritableStore` contract (see `tests/store_contract.py` for what is and
         isn't asserted across backends).

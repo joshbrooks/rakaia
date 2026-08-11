@@ -720,6 +720,11 @@ async def _handle_sse(
         )
         sse_headers["Stream-Sse-Data-Encoding"] = "base64"
 
+    # The first read runs before the response starts: a StreamError here (bad
+    # offset, vanished stream) must surface as its mapped 4xx, which is
+    # impossible once http.response.start has been sent.
+    pending_read: tuple[Any, bool] | None = store.read(path, initial_offset)
+
     await start_streaming_response(send, 200, sse_headers)
 
     current_offset = initial_offset
@@ -727,10 +732,14 @@ async def _handle_sse(
 
     while True:
         # Read messages from offset
-        try:
-            messages, up_to_date = store.read(path, current_offset)
-        except KeyError:
-            break
+        if pending_read is not None:
+            messages, up_to_date = pending_read
+            pending_read = None
+        else:
+            try:
+                messages, up_to_date = store.read(path, current_offset)
+            except (KeyError, StreamError):
+                break
 
         current_stream = store.get(path)
         if current_stream is None:
@@ -811,7 +820,7 @@ async def _handle_sse(
                 ) = await store.wait_for_messages(
                     path, current_offset, opts.long_poll_timeout
                 )
-            except KeyError:
+            except (KeyError, StreamError):
                 break
 
             if stream_closed:
