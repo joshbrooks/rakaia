@@ -238,6 +238,30 @@ class TestFailureBecomesStatus:
         assert second.status_code in (200, 204), "seq=10 must follow seq=9"
 
     @pytest.mark.asyncio
+    async def test_seq_regression_across_digit_lengths_is_409(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Stream-Seq 9 after 10 is a conflict.
+
+        The other half of the numeric-parse fix: text comparison put "9" above
+        "10", so this regression was wrongly *accepted*. Without this test a
+        revert to string comparison would keep the sibling test green and only
+        lose this one.
+        """
+        await client.put("/s", headers={"content-type": "text/plain"})
+        await client.post(
+            "/s",
+            content=b"a",
+            headers={"content-type": "text/plain", "stream-seq": "10"},
+        )
+        r = await client.post(
+            "/s",
+            content=b"b",
+            headers={"content-type": "text/plain", "stream-seq": "9"},
+        )
+        assert r.status_code == 409
+
+    @pytest.mark.asyncio
     async def test_non_numeric_seq_is_400(self, client: httpx.AsyncClient) -> None:
         await client.put("/s", headers={"content-type": "text/plain"})
         r = await client.post(

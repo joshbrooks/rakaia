@@ -84,6 +84,8 @@ class WritableStore(ReadableStore, Protocol):
         their own richer signatures — deliberately *not* on this protocol, so a
         backend that ignores such an option (e.g. `DjangoStreamStore`) can't be
         called with it through the `WritableStore` type and silently no-op.
+        `StreamServerStore` widens this with the full option set, which every
+        server store must honour.
         """
         ...
 
@@ -153,6 +155,27 @@ class StreamServerStore(WritableStore, Protocol):
     The shared conformance suite for this surface is
     `tests/server_store_contract.py`.
     """
+
+    def create(
+        self,
+        path: str,
+        *,
+        content_type: str | None = None,
+        ttl_seconds: int | None = None,
+        expires_at: str | None = None,
+        initial_data: bytes | None = None,
+        closed: bool = False,
+    ) -> Any:
+        """Idempotently create the stream at `path`, with protocol options.
+
+        Widens `WritableStore.create` — which deliberately declares only
+        `path`, so framework callers can't pass options a backend ignores. A
+        protocol server *does* pass them (`PUT` carries content type, TTL,
+        expiry, an initial body, and `Stream-Closed`), so a server store must
+        accept the full keyword surface. Raises `StreamConfigConflict` if the
+        stream exists with a different configuration.
+        """
+        ...
 
     def get(self, path: str) -> Any:
         """The stream at `path`, or `None` if absent or expired."""

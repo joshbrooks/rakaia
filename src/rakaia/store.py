@@ -358,9 +358,10 @@ class StreamStore:
         self,
         path: str,
         data: bytes,
-        options: AppendOptions,
+        options: AppendOptions | None = None,
     ) -> AppendResult:
         """Append with producer serialization for concurrent request handling."""
+        options = options or AppendOptions()
         if not options.producer_id:
             return self.append(path, data, options)
 
