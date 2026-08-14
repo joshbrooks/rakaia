@@ -122,6 +122,14 @@ Explicit metadata on an individual `AppendOptions` still wins over the ambient
 values (`merge_provenance` layers ambient *under* explicit), so a call can always
 override a field.
 
+Every append path merges the ambient block — both stores, and `@stream_model`.
+That last one was the exception until recently: the decorator wrote its event
+rows directly, so its `metadata` was always empty and its `event_ts` always
+unset, which meant the middleware built to stamp actor and URL could not reach
+the appends most Django consumers actually make. `envelope_actor` then fell back
+to the payload's owner foreign key — quietly answering "who owns this" in place
+of "who saved this".
+
 In a Django app you rarely call `provenance()` by hand — the shipped
 `HistoryMiddleware` opens the block for you around each request, mirroring
 `pghistory.middleware.HistoryMiddleware`:
