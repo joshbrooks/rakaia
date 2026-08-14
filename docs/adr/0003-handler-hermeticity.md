@@ -5,9 +5,9 @@
 - **Deciders:** rakaia maintainers
 - **Related:** [`staged-replay.md`](../staged-replay.md),
   [`dry-run-and-executors.md`](../dry-run-and-executors.md),
-  `django_rakaia.hermeticity` (`deny_database_access`), the `using=` seam
-  (#68 item 2, [`test_using_seam.py`](../../tests/test_django_rakaia/test_using_seam.py)),
-  Partisipa `assert_no_live_writes`
+  `django_rakaia.hermeticity` (`deny_database_access`, `assert_no_live_writes`),
+  the `using=` seam
+  (#68 item 2, [`test_using_seam.py`](../../tests/test_django_rakaia/test_using_seam.py))
 
 ## Context
 
@@ -49,6 +49,13 @@ The rebuild gate already guards the **write** side — `assert_no_live_writes`
 asserts the default DB's row counts are unchanged across a rebuild, turning a
 leaked `post_save` into a loud failure. But a stray **read** changes no row
 count, so the write-side guard cannot see it. Reads need their own guard.
+
+> **Update — 2026-08-14.** When this ADR was written the write-side guard lived
+> only in the first consumer's tree, and this ADR referred to it as
+> "Partisipa `assert_no_live_writes`". Both halves now ship in
+> `django_rakaia.hermeticity`, so the pairing this ADR describes is available
+> to every consumer rather than being re-derived per adopter. The decision is
+> unchanged; only the location is.
 
 ## Decision
 
