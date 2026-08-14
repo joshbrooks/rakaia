@@ -66,12 +66,8 @@ def _snapshot() -> dict[str, Any]:
         "balance": {
             b.suku: (b.operational, b.infrastructure) for b in Balance.objects.all()
         },
-        "project": {
-            (p.suku, p.output): p.percent for p in Project.objects.all()
-        },
-        "meeting": {
-            (m.suku, m.meeting_id): m.verified for m in Meeting.objects.all()
-        },
+        "project": {(p.suku, p.output): p.percent for p in Project.objects.all()},
+        "meeting": {(m.suku, m.meeting_id): m.verified for m in Meeting.objects.all()},
         # Order-sensitive across streams: the tied FINANCE/MEETING pair both
         # write this, so its value depends on the merged order between them.
         "claim": {c.slot: c.claimed_by for c in Claim.objects.all()},
@@ -235,8 +231,7 @@ class Command(BaseCommand):
             raise CommandError("single-stream and merged diverged after heal")
         self.stdout.write(
             self.style.SUCCESS(
-                "    → Maubara now READY; merged still matches the combined "
-                "stream ✓"
+                "    → Maubara now READY; merged still matches the combined stream ✓"
             )
         )
 

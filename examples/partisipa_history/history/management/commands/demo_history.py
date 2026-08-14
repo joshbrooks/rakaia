@@ -160,9 +160,7 @@ class Command(BaseCommand):
         loses_op = all("op" not in e for e in naive)
         enveloped = SubmissionHistoryEntry.objects.exclude(actor="").count()
 
-        self.stdout.write(
-            "\n[2] ENVELOPE — what a plain append(new_state) loses:"
-        )
+        self.stdout.write("\n[2] ENVELOPE — what a plain append(new_state) loses:")
         self.stdout.write(
             self.style.WARNING(
                 f"    fields-only stream: actor recoverable={not loses_actor}, "
@@ -197,12 +195,8 @@ class Command(BaseCommand):
                 f"field(s) mid-history."
             )
         )
-        self.stdout.write(
-            f"    peak snapshot from stream : {canonical(from_stream)}"
-        )
-        self.stdout.write(
-            f"    peak snapshot from pghist : {canonical(from_pgh)}"
-        )
+        self.stdout.write(f"    peak snapshot from stream : {canonical(from_stream)}")
+        self.stdout.write(f"    peak snapshot from pghist : {canonical(from_pgh)}")
         if not stream_history.snapshots_equal(from_stream, from_pgh):
             raise CommandError("stream recovery disagrees with pghistory recovery")
         if len(from_stream) <= 1:

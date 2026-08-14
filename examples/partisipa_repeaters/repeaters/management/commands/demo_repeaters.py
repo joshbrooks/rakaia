@@ -49,9 +49,9 @@ def _reset() -> None:
 
 
 def _node_ids() -> set[str]:
-    return set(Node.objects.filter(submission_id=SUBMISSION).values_list(
-        "node_id", flat=True
-    ))
+    return set(
+        Node.objects.filter(submission_id=SUBMISSION).values_list("node_id", flat=True)
+    )
 
 
 def _total() -> int:
@@ -104,8 +104,7 @@ class Command(BaseCommand):
         self.stdout.write(f"    {len(ids)} nodes {sorted(ids)}, Total={total}")
         if ids != V1_NODES or total != V1_TOTAL or dangling:
             raise CommandError(
-                f"v1 build wrong: nodes={sorted(ids)} total={total} "
-                f"dangling={dangling}"
+                f"v1 build wrong: nodes={sorted(ids)} total={total} dangling={dangling}"
             )
         self.stdout.write(
             self.style.SUCCESS(f"    → 6 nodes, valid tree, Total={V1_TOTAL} ✓")
@@ -146,15 +145,21 @@ class Command(BaseCommand):
         ids, total, dangling = _node_ids(), _total(), _dangling_parents()
         survived = PRUNED & ids
 
-        self.stdout.write("\n[3] TREE-RECONCILE — resubmit v2, whole-subtree reconcile:")
+        self.stdout.write(
+            "\n[3] TREE-RECONCILE — resubmit v2, whole-subtree reconcile:"
+        )
         self.stdout.write(
             f"    {len(ids)} nodes {sorted(ids)}, Total={total}, "
             f"dangling parents={dangling}"
         )
         if ids != V2_NODES:
-            raise CommandError(f"expected exactly {sorted(V2_NODES)}, got {sorted(ids)}")
+            raise CommandError(
+                f"expected exactly {sorted(V2_NODES)}, got {sorted(ids)}"
+            )
         if survived:
-            raise CommandError(f"pruned subtree survived at some depth: {sorted(survived)}")
+            raise CommandError(
+                f"pruned subtree survived at some depth: {sorted(survived)}"
+            )
         if dangling:
             raise CommandError(f"dangling parent pointers: {dangling}")
         if total != V2_TOTAL:

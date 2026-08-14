@@ -59,9 +59,7 @@ class Message(models.Model):
     room = models.ForeignKey(
         ChatRoom, on_delete=models.CASCADE, related_name="messages"
     )
-    author = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="messages"
-    )
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="messages")
     body = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 

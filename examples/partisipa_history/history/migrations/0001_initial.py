@@ -2,7 +2,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = []
@@ -23,7 +22,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="SubmissionRecord",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("submission_id", models.CharField(max_length=64, unique=True)),
                 ("fields", models.JSONField(default=dict)),
                 ("actor", models.CharField(default="", max_length=128)),
@@ -34,7 +41,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="SubmissionHistoryEntry",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("submission_id", models.CharField(max_length=64)),
                 ("seq", models.IntegerField()),
                 ("label", models.CharField(max_length=1)),

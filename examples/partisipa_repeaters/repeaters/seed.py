@@ -15,34 +15,62 @@ what makes the `Total` rollup double-count.
 """
 
 V1_TREE = {
-    "id": "A", "value": 0, "children": [
-        {"id": "B", "value": 0, "children": [
-            {"id": "D", "value": 10, "children": []},
-            {"id": "E", "value": 20, "children": []},
-        ]},
-        {"id": "C", "value": 0, "children": [
-            {"id": "F", "value": 30, "children": []},
-        ]},
+    "id": "A",
+    "value": 0,
+    "children": [
+        {
+            "id": "B",
+            "value": 0,
+            "children": [
+                {"id": "D", "value": 10, "children": []},
+                {"id": "E", "value": 20, "children": []},
+            ],
+        },
+        {
+            "id": "C",
+            "value": 0,
+            "children": [
+                {"id": "F", "value": 30, "children": []},
+            ],
+        },
     ],
 }
 
 V2_TREE = {
-    "id": "A", "value": 0, "children": [
-        {"id": "C", "value": 0, "children": [
-            {"id": "F", "value": 30, "children": []},
-        ]},
-        {"id": "G", "value": 0, "children": [
-            {"id": "H", "value": 5, "children": []},
-        ]},
+    "id": "A",
+    "value": 0,
+    "children": [
+        {
+            "id": "C",
+            "value": 0,
+            "children": [
+                {"id": "F", "value": 30, "children": []},
+            ],
+        },
+        {
+            "id": "G",
+            "value": 0,
+            "children": [
+                {"id": "H", "value": 5, "children": []},
+            ],
+        },
     ],
 }
 
 SUBMISSION = "sub-1"
 
-V1_EVENT = {"schema_version": 1, "form_type": "SURVEY", "key": SUBMISSION,
-            "tree": V1_TREE}
-V2_EVENT = {"schema_version": 1, "form_type": "SURVEY", "key": SUBMISSION,
-            "tree": V2_TREE}
+V1_EVENT = {
+    "schema_version": 1,
+    "form_type": "SURVEY",
+    "key": SUBMISSION,
+    "tree": V1_TREE,
+}
+V2_EVENT = {
+    "schema_version": 1,
+    "form_type": "SURVEY",
+    "key": SUBMISSION,
+    "tree": V2_TREE,
+}
 
 # v1: leaves D+E+F = 60 across 6 nodes.
 V1_NODES = {"A", "B", "C", "D", "E", "F"}

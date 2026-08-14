@@ -17,7 +17,7 @@ import json
 from typing import Any
 
 from django.core.management import call_command
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from submission_stream import stream
 from submission_stream.models import Submission, SubmissionHistory
@@ -214,5 +214,13 @@ class Command(BaseCommand):
         self.stdout.write("")
 
     def _say(self, ok: bool, msg: str) -> None:
+        """Report a claim, and fail the command if it does not hold.
+
+        A demo that prints a red ✗ and still exits 0 is worse than no demo: CI
+        goes green, `just demos` reports success, and the broken guarantee is
+        visible only to whoever happens to read the scrollback.
+        """
         style = self.style.SUCCESS if ok else self.style.ERROR
         self.stdout.write(style("\n" + msg + " " + ("✓" if ok else "✗")))
+        if not ok:
+            raise CommandError(msg)

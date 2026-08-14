@@ -173,4 +173,6 @@ class Command(BaseCommand):
     def _print_links(self) -> None:
         for sf in Sf12.objects.all():
             target = sf.project.name if sf.project_id else "— UNLINKED —"
-            self.stdout.write(f"    {sf.submission_id:<24} {sf.link_reason:<4} {target}")
+            self.stdout.write(
+                f"    {sf.submission_id:<24} {sf.link_reason:<4} {target}"
+            )

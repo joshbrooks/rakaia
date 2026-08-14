@@ -28,10 +28,10 @@ jobs:
         run: uv sync --extra dev --extra django --extra docs --extra prod
 
       - name: Lint with ruff
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ examples/
 
       - name: Format check with ruff
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ examples/
 
       - name: Type check with pyright (informational)
         # Pre-existing Django ORM dynamism complaints; tracked separately.
@@ -44,3 +44,29 @@ jobs:
 
       - name: Build docs
         run: uv run zensical build
+
+  demos:
+    # The examples are a tested surface, not a directory of prose. Every demo
+    # asserts its own claims and exits non-zero when one does not hold, so this
+    # job fails the moment a library change breaks a documented guarantee —
+    # which is how `examples/` fell out of date before it was gated.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra django
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Run every demo
+        run: just demos

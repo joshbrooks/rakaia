@@ -55,9 +55,7 @@ def _append(store: Any, event: dict) -> None:
 
 
 def _close_state() -> dict[str, tuple[str, list]]:
-    return {
-        c.suku: (c.status, sorted(c.reasons)) for c in CycleClose.objects.all()
-    }
+    return {c.suku: (c.status, sorted(c.reasons)) for c in CycleClose.objects.all()}
 
 
 def _balance(suku: str) -> tuple[Decimal, Decimal] | None:
@@ -129,8 +127,7 @@ class Command(BaseCommand):
             raise CommandError("Fatuberliu should stay ACCEPTED")
         self.stdout.write(
             self.style.SUCCESS(
-                "    → same POM_1 close is now ACCEPTED — no backfill, no code "
-                "change ✓"
+                "    → same POM_1 close is now ACCEPTED — no backfill, no code change ✓"
             )
         )
 

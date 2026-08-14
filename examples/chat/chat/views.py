@@ -69,9 +69,7 @@ def post_message(request: HttpRequest, room_id: int) -> HttpResponse:
 
 
 @require_http_methods(["POST"])
-def update_message(
-    request: HttpRequest, room_id: int, message_id: int
-) -> HttpResponse:
+def update_message(request: HttpRequest, room_id: int, message_id: int) -> HttpResponse:
     """Edit a message body. Triggers an `update` StreamEvent via @stream_model."""
     msg = get_object_or_404(Message, pk=message_id, room_id=room_id)
     body = (request.POST.get("body") or "").strip()
@@ -82,9 +80,7 @@ def update_message(
 
 
 @require_http_methods(["POST"])
-def delete_message(
-    request: HttpRequest, room_id: int, message_id: int
-) -> HttpResponse:
+def delete_message(request: HttpRequest, room_id: int, message_id: int) -> HttpResponse:
     """Delete a message. Triggers a `delete` StreamEvent via @stream_model."""
     msg = get_object_or_404(Message, pk=message_id, room_id=room_id)
     msg.delete()  # @stream_model post_delete → SSE delete event

@@ -45,7 +45,11 @@ def _to_payload(obj: models.Model) -> TranslationPayload:
 
 @receiver(post_save, sender=Translatable)
 def _translatable_saved(
-    sender, instance: Translatable, created: bool, **kwargs
+    # Django mandates the receiver signature; `sender` is unused here.
+    sender,  # noqa: ARG001
+    instance: Translatable,
+    created: bool,
+    **kwargs,
 ) -> None:
     # Hand-wired receivers do not get `@stream_model`'s `raw` guard — without
     # this, every `loaddata` row appends a phantom event (issue #80).
@@ -60,7 +64,11 @@ def _translatable_saved(
 
 
 @receiver(post_delete, sender=Translatable)
-def _translatable_deleted(sender, instance: Translatable, **kwargs) -> None:
+def _translatable_deleted(
+    sender,  # noqa: ARG001 - Django mandates the receiver signature
+    instance: Translatable,
+    **kwargs,  # noqa: ARG001
+) -> None:
     create_stream_event(
         stream_paths=[f"translations:{instance.langcode}"],
         to_dataclass=_to_payload,
