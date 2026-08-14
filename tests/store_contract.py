@@ -62,6 +62,34 @@ class StoreContract:
         store.create("s")
         assert store.has("s") is True
 
+    def test_create_on_an_existing_stream_preserves_its_messages(self, store):
+        """Idempotent means *no-op*, not *reset*.
+
+        `test_create_is_idempotent` only checks the stream still exists, which a
+        create-that-truncates would also satisfy. This is the property callers
+        rely on when they drop the `has()` guard and call `create()`
+        unconditionally: the create-if-missing shorthand is safe only because a
+        redundant `create()` cannot destroy a populated stream.
+        """
+        store.create("s")
+        store.append("s", b'{"n": 1}', AppendOptions(label="create"))
+        store.append("s", b'{"n": 2}', AppendOptions(label="update"))
+
+        store.create("s")
+
+        messages, _ = store.read("s")
+        assert [json.loads(m.data)["n"] for m in messages] == [1, 2]
+
+    def test_create_on_an_existing_stream_does_not_rewind_offsets(self, store):
+        """Any offset a caller is already holding stays valid."""
+        store.create("s")
+        store.append("s", b'{"n": 1}', AppendOptions(label="create"))
+        offset_before = store.get_current_offset("s")
+
+        store.create("s")
+
+        assert store.get_current_offset("s") == offset_before
+
     def test_has_reflects_existence(self, store):
         assert store.has("s") is False
         store.create("s")
