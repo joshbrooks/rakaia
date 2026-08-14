@@ -94,6 +94,16 @@ Both `manage.py replay` and the mounted protocol app resolve their store through
 `get_store()`, so flipping this one setting switches the whole integration over.
 The chosen store is cached one-per-backend for the process.
 
+Only those two values are accepted. Anything else — a typo like `"durrable"`, a
+stray space, a plausible guess like `"postgres"` — raises `ImproperlyConfigured`
+rather than falling back. It used to fall back to the in-memory store, which made
+a one-character mistake indistinguishable from a working durable deployment:
+appends succeeded, nothing complained, and the whole log vanished on the next
+restart. `manage.py check` reports the same problem at startup as `rakaia.E001`,
+so a misconfigured deployment fails before it serves a request. Running
+`"memory"` with `DEBUG = False` is allowed but warns (`rakaia.W001`) — silence it
+via `SILENCED_SYSTEM_CHECKS` if that is deliberate.
+
 | | `"memory"` (default) | `"durable"` |
 |---|---|---|
 | Backend | `rakaia.StreamStore` | `DjangoStreamStore` |
