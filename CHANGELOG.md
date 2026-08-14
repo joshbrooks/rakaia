@@ -289,6 +289,18 @@ is not yet tagged in a release.
   there was executed or linted by CI at all — which is how it drifted far enough
   to need a repair pass. `ruff` now covers `examples/` too.
 
+- **`StreamServerStore.get` is typed, and the contract asserts it.** It was
+  declared `-> Any`, and the conformance suite only checked `hasattr` for the six
+  fields a server reads — which a backend's own row object satisfies too. So when
+  `DjangoStreamStore.get` changed from returning its ORM `Stream` row to a
+  `rakaia.types.Stream` metadata snapshot, nothing noticed, and the first
+  downstream consumer broke on it. The snapshot is the right shape (a protocol
+  server is async and reads these fields outside the `run_sync` bridge, so
+  anything lazy would fail there); the mistake was that nothing said so. `get` is
+  now `-> Stream | None` and two contract cases assert the type and its inertness
+  on both backends. A new [`UPGRADING.md`](UPGRADING.md) documents this and the
+  other breaks since `5e4a6e3`, with the exact edits.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong

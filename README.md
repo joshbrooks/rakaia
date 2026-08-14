@@ -22,6 +22,11 @@ pip install "rakaia-streams[django,prod]"  # + channels-redis + hypercorn for pr
 The distribution is named `rakaia-streams` on PyPI (plain `rakaia` was already
 taken); the import names are unchanged — `import rakaia`, `import django_rakaia`.
 
+Already using rakaia from a pinned git revision? See
+[`UPGRADING.md`](UPGRADING.md) before bumping the pin — the distribution rename
+above is itself a breaking change for a `[tool.uv.sources]` entry spelled
+`rakaia`.
+
 ## Quick start (standalone)
 
 ```bash

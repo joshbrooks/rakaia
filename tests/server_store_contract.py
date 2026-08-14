@@ -39,6 +39,7 @@ from rakaia.types import (
     StreamConfigConflict,
     StreamNotFound,
 )
+from rakaia.types import Stream as ProtocolStream
 
 
 def _protocol_methods() -> list[str]:
@@ -136,6 +137,51 @@ class ServerStoreContract:
 
     def test_get_is_none_for_a_missing_stream(self, store):
         assert store.get("nope") is None
+
+    def test_get_returns_the_shared_stream_type(self, store):
+        """`get()` returns `rakaia.types.Stream` — the same type from every store.
+
+        `test_get_exposes_what_a_server_reads` only checks `hasattr`, which a
+        backend's own row object satisfies too: the durable store used to return
+        its ORM `Stream` model, which carries all six of those attributes. So the
+        contract passed while the two stores returned structurally similar but
+        entirely different types, and `StreamServerStore.get` was declared
+        `-> Any`, so the type checker had nothing to say either.
+
+        That is not hypothetical — it is exactly what happened, and it broke the
+        first downstream consumer, which was doing
+        `StreamEntry.objects.filter(stream=store.get(path))` and relying on
+        getting an ORM row back. Returning a snapshot is the *right* call (a
+        protocol server is async, and an ORM row is lazy — reading
+        `stream.current_offset` off it would issue a query at attribute access,
+        which Django refuses from an async context). The mistake was that
+        nothing stated it, so the change was invisible until it reached a
+        consumer.
+        """
+        store.create("s", content_type="text/plain", ttl_seconds=60)
+        assert isinstance(store.get("s"), ProtocolStream)
+
+    def test_get_does_not_leak_a_backend_row(self, store):
+        """The returned metadata is inert: reading it issues no further query.
+
+        The reason the durable store hands back a snapshot rather than its ORM
+        row. A server resolves everything inside the store's `run_sync` bridge
+        and reads it afterwards, outside — so anything lazy would blow up there
+        rather than here.
+        """
+        store.create("s", ttl_seconds=60)
+        stream = store.get("s")
+        # Consuming every field a server touches must not need a live connection.
+        snapshot = (
+            stream.path,
+            stream.current_offset,
+            stream.content_type,
+            stream.ttl_seconds,
+            stream.expires_at,
+            stream.last_seq,
+            stream.closed,
+        )
+        assert snapshot[0] == "s"
 
     # =========================================================================
     # Create
