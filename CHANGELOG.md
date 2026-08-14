@@ -229,6 +229,18 @@ is not yet tagged in a release.
   exactly as both stores do; a fan-out to several streams shares one envelope,
   since it is one event. Appends outside a `provenance()` block are unchanged.
 
+- **A bulk append now reaches live subscribers** (#82). `append_many` persists
+  with `bulk_create`, which does not fire `post_save` — and on the durable store
+  publication *was* a `post_save` receiver on `StreamEntry`, so every bulk append
+  was silently invisible to SSE subscribers. The docstring's promise that it is
+  "semantically identical to calling `append` once per item" was true of the rows
+  written and false of the subscribers reached; nothing caught it because that
+  semantic was never in the interface. The wire frame now has a single definition
+  (`channels_signals.broadcast_entries`) which both the receiver and the store
+  call, and `DjangoStreamStore` publishes its own appends rather than relying on
+  a signal that its own write strategy bypasses. Restoring the signal by saving
+  rows one at a time would have undone the reason `append_many` exists.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong

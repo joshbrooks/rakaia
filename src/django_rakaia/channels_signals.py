@@ -5,6 +5,8 @@ Replaces the custom SSEManager/Unix socket/Redis broadcasting with
 Django Channels' channel layer for cross-process event distribution.
 """
 
+from collections.abc import Sequence
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db.models.signals import post_save
@@ -77,39 +79,79 @@ def handle_stream_event_created(sender, instance, created, **kwargs):  # noqa: A
     async_to_sync(channel_layer.group_send)("translations", message)
 
 
-@receiver(post_save, sender=StreamEntry)
-def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: ARG001
-    """Broadcast stream events to the stream's channel group."""
-    # As above: skip fixture rows. Beyond the phantom frame, the `instance.stream`
-    # / `instance.event` dereferences below are separate queries that raise
-    # DoesNotExist mid-`loaddata` if the parent rows are not restored yet.
-    if kwargs.get("raw"):
-        return
-    if not created:
+def _frame(stream_id: str, entry: StreamEntry) -> dict:
+    """The SSE frame for one appended entry.
+
+    Sole definition of the wire shape. It used to live inline in the `post_save`
+    receiver, which made it unreachable from any write path that does not fire
+    `post_save` — see `broadcast_entries`.
+    """
+    return {
+        "type": "stream.event",
+        # The group name is a lossy sanitization — distinct stream ids can share
+        # a group (every disallowed character becomes ".", and long names
+        # truncate). The payload carries the exact id so a consumer can filter
+        # out a group-mate's events instead of cross-delivering them.
+        "stream_id": stream_id,
+        "event": {
+            "id": entry.event.id,
+            "offset": entry.offset,
+            "event_type": entry.event.event_type,
+            "created_at": entry.event.created_at.isoformat()
+            if entry.event.created_at
+            else None,
+            "data": entry.event.data,
+        },
+    }
+
+
+def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
+    """Publish `entries` to the stream's channel group, oldest first.
+
+    The one implementation of "an append reaches subscribers". Two callers reach
+    it, because there are two ways an entry gets written:
+
+    * the `post_save` receiver below, for entries written through the ORM —
+      `@stream_model` and anything else that does not go through the store;
+    * `DjangoStreamStore` directly, for its own appends.
+
+    The store has to call it rather than lean on the signal: `append_many`
+    persists with `bulk_create`, which does not fire `post_save`, so every bulk
+    append was silently invisible to subscribers (issue #82). Restoring the
+    signal by saving rows one at a time would undo the reason `append_many`
+    exists; publishing explicitly keeps the batch write a batch write.
+
+    A no-op when the channel layer is absent, so a framework-tier consumer that
+    never installed `channels` is unaffected.
+    """
+    if not entries:
         return
 
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
 
-    stream_id = instance.stream.stream_id
-    message = {
-        "type": "stream.event",
-        # The group name below is a lossy sanitization — distinct stream ids
-        # can share a group (every disallowed character becomes ".", and long
-        # names truncate). The payload carries the exact id so a consumer can
-        # filter out a group-mate's events instead of cross-delivering them.
-        "stream_id": stream_id,
-        "event": {
-            "id": instance.event.id,
-            "offset": instance.offset,
-            "event_type": instance.event.event_type,
-            "created_at": instance.event.created_at.isoformat()
-            if instance.event.created_at
-            else None,
-            "data": instance.event.data,
-        },
-    }
-
     group_name = _sanitize_group_name(f"stream.{stream_id}")
-    async_to_sync(channel_layer.group_send)(group_name, message)
+    send = async_to_sync(channel_layer.group_send)
+    for entry in entries:
+        send(group_name, _frame(stream_id, entry))
+
+
+@receiver(post_save, sender=StreamEntry)
+def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: ARG001
+    """Broadcast an ORM-written stream entry to the stream's channel group.
+
+    Covers the write paths that do not go through `DjangoStreamStore` — chiefly
+    `@stream_model`. The store publishes its own appends via `broadcast_entries`
+    and writes with `bulk_create`, so this receiver does not double-fire for
+    them.
+    """
+    # Skip fixture rows. Beyond the phantom frame, the `instance.stream` /
+    # `instance.event` dereferences are separate queries that raise DoesNotExist
+    # mid-`loaddata` if the parent rows are not restored yet.
+    if kwargs.get("raw"):
+        return
+    if not created:
+        return
+
+    broadcast_entries(instance.stream.stream_id, [instance])
