@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import fnmatch
 import importlib
-import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .registration_log import RegistrationLog
 from .source_hash import hash_function_source
 
 if TYPE_CHECKING:
@@ -100,6 +100,63 @@ class HandlerVersion:
     resolve facts materialised by earlier stages. Default 0 = single-stage,
     called with just the event (backward compatible)."""
 
+    # -- meta-stream record (see `rakaia.registration_log`) -----------------
+    #
+    # Identity and serialization live together on the type, so the round trip is
+    # a property of `HandlerVersion` rather than an agreement between two
+    # module-level functions that had to be kept mirrored by hand.
+
+    @property
+    def identity(self) -> tuple:
+        """Dedup key for the meta-stream. Excludes `fn` (not serializable, and
+        two registrations of the same source are the same registration)."""
+        return (
+            self.name,
+            self.event_match,
+            self.effective_from,
+            self.effective_to,
+            self.dotted_path,
+            self.source_hash,
+            self.match_field,
+            self.stage,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            # A frozenset serializes as a *sorted* list, so the meta-stream is
+            # stable regardless of set iteration order — otherwise every restart
+            # would see a "new" identity and re-append the same handler.
+            "event_match": (
+                self.event_match
+                if isinstance(self.event_match, str)
+                else sorted(self.event_match)
+            ),
+            "effective_from": self.effective_from,
+            "effective_to": self.effective_to,
+            "dotted_path": self.dotted_path,
+            "source_hash": self.source_hash,
+            "match_field": self.match_field,
+            "stage": self.stage,
+        }
+
+    @staticmethod
+    def identity_from_payload(p: dict[str, Any]) -> tuple:
+        return (
+            p["name"],
+            # Rebuild the frozenset a list-serialized set was persisted from, so
+            # a reload dedups against the live version.
+            p["event_match"]
+            if isinstance(p["event_match"], str)
+            else frozenset(p["event_match"]),
+            int(p["effective_from"]),
+            p["effective_to"] if p["effective_to"] is None else int(p["effective_to"]),
+            p["dotted_path"],
+            p["source_hash"],
+            p.get("match_field"),  # tolerate pre-match_field persisted payloads
+            int(p.get("stage", 0)),  # tolerate pre-stage persisted payloads
+        )
+
 
 @dataclass(frozen=True)
 class ReducerVersion:
@@ -145,6 +202,24 @@ class ReducerVersion:
     dotted_path: str
     source_hash: str
 
+    # -- meta-stream record (see `rakaia.registration_log`) -----------------
+
+    @property
+    def identity(self) -> tuple:
+        return (self.name, self.stage, self.dotted_path, self.source_hash)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "stage": self.stage,
+            "dotted_path": self.dotted_path,
+            "source_hash": self.source_hash,
+        }
+
+    @staticmethod
+    def identity_from_payload(p: dict[str, Any]) -> tuple:
+        return (p["name"], int(p["stage"]), p["dotted_path"], p["source_hash"])
+
 
 # =============================================================================
 # Registry
@@ -180,16 +255,15 @@ class HandlerRegistry:
         self._store = store
         self._stream_path = stream_path
         self._reducer_stream_path = REDUCERS_META_STREAM
-        # Identity tuples already persisted to the stream — used for dedup.
-        self._persisted_ids: set[
-            tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]
-        ] = set()
-        self._reducer_persisted_ids: set[tuple[str, int, str, str]] = set()
-        if store is not None:
-            self._ensure_stream()
-            self._load_persisted_ids()
-            self._ensure_reducer_stream()
-            self._load_reducer_ids()
+        # One log per record kind. Each owns create/read/dedup/append for its
+        # stream; `RegistrationLog` is a no-op when `store` is None, so nothing
+        # below needs to special-case an unbacked registry.
+        self._handler_log = RegistrationLog(store, stream_path, HandlerVersion)
+        self._reducer_log = RegistrationLog(
+            store, self._reducer_stream_path, ReducerVersion
+        )
+        self._handler_log.load()
+        self._reducer_log.load()
 
     def register(
         self,
@@ -250,13 +324,12 @@ class HandlerRegistry:
 
         # In-memory dedup: exact identical registration → no-op
         for existing in series:
-            if _identity(existing) == _identity(version):
+            if existing.identity == version.identity:
                 return existing
 
         self._check_overlap(version, series)
 
-        if self._store is not None:
-            self._persist_if_new(version)
+        self._handler_log.record(version)
 
         series.append(version)
         series.sort(key=lambda v: v.effective_from)
@@ -287,13 +360,10 @@ class HandlerRegistry:
         )
 
         existing = self._reducers.get(name)
-        if existing is not None and _reducer_identity(existing) == _reducer_identity(
-            reducer
-        ):
+        if existing is not None and existing.identity == reducer.identity:
             return existing
 
-        if self._store is not None:
-            self._persist_reducer_if_new(reducer)
+        self._reducer_log.record(reducer)
 
         self._reducers[name] = reducer
         return reducer
@@ -312,8 +382,8 @@ class HandlerRegistry:
         """
         self._versions.clear()
         self._reducers.clear()
-        self._persisted_ids.clear()
-        self._reducer_persisted_ids.clear()
+        self._handler_log.reset()
+        self._reducer_log.reset()
 
     def reducers_for_stage(self, stage: int) -> list[ReducerVersion]:
         """Reducers registered for `stage`, in deterministic (name) order."""
@@ -434,104 +504,12 @@ class HandlerRegistry:
         (Python caches imports), so calling this after some modules have
         already been imported is safe.
         """
-        if self._store is None:
-            return
-        for ident in self._persisted_ids:
-            dotted_path = ident[4]
-            module_name = dotted_path.rsplit(".", 1)[0]
-            importlib.import_module(module_name)
-        for r_ident in self._reducer_persisted_ids:
-            module_name = r_ident[2].rsplit(".", 1)[0]  # index 2 = dotted_path
+        for module_name in self._handler_log.modules() | self._reducer_log.modules():
             importlib.import_module(module_name)
 
     # ------------------------------------------------------------------
     # Internal — persistence
     # ------------------------------------------------------------------
-
-    def _ensure_stream(self) -> None:
-        # Meta-stream uses no content_type so each append is stored as a
-        # standalone bytes blob (one JSON object per message). We avoid
-        # application/json mode because it appends a trailing comma and
-        # treats the whole stream as a flattened JSON array.
-        #
-        # `create()` unguarded: creation is idempotent by contract, and a
-        # redundant create cannot truncate a populated stream or rewind its
-        # offsets (`tests/store_contract.py`). The `has()` it replaces was a
-        # second round trip buying nothing.
-        assert self._store is not None
-        self._store.create(self._stream_path)
-
-    def _load_persisted_ids(self) -> None:
-        assert self._store is not None
-        messages, _ = self._store.read(self._stream_path)
-        for msg in messages:
-            try:
-                payload = json.loads(msg.data)
-            except (ValueError, UnicodeDecodeError):
-                continue
-            self._persisted_ids.add(_identity_from_payload(payload))
-
-    def _persist_if_new(self, version: HandlerVersion) -> None:
-        assert self._store is not None
-        ident = _identity(version)
-        if ident in self._persisted_ids:
-            return
-        payload = {
-            "name": version.name,
-            # A frozenset event_match serializes as a sorted list so the
-            # meta-stream is stable regardless of set iteration order.
-            "event_match": (
-                version.event_match
-                if isinstance(version.event_match, str)
-                else sorted(version.event_match)
-            ),
-            "effective_from": version.effective_from,
-            "effective_to": version.effective_to,
-            "dotted_path": version.dotted_path,
-            "source_hash": version.source_hash,
-            "match_field": version.match_field,
-            "stage": version.stage,
-        }
-        self._store.append(
-            self._stream_path,
-            json.dumps(payload).encode("utf-8"),
-        )
-        self._persisted_ids.add(ident)
-
-    # ------------------------------------------------------------------
-    # Internal — reducer persistence (parallels the handler helpers)
-    # ------------------------------------------------------------------
-
-    def _ensure_reducer_stream(self) -> None:
-        assert self._store is not None
-        self._store.create(self._reducer_stream_path)
-
-    def _load_reducer_ids(self) -> None:
-        assert self._store is not None
-        messages, _ = self._store.read(self._reducer_stream_path)
-        for msg in messages:
-            try:
-                payload = json.loads(msg.data)
-            except (ValueError, UnicodeDecodeError):
-                continue
-            self._reducer_persisted_ids.add(_reducer_identity_from_payload(payload))
-
-    def _persist_reducer_if_new(self, reducer: ReducerVersion) -> None:
-        assert self._store is not None
-        ident = _reducer_identity(reducer)
-        if ident in self._reducer_persisted_ids:
-            return
-        payload = {
-            "name": reducer.name,
-            "stage": reducer.stage,
-            "dotted_path": reducer.dotted_path,
-            "source_hash": reducer.source_hash,
-        }
-        self._store.append(
-            self._reducer_stream_path,
-            json.dumps(payload).encode("utf-8"),
-        )
-        self._reducer_persisted_ids.add(ident)
 
     # ------------------------------------------------------------------
     # Internal — overlap check
@@ -582,6 +560,37 @@ class UpcasterVersion:
     string — mirrors ``register_handler``, so a per-form upcaster can route on a
     per-entity stream (e.g. ``submissions:<uuid>``) whose path carries no type."""
 
+    # -- meta-stream record (see `rakaia.registration_log`) -----------------
+
+    @property
+    def identity(self) -> tuple:
+        return (
+            self.event_match,
+            self.from_version,
+            self.dotted_path,
+            self.source_hash,
+            self.match_field,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "event_match": self.event_match,
+            "from_version": self.from_version,
+            "dotted_path": self.dotted_path,
+            "source_hash": self.source_hash,
+            "match_field": self.match_field,
+        }
+
+    @staticmethod
+    def identity_from_payload(p: dict[str, Any]) -> tuple:
+        return (
+            p["event_match"],
+            int(p["from_version"]),
+            p["dotted_path"],
+            p["source_hash"],
+            p.get("match_field"),  # tolerate pre-match_field persisted payloads
+        )
+
 
 class UpcasterRegistry:
     """
@@ -601,10 +610,8 @@ class UpcasterRegistry:
         self._upcasters: dict[tuple[str, int, str | None], UpcasterVersion] = {}
         self._store = store
         self._stream_path = stream_path
-        self._persisted_ids: set[tuple[str, int, str, str, str | None]] = set()
-        if store is not None:
-            self._ensure_stream()
-            self._load_persisted_ids()
+        self._log = RegistrationLog(store, stream_path, UpcasterVersion)
+        self._log.load()
 
     def register(
         self,
@@ -641,7 +648,7 @@ class UpcasterRegistry:
         key = (event_match, from_version, match_field)
         existing = self._upcasters.get(key)
         if existing is not None:
-            if _u_identity(existing) == _u_identity(new):
+            if existing.identity == new.identity:
                 return existing
             raise UpcasterConflictError(
                 f"Upcaster already registered for event_match={event_match!r}, "
@@ -650,8 +657,7 @@ class UpcasterRegistry:
                 f"new dotted_path={new.dotted_path!r})."
             )
 
-        if self._store is not None:
-            self._persist_if_new(new)
+        self._log.record(new)
         self._upcasters[key] = new
         return new
 
@@ -788,51 +794,15 @@ class UpcasterRegistry:
         meta-stream (delete that via the store if you need to).
         """
         self._upcasters.clear()
-        self._persisted_ids.clear()
+        self._log.reset()
 
     def rehydrate(self) -> None:
-        if self._store is None:
-            return
-        for ident in self._persisted_ids:
-            dotted_path = ident[2]
-            module_name = dotted_path.rsplit(".", 1)[0]
+        for module_name in self._log.modules():
             importlib.import_module(module_name)
 
     # ------------------------------------------------------------------
     # Internal — persistence (parallels HandlerRegistry)
     # ------------------------------------------------------------------
-
-    def _ensure_stream(self) -> None:
-        assert self._store is not None
-        self._store.create(self._stream_path)
-
-    def _load_persisted_ids(self) -> None:
-        assert self._store is not None
-        messages, _ = self._store.read(self._stream_path)
-        for msg in messages:
-            try:
-                payload = json.loads(msg.data)
-            except (ValueError, UnicodeDecodeError):
-                continue
-            self._persisted_ids.add(_u_identity_from_payload(payload))
-
-    def _persist_if_new(self, version: UpcasterVersion) -> None:
-        assert self._store is not None
-        ident = _u_identity(version)
-        if ident in self._persisted_ids:
-            return
-        payload = {
-            "event_match": version.event_match,
-            "from_version": version.from_version,
-            "dotted_path": version.dotted_path,
-            "source_hash": version.source_hash,
-            "match_field": version.match_field,
-        }
-        self._store.append(
-            self._stream_path,
-            json.dumps(payload).encode("utf-8"),
-        )
-        self._persisted_ids.add(ident)
 
 
 # =============================================================================
@@ -871,67 +841,6 @@ def _pattern_matches(pattern: str | frozenset[str], subject: str) -> bool:
 # =============================================================================
 # Identity helpers
 # =============================================================================
-
-
-def _identity(
-    v: HandlerVersion,
-) -> tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]:
-    # match_field / stage are appended after dotted_path (index 4) and
-    # source_hash (index 5) so rehydrate()'s ident[4] lookup stays valid.
-    return (
-        v.name,
-        v.event_match,
-        v.effective_from,
-        v.effective_to,
-        v.dotted_path,
-        v.source_hash,
-        v.match_field,
-        v.stage,
-    )
-
-
-def _identity_from_payload(
-    p: dict[str, Any],
-) -> tuple[str, str | frozenset[str], int, int | None, str, str, str | None, int]:
-    return (
-        p["name"],
-        # Reconstruct the same canonical (frozenset) identity a list-serialized
-        # set was persisted from, so a reload dedups against the live version.
-        p["event_match"]
-        if isinstance(p["event_match"], str)
-        else frozenset(p["event_match"]),
-        int(p["effective_from"]),
-        p["effective_to"] if p["effective_to"] is None else int(p["effective_to"]),
-        p["dotted_path"],
-        p["source_hash"],
-        p.get("match_field"),  # tolerate pre-match_field persisted payloads
-        int(p.get("stage", 0)),  # tolerate pre-stage persisted payloads
-    )
-
-
-def _reducer_identity(r: ReducerVersion) -> tuple[str, int, str, str]:
-    return (r.name, r.stage, r.dotted_path, r.source_hash)
-
-
-def _reducer_identity_from_payload(p: dict[str, Any]) -> tuple[str, int, str, str]:
-    return (p["name"], int(p["stage"]), p["dotted_path"], p["source_hash"])
-
-
-def _u_identity(v: UpcasterVersion) -> tuple[str, int, str, str, str | None]:
-    # match_field appended last so rehydrate()'s ident[2] (dotted_path) stays valid.
-    return (v.event_match, v.from_version, v.dotted_path, v.source_hash, v.match_field)
-
-
-def _u_identity_from_payload(
-    p: dict[str, Any],
-) -> tuple[str, int, str, str, str | None]:
-    return (
-        p["event_match"],
-        int(p["from_version"]),
-        p["dotted_path"],
-        p["source_hash"],
-        p.get("match_field"),  # tolerate pre-match_field persisted payloads
-    )
 
 
 # =============================================================================
