@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
+from .append_decision import StreamFacts, decide_append
 from .context import merge_provenance
 from .json_mode import (
     format_json_response,
@@ -260,56 +261,28 @@ class StreamStore:
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
 
-        # Check if stream is closed
-        if stream.closed:
-            # Check for idempotent duplicate of closing request
-            if (
-                opts.producer_id is not None
-                and stream.closed_by is not None
-                and stream.closed_by.producer_id == opts.producer_id
-                and stream.closed_by.epoch == opts.producer_epoch
-                and stream.closed_by.seq == opts.producer_seq
-            ):
-                return AppendResult(
-                    message=None,
-                    stream_closed=True,
-                    producer_result=ProducerDuplicate(last_seq=opts.producer_seq or 0),
-                )
-            # Stream is closed - reject
-            return AppendResult(message=None, stream_closed=True)
-
-        # Check content type match
-        if opts.content_type and stream.content_type:
-            provided = normalize_content_type(opts.content_type)
-            stream_ct = normalize_content_type(stream.content_type)
-            if provided != stream_ct:
-                raise ContentTypeMismatch(
-                    f"Content-type mismatch: expected {stream.content_type}, "
-                    f"got {opts.content_type}"
-                )
-
-        # Producer validation (before Stream-Seq check for retry dedup)
-        producer_result: ProducerValidationResult | None = None
-        if (
-            opts.producer_id is not None
-            and opts.producer_epoch is not None
-            and opts.producer_seq is not None
-        ):
-            producer_result = self._validate_producer(
-                stream, opts.producer_id, opts.producer_epoch, opts.producer_seq
+        # Admission is decided in `rakaia.append_decision`, shared with the
+        # durable store, so the ordering (closed -> content-type -> fencing ->
+        # Stream-Seq) cannot drift between the two. This store's only job here
+        # is to supply the facts and then persist the verdict.
+        verdict = decide_append(
+            StreamFacts(
+                closed=stream.closed,
+                closed_by=stream.closed_by,
+                content_type=stream.content_type,
+                last_seq=stream.last_seq,
+            ),
+            opts,
+            producer_state=self._producer_state(stream, opts.producer_id),
+            now=time.time(),
+        )
+        if not verdict.write:
+            return AppendResult(
+                message=None,
+                stream_closed=verdict.stream_closed,
+                producer_result=verdict.producer_result,
             )
-            if producer_result.status != "accepted":
-                return AppendResult(message=None, producer_result=producer_result)
-
-        # Stream-Seq coordination
-        if (
-            opts.seq is not None
-            and stream.last_seq is not None
-            and opts.seq <= stream.last_seq
-        ):
-            raise SequenceConflict(
-                f"Sequence conflict: {opts.seq} <= {stream.last_seq}"
-            )
+        producer_result = verdict.producer_result
 
         # Append the data (may raise for invalid JSON). Provenance is merged
         # here at the public-append boundary — not in _append_to_stream — so a
@@ -619,6 +592,18 @@ class StreamStore:
     # =========================================================================
     # Producer validation
     # =========================================================================
+
+    def _producer_state(self, stream: Stream, producer_id: str | None):
+        """The last known state for `producer_id`, or None.
+
+        The one fact `decide_append` cannot work out for itself, since only the
+        store knows where producer state lives. Expired states are dropped
+        first, so an aged-out producer reads as a new one.
+        """
+        if producer_id is None:
+            return None
+        self._cleanup_expired_producers(stream)
+        return stream.producers.get(producer_id)
 
     def _validate_producer(
         self,
