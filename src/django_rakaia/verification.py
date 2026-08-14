@@ -97,13 +97,28 @@ class RowDiff:
         return f"{head}: " + "; ".join(str(d) for d in self.field_diffs)
 
 
+#: The three verdicts a verification sweep can reach. ``VACUOUS`` is deliberately
+#: distinct from both others: "nothing was wrong" and "nothing was looked at" are
+#: different facts, and a proof that conflates them is worthless as evidence.
+GREEN, RED, VACUOUS = "green", "red", "vacuous"
+
+
 @dataclass(frozen=True)
 class DiffReport:
     """Aggregate result of :func:`diff_effects_against_rows`.
 
     ``rows`` holds one :class:`RowDiff` per write effect checked (in effect
-    order); ``problems`` is the subset that disagree. ``ok`` is the assertion a
-    migration proof cares about.
+    order); ``problems`` is the subset that disagree.
+
+    **The population guard.** ``ok`` answers "did anything disagree?", which is
+    vacuously ``True`` when nothing was compared. That made a sweep over an empty
+    effect list — a store on the wrong backend, a replay over a renamed stream
+    path, an ``event_match`` filter that stopped matching, a registry that failed
+    to autodiscover — print a clean bill of health with nothing behind it. Read
+    :attr:`verdict` (or :attr:`certified`) instead: it separates `GREEN` from
+    `VACUOUS`, and :meth:`raise_if_diff` refuses to certify a zero population.
+
+    ``ok`` keeps its original meaning so existing callers are unaffected.
     """
 
     rows: list[RowDiff]
@@ -113,28 +128,91 @@ class DiffReport:
         return [r for r in self.rows if not r.ok]
 
     @property
+    def compared(self) -> int:
+        """How many rows this report actually checked.
+
+        The population the verdict rests on. Note this counts *checked* rows, not
+        input effects: non-write effects (delete/retire/external) carry no values
+        to diff and are skipped, so a batch of only those compares nothing.
+        """
+        return len(self.rows)
+
+    @property
     def ok(self) -> bool:
+        """Whether any checked row disagreed.
+
+        Vacuously ``True`` for an empty population — prefer :attr:`certified`.
+        """
         return not self.problems
 
-    def raise_if_diff(self) -> None:
-        """Raise :class:`VerificationError` if any checked row disagrees."""
-        if self.ok:
-            return
-        raise VerificationError(self)
+    @property
+    def verdict(self) -> str:
+        """`GREEN`, `RED` or `VACUOUS`.
+
+        **Failures are checked before vacuity.** If anything disagreed then
+        something was evidently compared, and reporting `RED` is strictly safer
+        than hiding a real failure behind "empty".
+        """
+        if self.problems:
+            return RED
+        if self.compared == 0:
+            return VACUOUS
+        return GREEN
+
+    @property
+    def certified(self) -> bool:
+        """Whether this report is positive evidence: a non-empty population, all
+        of it matching. The assertion a migration proof wants."""
+        return self.verdict == GREEN
+
+    def raise_if_diff(self, *, allow_empty: bool = False) -> None:
+        """Raise unless this report certifies the projection.
+
+        Raises :class:`VerificationError` if any checked row disagrees, or
+        :class:`VacuousVerification` if nothing was compared at all. Pass
+        ``allow_empty=True`` when an empty population is genuinely expected —
+        explicitly, at the call site. It never suppresses a real failure.
+        """
+        verdict = self.verdict
+        if verdict == RED:
+            raise VerificationError(self)
+        if verdict == VACUOUS and not allow_empty:
+            raise VacuousVerification(self)
 
     def __str__(self) -> str:
         problems = self.problems
-        if not problems:
-            return f"DiffReport: {len(self.rows)} row(s) verified, no differences"
-        lines = [
-            f"DiffReport: {len(problems)} of {len(self.rows)} row(s) differ:",
-            *(f"  - {p}" for p in problems),
-        ]
-        return "\n".join(lines)
+        if problems:
+            lines = [
+                f"DiffReport: {len(problems)} of {self.compared} row(s) differ:",
+                *(f"  - {p}" for p in problems),
+            ]
+            return "\n".join(lines)
+        if self.compared == 0:
+            return (
+                "DiffReport: NOTHING COMPARED (rows=0) — this run certifies "
+                "nothing. No write effects reached the diff: check the store "
+                "backend, the stream path, and that handlers were registered."
+            )
+        return f"DiffReport: {self.compared} row(s) verified, no differences"
 
 
 class VerificationError(AssertionError):
     """Raised by :meth:`DiffReport.raise_if_diff` when a projection disagrees."""
+
+    def __init__(self, report: DiffReport) -> None:
+        self.report = report
+        super().__init__(str(report))
+
+
+class VacuousVerification(AssertionError):
+    """Raised by :meth:`DiffReport.raise_if_diff` when nothing was compared.
+
+    A sibling of :class:`VerificationError`, not a subclass: they mean opposite
+    things. `VerificationError` says the projection is wrong; this says the run
+    produced no evidence either way, so treating it as a pass would be a false
+    green. Both subclass `AssertionError`, so a proof written as
+    ``except AssertionError`` still catches either.
+    """
 
     def __init__(self, report: DiffReport) -> None:
         self.report = report

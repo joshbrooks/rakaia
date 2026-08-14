@@ -163,6 +163,22 @@ is not yet tagged in a release.
   string with no interface check"); the first production consumer had written
   its own check downstream to catch it.
 
+- **A verification sweep no longer certifies a population of zero.**
+  `diff_effects_against_rows(...).ok` answers "did anything disagree?", which is
+  vacuously `True` when nothing was compared — so an empty effect list reported
+  a clean bill of health with nothing behind it. The ways that happens are all
+  ordinary: a store on the wrong backend, a replay over a renamed stream path,
+  an `event_match` filter that stopped matching, a registry that failed to
+  autodiscover. `DiffReport` now carries a three-state `verdict`
+  (`GREEN`/`RED`/`VACUOUS`) plus `compared` and `certified`, and
+  `raise_if_diff()` raises the new `VacuousVerification` rather than passing.
+  Failures are checked **before** vacuity, so a real failure is never hidden
+  behind "empty"; pass `allow_empty=True` where a zero population is genuinely
+  expected. `ok` keeps its original meaning, so existing callers are unaffected.
+  Upstreamed from the first production consumer, which named this **the vacuous
+  green** and had built the same guard downstream.
+  → [`docs/projection-cookbook.md`](docs/projection-cookbook.md)
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong
