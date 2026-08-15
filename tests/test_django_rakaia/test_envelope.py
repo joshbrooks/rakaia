@@ -219,3 +219,37 @@ class TestFoldEvents:
             executor=DjangoExecutor(),
         )
         assert FinanceLine.objects.count() == 1
+
+
+class TestTheScratchPathIsRakaiasOwnNamespace:
+    """#100 — the default was `produce/submission`, domain language from the
+    first consumer sitting in the generic integration. It reads like a
+    convention; it is not one. But it *is* load-bearing, because a registry's
+    `event_match` has to name it, so every other consumer was registering
+    handlers against another project's vocabulary."""
+
+    def test_it_is_namespaced_and_not_consumer_domain_language(self):
+        assert SCRATCH_PATH.startswith("_")
+        assert "submission" not in SCRATCH_PATH
+
+    def test_an_explicit_scratch_path_overrides_it(self):
+        """A consumer whose handlers match their own vocabulary can say so."""
+        registry = HandlerRegistry()
+        registry.register(
+            name="finance", event_match="my/own/path", fn=_handler, effective_from=0
+        )
+        fold_events([{"id": "a", "suku": "one"}], registry, scratch_path="my/own/path")
+        assert FinanceLine.objects.count() == 1
+
+    def test_a_registry_matching_a_different_path_projects_nothing(self):
+        """The coupling made explicit: mismatch is silent, which is why the
+        constant exists for both sides to name."""
+        registry = HandlerRegistry()
+        registry.register(
+            name="finance",
+            event_match="somewhere/else",
+            fn=_handler,
+            effective_from=0,
+        )
+        fold_events([{"id": "a", "suku": "one"}], registry)
+        assert FinanceLine.objects.count() == 0

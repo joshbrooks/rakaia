@@ -103,12 +103,43 @@ def deny_database_access(*aliases: str) -> Iterator[None]:
                 f"the reader, or move it to a stage that has one."
             )
 
+        # Tagged so `assert_no_live_writes` can suspend *this* wrapper for its
+        # own row counts without disturbing a wrapper the consumer installed.
+        _wrap._rakaia_deny_guard = True  # type: ignore[attr-defined]
         return _wrap
 
     with ExitStack() as stack:
         for alias in aliases:
             stack.enter_context(connections[alias].execute_wrapper(_blocker(alias)))
         yield
+
+
+@contextmanager
+def _without_deny_guards(alias: str) -> Iterator[None]:
+    """Suspend rakaia's own `deny_database_access` wrappers on `alias`.
+
+    Counting rows to *check* for a leak is the guard's bookkeeping, not the
+    rebuild reading live data — so it must not be reported as a leak, and the
+    two guards must compose in either nesting order (#101). Without this,
+    `deny_database_access` on the outside made `assert_no_live_writes`'s closing
+    `COUNT(*)` raise `AmbientDatabaseAccess` blaming *the rebuild* for a query
+    the guard itself issued, sending the reader after a leak that did not exist.
+
+    Only wrappers this module installed are removed — a consumer's own
+    `execute_wrapper` (query logging, timing) still sees these counts, since
+    suppressing it would be a surprise we have no business causing.
+    """
+    from django.db import connections
+
+    conn = connections[alias]
+    saved = list(conn.execute_wrappers)
+    conn.execute_wrappers[:] = [
+        w for w in saved if not getattr(w, "_rakaia_deny_guard", False)
+    ]
+    try:
+        yield
+    finally:
+        conn.execute_wrappers[:] = saved
 
 
 @contextmanager
@@ -127,6 +158,10 @@ def assert_no_live_writes(
         with assert_no_live_writes(Submission, ProjectLink):
             replay(store, path, DjangoExecutor(using="rebuild"),
                    reader=DjangoProjectionReader(using="rebuild"), ...)
+
+    Composes with :func:`deny_database_access` in **either** nesting order: this
+    guard's own row counts are taken with rakaia's deny wrappers suspended, so
+    its bookkeeping is never mistaken for the rebuild reading live data (#101).
 
     **Why this exists alongside the read-side guard.** `deny_database_access`
     installs a statement wrapper, so it can only be armed around a region where
@@ -156,7 +191,8 @@ def assert_no_live_writes(
         return
 
     def _counts() -> dict[type[Model], int]:
-        return {m: m.objects.using(using).count() for m in models}
+        with _without_deny_guards(using):
+            return {m: m.objects.using(using).count() for m in models}
 
     before = _counts()
     try:

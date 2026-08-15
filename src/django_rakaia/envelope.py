@@ -36,11 +36,20 @@ from rakaia.protocols import ProjectionReader, WritableStore
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 
-#: The in-memory stream path a live fold replays through. A fold is not a
-#: durable append — it exists to run the *same handlers* a rebuild will run, so
-#: the write-time projection and the replayed one cannot diverge. The path is a
-#: constant so a registry's ``event_match`` can name it.
-SCRATCH_PATH = "produce/submission"
+#: The in-memory stream path a live fold replays through.
+#:
+#: **Arbitrary, but load-bearing.** The store is in-memory and thrown away per
+#: call, so the value means nothing on its own — but a registry's ``event_match``
+#: has to name it for the handlers to fire, which makes it part of the calling
+#: contract rather than an implementation detail. It is a constant so both sides
+#: can refer to one name instead of repeating a string.
+#:
+#: The leading underscore marks it as rakaia's own namespace, so it cannot
+#: collide with a consumer's stream paths. It previously read
+#: ``"produce/submission"`` — domain language borrowed from the first consumer,
+#: which implied a convention that does not exist and made every other consumer
+#: register handlers against another project's vocabulary (#100).
+SCRATCH_PATH = "_scratch/fold"
 
 
 def append_event(
@@ -101,6 +110,10 @@ def fold_events(
     Seeds a throwaway in-memory `StreamStore` with ``events`` in list order and
     replays it through ``registry`` — staged, and reader-bound when ``reader`` is
     given so stage-1 handlers resolve against the rows stage 0 just wrote.
+
+    ``scratch_path`` must match the ``event_match`` the registry's handlers were
+    registered against, or nothing fires. It defaults to `SCRATCH_PATH`; register
+    against that same constant rather than repeating the string.
 
     The point is that write-time projection and rebuild-time projection run the
     *same* handler code. A consumer that instead materialises rows directly at
