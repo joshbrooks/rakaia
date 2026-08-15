@@ -292,6 +292,44 @@ protocol is covered by both stores.
 
 ### Changed
 
+- **BREAKING — one `Effect` with an `op=` becomes four types, one per
+  operation.** `Effect` carried thirteen fields, ten of which were meaningless on
+  any given `op`, and needed five runtime `ValueError` checks to police the
+  combinations that shouldn't have been writable at all. It is now `Upsert`,
+  `Update`, `Delete` and `Retire`, sharing a `RowEffect` base (`model_label` and
+  `lookup`, now both required), with `Effect` kept as the union of the four so a
+  `-> list[Effect]` annotation still reads the same. Three of the five checks
+  vanish because the field no longer exists on the wrong variant; the other two
+  are modelled away — a delete's two alternative row-sparing mechanisms become
+  one `spare` field with two shapes (`Exclude` or `SpareKeys`), and the
+  `transition_kind`/`transition_key_fields` pair becomes one `Transition`. **The
+  cross-field validation in `Effect.__post_init__` is now empty**; the only rule
+  left is `Transition` rejecting empty `key_fields`, inside a two-field object
+  rather than across a thirteen-field one. `EffectOp` is gone.
+  → [UPGRADING.md](UPGRADING.md#effect-is-now-four-types-one-per-operation).
+
+- **BREAKING — `external` effects leave the Effect family.** An `ExternalEffect`
+  (an email, a webhook) names no row and no executor ever applied one — replay
+  filtered them out before the executor, then either counted and dropped them or,
+  under `include_external=True`, handed them to the *database* executor mixed
+  into a write batch, which is why an example executor needed an `op="external"`
+  branch. Now `replay()` collects them into **`ReplayResult.external:
+  list[ExternalEffect]`** and returns them, replacing the
+  `external_effects_skipped` count with the effects themselves. The
+  `include_external=` parameter is gone from `replay()`, `merge_replay()` and
+  `replay_stream`, along with `--include-external` on `manage.py replay`. A
+  rebuild still delivers nothing by itself, but a caller who *wants* the
+  transitions now has enough to send them.
+
+- **BREAKING — `rakaia.types.Stream` no longer carries `messages`.** It is the
+  metadata a store's `get()` returns, and the durable store documented the field
+  as permanently empty — a lie on one of the two backends. The in-memory store
+  keeps its messages in its own storage; read a stream with `read()`.
+
+- **`diff_effects_against_rows(ops=...)` is now `kinds=`**, taking effect classes
+  instead of op strings and defaulting to `(Upsert, Update)`. Callers on the
+  default need no change.
+
 - **One uv version, so the lockfile stops rewriting itself.** CI pinned the
   `setup-uv` action but not uv itself, so it installed whatever was latest and
   reserialised `uv.lock` in the newer style — a version-bump PR arrived carrying

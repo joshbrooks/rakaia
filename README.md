@@ -96,12 +96,12 @@ pure — they return `Effect` descriptions that an executor applies via
 idempotent `update_or_create`, so replay can be re-run safely.
 
 ```python
-from rakaia import Effect, register_handler, register_upcaster
+from rakaia import Upsert, register_handler, register_upcaster
 
 @register_handler(name="mogrify", event_match="room:*:messages",
                   effective_from=0, effective_to=10_000)
 def mogrify_v1(event):
-    return Effect(op="update_or_create", model_label="myapp.Room",
+    return Upsert(model_label="myapp.Room",
                   lookup={"id": event["room_id"]},
                   defaults={"name": event["name"]})
 

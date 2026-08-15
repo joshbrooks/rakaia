@@ -18,7 +18,7 @@ plain signals cannot give you.
 |---|---|
 | `Submission` (raw JSON payload) | an event on the `submissions` stream |
 | Stage 1 flatten → `SeparatedSubmission` (root + repeater rows) | `mapping.py` helpers over `fields` / `fields.activities` |
-| Stage 3 `to_model()` → `update_or_create(submission_id=…, defaults=…)` | `Effect(op="update_or_create", lookup={"submission_id": …}, defaults=…)` |
+| Stage 3 `to_model()` → `update_or_create(submission_id=…, defaults=…)` | `Upsert(lookup={"submission_id": …}, defaults=…)` |
 | The `submission` OneToOneField anchor | `lookup={"submission_id": …}` on every effect |
 | Producer form drift (renamed field) | `upcasters.py` (`pct` → `progress_pct`) |
 | Mapping/business-rule change over time | `handlers.py` versioned `visit_summary` (v1/v2) |

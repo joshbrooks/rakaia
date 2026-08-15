@@ -3,8 +3,25 @@ Effects: pure data descriptions of side-effects produced by handlers.
 
 Versioned handlers are pure functions that return Effect descriptions instead
 of performing I/O directly. A separate Executor applies the effects. This
-makes replay idempotent (re-applying update_or_create converges to the same
+makes replay idempotent (re-applying an :class:`Upsert` converges to the same
 state) and keeps handlers trivially testable without a database.
+
+There are four database effects — :class:`Upsert`, :class:`Update`,
+:class:`Delete` and :class:`Retire` — which share a row identity
+(:class:`RowEffect`: a ``model_label`` and a ``lookup``) and otherwise carry
+only the fields their own operation uses. ``Effect`` is the union of the four.
+An :class:`ExternalEffect` (an email, a third-party call) is deliberately *not*
+one of them: it names no row, no executor applies it, and replay returns it to
+the caller instead.
+
+Modelling each operation as its own type is what removes cross-field validation
+from this module: a ``produces`` on a delete or a ``patch`` on an upsert is a
+type error, not a runtime ``ValueError``. The two constraints that live *within*
+one operation are modelled away too — the two alternative row-sparing
+mechanisms become one ``spare`` field with two shapes (:class:`Exclude` or
+:class:`SpareKeys`), and the transition pair becomes one :class:`Transition`
+object. Only ``Transition.key_fields`` being non-empty survives as a check, and
+it lives inside ``Transition``.
 """
 
 from __future__ import annotations
@@ -14,10 +31,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
-from typing import Any, Literal, Protocol, runtime_checkable
-
-EffectOp = Literal["update_or_create", "update", "delete", "external", "retire"]
-
+from typing import Any, Protocol, runtime_checkable
 
 # =============================================================================
 # Symbolic refs — bind to a sibling effect's generated key
@@ -29,15 +43,15 @@ class Ref:
     """A batch-local reference to a row a *sibling* effect materialises.
 
     Placed as a **direct value** inside another effect's ``lookup``/``defaults``/
-    ``patch``/``spare_keys`` (or a delete's ``exclude``), it stands in for a
-    column of the row produced by the effect that declared the matching
-    ``produces=`` id earlier in the same ``apply()`` batch. The executor
-    substitutes the real value at apply time.
+    ``patch`` (or a delete's ``spare``), it stands in for a column of the row
+    produced by the effect that declared the matching ``produces=`` id earlier
+    in the same ``apply()`` batch. The executor substitutes the real value at
+    apply time.
 
     Must be a **direct** value — a ``Ref`` nested inside a list or dict (e.g.
     ``defaults={"tags": [Ref("t")]}``) is not resolved. Not resolved in
-    ``op="external"`` payloads either: the shipped executors do not apply
-    external effects, so a ``Ref`` there would never be substituted.
+    :class:`ExternalEffect` payloads either: external effects never reach an
+    executor, so a ``Ref`` there would never be substituted.
 
     ``field`` defaults to ``"pk"`` (the produced row's primary key — the FK case),
     or names any other column, e.g. ``Ref("proj", "suku")``.
@@ -55,144 +69,184 @@ class Ref:
 
 
 # =============================================================================
-# Effect
+# Row-sparing shapes — the two alternatives, as two types
 # =============================================================================
 
 
 @dataclass(frozen=True)
-class Effect:
-    """A pure data description of one side-effect."""
+class Exclude:
+    """Spare rows from a delete via a single flat lookup.
 
-    op: EffectOp
-    """The kind of effect. 'update_or_create', 'update', 'delete' and 'retire'
-    are replay-safe; 'external' (email, third-party call) is skipped by default
-    on replay."""
+    ``filter(**lookup).exclude(**spare.lookup)`` — e.g.
+    ``Exclude({"idx__in": [0, 1]})``, the positional `reconcile_children` case.
+    For composite natural keys use :class:`SpareKeys` instead. The two are
+    alternatives, which is why a delete carries one ``spare`` field rather than
+    two fields and a rule forbidding both.
+    """
 
-    # Fields for op="update_or_create", op="update", op="delete" and op="retire"
-    model_label: str | None = None
+    lookup: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SpareKeys:
+    """Spare rows from a delete or retire by composite natural key.
+
+    ``filter(**lookup).exclude(Q(**k0) | Q(**k1) | ...)``. This is the
+    natural-key reconcile primitive — retire every row in scope *except* the
+    composite keys still present (e.g.
+    ``SpareKeys([{"alert_type": "ff4", "field_key": "a"}])``). An empty list
+    spares nothing (retires/deletes the whole scope).
+    """
+
+    keys: list[dict[str, Any]]
+
+
+# =============================================================================
+# Transition — the machine-resolution notification request
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class Transition:
+    """A retire's opt-in request for per-flip notifications.
+
+    When a :class:`Retire` carries one, the replay orchestrator emits one
+    :class:`ExternalEffect` of ``kind`` per row the retire actually flipped (its
+    liveness sentinel went NULL->set) — the "one transition per real machine
+    resolution" of a ``reconcile_by_key`` soft-delete. Opt-in: a retire without
+    it costs no extra query.
+
+    The two values are a pair, which is why they are one object: ``key_fields``
+    names the columns identifying each flipped row, and the executor's
+    deterministic ``ORDER BY``/identity ``SELECT`` relies on them being present
+    whenever a transition is requested. It is the retire's scope-equality columns
+    *plus* its natural key, used verbatim (the executor does not re-derive them
+    from ``lookup``). ``reconcile_by_key`` sets it from ``scope`` + ``key_fields``.
+    """
+
+    kind: str
+    """Sub-kind of the emitted external effect ('alert_resolved', ...)."""
+
+    key_fields: tuple[str, ...]
+    """The full ordered set of columns identifying each flipped row."""
+
+    def __post_init__(self) -> None:
+        if not self.key_fields:
+            raise ValueError(
+                "Transition has empty key_fields; it must name at least one "
+                "column identifying each flipped row."
+            )
+
+
+# =============================================================================
+# The database effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class RowEffect:
+    """The row identity every database effect shares.
+
+    Not constructed directly — use :class:`Upsert`, :class:`Update`,
+    :class:`Delete` or :class:`Retire`.
+    """
+
+    model_label: str
     """'app_label.ModelName', e.g. 'myapp.Room'."""
 
-    lookup: dict[str, Any] | None = None
-    """Lookup kwargs. For 'update_or_create', passed as **kwargs; for 'update',
-    'delete' and 'retire', the `filter()` scope. An empty dict on a delete scopes
-    the whole model."""
+    lookup: dict[str, Any]
+    """Lookup kwargs. For an :class:`Upsert`, passed as ``**kwargs``; for the
+    others, the ``filter()`` scope. An empty dict on a delete scopes the whole
+    model."""
+
+
+@dataclass(frozen=True)
+class Upsert(RowEffect):
+    """Create the row matching ``lookup``, or update it in place — the
+    replay-safe write. Re-applying converges to the same row."""
 
     defaults: dict[str, Any] | None = None
-    """Default field values. For 'update_or_create', passed as `defaults=`; for
-    'update', the `update()` SET values — the row(s) matching `lookup` are
-    updated in place and **never** inserted (a no-op when nothing matches or when
-    `defaults` is empty). 'update' is the update-if-exists primitive a secondary
-    owner of a multi-owned projection row uses instead of a hand-rolled
-    exists-guard."""
+    """Field values passed as ``defaults=`` to ``update_or_create``."""
 
-    # Field for op="delete"
-    exclude: dict[str, Any] | None = None
-    """Rows to spare from a delete via a single flat lookup:
-    `filter(**lookup).exclude(**exclude)` — e.g. `{"idx__in": [0, 1]}` (the
-    positional reconcile_children case). For composite natural keys use
-    `spare_keys` instead. Ignored for other ops."""
-
-    # Fields for op="delete" and op="retire"
-    spare_keys: list[dict[str, Any]] | None = None
-    """Composite keys to spare from a delete/retire:
-    `filter(**lookup).exclude(Q(**k0) | Q(**k1) | ...)`. This is the
-    natural-key reconcile primitive — retire every row in scope *except* the
-    composite keys still present (e.g. `[{"alert_type": "ff4", "field_key":
-    "a"}]`). An empty list spares nothing (retires/deletes the whole scope)."""
-
-    # Field for op="retire"
-    patch: dict[str, Any] | None = None
-    """Soft-delete SET values for op="retire": rows in scope (minus
-    `spare_keys`) are UPDATEd with these instead of DELETEd, e.g.
-    `{"resolved_at": <event ts>}`. The value must be the *triggering event's*
-    timestamp, never `timezone.now()`, or replay is not deterministic."""
-
-    # Field for op="update_or_create" — symbolic refs
     produces: str | None = None
     """A batch-local correlation id naming the single row this upsert
     materialises, so a sibling effect can bind to it via ``Ref(produces)``
-    without a staging split or a natural-key reader lookup. Only valid on
-    op="update_or_create" (the single-row upsert); an ``update`` can match many
-    rows and a delete/retire/external produces none."""
+    without a staging split or a natural-key reader lookup. Only an upsert has
+    it: an :class:`Update` can match many rows and a delete/retire produces
+    none."""
 
-    # Fields for op="external"
-    kind: str | None = None
+
+@dataclass(frozen=True)
+class Update(RowEffect):
+    """Update-if-exists: the rows matching ``lookup`` are updated in place and
+    **never** inserted (a no-op when nothing matches or ``defaults`` is empty).
+
+    This is the primitive a secondary owner of a multi-owned projection row uses
+    instead of a hand-rolled exists-guard."""
+
+    defaults: dict[str, Any] | None = None
+    """The ``update()`` SET values."""
+
+
+@dataclass(frozen=True)
+class Delete(RowEffect):
+    """Hard-delete the rows matching ``lookup``, minus any ``spare``."""
+
+    spare: Exclude | SpareKeys | None = None
+    """Rows to spare: an :class:`Exclude` (flat lookup, the positional
+    `reconcile_children` case) or :class:`SpareKeys` (composite natural keys).
+    They are alternatives, so this is one field, not two."""
+
+
+@dataclass(frozen=True)
+class Retire(RowEffect):
+    """Soft-delete: the rows matching ``lookup`` (minus ``spare``) are UPDATEd
+    with ``patch`` instead of DELETEd, e.g. ``{"resolved_at": <event ts>}``.
+
+    The patch value must be the *triggering event's* timestamp, never
+    ``timezone.now()``, or replay is not deterministic."""
+
+    patch: dict[str, Any]
+    """The soft-delete SET values. Must be non-empty."""
+
+    spare: SpareKeys | None = None
+    """Composite natural keys to spare. (A retire has no flat-exclude form —
+    that is the positional delete case.)"""
+
+    transition: Transition | None = None
+    """Opt in to one external notification per row this retire actually flips.
+    See :class:`Transition`."""
+
+
+#: The four database effects. An executor applies exactly these.
+Effect = Upsert | Update | Delete | Retire
+
+
+# =============================================================================
+# External effects — application-level, never applied by an executor
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ExternalEffect:
+    """An application-level side effect: an email, a webhook, a payment.
+
+    Not an :class:`Effect`. It names no row, shares none of the row fields, and
+    no executor applies it — ``replay()`` collects them into
+    ``ReplayResult.external`` and hands them back to the caller, who decides
+    whether to deliver them. A rebuild therefore never re-spams by accident, and
+    an executor never needs an external branch.
+    """
+
+    kind: str
     """Sub-kind of external effect ('email', 'stripe_charge', ...)."""
 
-    payload: dict[str, Any] | None = None
-    """Opaque payload for external effects."""
+    payload: dict[str, Any]
+    """Opaque payload."""
 
-    # Fields for op="retire" — machine-resolution notifications
-    transition_kind: str | None = None
-    """When set on a retire, the orchestrator emits one ``external`` effect of
-    this ``kind`` per row the retire actually flipped (its liveness sentinel went
-    NULL->set) — the "one transition per real machine resolution" of a
-    ``reconcile_by_key`` soft-delete. Opt-in: a retire without it costs no extra
-    query. Only meaningful on op="retire" (a hard delete leaves no resolved row
-    to notify about)."""
 
-    transition_key_fields: tuple[str, ...] | None = None
-    """The full ordered set of columns identifying each flipped row in the
-    transition payload — the retire's scope-equality columns *plus* its natural
-    key. The executor uses these verbatim for its deterministic identity SELECT
-    (it does not re-derive them from ``lookup``). Set by ``reconcile_by_key``
-    from ``scope`` + ``key_fields`` when ``transition_kind`` is requested. Only
-    meaningful on op="retire"."""
-
-    def __post_init__(self) -> None:
-        # `produces` names the single row an upsert materialises, so a sibling
-        # can bind to its pk. An `update` may match many rows (ambiguous which
-        # one), and delete/retire/external materialise none — reject those.
-        if self.produces is not None and self.op != "update_or_create":
-            raise ValueError(
-                f"Effect sets produces={self.produces!r} with op={self.op!r}; "
-                "produces names the single row an update_or_create materialises "
-                "and is only valid on that op."
-            )
-        # `exclude` and `spare_keys` are ALTERNATIVE row-sparing mechanisms.
-        # Setting both silently ANDs them in the executor
-        # (`.exclude(**exclude).exclude(Q(...))`), which is never intended —
-        # reject it at construction so the mistake surfaces in the handler.
-        if self.exclude is not None and self.spare_keys is not None:
-            raise ValueError(
-                "Effect sets both `exclude` and `spare_keys`; they are alternative "
-                "row-sparing mechanisms — use one. `exclude` is the flat "
-                "reconcile_children (positional) case; `spare_keys` is the composite "
-                "natural-key case."
-            )
-        # `exclude` only applies to op="delete"; the retire path ignores it, so an
-        # `exclude` on a retire would be silently dropped. Fail loudly instead.
-        if self.exclude is not None and self.op != "delete":
-            raise ValueError(
-                f"Effect sets `exclude` with op={self.op!r}; `exclude` only applies "
-                "to op='delete'. Use `spare_keys` to spare rows from a retire."
-            )
-        # `transition_kind`/`transition_key_fields` drive per-flip notifications,
-        # which only a retire produces (it flips rows silently). On any other op
-        # they would be dropped — fail loudly.
-        if (
-            self.transition_kind is not None or self.transition_key_fields is not None
-        ) and self.op != "retire":
-            raise ValueError(
-                f"Effect sets `transition_kind`/`transition_key_fields` with "
-                f"op={self.op!r}; it only applies to op='retire'."
-            )
-        # The two are a pair: `transition_key_fields` names the columns that
-        # identify each flipped row, and the executor's deterministic
-        # `ORDER BY`/identity SELECT relies on them being present whenever
-        # `transition_kind` asks for notifications. Enforce both-or-neither (and
-        # non-empty key fields) so a half-set retire can't silently degrade to a
-        # non-deterministic, identity-less transition.
-        if (self.transition_kind is None) != (self.transition_key_fields is None):
-            raise ValueError(
-                "Effect sets one of `transition_kind`/`transition_key_fields` "
-                "without the other; they must be set together."
-            )
-        if self.transition_key_fields is not None and not self.transition_key_fields:
-            raise ValueError(
-                "Effect sets an empty `transition_key_fields`; it must name at "
-                "least one column identifying each flipped row."
-            )
+#: Anything a handler or reducer may return.
+AnyEffect = Upsert | Update | Delete | Retire | ExternalEffect
 
 
 # =============================================================================
@@ -237,10 +291,9 @@ class RefResolver:
     literal ``Ref`` values, which is correct.
     """
 
-    # Effect fields whose dict values may carry a Ref. `payload` is excluded on
-    # purpose: it is only meaningful for op="external", which the shipped
-    # executors never apply, so a Ref there could not be substituted anyway.
-    _MAPPING_FIELDS = ("lookup", "defaults", "patch", "exclude")
+    # Effect fields whose dict values may carry a Ref. Which of them a given
+    # variant has is decided by the variant's own type, not by a rule here.
+    _MAPPING_FIELDS = ("lookup", "defaults", "patch")
 
     def __init__(self) -> None:
         self._symbols: dict[str, Callable[[str], Any]] = {}
@@ -285,21 +338,35 @@ class RefResolver:
             return mapping  # unchanged (same object) — no Ref to substitute
         return {k: self.resolve_value(v) for k, v in mapping.items()}
 
-    def resolve_effect(self, effect: Effect) -> Effect:
+    def _resolve_spare(self, spare: Any) -> Any:
+        """Substitute Refs inside a `spare`, returning it unchanged when there
+        is nothing to substitute (so the caller can compare by identity)."""
+        if isinstance(spare, Exclude):
+            resolved = self._resolve_mapping(spare.lookup)
+            return spare if resolved is spare.lookup else Exclude(lookup=resolved or {})
+        if isinstance(spare, SpareKeys):
+            keys = [self._resolve_mapping(k) for k in spare.keys]
+            if all(n is o for n, o in zip(keys, spare.keys, strict=True)):
+                return spare
+            return SpareKeys(keys=[k or {} for k in keys])
+        return spare
+
+    def resolve_effect(self, effect: Any) -> Any:
         """Return `effect` with every `Ref` value substituted, or `effect`
         itself (unchanged) when it carries no refs — the common fast path."""
         changed: dict[str, Any] = {}
         for name in self._MAPPING_FIELDS:
+            if not hasattr(effect, name):
+                continue
             original = getattr(effect, name)
             resolved = self._resolve_mapping(original)
             if resolved is not original:
                 changed[name] = resolved
-        if effect.spare_keys:
-            new_spare = [self._resolve_mapping(k) for k in effect.spare_keys]
-            if any(
-                n is not o for n, o in zip(new_spare, effect.spare_keys, strict=True)
-            ):
-                changed["spare_keys"] = new_spare
+        spare = getattr(effect, "spare", None)
+        if spare is not None:
+            resolved_spare = self._resolve_spare(spare)
+            if resolved_spare is not spare:
+                changed["spare"] = resolved_spare
         if not changed:
             return effect
         return dc_replace(effect, **changed)
@@ -315,13 +382,13 @@ class ApplyReport:
     """What ``Executor.apply`` observed while applying a batch.
 
     Currently carries ``retire_flips``: one ``(retire_effect, flipped_rows)``
-    entry per retire that opted into notifications (``transition_kind`` set),
+    entry per retire that opted into notifications (a :class:`Transition`),
     where ``flipped_rows`` is the list of identity dicts for the rows whose
     liveness sentinel actually went NULL->set. The orchestrator turns these into
-    one ``external`` transition each. Executors that don't observe flips (or
+    one :class:`ExternalEffect` each. Executors that don't observe flips (or
     predate this) may return ``None``; the orchestrator treats that as empty."""
 
-    retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = dc_field(
+    retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = dc_field(
         default_factory=list
     )
 
@@ -332,8 +399,8 @@ class Executor(Protocol):
     Applies a batch of effects to durable storage.
 
     Concrete implementations live outside rakaia core (e.g. DjangoExecutor
-    in django_rakaia). The replay orchestrator filters external effects
-    before calling apply().
+    in django_rakaia). Only database effects reach ``apply()`` — external
+    effects are not Effects and never arrive here.
 
     ``runtime_checkable`` so ``isinstance(x, Executor)`` works — every protocol
     in ``protocols.py`` carries it, and the shared conformance suite
@@ -349,11 +416,7 @@ class Executor(Protocol):
 # =============================================================================
 
 
-def _row_key(effect: Effect) -> tuple[str, str]:
-    if effect.model_label is None or effect.lookup is None:
-        raise ValueError(
-            f"Effect with op={effect.op!r} requires model_label and lookup"
-        )
+def _row_key(effect: RowEffect) -> tuple[str, str]:
     canon_lookup = json.dumps(effect.lookup, sort_keys=True, default=str)
     return (effect.model_label, canon_lookup)
 
@@ -363,16 +426,16 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
     Raise EffectCollisionError if two write effects targeting the same
     (model_label, lookup) row share any key in their `defaults`.
 
-    Covers both `update_or_create` and `update` (the write ops that carry
+    Covers both :class:`Upsert` and :class:`Update` (the effects that carry
     `defaults`), including a mix of the two — the multi-owner invariant is that
     each owner writes a *disjoint* set of columns, so two effects writing the
-    same column on the same row is always a bug. External, delete and retire
-    effects are ignored, as are effects without `defaults`.
+    same column on the same row is always a bug. Delete and retire effects are
+    ignored, as are effects without `defaults`.
     """
     # field -> first-seen effect index, keyed by row
     seen: dict[tuple[str, str], dict[str, int]] = {}
     for idx, eff in enumerate(effects):
-        if eff.op not in ("update_or_create", "update") or not eff.defaults:
+        if not isinstance(eff, (Upsert, Update)) or not eff.defaults:
             continue
         row = _row_key(eff)
         existing = seen.setdefault(row, {})

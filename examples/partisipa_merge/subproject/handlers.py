@@ -17,7 +17,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from rakaia import Effect
+from rakaia import Effect, Upsert
 
 PROJECT = "subproject.Project"
 MEETING = "subproject.Meeting"
@@ -33,8 +33,7 @@ REQUIRED_VERIFIED_MEETINGS = 2
 
 
 def progress(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=PROJECT,
         lookup={"suku": event["suku"], "output": event["output"]},
         defaults={"percent": event["percent"]},
@@ -42,8 +41,7 @@ def progress(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
 
 
 def meeting(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=MEETING,
         lookup={"suku": event["suku"], "meeting_id": event["meeting_id"]},
         defaults={"verified": event["verified"]},
@@ -51,8 +49,7 @@ def meeting(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
 
 
 def finance_line(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=FINANCE_LINE,
         lookup={"submission_id": event["key"]},
         defaults={
@@ -72,8 +69,7 @@ def claim(event: dict[str, Any], refs: Any) -> Effect | None:  # noqa: ARG001
     """
     if "slot" not in event:
         return None
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=CLAIM,
         lookup={"slot": event["slot"]},
         defaults={"claimed_by": event["key"], "ts": event["ts"]},
@@ -95,8 +91,7 @@ def balance_rollup(refs: Any) -> list[Effect]:
             (r.delta for r in rows if r.account == "infrastructure"), Decimal("0")
         )
         effects.append(
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=BALANCE,
                 lookup={"suku": suku},
                 defaults={
@@ -140,8 +135,7 @@ def readiness_rollup(refs: Any) -> list[Effect]:
     for suku in sorted(sukus):
         reasons = readiness_reasons(suku, refs)
         effects.append(
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=READINESS,
                 lookup={"suku": suku},
                 defaults={"ready": not reasons, "reasons": reasons},

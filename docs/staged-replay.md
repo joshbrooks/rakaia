@@ -12,7 +12,7 @@ Declare a handler's stage; replay runs stages in ascending order, and a stage > 
 handler is called `fn(event, reader)` with a read-only projection reader:
 
 ```python
-from rakaia import register_handler
+from rakaia import Upsert, register_handler
 from rakaia import replay
 from django_rakaia import DjangoExecutor
 from django_rakaia import DjangoProjectionReader
@@ -20,7 +20,7 @@ from django_rakaia import DjangoProjectionReader
 @register_handler(name="project", event_match="TF_6_1_1",
                   match_field="form_type", stage=0)
 def project(event):                         # stage 0: build the reference
-    return Effect(op="update_or_create", model_label="ida.Project",
+    return Upsert(model_label="ida.Project",
                   lookup={"suku": event["suku"], "output": event["output"]},
                   defaults={"name": event["project_name"]})
 
@@ -28,7 +28,7 @@ def project(event):                         # stage 0: build the reference
                   match_field="form_type", stage=1)
 def sf12(event, refs):                      # stage 1: resolve via the reader
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
+    return Upsert(model_label="ida_forms.Sf_1_2",
                   lookup={"submission_id": event["key"]},
                   defaults={"project_id": project.pk if project else None})
 
@@ -109,7 +109,7 @@ earlier stages materialized.
 @register_handler(name="project_registry", event_match="TF_6_1_1",
                   match_field="form_type", stage=0)
 def project_registry(event):
-    return Effect(op="update_or_create", model_label="ida.Project",
+    return Upsert(model_label="ida.Project",
                   lookup={"suku": event["suku"], "output": event["output"]},
                   defaults={"name": event["project_name"]})
 
@@ -117,7 +117,7 @@ def project_registry(event):
                   match_field="form_type", stage=1)
 def sf12_link(event, refs):
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
+    return Upsert(model_label="ida_forms.Sf_1_2",
                   lookup={"submission_id": event["key"]},
                   defaults={"project_id": project.pk if project else None})
 ```

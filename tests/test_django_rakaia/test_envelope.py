@@ -25,7 +25,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.envelope import SCRATCH_PATH, append_event, fold_events
 from django_rakaia.projection_reader import DjangoProjectionReader
-from rakaia import AppendOptions, Effect, StreamStore, provenance
+from rakaia import AppendOptions, StreamStore, Upsert, provenance
 from rakaia.registry import HandlerRegistry
 
 from .models import FinanceLine
@@ -145,8 +145,7 @@ class TestAppendEventMatchesTheLonghand:
 
 
 def _handler(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.FinanceLine",
         lookup={"submission_id": event["id"]},
         defaults={"suku": event["suku"]},

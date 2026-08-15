@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.effects import Effect
+from rakaia.effects import Effect, Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
@@ -13,12 +13,7 @@ from rakaia.store import StreamStore
 
 
 def _eff(i: int) -> Effect:
-    return Effect(
-        op="update_or_create",
-        model_label="x.X",
-        lookup={"id": i},
-        defaults={},
-    )
+    return Upsert(model_label="x.X", lookup={"id": i}, defaults={})
 
 
 class TestCollectingExecutor:
@@ -36,8 +31,7 @@ class TestCollectingExecutor:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="x.X",
                 lookup={"id": event["id"]},
                 defaults={"name": event["name"]},

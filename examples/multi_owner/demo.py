@@ -16,8 +16,8 @@ holds to the same behaviour as `DjangoExecutor`:
   * `reconcile_by_key(retire=)`  — reconcile rows on a composite natural key,
                                 soft-deleting (not hard-deleting) stale rows.
   * `check_disjoint_defaults`    — the guard that makes multi-owner rows safe.
-  * `op="external"` effects      — the ones rakaia deliberately never applies;
-                                the app routes them itself in a two-line loop.
+  * `ExternalEffect`             — not an Effect at all: no executor applies it,
+                                replay hands them back, the app routes them.
 
 Runs as a plain script (no Django):
 
@@ -30,8 +30,11 @@ from __future__ import annotations
 from rakaia import (
     Effect,
     EffectCollisionError,
+    ExternalEffect,
     InMemoryProjections,
     Ref,
+    Update,
+    Upsert,
     check_disjoint_defaults,
     reconcile_aggregate,
     reconcile_by_key,
@@ -56,18 +59,16 @@ def section_refs() -> None:
     # `produces=`/`Ref` wires them without a natural-key reader lookup.
     ex.apply(
         [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=AREA,
                 lookup={"name": "Zone-North"},
                 defaults={},
                 produces="north",
             ),
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=PROJECT,
                 lookup={"name": "Irrigation-7"},
-                defaults={"area_id": Ref("north")},  # resolves to the Area pk
+                defaults={"area_id": Ref("north")},
             ),
         ]
     )
@@ -105,12 +106,7 @@ def section_multi_owner_aggregate() -> None:
     # null-clears only its own columns instead.
     def roster_pass(sukus: list[str]) -> list[Effect]:
         return [
-            Effect(
-                op="update_or_create",
-                model_label=BALANCE,
-                lookup={"report_id": 1, "suku": s},
-                defaults={},
-            )
+            Upsert(model_label=BALANCE, lookup={"report_id": 1, "suku": s}, defaults={})
             for s in sukus
         ]
 
@@ -199,17 +195,11 @@ def section_disjoint_guard() -> None:
     _hdr("[4] check_disjoint_defaults: the invariant that keeps owners honest")
     # Two owners writing DISJOINT columns of the same row is fine...
     ok = [
-        Effect(
-            op="update",
-            model_label=BALANCE,
-            lookup={"suku": "north"},
-            defaults={"status": "open"},
+        Update(
+            model_label=BALANCE, lookup={"suku": "north"}, defaults={"status": "open"}
         ),
-        Effect(
-            op="update",
-            model_label=BALANCE,
-            lookup={"suku": "north"},
-            defaults={"ksp_total": 5},
+        Update(
+            model_label=BALANCE, lookup={"suku": "north"}, defaults={"ksp_total": 5}
         ),
     ]
     check_disjoint_defaults(ok)  # no raise
@@ -217,17 +207,11 @@ def section_disjoint_guard() -> None:
 
     # ...but two owners writing the SAME column is a collision — caught early.
     clash = [
-        Effect(
-            op="update",
-            model_label=BALANCE,
-            lookup={"suku": "north"},
-            defaults={"status": "open"},
+        Update(
+            model_label=BALANCE, lookup={"suku": "north"}, defaults={"status": "open"}
         ),
-        Effect(
-            op="update",
-            model_label=BALANCE,
-            lookup={"suku": "north"},
-            defaults={"status": "closed"},
+        Update(
+            model_label=BALANCE, lookup={"suku": "north"}, defaults={"status": "closed"}
         ),
     ]
     try:
@@ -239,21 +223,16 @@ def section_disjoint_guard() -> None:
 
 
 def section_external_effects() -> None:
-    _hdr("[5] external effects: route the ones rakaia deliberately won't apply")
+    _hdr("[5] external effects: route the ones no executor will apply")
     sent: list[str] = []
     effects = [
-        Effect(
-            op="update_or_create",
-            model_label=BALANCE,
-            lookup={"suku": "north"},
-            defaults={"status": "closed"},
+        Upsert(
+            model_label=BALANCE, lookup={"suku": "north"}, defaults={"status": "closed"}
         ),
-        Effect(
-            op="external",
-            kind="email",
-            payload={"to": "pm@example.org", "re": "north closed"},
+        ExternalEffect(
+            kind="email", payload={"to": "pm@example.org", "re": "north closed"}
         ),
-        Effect(op="external", kind="webhook", payload={"url": "/hooks/closed"}),
+        ExternalEffect(kind="webhook", payload={"url": "/hooks/closed"}),
     ]
     handlers = {
         "email": lambda e: sent.append(f"email->{e.payload['to']}"),
@@ -261,7 +240,7 @@ def section_external_effects() -> None:
     }
     count = 0
     for eff in effects:  # the write effect is ignored — it is not external
-        if eff.op == "external" and eff.kind in handlers:
+        if isinstance(eff, ExternalEffect) and eff.kind in handlers:
             handlers[eff.kind](eff)
             count += 1
     assert count == 2 and len(sent) == 2

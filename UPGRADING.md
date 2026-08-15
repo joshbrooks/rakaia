@@ -187,6 +187,137 @@ longer claimed by the dashboard.
 
 ---
 
+## `Effect` is now four types, one per operation
+
+This is the largest break in `0.2.0`. `Effect` shipped in `0.1.0` and was
+exported, so every handler you have written constructs one.
+
+The single `Effect` dataclass carried thirteen fields and an `op=` string
+selecting which of them were meaningful. Ten of the thirteen were meaningless on
+any given `op`, which is why the class needed five runtime `ValueError` checks to
+police combinations that should never have been writable in the first place. It
+is now four dataclasses, one per operation, each carrying only its own fields:
+
+```python
+from rakaia import Upsert, Update, Delete, Retire, ExternalEffect
+```
+
+`Effect` still exists and is still importable — it is now the union
+`Upsert | Update | Delete | Retire`, so a `-> list[Effect]` annotation on your
+handler needs no change. `RowEffect` is the shared base carrying `model_label`
+and `lookup`; both are now **required**, where they were `None`-defaulted before.
+`EffectOp` is gone.
+
+### The five ops, before and after
+
+```diff
+-Effect(op="update_or_create", model_label="app.Room", lookup={"id": 5},
+-       defaults={"name": "general"}, produces="room")
++Upsert(model_label="app.Room", lookup={"id": 5},
++       defaults={"name": "general"}, produces="room")
+
+-Effect(op="update", model_label="app.Order", lookup={"ref": "A"},
+-       defaults={"bonus": 50})
++Update(model_label="app.Order", lookup={"ref": "A"}, defaults={"bonus": 50})
+
+-Effect(op="delete", model_label="app.Child", lookup={"parent_id": 7},
+-       exclude={"idx__in": [0, 1]})
++Delete(model_label="app.Child", lookup={"parent_id": 7},
++       spare=Exclude({"idx__in": [0, 1]}))
+
+-Effect(op="delete", model_label="app.Alert", lookup={"stream_key": "s"},
+-       spare_keys=[{"alert_type": "ff4"}])
++Delete(model_label="app.Alert", lookup={"stream_key": "s"},
++       spare=SpareKeys([{"alert_type": "ff4"}]))
+
+-Effect(op="retire", model_label="app.Alert", lookup={"stream_key": "s"},
+-       patch={"resolved_at": ts}, spare_keys=keys,
+-       transition_kind="alert_resolved",
+-       transition_key_fields=("stream_key", "alert_type"))
++Retire(model_label="app.Alert", lookup={"stream_key": "s"},
++       patch={"resolved_at": ts}, spare=SpareKeys(keys),
++       transition=Transition(kind="alert_resolved",
++                             key_fields=("stream_key", "alert_type")))
+
+-Effect(op="external", kind="email", payload={"to": "x@y.z"})
++ExternalEffect(kind="email", payload={"to": "x@y.z"})
+```
+
+**If you use only `update_or_create`, `update` and `delete`** — which is the
+shape of the one adopter we know of — the migration is purely mechanical: drop
+the `op=`, rename the constructor, and wrap a delete's `exclude=` in
+`spare=Exclude(...)`. Nothing else changes: the field names, the values, and the
+resulting rows are identical. `Exclude` and `SpareKeys` are the two shapes a
+delete's single `spare` field can take; they were always alternatives, and a rule
+forbidding both at once is now simply unwritable.
+
+`Transition` is the only place a runtime check survives: it rejects empty
+`key_fields`. Everything the other four checks used to catch is now a type error,
+so run `pyright` (or your checker of choice) over your handlers once after
+migrating and it will find every site.
+
+If you construct effects through `reconcile_children`, `reconcile_by_key`,
+`reconcile_tree`, `reconcile_aggregate`, `project_latest` or `history_effects`,
+those helpers are unchanged — they now return the new types, and you only need to
+adjust code that *inspects* what they returned.
+
+### `external` effects are no longer effects at all
+
+An `ExternalEffect` shares none of the row fields, no executor ever applied one,
+and replay filtered them out before the executor anyway. It has left the family:
+
+- `ReplayResult.external_effects_skipped` (a count) is replaced by
+  **`ReplayResult.external: list[ExternalEffect]`** — the effects themselves, in
+  order, including the ones a notifying `Retire` produced.
+- **`include_external=` is gone** from `replay()`, `merge_replay()` and
+  `django_rakaia.replay.replay_stream`, and `--include-external` is gone from
+  `manage.py replay`. It no longer means anything: no executor receives an
+  external effect under any setting.
+
+```diff
+ result = replay(store, "orders", executor)
+-if result.external_effects_skipped:
+-    ...
++for effect in result.external:
++    send(effect.kind, effect.payload)
+```
+
+Replay still never delivers anything by itself, so a rebuild cannot re-send last
+year's receipts — but the caller now gets enough to deliver them deliberately,
+which a bare count never was. **If your executor has an `op == "external"`
+branch, delete it**; it is unreachable.
+
+### `diff_effects_against_rows(ops=...)` is now `kinds=`
+
+The parameter selected which ops to verify by string. It now takes effect
+*classes* and defaults to `(Upsert, Update)` — the two that carry `defaults`:
+
+```diff
+-diff_effects_against_rows(effects, ops=("update_or_create",))
++diff_effects_against_rows(effects, kinds=(Upsert,))
+```
+
+Callers using the default — which is all known callers — need no change.
+
+---
+
+## `rakaia.types.Stream` no longer carries `messages`
+
+`Stream` is the metadata a store's `get()` returns. It had a `messages` list,
+which the durable store documented as permanently empty — so the field was
+already a lie on one of the two backends. Where the messages actually live is now
+the store's own business.
+
+```diff
+-messages = store.get(path).messages
++messages, _ = store.read(path)
+```
+
+Nothing outside the in-memory store's own internals read it, so most consumers
+have nothing to do.
+
+---
+
 ## Behaviour worth re-checking after upgrading
 
 These are not API breaks — nothing to edit — but each changes what your code

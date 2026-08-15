@@ -14,14 +14,15 @@ about:
 * ``order_loyalty`` — a sibling handler awarding points on PAID orders. It
   writes a *disjoint* ``defaults`` key (``loyalty_points``) on the same row, so
   it never collides with ``order_totals``.
-* ``order_receipt`` — an ``op="external"`` effect (a receipt email). Replay
-  skips external effects by default, so re-deriving state never re-sends mail.
-* ``order_bonus`` — the ``op="update"`` (update-if-exists) showcase. A
-  loyalty-bonus event *decorates* an existing order row's ``bonus_points``
-  column; it is a **secondary owner** that must never mint a row. Because
-  ``op="update"`` updates in place and never inserts, a bonus referencing an
-  order that was never placed is a clean no-op — not a phantom half-row (which
-  ``op="update_or_create"`` would leave behind).
+* ``order_receipt`` — an ``ExternalEffect`` (a receipt email). It is not an
+  ``Effect`` and no executor applies it; replay hands it back in
+  ``ReplayResult.external``, so re-deriving state never re-sends mail.
+* ``order_bonus`` — the ``Update`` (update-if-exists) showcase. A loyalty-bonus
+  event *decorates* an existing order row's ``bonus_points`` column; it is a
+  **secondary owner** that must never mint a row. Because ``Update`` updates in
+  place and never inserts, a bonus referencing an order that was never placed is
+  a clean no-op — not a phantom half-row (which an ``Upsert`` would leave
+  behind).
 
 Handlers are pure: they take an (already upcasted) event dict and return an
 ``Effect`` description — no I/O, no DB writes. The DjangoExecutor applies them.
@@ -29,7 +30,7 @@ Handlers are pure: they take an (already upcasted) event dict and return an
 
 from decimal import Decimal
 
-from rakaia import Effect, register_handler
+from rakaia import Effect, ExternalEffect, Update, Upsert, register_handler
 
 from .seed import TAX_CHANGE_SEQ
 
@@ -61,8 +62,7 @@ def _subtotal(event: dict) -> Decimal:
 def _totals_effect(event: dict, rate: Decimal) -> Effect:
     subtotal = _subtotal(event)
     tax = (subtotal * rate).quantize(Decimal("0.01"))
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=MODEL,
         lookup={"order_id": event["order_id"]},
         defaults={
@@ -120,8 +120,7 @@ def order_loyalty(event: dict) -> Effect | None:
     if _is_bonus(event) or event.get("status") != "PAID":
         return None  # only PAID orders earn points
     points = int(_subtotal(event))  # 1 point per whole currency unit
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=MODEL,
         lookup={"order_id": event["order_id"]},
         defaults={"loyalty_points": points},
@@ -129,8 +128,8 @@ def order_loyalty(event: dict) -> Effect | None:
 
 
 # ---------------------------------------------------------------------------
-# order_receipt — external effect (email). Skipped on replay unless
-# --include-external, so re-deriving state never re-sends the receipt.
+# order_receipt — an ExternalEffect (email). No executor applies one; replay
+# returns it, so re-deriving state never re-sends the receipt.
 # ---------------------------------------------------------------------------
 @register_handler(
     name="order_receipt",
@@ -141,8 +140,7 @@ def order_loyalty(event: dict) -> Effect | None:
 def order_receipt(event: dict) -> Effect | None:
     if _is_bonus(event) or event.get("status") != "PAID":
         return None
-    return Effect(
-        op="external",
+    return ExternalEffect(
         kind="email",
         payload={
             "to": f"{event['order_id']}@example.test",
@@ -153,10 +151,10 @@ def order_receipt(event: dict) -> Effect | None:
 
 
 # ---------------------------------------------------------------------------
-# order_bonus — the op="update" (update-if-exists) showcase. Fires only on
+# order_bonus — the Update (update-if-exists) showcase. Fires only on
 # loyalty-bonus events. It decorates an *existing* order's bonus_points column
 # and never inserts: a bonus for an order that was never placed is a no-op, not
-# a phantom row. Contrast order_totals/order_loyalty, which use update_or_create
+# a phantom row. Contrast order_totals/order_loyalty, which use an Upsert
 # because they co-own the row and legitimately create it.
 # ---------------------------------------------------------------------------
 @register_handler(
@@ -168,8 +166,7 @@ def order_receipt(event: dict) -> Effect | None:
 def order_bonus(event: dict) -> Effect | None:
     if not _is_bonus(event):
         return None  # only loyalty-bonus events award a bonus
-    return Effect(
-        op="update",
+    return Update(
         model_label=MODEL,
         lookup={"order_id": event["order_id"]},
         defaults={"bonus_points": int(event["bonus"])},

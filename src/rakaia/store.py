@@ -60,6 +60,11 @@ class StreamStore:
 
     def __init__(self) -> None:
         self._streams: dict[str, Stream] = {}
+        # The messages themselves, keyed by path. They live here rather than on
+        # `Stream` because `Stream` is the *metadata* `get()` hands back, and a
+        # durable store's `Stream` carries no messages at all — the field was
+        # permanently empty there, which made it a lie in the shared type.
+        self._messages: dict[str, list[StreamMessage]] = {}
         self._notify_events: dict[str, asyncio.Event] = {}
         self._producer_locks: dict[str, asyncio.Lock] = {}
         # Highest read_seq (offset generation) ever retired at a path, so a
@@ -220,6 +225,7 @@ class StreamStore:
             read_seq = int(self._streams[path].current_offset.split("_")[0])
             self._retired_seq[path] = max(self._retired_seq.get(path, -1), read_seq)
             del self._streams[path]
+            self._messages.pop(path, None)
             return True
         return False
 
@@ -228,6 +234,7 @@ class StreamStore:
         for path in list(self._notify_events.keys()):
             self._cancel_notify(path)
         self._streams.clear()
+        self._messages.clear()
 
     def list_paths(self) -> list[str]:
         """Get all stream paths."""
@@ -494,8 +501,9 @@ class StreamStore:
         # A read extends the sliding TTL window.
         self._touch(stream)
 
+        messages = self._messages.get(path, [])
         if not offset or offset == "-1":
-            return list(stream.messages), True
+            return list(messages), True
 
         self._check_offset(offset)
 
@@ -504,7 +512,7 @@ class StreamStore:
         if idx == -1:
             return [], True
 
-        return stream.messages[idx:], True
+        return messages[idx:], True
 
     def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
         """
@@ -663,7 +671,7 @@ class StreamStore:
             metadata=metadata,
         )
 
-        stream.messages.append(message)
+        self._messages.setdefault(stream.path, []).append(message)
         stream.current_offset = new_offset
 
         return message
@@ -688,7 +696,7 @@ class StreamStore:
 
     def _find_offset_index(self, stream: Stream, offset: str) -> int:
         """Find first message with offset > given offset (lexicographic)."""
-        for i, msg in enumerate(stream.messages):
+        for i, msg in enumerate(self._messages.get(stream.path, [])):
             if msg.offset > offset:
                 return i
         return -1

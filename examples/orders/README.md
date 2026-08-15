@@ -17,7 +17,7 @@ just orders-live           # http://localhost:8002/live/ — a live-streaming de
 
 Every page carries a nav to a **How it works** explainer
 (`http://localhost:8002/info/`) — Mermaid diagrams and code for the replay
-pipeline, versioned handlers, multi-owner columns, and `op="update"`.
+pipeline, versioned handlers, multi-owner columns, and `Update`.
 
 Or directly:
 
@@ -32,7 +32,7 @@ Expected output (abridged):
 ```
 Seeded 6 order events (tax rule changes at seq 3) + 2 loyalty-bonus events.
 Dry run: replay would apply 12 effects (no writes yet).
-[replay] events=8 effects_applied=12 external_skipped=4
+[replay] events=8 effects_applied=12 external=4
 
 order     status       subtotal   rate      tax     total  points  bonus
 ------------------------------------------------------------------------
@@ -43,8 +43,8 @@ ORD-1004  PAID            30.00 0.1000     3.00     33.00      30      0
 ORD-1005  PAID            58.00 0.1000     5.80     63.80      58      0
 ORD-1006  CANCELLED       40.00 0.1000     4.00     44.00       0      0
 
-op="update": bonus landed on ORD-1003 (+50) and minted NO row for ORD-9999 (a
-bonus for an order never placed) — update_or_create would have left a phantom
+Update: bonus landed on ORD-1003 (+50) and minted NO row for ORD-9999 (a
+bonus for an order never placed) — an Upsert would have left a phantom
 row. ✓
 
 Replayed again: 6 -> 6 rows — idempotent ✓
@@ -57,9 +57,9 @@ Replayed again: 6 -> 6 rows — idempotent ✓
 | **Time-correct versions** | `handlers.py` — `order_totals` v1/v2 | Orders at seq < 3 get 0% tax; seq ≥ 3 get 10%. The bugfix-forward never rewrites history. |
 | **Upcaster** | `upcasters.py` — `qty` → `quantity` | Events `ORD-1001/1002/1005` use the legacy `qty` key; the upcaster normalises them so handlers only ever see `quantity`. |
 | **Sibling handler** | `handlers.py` — `order_loyalty` | Writes a *disjoint* `defaults` key (`loyalty_points`) on the same row as `order_totals` — no `EffectCollisionError`. Only PAID orders earn points. |
-| **Update-if-exists** | `handlers.py` — `order_bonus` | A loyalty-bonus event decorates an *existing* order's `bonus_points` via `op="update"`. It's a **secondary owner**: the bonus for `ORD-1003` lands, but the bonus for the never-placed `ORD-9999` is a clean no-op — no phantom row. `update_or_create` couldn't express "update only if it exists". |
-| **External effect** | `handlers.py` — `order_receipt` | A receipt email tagged `op="external"`. Replay **skips** it (`external_skipped=4`), so re-deriving state never re-sends mail. Pass `--include-external` to count them differently. |
-| **Idempotency** | `--twice` | `update_or_create` converges: replaying again produces identical rows. |
+| **Update-if-exists** | `handlers.py` — `order_bonus` | A loyalty-bonus event decorates an *existing* order's `bonus_points` via an `Update`. It's a **secondary owner**: the bonus for `ORD-1003` lands, but the bonus for the never-placed `ORD-9999` is a clean no-op — no phantom row. An `Upsert` couldn't express "update only if it exists". |
+| **External effect** | `handlers.py` — `order_receipt` | A receipt email as an `ExternalEffect`. No executor applies it; replay hands them back in `ReplayResult.external` (`external=4`) for the caller to route, so re-deriving state never re-sends mail. |
+| **Idempotency** | `--twice` | `Upsert` converges: replaying again produces identical rows. |
 | **Dry-run preview** | `demo_orders.py` — `CollectingExecutor` | Records the effects replay *would* apply without writing them. The dry-run count matches `effects_applied` — the same primitive you'd use to verify a migration before committing it. |
 
 ## Live mode (`just orders-live`)
@@ -73,11 +73,11 @@ and shows two panels side by side: the raw **event stream** (newest first) and
 the derived **projection** table — so you watch events flow in and the read model
 update in real time.
 
-About one in four events is a loyalty bonus applied with `op="update"`. The feed
+About one in four events is a loyalty bonus applied with an `Update`. The feed
 labels each: **applied** when it lands on a real order, or **no-op — no such
 order** when it targets a fabricated `ORD-GHOST-*`. Watch the projection: a
 `ORD-GHOST-*` row **never appears**, because update-if-exists refuses to insert.
-That's the whole point of the op, shown live.
+That's the whole point of the effect, shown live.
 
 There's also a small form to **submit your own order** (item, quantity, status);
 it's enqueued to the producer and shows up on the next poll as an `ORD-YOU-*`
@@ -106,7 +106,7 @@ Implementation notes:
   manual wiring.
 * **`management/commands/demo_orders.py`** — seeds the in-memory stream and calls
   `rakaia.replay.replay(...)` with the `DjangoExecutor`, which applies the
-  produced effects (`update_or_create` for the order rows, `update` for the
+  produced effects (an `Upsert` for the order rows, an `Update` for the
   loyalty bonus).
 * **`models.py` / `views.py`** — `OrderSummary` is the materialized projection;
   the view just displays it.

@@ -6,9 +6,9 @@ Per event the pipeline is:
     1. Load the raw event bytes from the stream
     2. Decode as JSON, upcast to current schema via UpcasterRegistry
     3. Resolve handlers via HandlerRegistry.resolve(event_match, seq, event, stage)
-    4. Call each handler -> collect Effects
-    5. Filter out op="external" effects unless include_external=True
-    6. executor.apply(effects)
+    4. Call each handler -> collect effects
+    5. Split off the ExternalEffects into ReplayResult.external
+    6. executor.apply(the database effects)
 
 When every handler is stage 0 (the default), replay is a single streaming pass
 over the range — one event decoded and applied at a time. When handlers span
@@ -24,7 +24,7 @@ scope its recompute to what changed (incremental) or to everything (full
 rebuild). See `register_handler(stage=...)` and `register_reducer(...)`.
 
 Re-running the same range twice produces identical materialized state because
-all Effects use update_or_create (idempotent).
+every database effect is idempotent (an `Upsert` converges to the same row).
 """
 
 from __future__ import annotations
@@ -36,7 +36,17 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .effects import ApplyReport, Effect, Executor
+from .effects import (
+    AnyEffect,
+    ApplyReport,
+    Delete,
+    Effect,
+    Executor,
+    ExternalEffect,
+    Retire,
+    Update,
+    Upsert,
+)
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
     HandlerDriftError,
@@ -78,7 +88,13 @@ class ReplayResult:
 
     events_processed: int = 0
     effects_applied: int = 0
-    external_effects_skipped: int = 0
+    external: list[ExternalEffect] = field(default_factory=list)
+    """The application-level effects this replay produced, in the order the
+    handlers emitted them (plus one per row a notifying retire flipped).
+
+    They are **returned, not applied** — no executor ever sees an external
+    effect. A rebuild therefore never re-sends an email by accident, and a
+    caller that *does* want them delivered walks this list itself."""
     warnings: list[str] = field(default_factory=list)
     drift_detected: list[str] = field(default_factory=list)
 
@@ -108,7 +124,6 @@ class _ReplayCtx:
     handlers: HandlerRegistry
     executor: Executor
     reader: ProjectionReader | None
-    include_external: bool
     on_drift: OnDriftPolicy
     result: ReplayResult
     # Only accumulate touched subjects when a reducer actually opts in (a second
@@ -135,7 +150,6 @@ def build_pipeline(
     upcaster_registry: UpcasterRegistry | None,
     executor: Executor,
     reader: ProjectionReader | None,
-    include_external: bool,
     on_drift: OnDriftPolicy,
 ) -> _ReplayCtx:
     """Assemble everything a replay needs that does not depend on its event source.
@@ -155,7 +169,6 @@ def build_pipeline(
         handlers=handlers,
         executor=executor,
         reader=reader,
-        include_external=include_external,
         on_drift=on_drift,
         result=result,
         track_touched=_wants_touched_reducer(handlers),
@@ -255,13 +268,11 @@ def _wants_touched_reducer(handlers: HandlerRegistry) -> bool:
 
 
 def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
-    # A subject is a subject-bearing effect's (model_label, lookup). Skip
-    # external effects (no subject) and dedup in first-seen (event) order so the
-    # set is a pure function of the events. A non-hashable lookup value is rare
-    # and simply skips dedup — order still deterministic.
+    # A subject is a database effect's (model_label, lookup); externals never
+    # reach here. Dedup in first-seen (event) order so the set is a pure
+    # function of the events. A non-hashable lookup value is rare and simply
+    # skips dedup — order still deterministic.
     for e in effects:
-        if e.op == "external" or e.model_label is None or e.lookup is None:
-            continue
         try:
             key = (e.model_label, tuple(sorted(e.lookup.items())))
         except TypeError:
@@ -275,7 +286,7 @@ def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
         )
 
 
-def _synth_transitions(report: ApplyReport | None) -> list[Effect]:
+def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
     # Turn the executor's retire-flip report into one external transition per
     # row a retire actually flipped. `report` may be None (executors that don't
     # observe flips) — treat that as nothing to synthesise. Typed as
@@ -283,17 +294,15 @@ def _synth_transitions(report: ApplyReport | None) -> list[Effect]:
     # type error rather than a silent "synthesise nothing" regression.
     if report is None:
         return []
-    flips = report.retire_flips
-    out: list[Effect] = []
-    for eff, rows in flips:
-        if eff.transition_kind is None:
+    out: list[ExternalEffect] = []
+    for eff, rows in report.retire_flips:
+        if eff.transition is None:
             continue
         patch = eff.patch or {}
         for identity in rows:
             out.append(
-                Effect(
-                    op="external",
-                    kind=eff.transition_kind,
+                ExternalEffect(
+                    kind=eff.transition.kind,
                     # Spread patch first so the orchestrator's own `key`/`state`
                     # always win: reconcile_by_key is a generic primitive, and a
                     # patch column named `key` or `state` must not clobber the
@@ -304,36 +313,39 @@ def _synth_transitions(report: ApplyReport | None) -> list[Effect]:
     return out
 
 
-def _apply_effects(ctx: _ReplayCtx, effects: list[Effect]) -> None:
-    external_count = sum(1 for e in effects if e.op == "external")
-    if not ctx.include_external:
-        ctx.result.external_effects_skipped += external_count
-    to_apply = (
-        effects if ctx.include_external else [e for e in effects if e.op != "external"]
-    )
+def _apply_effects(ctx: _ReplayCtx, effects: list[AnyEffect]) -> None:
+    """Route a batch: external effects to the result, the rest to the executor.
+
+    The split is by *type*, so no executor ever needs an external branch and no
+    caller has to ask for one to be skipped.
+    """
+    to_apply: list[Effect] = []
+    for e in effects:
+        if isinstance(e, ExternalEffect):
+            ctx.result.external.append(e)
+        else:
+            to_apply.append(e)
     if not to_apply:
         return
     report = ctx.executor.apply(to_apply)
     ctx.result.effects_applied += len(to_apply)
     # A retire that flipped rows (a real machine resolution) yields external
-    # transitions; feed them back through the same gate — so they're skipped-and-
-    # counted on replay by default, delivered only when include_external. They're
-    # all op="external", so this recurses at most once (no further flips).
-    synth = _synth_transitions(report)
-    if synth:
-        _apply_effects(ctx, synth)
+    # transitions — collect them alongside the handler-emitted ones.
+    ctx.result.external.extend(_synth_transitions(report))
 
 
 def _dispatch_event(
     ctx: _ReplayCtx, seq: int, match_str: str, upcasted: dict, stage: int | None
 ) -> None:
     versions = ctx.handlers.resolve(match_str, seq, event=upcasted, stage=stage)
-    all_effects: list[Effect] = []
+    all_effects: list[AnyEffect] = []
     for version in versions:
         _check_handler_drift(version, ctx.on_drift, ctx.result)
         all_effects.extend(_call_handler(version, upcasted, ctx.reader))
     if ctx.track_touched:
-        _record_touched(ctx, all_effects)
+        _record_touched(
+            ctx, [e for e in all_effects if not isinstance(e, ExternalEffect)]
+        )
     _apply_effects(ctx, all_effects)
 
 
@@ -363,7 +375,6 @@ def replay(
     start_seq: int = 0,
     end_seq: int | None = None,
     event_match: str | None = None,
-    include_external: bool = False,
     on_drift: OnDriftPolicy = "warn",
     reader: ProjectionReader | None = None,
 ) -> ReplayResult:
@@ -384,8 +395,6 @@ def replay(
         end_seq: One past the last event index to replay (None = to head).
         event_match: Match string passed to the registries; defaults to
             stream_path.
-        include_external: If False (default), Effects with op="external" are
-            counted but not passed to the executor.
         on_drift: 'warn' (default) emits a warning and continues if a
             handler's source has changed since registration; 'raise' raises
             HandlerDriftError. (Drift detection itself lands in Step 6.)
@@ -414,7 +423,6 @@ def replay(
         upcaster_registry=upcaster_registry,
         executor=executor,
         reader=reader,
-        include_external=include_external,
         on_drift=on_drift,
     )
 
@@ -464,7 +472,6 @@ def merge_replay(
     handler_registry: HandlerRegistry | None = None,
     upcaster_registry: UpcasterRegistry | None = None,
     event_match: str | None = None,
-    include_external: bool = False,
     on_drift: OnDriftPolicy = "warn",
     reader: ProjectionReader | None = None,
 ) -> ReplayResult:
@@ -500,8 +507,8 @@ def merge_replay(
             uses each event's **source stream path** as its match string, so
             content-routed handlers (`match_field`) and per-stream upcasters both
             work; pass a value to route every merged event by one match string.
-        include_external / on_drift / reader: as for `replay()`. A reader is
-            required when any handler declares stage > 0 or any reducer exists.
+        on_drift / reader: as for `replay()`. A reader is required when any
+            handler declares stage > 0 or any reducer exists.
 
     Note: merged `seq` is the event's position in the *merged* order (0-based),
     not a per-stream one, so handlers routed by content (`match_field`) or
@@ -524,7 +531,6 @@ def merge_replay(
         upcaster_registry=upcaster_registry,
         executor=executor,
         reader=reader,
-        include_external=include_external,
         on_drift=on_drift,
     )
 
@@ -644,17 +650,17 @@ def _call_handler(
     version: HandlerVersion,
     event: dict,
     reader: ProjectionReader | None,
-) -> Iterable[Effect]:
+) -> Iterable[AnyEffect]:
     # Stage > 0 handlers take (event, reader); stage 0 keeps the (event)
     # signature so existing single-stage handlers are unchanged.
     result = version.fn(event, reader) if version.stage > 0 else version.fn(event)
     return _normalize_effects(result)
 
 
-def _normalize_effects(result: object) -> list[Effect]:
-    """Coerce a handler/reducer return (None | Effect | iterable) to a list."""
+def _normalize_effects(result: object) -> list[AnyEffect]:
+    """Coerce a handler/reducer return (None | one effect | iterable) to a list."""
     if result is None:
         return []
-    if isinstance(result, Effect):
+    if isinstance(result, (Upsert, Update, Delete, Retire, ExternalEffect)):
         return [result]
     return list(result)  # type: ignore[arg-type]

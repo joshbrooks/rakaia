@@ -35,7 +35,7 @@ from django_rakaia.verification import (
     VerificationError,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect
+from rakaia.effects import Delete, Effect, ExternalEffect, Upsert
 
 from .models import Measure
 
@@ -44,8 +44,7 @@ OTHER_REF = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 
 def _effect(ref: uuid.UUID, amount: str) -> Effect:
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Measure",
         lookup={"ref": ref},
         defaults={"amount": Decimal(amount)},
@@ -115,12 +114,8 @@ class TestTheWaysASweepSilentlyComparesNothing:
         """delete/retire/external effects are skipped, so a batch of only those
         compares nothing — the report must say so rather than report clean."""
         effects = [
-            Effect(
-                op="delete",
-                model_label="test_django_rakaia.Measure",
-                lookup={"ref": OTHER_REF},
-            ),
-            Effect(op="external", payload={"kind": "notify"}),
+            Delete(model_label="test_django_rakaia.Measure", lookup={"ref": OTHER_REF}),
+            ExternalEffect(kind="notify", payload={}),
         ]
         report = diff_effects_against_rows(effects)
         assert report.verdict == VACUOUS
@@ -161,10 +156,8 @@ class TestBackwardCompatibility:
         report = diff_effects_against_rows(
             [
                 _effect(REF, "10.00"),
-                Effect(
-                    op="delete",
-                    model_label="test_django_rakaia.Measure",
-                    lookup={"ref": OTHER_REF},
+                Delete(
+                    model_label="test_django_rakaia.Measure", lookup={"ref": OTHER_REF}
                 ),
             ]
         )

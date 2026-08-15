@@ -39,7 +39,7 @@ New to these words? Each is defined in plain language in the
 | **Handler**     | Pure function `event -> Effect | list[Effect]`. No I/O.                                       |
 | **Version**     | One registered handler is one version. Multiple versions of the same handler-name are layered |
 |                 | by sequence range; the dispatcher picks the one whose `[from, to)` covers the event's seq.    |
-| **Effect**      | Frozen dataclass describing one side-effect (`op="update_or_create"` or `op="external"`).     |
+| **Effect**      | Frozen dataclass describing one database side-effect — `Upsert`, `Update`, `Delete` or `Retire`. |
 | **Executor**    | Applies effects. `DjangoExecutor` runs `Model.objects.update_or_create()` in a transaction.   |
 | **Upcaster**    | Pure function `dict -> dict` that bumps an event from schema version *N* to *N+1*.            |
 | **Replay**      | Reads the stream, runs each event through the upcaster chain and resolved handlers, applies. |
@@ -52,8 +52,9 @@ Key invariants:
 - **Multiple handlers** can fire on one event; they're independent and unordered.
 - **Sibling effects** writing the same field on the same row raise
   `EffectCollisionError`.
-- **External effects** (emails, third-party calls) are tagged `op="external"`
-  and **skipped on replay** unless `include_external=True`.
+- **External effects** (emails, third-party calls) are `ExternalEffect`s, not
+  `Effect`s. No executor ever applies one; replay returns them in
+  `ReplayResult.external` for the caller to route.
 
 An event is dispatched to the handler version whose `[from, to)` range covers its
 sequence number — so old events keep the logic that was correct at the time:
@@ -87,7 +88,7 @@ Two real changes from Partisipa's recent history are easy to express:
 Django autodiscovery picks up this module on app `ready()`.
 
 ```python
-from rakaia import Effect
+from rakaia import Upsert
 from rakaia import register_handler, register_upcaster
 
 
@@ -117,11 +118,10 @@ def upcast_sf12_v1_to_v2(event: dict) -> dict:
     effective_from=0,
     effective_to=5000,
 )
-def sf12_cost_sync_v1(event: dict) -> Effect:
+def sf12_cost_sync_v1(event: dict) -> Upsert:
     contributions = event["fields"].get("contributions", [])
     cost = sum(c["amount"] for c in contributions)
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="ida_forms.Sf_1_2",
         lookup={"submission_id": event["key"]},
         defaults={"cost_estimation": cost},
@@ -138,11 +138,10 @@ def sf12_cost_sync_v1(event: dict) -> Effect:
     effective_from=5000,
     effective_to=None,
 )
-def sf12_cost_sync_v2(event: dict) -> Effect:
+def sf12_cost_sync_v2(event: dict) -> Upsert:
     contributions = event["fields"].get("contributions", [])
     subtotal = sum(c["amount"] for c in contributions)
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="ida_forms.Sf_1_2",
         lookup={"submission_id": event["key"]},
         defaults={"cost_estimation": subtotal * 1.1},  # 10% tax
@@ -161,11 +160,10 @@ def sf12_cost_sync_v2(event: dict) -> Effect:
     effective_from=0,
     effective_to=None,
 )
-def sf12_project_status(event: dict) -> Effect | None:
+def sf12_project_status(event: dict) -> Upsert | None:
     if event.get("status") != "VERIFIED":
         return None
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="ida_forms.Sf_1_2",
         lookup={"submission_id": event["key"]},
         defaults={"project_status": 1},
@@ -203,7 +201,7 @@ The equivalent of running every `_task_*_backfill` together:
 
 ```bash
 python manage.py replay submissions:SF_1_2 --from 0
-# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external_skipped=0
+# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external=0
 ```
 
 Options:
@@ -213,7 +211,6 @@ Options:
 | `--from N`            | First event index to replay (default 0).                                |
 | `--to M`              | One past the last event index to replay (default: stream head).         |
 | `--strict-drift`      | Raise `HandlerDriftError` on source-hash mismatch instead of warning.   |
-| `--include-external`  | Apply `op="external"` effects (emails, etc.) instead of skipping them.  |
 | `--dry-run`           | Resolve handlers and count effects without applying them.               |
 
 What this gets you:
@@ -252,7 +249,7 @@ compared.
 ```bash
 python manage.py replay submissions:SF_1_2 --from 0
 # RAKAIA_DRIFT handler='sf12_cost_sync' stored=ab12cd34ef56 current=99887766ddee
-# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external_skipped=0
+# [APPLIED] stream='submissions:SF_1_2' events=12847 effects=24102 external=0
 ```
 
 By default replay **warns and continues** — useful in development. CI or

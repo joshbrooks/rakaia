@@ -21,14 +21,23 @@ from .append import append_if_changed, snapshots_equal
 from .context import get_provenance, provenance
 from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
 from .effects import (
+    AnyEffect,
+    Delete,
     DuplicateProducesError,
     Effect,
     EffectCollisionError,
-    EffectOp,
+    Exclude,
     Executor,
+    ExternalEffect,
     Ref,
     RefResolver,
+    Retire,
+    RowEffect,
+    SpareKeys,
+    Transition,
     UnresolvedRefError,
+    Update,
+    Upsert,
     check_disjoint_defaults,
 )
 from .executors import CollectingExecutor, InMemoryProjections
@@ -187,7 +196,16 @@ __all__ = [
     "generate_response_cursor",
     # Versioned handlers — effects
     "Effect",
-    "EffectOp",
+    "AnyEffect",
+    "RowEffect",
+    "Upsert",
+    "Update",
+    "Delete",
+    "Retire",
+    "ExternalEffect",
+    "Exclude",
+    "SpareKeys",
+    "Transition",
     "Executor",
     "EffectCollisionError",
     "DuplicateProducesError",

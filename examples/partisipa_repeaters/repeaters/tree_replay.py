@@ -25,7 +25,7 @@ import json
 from typing import Any
 
 from django_rakaia import DjangoExecutor
-from rakaia import Effect
+from rakaia import Delete, Effect, Exclude, Upsert
 
 NODE = "repeaters.Node"
 TOTAL = "repeaters.Total"
@@ -53,8 +53,7 @@ def flatten(
 
 def _node_upserts(submission_id: str, nodes: list[dict[str, Any]]) -> list[Effect]:
     return [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=NODE,
             lookup={"submission_id": submission_id, "node_id": n["node_id"]},
             defaults={
@@ -70,11 +69,10 @@ def _node_upserts(submission_id: str, nodes: list[dict[str, Any]]) -> list[Effec
 
 def _tree_reconcile(submission_id: str, kept_ids: list[str]) -> Effect:
     """Delete every node of this submission NOT in the current tree — any depth."""
-    return Effect(
-        op="delete",
+    return Delete(
         model_label=NODE,
         lookup={"submission_id": submission_id},
-        exclude={"node_id__in": kept_ids},
+        spare=Exclude({"node_id__in": kept_ids}),
     )
 
 
@@ -91,8 +89,7 @@ def _recompute_totals() -> None:
             n.value for n in Node.objects.filter(submission_id=sid, is_leaf=True)
         )
         effects.append(
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=TOTAL,
                 lookup={"submission_id": sid},
                 defaults={"total": total},

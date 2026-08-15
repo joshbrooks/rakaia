@@ -12,7 +12,7 @@ An executor is any object with an `apply(effects)` method:
 
 ```python
 class Executor(Protocol):
-    def apply(self, effects: Iterable[Effect]) -> None: ...
+    def apply(self, effects: Iterable[Effect]) -> ApplyReport | None: ...
 ```
 
 The same replay produces the same effects either way — the executor is the only
@@ -30,7 +30,7 @@ ships three implementations:
 
 | Executor | Package | What it does |
 |---|---|---|
-| `DjangoExecutor` | `django_rakaia.effect_executor` | Applies effects for real — `update_or_create`, `delete`, and (optionally) external effects. |
+| `DjangoExecutor` | `django_rakaia.effect_executor` | Applies effects for real — an `Upsert` via `update_or_create`, an `Update`, a `Delete`, a `Retire`. |
 | `CollectingExecutor` | `rakaia.executors` | Records effects into `.effects` **without applying them**. The building block for a dry run. |
 | `InMemoryProjections` | `rakaia.executors` | Applies effects to in-memory dicts, and reads them back — an `Executor` and a `ProjectionReader` in one, with no database. |
 
@@ -97,7 +97,7 @@ replay(store, "orders", ex)          # zero writes
 
 print(f"{len(ex.effects)} effects would be applied")
 for effect in ex.effects:
-    print(effect.op, effect.model_label, effect.lookup)
+    print(type(effect).__name__, effect.model_label, effect.lookup)
 ```
 
 Because handlers are pure, the effects a `CollectingExecutor` records are exactly
@@ -121,15 +121,15 @@ python manage.py replay orders --dry-run
 ```
 
 ```
-[DRY RUN] stream='orders' events=6 effects=10 external_skipped=4
-  update_or_create orders.OrderSummary {'order_id': 'ORD-1001'}
-  update_or_create orders.OrderSummary {'order_id': 'ORD-1002'}
+[DRY RUN] stream='orders' events=6 effects=10 external=4
+  upsert orders.OrderSummary {'order_id': 'ORD-1001'}
+  upsert orders.OrderSummary {'order_id': 'ORD-1002'}
   ...
 ```
 
 Drop `--dry-run` to apply the same effects via the `DjangoExecutor`. See
 [Versioned handlers](versioned-handlers.md) for the full command reference
-(`--from`, `--to`, `--strict-drift`, `--include-external`).
+(`--from`, `--to`, `--strict-drift`).
 
 ## Verifying a from-scratch rebuild: the `using=` seam
 

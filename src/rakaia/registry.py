@@ -1087,8 +1087,7 @@ def register_handler(
             effective_to=10_000,
         )
         def mogrify_v1(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="myapp.Room",
                 lookup={"id": event["room_id"]},
                 defaults={"name": event["name"]},
@@ -1139,7 +1138,7 @@ def register_simple(
     Example:
         @register_simple("project_registry", "TF_6_1_1", match_field="form_type")
         def project_registry(event):
-            return Effect(op="update_or_create", ...)
+            return Upsert(...)
     """
     return register_handler(
         name,

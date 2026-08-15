@@ -77,12 +77,12 @@ old event runs through the handler version that was correct *when it happened*.
 Fixing a rule forward never rewrites the past.
 
 ```python
-from rakaia import Effect, register_handler
+from rakaia import Upsert, register_handler
 
 @register_handler(name="order_totals", event_match="orders",
                   effective_from=0, effective_to=3)      # tax-free era
 def order_totals_v1(event):
-    return Effect(op="update_or_create", model_label="orders.OrderSummary",
+    return Upsert(model_label="orders.OrderSummary",
                   lookup={"order_id": event["order_id"]},
                   defaults={"tax": 0})
 
@@ -209,7 +209,7 @@ earlier stages — deterministic and self-healing, no backfills.
 @register_handler(name="sf12", event_match="SF_1_2", match_field="form_type", stage=1)
 def sf12(event, refs):                       # stage 1 gets a projection reader
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Effect(op="update_or_create", model_label="ida_forms.Sf_1_2",
+    return Upsert(model_label="ida_forms.Sf_1_2",
                   lookup={"submission_id": event["key"]},
                   defaults={"project_id": project.pk if project else None})
 ```

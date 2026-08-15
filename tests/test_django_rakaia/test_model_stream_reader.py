@@ -11,7 +11,7 @@ from django_rakaia.decorators import create_stream_event
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 from django_rakaia.streams import DjangoStreamReader, ModelStreamReader
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 
@@ -99,8 +99,7 @@ class TestReplayAgainstModelStream:
         reg = HandlerRegistry()
 
         def project_handler(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="test_django_rakaia.Area",
                 lookup={"name": f"projected:{event['name']}"},
                 defaults={},
@@ -133,8 +132,7 @@ class TestReplayAgainstModelStream:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="test_django_rakaia.Area",
                 lookup={"name": f"projected:{event['name']}"},
                 defaults={},
@@ -204,8 +202,7 @@ class TestDjangoStreamReader:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="test_django_rakaia.Area",
                 lookup={"name": f"from-stream:{event['name']}"},
                 defaults={},

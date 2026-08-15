@@ -1,15 +1,15 @@
 """
 Django implementation of the rakaia.effects.Executor protocol.
 
-Applies update_or_create, update, delete and retire Effects to the Django ORM in
-a single atomic transaction. Writes (upserts and in-place updates) are applied
-first, then deletes, then retires, so a batch that reconciles a row set (upsert
-the current rows, then prune/soft-delete the stale ones) is deterministic.
-``op="update"`` is update-if-exists: ``filter(**lookup).update(**defaults)`` —
-it modifies matching rows in place and never inserts, so a secondary owner of a
-multi-owned projection row can emit it unconditionally. External effects passed
-to apply() are silently dropped — the replay orchestrator decides whether
-external effects reach the executor based on its include_external setting.
+Applies ``Upsert``, ``Update``, ``Delete`` and ``Retire`` effects to the Django
+ORM in a single atomic transaction. Writes (upserts and in-place updates) are
+applied first, then deletes, then retires, so a batch that reconciles a row set
+(upsert the current rows, then prune/soft-delete the stale ones) is
+deterministic. ``Update`` is update-if-exists:
+``filter(**lookup).update(**defaults)`` — it modifies matching rows in place and
+never inserts, so a secondary owner of a multi-owned projection row can emit it
+unconditionally. An ``ExternalEffect`` is not an ``Effect`` and never reaches an
+executor: replay returns those to its caller.
 
 Pass ``skip_unchanged=True`` to avoid writing rows whose values already match.
 By default (matching Django's ``update_or_create``) every upsert issues an
@@ -33,7 +33,18 @@ from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
 
-from rakaia.effects import ApplyReport, Effect, RefResolver, check_disjoint_defaults
+from rakaia.effects import (
+    ApplyReport,
+    Delete,
+    Effect,
+    Exclude,
+    RefResolver,
+    Retire,
+    SpareKeys,
+    Update,
+    Upsert,
+    check_disjoint_defaults,
+)
 
 from .verification import canonical_value
 
@@ -75,7 +86,7 @@ class DjangoExecutor:
         # One resolver per batch: an upsert declaring produces= records its row,
         # and a sibling's Ref values are substituted before that sibling applies.
         resolver = RefResolver()
-        retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = []
+        retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
         with transaction.atomic(using=self._using):
             # Writes first, then deletes, then retires: reconcile batches
             # (upsert current rows, prune/soft-delete the rest) converge
@@ -83,26 +94,24 @@ class DjangoExecutor:
             # so a produces= row is always recorded before any later effect that
             # refs it.
             for eff in effects_list:
-                if eff.op == "update_or_create":
+                if isinstance(eff, Upsert):
                     obj = self._upsert(resolver.resolve_effect(eff))
                     if eff.produces is not None:
                         resolver.record(eff.produces, _row_accessor(obj))
-                elif eff.op == "update":
+                elif isinstance(eff, Update):
                     self._update(resolver.resolve_effect(eff))
             for eff in effects_list:
-                if eff.op == "delete":
+                if isinstance(eff, Delete):
                     self._delete(resolver.resolve_effect(eff))
             for eff in effects_list:
-                if eff.op == "retire":
+                if isinstance(eff, Retire):
                     reff = resolver.resolve_effect(eff)
                     flipped = self._retire(reff)
-                    if reff.transition_kind is not None:
+                    if reff.transition is not None:
                         retire_flips.append((reff, flipped))
         return ApplyReport(retire_flips=retire_flips)
 
-    def _upsert(self, eff: Effect) -> Any:
-        if eff.model_label is None or eff.lookup is None:
-            raise ValueError("update_or_create effect requires model_label and lookup")
+    def _upsert(self, eff: Upsert) -> Any:
         model = apps.get_model(eff.model_label)
         defaults = eff.defaults or {}
         if not self._skip_unchanged:
@@ -112,15 +121,13 @@ class DjangoExecutor:
             return obj
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
-    def _update(self, eff: Effect) -> None:
+    def _update(self, eff: Update) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never
         insert. A no-op when nothing matches or when `defaults` is empty.
 
         `skip_unchanged` is not wired here: `QuerySet.update()` already issues a
         single UPDATE and does not advance `auto_now` columns, so the write-churn
         concern that motivates the upsert's SELECT-first path does not apply."""
-        if eff.model_label is None or eff.lookup is None:
-            raise ValueError("update effect requires model_label and lookup")
         defaults = eff.defaults or {}
         if not defaults:
             return  # nothing to write — a pure no-op
@@ -172,21 +179,21 @@ class DjangoExecutor:
             spared |= Q(**key)
         return qs.exclude(spared)
 
-    def _delete(self, eff: Effect) -> None:
-        if eff.model_label is None or eff.lookup is None:
-            raise ValueError("delete effect requires model_label and lookup")
+    def _delete(self, eff: Delete) -> None:
         model = apps.get_model(eff.model_label)
-        qs = self._manager(model).filter(**eff.lookup).exclude(**(eff.exclude or {}))
-        self._spare(qs, eff.spare_keys).delete()
+        qs = self._manager(model).filter(**eff.lookup)
+        if isinstance(eff.spare, Exclude):
+            qs = qs.exclude(**eff.spare.lookup)
+        elif isinstance(eff.spare, SpareKeys):
+            qs = self._spare(qs, eff.spare.keys)
+        qs.delete()
 
-    def _retire(self, eff: Effect) -> list[dict[str, Any]]:
-        if eff.model_label is None or eff.lookup is None:
-            raise ValueError("retire effect requires model_label and lookup")
+    def _retire(self, eff: Retire) -> list[dict[str, Any]]:
         if not eff.patch:
             raise ValueError("retire effect requires a non-empty patch")
         model = apps.get_model(eff.model_label)
         qs = self._manager(model).filter(**eff.lookup)
-        qs = self._spare(qs, eff.spare_keys)
+        qs = self._spare(qs, eff.spare.keys if eff.spare is not None else None)
         # The retire is open-guarded, so the rows it matches are exactly the ones
         # that flip NULL->set. Capture their identities BEFORE the UPDATE (same
         # atomic txn) only when the effect asked to notify — otherwise skip the
@@ -199,18 +206,8 @@ class DjangoExecutor:
         # UPDATE actually flips (a false or missed transition). No-op on SQLite,
         # which serialises writers anyway.
         flipped: list[dict[str, Any]] = []
-        if eff.transition_kind is not None:
-            cols = self._identity_cols(eff)
+        if eff.transition is not None:
+            cols = list(eff.transition.key_fields)
             flipped = list(qs.select_for_update().order_by(*cols).values(*cols))
         qs.update(**eff.patch)
         return flipped
-
-    @staticmethod
-    def _identity_cols(eff: Effect) -> list[str]:
-        """Columns identifying a flipped row in its transition payload. The
-        producer (`reconcile_by_key`) states the full ordered identity — scope
-        columns plus the natural key — in ``transition_key_fields``, so the
-        executor uses it verbatim for a deterministic ``ORDER BY``/``SELECT``
-        rather than re-deriving it from ``lookup`` (which can't tell a scope
-        column from the open-guard/retire_filter)."""
-        return list(eff.transition_key_fields or ())

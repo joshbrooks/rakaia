@@ -83,7 +83,7 @@ class TestReplayCommand:
         assert not Area.objects.filter(name__in=["Delta", "Epsilon"]).exists()
         # ... but the effects that WOULD be applied are listed.
         assert "DRY RUN" in text
-        assert "update_or_create" in text
+        assert "upsert" in text
         assert "test_django_rakaia.Area" in text
 
     def test_range_bounds(self):

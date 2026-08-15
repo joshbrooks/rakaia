@@ -11,7 +11,15 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.effect_executor import DjangoExecutor
-from rakaia.effects import Effect, EffectCollisionError
+from rakaia.effects import (
+    Delete,
+    Effect,
+    EffectCollisionError,
+    Exclude,
+    ExternalEffect,
+    Update,
+    Upsert,
+)
 
 from .models import Area, History, Measure, Project
 
@@ -39,8 +47,7 @@ class TestDjangoExecutor:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "Region A"},
                     defaults={},
@@ -51,11 +58,8 @@ class TestDjangoExecutor:
 
     def test_apply_is_idempotent(self):
         executor = DjangoExecutor()
-        effect = Effect(
-            op="update_or_create",
-            model_label="test_django_rakaia.Area",
-            lookup={"name": "Once"},
-            defaults={},
+        effect = Upsert(
+            model_label="test_django_rakaia.Area", lookup={"name": "Once"}, defaults={}
         )
         executor.apply([effect])
         executor.apply([effect])
@@ -68,8 +72,7 @@ class TestDjangoExecutor:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"id": existing_id},
                     defaults={"name": "New"},
@@ -82,14 +85,12 @@ class TestDjangoExecutor:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "A1"},
                     defaults={},
                 ),
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "A2"},
                     defaults={},
@@ -103,7 +104,7 @@ class TestDjangoExecutor:
         # External effects should pass through without raising or writing
         executor.apply(
             [
-                Effect(op="external", kind="email", payload={"to": "x@y.z"}),
+                ExternalEffect(kind="email", payload={"to": "x@y.z"}),
             ]
         )
         # No areas created (and no error)
@@ -114,8 +115,7 @@ class TestDjangoExecutor:
         with pytest.raises(LookupError):
             executor.apply(
                 [
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="nonexistent_app.Nothing",
                         lookup={"id": 1},
                         defaults={},
@@ -128,14 +128,12 @@ class TestDjangoExecutor:
         with pytest.raises(EffectCollisionError):
             executor.apply(
                 [
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="test_django_rakaia.Area",
                         lookup={"name": "X"},
                         defaults={"name": "a"},
                     ),
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="test_django_rakaia.Area",
                         lookup={"name": "X"},
                         defaults={"name": "b"},
@@ -155,13 +153,7 @@ class TestDjangoExecutorDelete:
         Area.objects.create(name="gone")
         executor = DjangoExecutor()
         executor.apply(
-            [
-                Effect(
-                    op="delete",
-                    model_label="test_django_rakaia.Area",
-                    lookup={"name": "gone"},
-                )
-            ]
+            [Delete(model_label="test_django_rakaia.Area", lookup={"name": "gone"})]
         )
         assert not Area.objects.filter(name="gone").exists()
 
@@ -173,11 +165,10 @@ class TestDjangoExecutorDelete:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="delete",
+                Delete(
                     model_label="test_django_rakaia.Area",
                     lookup={},
-                    exclude={"name__in": ["keep0", "keep1"]},
+                    spare=Exclude({"name__in": ["keep0", "keep1"]}),
                 )
             ]
         )
@@ -187,13 +178,7 @@ class TestDjangoExecutorDelete:
         Area.objects.create(name="stays")
         executor = DjangoExecutor()
         executor.apply(
-            [
-                Effect(
-                    op="delete",
-                    model_label="test_django_rakaia.Area",
-                    lookup={"name": "absent"},
-                )
-            ]
+            [Delete(model_label="test_django_rakaia.Area", lookup={"name": "absent"})]
         )
         assert Area.objects.filter(name="stays").exists()
 
@@ -204,13 +189,8 @@ class TestDjangoExecutorDelete:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="delete",
-                    model_label="test_django_rakaia.Area",
-                    lookup={"name": "temp"},
-                ),
-                Effect(
-                    op="update_or_create",
+                Delete(model_label="test_django_rakaia.Area", lookup={"name": "temp"}),
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "temp"},
                     defaults={},
@@ -227,13 +207,10 @@ class TestDjangoExecutorDelete:
         with pytest.raises(LookupError):
             executor.apply(
                 [
-                    Effect(
-                        op="delete",
-                        model_label="test_django_rakaia.Area",
-                        lookup={"name": "keep"},
+                    Delete(
+                        model_label="test_django_rakaia.Area", lookup={"name": "keep"}
                     ),
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="nonexistent_app.Nothing",
                         lookup={"id": 1},
                         defaults={},
@@ -248,8 +225,7 @@ class TestSkipUnchanged:
     """The opt-in `skip_unchanged` executor avoids no-op writes on replay."""
 
     def _area_upsert(self, area_id: int, name: str) -> Effect:
-        return Effect(
-            op="update_or_create",
+        return Upsert(
             model_label="test_django_rakaia.Area",
             lookup={"id": area_id},
             defaults={"name": name},
@@ -275,8 +251,7 @@ class TestSkipUnchanged:
         executor = DjangoExecutor(skip_unchanged=True)
         executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "New"},
                     defaults={},
@@ -301,11 +276,10 @@ class TestSkipUnchanged:
         with CaptureQueriesContext(connection) as ctx:
             executor.apply(
                 [
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="test_django_rakaia.Project",
                         lookup={"id": project.id},
-                        defaults={"name": "new"},  # only the name changes
+                        defaults={"name": "new"},
                     )
                 ]
             )
@@ -339,8 +313,7 @@ class TestSkipUnchangedCoercion:
     """
 
     def _measure_upsert(self, ref, amount) -> Effect:
-        return Effect(
-            op="update_or_create",
+        return Upsert(
             model_label="test_django_rakaia.Measure",
             lookup={"ref": ref},
             defaults={"amount": amount},
@@ -371,8 +344,7 @@ class TestSkipUnchangedCoercion:
         with CaptureQueriesContext(connection) as ctx:
             executor.apply(
                 [
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label="test_django_rakaia.Measure",
                         lookup={"ref": str(ref)},
                         defaults={"ref": str(ref), "amount": Decimal("2.10")},
@@ -407,8 +379,7 @@ class TestDjangoExecutorUpdate:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update",
+                Update(
                     model_label="test_django_rakaia.Area",
                     lookup={"id": area.id},
                     defaults={"name": "New"},
@@ -423,8 +394,7 @@ class TestDjangoExecutorUpdate:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update",
+                Update(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "ghost"},
                     defaults={"name": "ghost"},
@@ -439,13 +409,7 @@ class TestDjangoExecutorUpdate:
         area = Area.objects.create(name="stays")
         executor = DjangoExecutor()
         executor.apply(
-            [
-                Effect(
-                    op="update",
-                    model_label="test_django_rakaia.Area",
-                    lookup={"id": area.id},
-                )
-            ]
+            [Update(model_label="test_django_rakaia.Area", lookup={"id": area.id})]
         )
         assert Area.objects.get(id=area.id).name == "stays"
 
@@ -458,8 +422,7 @@ class TestDjangoExecutorUpdate:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update",
+                Update(
                     model_label="test_django_rakaia.History",
                     lookup={"submission_id": "s", "version": 1},
                     defaults={"actor": None},
@@ -475,14 +438,12 @@ class TestDjangoExecutorUpdate:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="update",
+                Update(
                     model_label="test_django_rakaia.History",
                     lookup={"submission_id": "s", "version": 1},
                     defaults={"actor": 42},
                 ),
-                Effect(
-                    op="update",
+                Update(
                     model_label="test_django_rakaia.History",
                     lookup={"submission_id": "s", "version": 1},
                     defaults={"ts": 9.5},
@@ -501,13 +462,8 @@ class TestDjangoExecutorUpdate:
         executor = DjangoExecutor()
         executor.apply(
             [
-                Effect(
-                    op="delete",
-                    model_label="test_django_rakaia.Area",
-                    lookup={"name": "temp"},
-                ),
-                Effect(
-                    op="update",
+                Delete(model_label="test_django_rakaia.Area", lookup={"name": "temp"}),
+                Update(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "temp"},
                     defaults={"name": "temp"},

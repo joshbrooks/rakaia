@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rakaia import Effect, reconcile_children, register_handler
+from rakaia import Effect, Upsert, reconcile_children, register_handler
 
 from . import mapping
 from .seed import POLICY_CHANGE_SEQ
@@ -37,8 +37,7 @@ ACTIVITY_MODEL = "submissions.ActivityProgress"
 
 
 def _visit_effect(event: dict[str, Any], *, lenient: bool) -> Effect:
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=VISIT_MODEL,
         lookup={"submission_id": event["submission_id"]},
         defaults=mapping.visit_defaults(event, lenient=lenient),

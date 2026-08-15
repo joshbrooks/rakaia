@@ -18,7 +18,7 @@ import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
-from rakaia.effects import Effect
+from rakaia.effects import Effect, ExternalEffect, Upsert
 from rakaia.projections import reconcile_by_key
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
@@ -29,19 +29,17 @@ from .models import Alert
 ALERT = "test_django_rakaia.Alert"
 
 
-class _CapturingDjangoExecutor(DjangoExecutor):
-    """DjangoExecutor that also records the ``external`` effects handed to it.
-
-    The base executor drops externals; this records them so a delivery test can
-    assert what the replay orchestrator synthesised from retire flips."""
+class _RecordingExecutor(DjangoExecutor):
+    """DjangoExecutor that records every effect handed to it, so a test can
+    assert that no ExternalEffect ever arrives."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.externals: list[Effect] = []
+        self.seen: list[Effect] = []
 
     def apply(self, effects):
         effects = list(effects)
-        self.externals.extend(e for e in effects if e.op == "external")
+        self.seen.extend(effects)
         return super().apply(effects)
 
 
@@ -73,8 +71,7 @@ def raise_effects(ev: dict[str, Any]) -> list[Effect]:
     """Authored ``alert_raised`` -> open the natural-key row + notify."""
     key = _key(ev)
     return [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=ALERT,
             lookup=key,
             defaults={
@@ -85,8 +82,7 @@ def raise_effects(ev: dict[str, Any]) -> list[Effect]:
                 "resolved_by": None,
             },
         ),
-        Effect(
-            op="external",
+        ExternalEffect(
             kind="alert_transition",
             payload={"key": key, "state": "open", "actor": ev.get("actor")},
         ),
@@ -101,14 +97,12 @@ def dismiss_effects(ev: dict[str, Any]) -> list[Effect]:
     """
     key = _key(ev)
     return [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=ALERT,
             lookup=key,
             defaults={"resolved_at": ev["ts"], "resolved_by": ev.get("actor")},
         ),
-        Effect(
-            op="external",
+        ExternalEffect(
             kind="alert_transition",
             payload={"key": key, "state": "resolved", "actor": ev.get("actor")},
         ),
@@ -328,7 +322,7 @@ class TestMachineReconciledAlerts:
 class TestRetireFlipReport:
     """Issue #32 R3: the executor reports which rows a retire actually flipped
     (NULL->set) so the orchestrator can emit one transition per real resolution.
-    Opt-in: only a retire carrying ``transition_kind`` pays for the extra SELECT.
+    Opt-in: only a retire carrying a ``Transition`` pays for the extra SELECT.
     """
 
     def test_apply_reports_flipped_open_rows_only(self):
@@ -350,7 +344,8 @@ class TestRetireFlipReport:
         )
         assert len(report.retire_flips) == 1
         eff, rows = report.retire_flips[0]
-        assert eff.transition_kind == "alert_transition"
+        assert eff.transition is not None
+        assert eff.transition.kind == "alert_transition"
         # Only the open row flipped; identity is the full natural key.
         assert rows == [
             {
@@ -369,7 +364,7 @@ class TestRetireFlipReport:
         _, rows = report.retire_flips[0]
         assert [r["field_key"] for r in rows] == ["a", "m", "z"]  # ordered by key
 
-    def test_no_report_and_no_extra_query_without_transition_kind(self):
+    def test_no_report_and_no_extra_query_without_a_transition(self):
         _seed("sub-1", "sf11_smt_exceeds_cap", field_key="b")
         report = DjangoExecutor().apply(
             _machine_reconcile("sub-1", [], ts="t")  # no transition_kind
@@ -379,9 +374,10 @@ class TestRetireFlipReport:
 
 @pytest.mark.django_db
 class TestMachineResolutionTransitions:
-    """Issue #32 R4 (headline): replaying machine reconciles emits exactly one
-    ``external`` ``alert_transition`` per *real* resolution — skipped on replay
-    by default, delivered when ``include_external=True``, never re-spammed."""
+    """Issue #32 R4 (headline): replaying machine reconciles produces exactly one
+    ``alert_transition`` per *real* resolution, returned to the caller in
+    ``ReplayResult.external`` rather than applied — so a rebuild never
+    re-spams."""
 
     @staticmethod
     def _registry() -> HandlerRegistry:
@@ -411,12 +407,11 @@ class TestMachineResolutionTransitions:
 
     def test_one_transition_per_real_resolution(self):
         store = seed_stream("sub:1", self._events)
-        ex = _CapturingDjangoExecutor()
-        replay(
-            store, "sub:1", ex, handler_registry=self._registry(), include_external=True
+        result = replay(
+            store, "sub:1", DjangoExecutor(), handler_registry=self._registry()
         )
-        assert len(ex.externals) == 1
-        t = ex.externals[0]
+        assert len(result.external) == 1
+        t = result.external[0]
         assert t.kind == "alert_transition"
         assert t.payload["state"] == "resolved"
         assert t.payload["key"] == {
@@ -429,28 +424,27 @@ class TestMachineResolutionTransitions:
 
     def test_still_violating_key_emits_no_transition(self):
         store = seed_stream("sub:1", self._events)
-        ex = _CapturingDjangoExecutor()
-        replay(
-            store, "sub:1", ex, handler_registry=self._registry(), include_external=True
+        result = replay(
+            store, "sub:1", DjangoExecutor(), handler_registry=self._registry()
         )
-        fired = {t.payload["key"]["alert_type"] for t in ex.externals}
+        fired = {t.payload["key"]["alert_type"] for t in result.external}
         assert "ff4_operational_exceeds_ksp" not in fired  # A stayed open
 
-    def test_transition_skipped_on_replay_by_default(self):
+    def test_the_transition_never_reaches_the_executor(self):
         store = seed_stream("sub:1", self._events)
-        ex = _CapturingDjangoExecutor()
+        ex = _RecordingExecutor()
         result = replay(store, "sub:1", ex, handler_registry=self._registry())
-        assert ex.externals == []  # not delivered
-        assert result.external_effects_skipped == 1  # but counted
+        assert not any(isinstance(e, ExternalEffect) for e in ex.seen)
+        assert len(result.external) == 1
 
-    def test_rebuild_is_silent_by_default(self):
+    def test_rebuild_delivers_nothing_by_itself(self):
         store = seed_stream("sub:1", self._events)
         reg = self._registry()
-        for _ in range(2):  # a rebuild replays from scratch at the default gate
-            ex = _CapturingDjangoExecutor()
+        for _ in range(2):  # a rebuild replays from scratch
+            ex = _RecordingExecutor()
             result = replay(store, "sub:1", ex, handler_registry=reg)
-            assert ex.externals == []
-            assert result.external_effects_skipped == 1
+            assert not any(isinstance(e, ExternalEffect) for e in ex.seen)
+            assert len(result.external) == 1
 
 
 # ===========================================================================
@@ -473,8 +467,7 @@ def _sev(alert_type: str) -> str:
 
 def authored_raise_h(event: dict[str, Any]) -> Effect:
     """stage 0: `alert_raised` -> open the natural-key row."""
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=ALERT,
         lookup=_key(event),
         defaults={
@@ -490,8 +483,7 @@ def authored_raise_h(event: dict[str, Any]) -> Effect:
 
 def authored_dismiss_h(event: dict[str, Any]) -> Effect:
     """stage 0: `alert_dismissed` -> soft-resolve + record dismissed_version."""
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=ALERT,
         lookup=_key(event),
         defaults={

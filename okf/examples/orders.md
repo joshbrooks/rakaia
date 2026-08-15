@@ -16,7 +16,7 @@ An e-commerce projection showing time-correctness: the sales-tax rule changed
 on a date, and orders placed before it must keep the old tax. Demonstrates
 `register_handler` with `effective_from`/`effective_to` ranges, an upcaster
 (`register_upcaster`) normalising an old field name, a `CollectingExecutor`
-dry-run, `op="external"` receipt effects skipped on replay, `op="update"`
+dry-run, `ExternalEffect` receipt effects returned rather than applied, `Update`
 (update-if-exists) for a loyalty bonus, and drift detection via
 `on_drift="raise"`.
 

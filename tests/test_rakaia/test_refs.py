@@ -11,11 +11,15 @@ from __future__ import annotations
 import pytest
 
 from rakaia.effects import (
+    Delete,
     DuplicateProducesError,
-    Effect,
     Ref,
     RefResolver,
+    Retire,
+    SpareKeys,
     UnresolvedRefError,
+    Update,
+    Upsert,
 )
 
 
@@ -29,23 +33,18 @@ class TestRefAndProduces:
         assert Ref("proj", "suku").field == "suku"
 
     def test_produces_valid_on_update_or_create(self):
-        eff = Effect(
-            op="update_or_create",
-            model_label="app.Project",
-            lookup={"suku": "A"},
-            produces="proj",
-        )
+        eff = Upsert(model_label="app.Project", lookup={"suku": "A"}, produces="proj")
         assert eff.produces == "proj"
 
-    def test_produces_rejected_on_other_ops(self):
-        for op in ("update", "delete", "retire"):
-            with pytest.raises(ValueError, match="produces"):
-                Effect(
-                    op=op,
-                    model_label="app.Project",
-                    lookup={"suku": "A"},
-                    produces="proj",
-                )
+    def test_produces_exists_only_on_upsert(self):
+        # An Update matches many rows and a Delete/Retire produces none, so
+        # `produces` is not a field they have — a construction that sets one no
+        # longer type-checks, and there is nothing to reject at runtime.
+        assert not hasattr(Update(model_label="app.Project", lookup={}), "produces")
+        assert not hasattr(Delete(model_label="app.Project", lookup={}), "produces")
+        assert not hasattr(
+            Retire(model_label="app.Project", lookup={}, patch={"x": 1}), "produces"
+        )
 
 
 class TestRefResolver:
@@ -95,11 +94,8 @@ class TestRefResolver:
         # unchanged (documented limitation, pinned here).
         resolver = RefResolver()
         resolver.record("proj", self._accessor({"pk": 7}))
-        eff = Effect(
-            op="update_or_create",
-            model_label="app.X",
-            lookup={"id": "1"},
-            defaults={"tags": [Ref("proj")]},
+        eff = Upsert(
+            model_label="app.X", lookup={"id": "1"}, defaults={"tags": [Ref("proj")]}
         )
         resolved = resolver.resolve_effect(eff)
         assert resolved.defaults["tags"] == [Ref("proj")]
@@ -107,8 +103,7 @@ class TestRefResolver:
     def test_resolve_effect_substitutes_in_defaults_and_lookup(self):
         resolver = RefResolver()
         resolver.record("proj", self._accessor({"pk": 7}))
-        eff = Effect(
-            op="update_or_create",
+        eff = Upsert(
             model_label="app.Tf",
             lookup={"submission_id": "s1"},
             defaults={"project_id": Ref("proj"), "name": "keep"},
@@ -121,23 +116,19 @@ class TestRefResolver:
         # Fast path: an effect with no Ref values is returned unchanged (same
         # object), so the common no-ref batch pays nothing.
         resolver = RefResolver()
-        eff = Effect(
-            op="update_or_create",
-            model_label="app.Tf",
-            lookup={"submission_id": "s1"},
-            defaults={"name": "x"},
+        eff = Upsert(
+            model_label="app.Tf", lookup={"submission_id": "s1"}, defaults={"name": "x"}
         )
         assert resolver.resolve_effect(eff) is eff
 
     def test_resolve_effect_substitutes_in_spare_keys(self):
         resolver = RefResolver()
         resolver.record("proj", self._accessor({"pk": 3}))
-        eff = Effect(
-            op="retire",
+        eff = Retire(
             model_label="app.Alert",
             lookup={"stream_key": "k"},
             patch={"resolved_at": "t"},
-            spare_keys=[{"project_id": Ref("proj")}],
+            spare=SpareKeys([{"project_id": Ref("proj")}]),
         )
         resolved = resolver.resolve_effect(eff)
-        assert resolved.spare_keys == [{"project_id": 3}]
+        assert resolved.spare == SpareKeys([{"project_id": 3}])

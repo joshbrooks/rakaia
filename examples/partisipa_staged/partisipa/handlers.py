@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rakaia import Effect
+from rakaia import Effect, Upsert
 
 PROJECT_MODEL = "partisipa.Project"
 SF12_MODEL = "partisipa.Sf12"
@@ -26,8 +26,7 @@ SF12_MODEL = "partisipa.Sf12"
 
 def project_registry(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG001
     """TF_6_1_1 -> a Project keyed by (suku, output). Ignores refs (stage 0)."""
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=PROJECT_MODEL,
         lookup={"suku": event["suku"], "output": event["output"]},
         defaults={"name": event["project_name"]},
@@ -37,8 +36,7 @@ def project_registry(event: dict[str, Any], refs: Any) -> Effect:  # noqa: ARG00
 def sf12_link(event: dict[str, Any], refs: Any) -> Effect:
     """SF_1_2 -> an Sf12 row linked to its Project, resolved via refs (stage 1)."""
     project = refs.get(PROJECT_MODEL, suku=event["suku"], output=event["output"])
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=SF12_MODEL,
         lookup={"submission_id": event["key"]},
         defaults={

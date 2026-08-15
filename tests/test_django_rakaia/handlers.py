@@ -7,7 +7,7 @@ process-wide default registry, which the autodiscovery test asserts on.
 
 from __future__ import annotations
 
-from rakaia.effects import Effect
+from rakaia.effects import Effect, Upsert
 from rakaia.registry import register_handler
 
 AUTODISCOVERED_HANDLER_NAME = "test_autodiscovered_handler"
@@ -19,8 +19,7 @@ AUTODISCOVERED_HANDLER_NAME = "test_autodiscovered_handler"
     effective_from=0,
 )
 def autodiscovered_handler(event: dict) -> Effect:
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Area",
         lookup={"name": event["name"]},
         defaults={},

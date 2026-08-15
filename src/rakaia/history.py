@@ -22,7 +22,7 @@ import json
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from .effects import Effect
+from .effects import Effect, Upsert
 from .types import StreamMessage
 
 
@@ -99,8 +99,7 @@ def history_effects(
         event = json.loads(msg.data)
         version = version_of(msg) if version_of is not None else index
         effects.append(
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=model_label,
                 lookup={subject_field: subject_of(event), version_field: version},
                 defaults=defaults_of(msg, event),

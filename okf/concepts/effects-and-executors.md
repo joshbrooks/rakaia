@@ -21,23 +21,29 @@ compose one row safely.
 
 Imported from `rakaia`:
 
-* `Effect(op, model_label, lookup, defaults, exclude, spare_keys, patch,
-  produces, kind, payload, …)`; `EffectOp` is one of `update_or_create` /
-  `update` / `delete` / `retire` / `external`.
+* Four database effects, one per operation, sharing the `RowEffect` base
+  (`model_label`, `lookup` — both required): `Upsert(…, defaults, produces)`,
+  `Update(…, defaults)`, `Delete(…, spare)`, `Retire(…, patch, spare,
+  transition)`. `Effect` is the union of the four; `AnyEffect` also admits
+  `ExternalEffect`.
+* `Exclude(lookup)` / `SpareKeys(keys)` — the two shapes a `Delete`'s single
+  `spare` field can take (a `Retire` takes only `SpareKeys`).
+* `Transition(kind, key_fields)` — a `Retire`'s opt-in per-flip notification
+  request; rejects empty `key_fields`.
+* `ExternalEffect(kind, payload)` — **not** an `Effect`: no executor applies one.
+  `replay()` returns them in `ReplayResult.external` for the caller to route.
 * `Ref(produces, field="pk")` and `RefResolver` — resolve batch-local FK refs;
   `UnresolvedRefError`, `DuplicateProducesError` on misuse.
 * `check_disjoint_defaults` — raise `EffectCollisionError` if two write effects
   write the same column of the same row (the multi-owner guard).
-* `dispatch_external(effects, handlers, on_unknown=…)` — route `op="external"`
-  effects (email, webhooks) that rakaia never applies itself.
 * `Executor` protocol; `CollectingExecutor` (dry-run).
 * Django: `DjangoExecutor` (applies to the ORM, resolves `Ref`s);
   `diff_effects_against_rows` (verify replay reproduces existing rows).
 
 # Demonstrated by
 
-* [multi_owner](../examples/multi-owner.md) — `Ref`/`RefResolver`, `check_disjoint_defaults`, `dispatch_external`.
-* [orders](../examples/orders.md) — `op="update"`, `op="external"`, `CollectingExecutor` dry-run.
+* [multi_owner](../examples/multi-owner.md) — `Ref`/`RefResolver`, `check_disjoint_defaults`, routing `ExternalEffect`s.
+* [orders](../examples/orders.md) — `Update`, `ExternalEffect`, `CollectingExecutor` dry-run.
 * [projection_cookbook](../examples/projection-cookbook.md) — `diff_effects_against_rows` verification.
 
 # Known gaps

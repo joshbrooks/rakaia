@@ -25,7 +25,7 @@ class OrderSummary(models.Model):
     # Written by the sibling `order_loyalty` handler (disjoint defaults key).
     loyalty_points = models.IntegerField(default=0)
 
-    # Written *only* by the `order_bonus` handler via op="update" — a secondary
+    # Written *only* by the `order_bonus` handler, via an Update — a secondary
     # owner that decorates an existing row and must never mint one. A bonus for
     # an order that was never placed is a clean no-op, not a phantom row.
     bonus_points = models.IntegerField(default=0)

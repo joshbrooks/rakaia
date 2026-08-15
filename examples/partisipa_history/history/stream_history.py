@@ -27,7 +27,7 @@ import json
 from typing import Any
 
 from django_rakaia import DjangoExecutor
-from rakaia import Effect, seed_stream
+from rakaia import Delete, Effect, Upsert, seed_stream
 
 from .envelope import OP_TO_LABEL, canonical, make_event
 from .models import SubmissionHistoryEntry
@@ -72,8 +72,7 @@ def replay_history(store: Any, stream: str) -> None:
 
 def _history_effect(seq: int, event: dict[str, Any]) -> Effect:
     """One append-only audit row per event; idempotent on (submission_id, seq)."""
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label=HISTORY_MODEL,
         lookup={"submission_id": event["key"], "seq": seq},
         defaults={
@@ -88,13 +87,8 @@ def _history_effect(seq: int, event: dict[str, Any]) -> Effect:
 def _record_effect(event: dict[str, Any]) -> Effect:
     """Current-state upsert, or a delete when the submission is removed."""
     if event["op"] == "delete":
-        return Effect(
-            op="delete",
-            model_label=RECORD_MODEL,
-            lookup={"submission_id": event["key"]},
-        )
-    return Effect(
-        op="update_or_create",
+        return Delete(model_label=RECORD_MODEL, lookup={"submission_id": event["key"]})
+    return Upsert(
         model_label=RECORD_MODEL,
         lookup={"submission_id": event["key"]},
         defaults={

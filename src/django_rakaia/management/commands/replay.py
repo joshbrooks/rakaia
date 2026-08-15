@@ -40,11 +40,6 @@ class Command(BaseCommand):
             help="Raise HandlerDriftError on source_hash mismatch instead of warning.",
         )
         parser.add_argument(
-            "--include-external",
-            action="store_true",
-            help="Apply external effects (e.g. emails) instead of skipping them.",
-        )
-        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Resolve handlers and produce effects but do not apply them.",
@@ -62,7 +57,6 @@ class Command(BaseCommand):
             executor=executor,
             start_seq=options["start_seq"],
             end_seq=options["end_seq"],
-            include_external=options["include_external"],
             on_drift="raise" if options["strict_drift"] else "warn",
         )
 
@@ -72,14 +66,15 @@ class Command(BaseCommand):
                 f"[{mode}] stream={options['stream']!r} "
                 f"events={result.events_processed} "
                 f"effects={result.effects_applied} "
-                f"external_skipped={result.external_effects_skipped}"
+                f"external={len(result.external)}"
             )
         )
         if dry_run:
             for eff in executor.effects:
-                target = eff.model_label or eff.kind or ""
-                detail = eff.lookup if eff.op != "external" else eff.payload
-                self.stdout.write(f"  {eff.op} {target} {detail}")
+                kind = type(eff).__name__.lower()
+                self.stdout.write(f"  {kind} {eff.model_label} {eff.lookup}")
+        for ext in result.external:
+            self.stdout.write(f"  external {ext.kind} {ext.payload}")
         if result.warnings:
             for w in result.warnings:
                 self.stdout.write(self.style.WARNING(w))
