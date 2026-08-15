@@ -82,7 +82,6 @@ URLs (chat sample):
 |--------------|------------------------------------------------------|
 | Rooms list   | http://localhost:8000/                               |
 | Streams      | http://localhost:8000/streams/                       |
-| Translations | http://localhost:8000/streams/translations/ (login)  |
 | Admin        | http://localhost:8000/admin/                         |
 
 ## Production-style local run

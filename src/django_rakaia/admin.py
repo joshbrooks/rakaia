@@ -12,7 +12,7 @@ from django.contrib import admin
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import mark_safe
 
-from django_rakaia.models import Stream, StreamEntry, StreamEvent, Translatable
+from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 
 @admin.register(Stream)
@@ -225,74 +225,3 @@ def register_stream_event_admin(event_model_class):
         streams_list.short_description = "Streams"
 
     admin.site.register(event_model_class, StreamEventSubclassAdmin)
-
-
-@admin.register(Translatable)
-class TranslatableAdmin(admin.ModelAdmin):
-    """Admin interface for Translatable model."""
-
-    list_display = [
-        "msgid",
-        "msgstr_preview",
-        "langcode_badge",
-        "domain",
-        "msgctxt",
-        "deleted_status",
-    ]
-    list_filter = ["langcode", "domain", "deleted"]
-    search_fields = ["msgid", "msgstr", "msgctxt"]
-    ordering = ["msgid", "langcode"]
-    list_per_page = 50
-
-    fieldsets = (
-        (None, {"fields": ("msgid", "msgstr", "langcode")}),
-        (
-            "Advanced Options",
-            {"fields": ("domain", "msgctxt", "deleted"), "classes": ("collapse",)},
-        ),
-    )
-
-    def msgstr_preview(self, obj):
-        if not obj.msgstr:
-            return mark_safe(
-                '<span style="color: #999; font-style: italic;">Not translated</span>'
-            )
-
-        # Truncate long translations
-        if len(obj.msgstr) > 50:
-            return obj.msgstr[:47] + "..."
-        return obj.msgstr
-
-    msgstr_preview.short_description = "Translation"
-
-    def langcode_badge(self, obj):
-        colors = {
-            "en": "#007bff",  # Blue
-            "fr": "#28a745",  # Green
-            "es": "#fd7e14",  # Orange
-            "pt": "#6f42c1",  # Purple
-            "id": "#20c997",  # Teal
-            "tet": "#e83e8c",  # Pink
-        }
-        color = colors.get(obj.langcode, "#6c757d")
-        return format_html(
-            '<span style="background-color: {}; color: white; padding: 3px 8px; '
-            'border-radius: 3px; font-size: 11px; font-weight: bold;">{}</span>',
-            color,
-            obj.langcode.upper(),
-        )
-
-    langcode_badge.short_description = "Language"
-
-    def deleted_status(self, obj):
-        if obj.deleted:
-            return mark_safe(
-                '<span style="color: #dc3545; font-weight: bold;">Deleted</span>'
-            )
-        return mark_safe('<span style="color: #28a745;">Active</span>')
-
-    deleted_status.short_description = "Status"
-
-    def get_queryset(self, request):
-        # Optimize queries for better performance
-        return super().get_queryset(request).select_related()

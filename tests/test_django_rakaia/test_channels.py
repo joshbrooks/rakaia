@@ -81,52 +81,6 @@ class TestChannelLayerSignals:
 
         await channel_layer.group_discard(group_name, channel)
 
-    async def test_stream_event_with_translatable_sends_to_translations_group(self):
-        """Creating a StreamEvent with translatable_id sends to 'translations' group."""
-        channel_layer = get_channel_layer()
-        assert channel_layer is not None
-
-        channel = await channel_layer.new_channel()
-        await channel_layer.group_add("translations", channel)
-
-        await StreamEvent.objects.acreate(
-            event_type="create",
-            data={
-                "translatable_id": 42,
-                "msgid": "hello",
-                "msgstr": "ola",
-                "langcode": "tet",
-                "username": "testuser",
-                "url": "/admin/",
-            },
-        )
-
-        message = await asyncio.wait_for(channel_layer.receive(channel), timeout=2.0)
-        assert message["type"] == "translation.event"
-        assert message["stream"]["translatable"]["id"] == 42
-        assert message["stream"]["translatable"]["msgid"] == "hello"
-        assert message["stream"]["action"] == "create"
-
-        await channel_layer.group_discard("translations", channel)
-
-    async def test_stream_event_without_translatable_does_not_broadcast(self):
-        """Creating a StreamEvent without translatable_id sends nothing to translations."""
-        channel_layer = get_channel_layer()
-        assert channel_layer is not None
-
-        channel = await channel_layer.new_channel()
-        await channel_layer.group_add("translations", channel)
-
-        await StreamEvent.objects.acreate(
-            event_type="create",
-            data={"key": "value"},
-        )
-
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(channel_layer.receive(channel), timeout=0.5)
-
-        await channel_layer.group_discard("translations", channel)
-
     async def test_message_format_matches_sse_payload(self):
         """Verify the stream event message payload matches the expected SSE JSON structure."""
         channel_layer = get_channel_layer()
@@ -280,51 +234,6 @@ class TestChannelLayerSSEViews:
 
         assert chunks[0]["event"]["data"] == {"from": "mine"}
         assert "stream_id" not in chunks[0], "routing field must not leak to clients"
-
-    async def test_translation_sse_yields_translation_events(self):
-        """Translation SSE view yields events from 'translations' group."""
-        from django.test import RequestFactory
-
-        from django_rakaia.channels_views import translation_streams_sse
-
-        factory = RequestFactory()
-        request = factory.get("/api/translations/sse/")
-
-        response = await translation_streams_sse(request)
-
-        assert response["Content-Type"] == "text/event-stream"
-
-        channel_layer = get_channel_layer()
-        assert channel_layer is not None
-
-        async def push_translation():
-            await asyncio.sleep(0.2)
-            await channel_layer.group_send(
-                "translations",
-                {
-                    "type": "translation.event",
-                    "stream": {
-                        "id": 1,
-                        "user": "admin",
-                        "langcode": "tet",
-                        "url": "/admin/",
-                        "action": "create",
-                        "translatable": {
-                            "id": 42,
-                            "msgid": "hello",
-                            "msgstr": "ola",
-                            "langcode": "tet",
-                        },
-                        "created_at": "2026-01-01T00:00:00+00:00",
-                    },
-                },
-            )
-
-        push_task = asyncio.create_task(push_translation())
-        chunks = await _collect_payloads(response.streaming_content, count=1)
-        await push_task
-
-        assert chunks[0]["stream"]["translatable"]["msgid"] == "hello"
 
     async def test_sse_response_headers(self):
         """SSE response has correct content-type and cache headers."""

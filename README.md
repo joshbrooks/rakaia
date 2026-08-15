@@ -84,7 +84,7 @@ Pages live in [`docs/`](docs/) and the site config is in
 - [Versioned handlers](docs/versioned-handlers.md)
 - [Projections & fan-out](docs/projections-and-fan-out.md)
 - [Dry-run & executors](docs/dry-run-and-executors.md)
-- [Translations](docs/translations.md)
+- [Translations](docs/translations.md) (example)
 - [Deployment](docs/deployment.md)
 - [Protocol specification](docs/protocol.md) · [Backend storage](docs/streams-backend-storage.md)
 

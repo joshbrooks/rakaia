@@ -292,7 +292,6 @@ subscribe to those groups:
 | URL                                            | Purpose                              |
 |------------------------------------------------|--------------------------------------|
 | `/streams/api/streams/<stream_id>/sse/`        | Live events for one stream.          |
-| `/streams/api/translations/sse/`               | Live translation events (see [translations.md](translations.md)). |
 
 Consume them from JavaScript:
 

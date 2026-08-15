@@ -116,6 +116,64 @@ being rejected after `9` because `"10" < "9"` as text.
 
 ---
 
+## The `Translatable` model has left the library
+
+`django_rakaia` shipped a translations demo — a `Translatable` model and manager,
+an admin, an HTMX dashboard, JSON endpoints and a translations SSE feed. It was
+demo domain rather than library surface (its `langcode` choices were hard-coded
+to `tet`/`pt`/`id`), and because the model was declared in `0001_initial`,
+**every** consumer got a `django_rakaia_translatable` table whether they used it
+or not. It has moved to `examples/polyglot`, the only thing that ever used it.
+
+**Migration `0008` drops the table.** If you have rows in it, copy them out
+first:
+
+```bash
+python manage.py dumpdata django_rakaia.Translatable > translatable.json
+python manage.py migrate django_rakaia
+```
+
+Nothing else in rakaia referenced it, so if you never used it there is nothing
+to do — the table simply goes away.
+
+**If you were using it**, the model is small and self-contained; declare it in
+your own app rather than depending on the library for it:
+
+```python
+from django.db import models
+from django.utils import timezone
+
+
+class Translatable(models.Model):
+    msgid = models.CharField(max_length=2048)
+    msgstr = models.CharField(max_length=2048, null=True, blank=True)
+    domain = models.CharField(max_length=2048, null=True, blank=True)
+    msgctxt = models.CharField(max_length=2048, null=True, blank=True)
+    langcode = models.CharField(max_length=3, default="en")
+    deleted = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = [["msgid", "msgctxt", "langcode"]]
+        indexes = [models.Index(fields=["msgid", "msgctxt", "langcode"])]
+```
+
+The gettext-mirroring manager (`gettext`, `ngettext`, `pgettext`, `npgettext`)
+is in [`examples/polyglot/polyglot/models.py`](https://github.com/joshbrooks/rakaia/blob/main/examples/polyglot/polyglot/models.py)
+— copy it if you want it. Note polyglot's table is `polyglot_translatable`, a
+*different* table, so loading a dump into it needs the app label changed.
+
+**Also removed** with it: the `/streams/translations/` page, the
+`/streams/api/translations/…` endpoints (JSON, HTMX and SSE), the
+`TranslatableAdmin`, and the `post_save` receiver that broadcast events carrying
+a `translatable_id` to a `"translations"` channel group. The stream dashboard,
+the stream SSE endpoint and everything else under `/streams/` are unaffected.
+
+One incidental routing change: a stream literally named `translations` now
+resolves to the stream detail page, because `/streams/translations/` is no
+longer claimed by the dashboard.
+
+---
+
 ## Behaviour worth re-checking after upgrading
 
 These are not API breaks — nothing to edit — but each changes what your code
