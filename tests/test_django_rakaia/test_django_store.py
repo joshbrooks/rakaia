@@ -127,16 +127,22 @@ class TestDjangoStreamStore:
     def test_seq_conflict_raises(self):
         store = DjangoStreamStore()
         store.create("s")
-        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
         with pytest.raises(SequenceConflict):
-            store.append("s", b'{"id": 2}', AppendOptions(seq=5))
+            store.append("s", b'{"id": 2}', AppendOptions(seq="5"))
 
-    def test_seq_compares_numerically(self):
+    def test_seq_compares_lexicographically(self):
+        """Seq values are opaque strings compared byte-wise, so "10" after "9"
+        is a conflict. Padded, "10" follows "09"."""
         store = DjangoStreamStore()
         store.create("s")
-        store.append("s", b'{"id": 1}', AppendOptions(seq=9))
-        # 10 follows 9. Compared as text it would not.
-        result = store.append("s", b'{"id": 2}', AppendOptions(seq=10))
+        store.append("s", b'{"id": 1}', AppendOptions(seq="9"))
+        with pytest.raises(SequenceConflict):
+            store.append("s", b'{"id": 2}', AppendOptions(seq="10"))
+
+        store.create("padded")
+        store.append("padded", b'{"id": 1}', AppendOptions(seq="09"))
+        result = store.append("padded", b'{"id": 2}', AppendOptions(seq="10"))
         assert result.message is not None
 
     def test_get_current_offset(self):

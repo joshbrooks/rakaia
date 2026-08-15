@@ -240,15 +240,21 @@ class ServerStoreContract:
 
     def test_seq_conflict_raises(self, store):
         store.create("s")
-        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
         with pytest.raises(SequenceConflict):
-            store.append("s", b'{"id": 2}', AppendOptions(seq=5))
+            store.append("s", b'{"id": 2}', AppendOptions(seq="5"))
 
-    def test_seq_advances_numerically(self, store):
-        """10 follows 9. Compared as text it would not."""
+    def test_seq_advances_lexicographically(self, store):
+        """`Stream-Seq` is an opaque string compared byte-wise, so "10" after
+        "9" is a conflict and a writer that wants ordering pads its values."""
         store.create("s")
-        store.append("s", b'{"id": 1}', AppendOptions(seq=9))
-        result = store.append("s", b'{"id": 2}', AppendOptions(seq=10))
+        store.append("s", b'{"id": 1}', AppendOptions(seq="9"))
+        with pytest.raises(SequenceConflict):
+            store.append("s", b'{"id": 2}', AppendOptions(seq="10"))
+
+        store.create("padded")
+        store.append("padded", b'{"id": 1}', AppendOptions(seq="09"))
+        result = store.append("padded", b'{"id": 2}', AppendOptions(seq="10"))
         assert result.message is not None
 
     def test_append_with_close_closes_the_stream(self, store):
@@ -290,21 +296,21 @@ class ServerStoreContract:
 
     def test_append_many_validates_seq_per_item(self, store):
         store.create("s")
-        store.append("s", b'{"id": 1}', AppendOptions(seq=5))
+        store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
         with pytest.raises(SequenceConflict):
-            store.append_many("s", [(b'{"id": 2}', AppendOptions(seq=5))])
+            store.append_many("s", [(b'{"id": 2}', AppendOptions(seq="5"))])
 
     def test_append_many_advances_seq_like_a_loop_of_append(self, store):
         store.create("s")
         store.append_many(
             "s",
             [
-                (b'{"id": 1}', AppendOptions(seq=1)),
-                (b'{"id": 2}', AppendOptions(seq=2)),
+                (b'{"id": 1}', AppendOptions(seq="1")),
+                (b'{"id": 2}', AppendOptions(seq="2")),
             ],
         )
         with pytest.raises(SequenceConflict):
-            store.append("s", b'{"id": 3}', AppendOptions(seq=2))
+            store.append("s", b'{"id": 3}', AppendOptions(seq="2"))
 
     def test_append_many_close_item_refuses_the_rest(self, store):
         """A batch is a loop of `append`: an item with `close=True` closes the

@@ -216,10 +216,10 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 - `Transfer-Encoding: chunked` (optional)
   - Indicates a streaming body. Servers **SHOULD** support HTTP/1.1 chunked encoding and HTTP/2 streaming semantics.
 
-- `Stream-Seq: <integer>` (optional)
-  - A monotonic, numeric writer sequence number for coordination.
-  - `Stream-Seq` values are non-negative decimal integers that **MUST** compare numerically. Servers **MUST** reject a non-integer value with `400 Bad Request`. (An earlier revision of this document specified opaque strings under byte-wise lexicographic ordering; that ordering rejects `10` after `9`, so any writer reaching double digits started failing. Numeric comparison is the behaviour servers implement.) Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
-  - If provided and numerically less than or equal to the last appended sequence, the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
+- `Stream-Seq: <string>` (optional)
+  - A monotonic, lexicographic writer sequence number for coordination.
+  - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
+  - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
 
 - `Stream-Closed: true` (optional)
   - When present with value `true`, the stream is **closed** after the append completes. This is an atomic operation: the body (if any) is appended as the final data, and the stream transitions to the closed state in the same step.
@@ -274,7 +274,7 @@ Durable Streams supports Kafka-style idempotent producers for exactly-once write
 - **Per-batch sequence numbers**: Separate from `Stream-Seq`, used for retry safety
 - **Two-layer sequence design**:
   - Transport layer: `Producer-Id` + `Producer-Epoch` + `Producer-Seq` (retry safety)
-  - Application layer: `Stream-Seq` (cross-restart ordering, numeric)
+  - Application layer: `Stream-Seq` (cross-restart ordering, lexicographic)
 
 #### Request Headers
 
@@ -1004,7 +1004,7 @@ This document requests registration of the following HTTP headers in the "Perman
 
 - `Stream-TTL`: Relative time-to-live for streams (seconds)
 - `Stream-Expires-At`: Absolute expiry time for streams (RFC 3339 timestamp)
-- `Stream-Seq`: Writer sequence number for coordination (decimal integer)
+- `Stream-Seq`: Writer sequence number for coordination (opaque string)
 - `Stream-Cursor`: Cursor for CDN collapsing (opaque string)
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
