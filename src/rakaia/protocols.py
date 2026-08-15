@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
+from .types import Stream as StreamMetadata
 from .types import StreamMessage
 
 
@@ -176,8 +177,21 @@ class StreamServerStore(WritableStore, Protocol):
         """
         ...
 
-    def get(self, path: str) -> Any:
-        """The stream at `path`, or `None` if absent or expired."""
+    def get(self, path: str) -> StreamMetadata | None:
+        """The stream at `path`, or `None` if absent or expired.
+
+        Returns `rakaia.types.Stream` — **metadata only**, and the same type from
+        every backend. Not the backend's own row: a protocol server is async and
+        reads these fields outside the `run_sync` bridge, so anything lazy (an
+        ORM row issuing a query at attribute access) would fail there. Resolve
+        everything inside the sync call and hand it over inert.
+
+        Declared here rather than left as `Any` because it has already gone
+        wrong: `DjangoStreamStore.get` once returned its ORM row, and nothing —
+        not this protocol, not the conformance suite, which only checked
+        `hasattr` — noticed when it changed. A consumer holding the row broke.
+        `messages` is always empty; read the stream with `read()`.
+        """
         ...
 
     def touch(self, path: str) -> None:
