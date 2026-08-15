@@ -279,6 +279,16 @@ is not yet tagged in a release.
   rules themselves are now unit-testable as a table with no store, no database
   and no async.
 
+- **A broken demo now fails instead of printing ✗ and exiting 0.** Seven checks
+  across three examples computed a verdict, styled it red on failure, wrote it to
+  stdout — and returned success. `just demo` reported a clean run on a library
+  that had stopped upholding the guarantee the demo exists to show. Every check
+  now raises `CommandError`, so "it ran" and "it was right" are the same
+  outcome. A new `just demos` runs all eleven demos, and CI runs it: `examples/`
+  was outside `testpaths` *and* outside `ruff check src/ tests/`, so nothing
+  there was executed or linted by CI at all — which is how it drifted far enough
+  to need a repair pass. `ruff` now covers `examples/` too.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong

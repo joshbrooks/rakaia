@@ -26,7 +26,7 @@ import json
 from typing import Any
 
 from django.core.management import call_command
-from django.core.management.base import BaseCommand, CommandParser
+from django.core.management.base import BaseCommand, CommandError, CommandParser
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.store import get_store
@@ -176,6 +176,10 @@ class Command(BaseCommand):
                     f"{'idempotent ✓' if ok else 'NOT idempotent ✗'}"
                 )
             )
+            if not ok:
+                raise CommandError(
+                    f"replay is not idempotent: {before} -> {after} visit rows"
+                )
 
     def _demo_reconcile(self, store: Any) -> None:
         # Append a correction: IR-108 resubmitted with ONE activity (it had
@@ -212,6 +216,10 @@ class Command(BaseCommand):
                 f"-> {count} row(s) — {'no orphan ✓' if ok else 'ORPHAN ✗'}"
             )
         )
+        if not ok:
+            raise CommandError(
+                f"reconcile left an orphan: expected 1 activity row, got {count}"
+            )
 
     def _demo_history(self, store: Any) -> None:
         """Materialise a streams-native `/history` and check it is equivalent to
@@ -277,6 +285,12 @@ class Command(BaseCommand):
                 f"{'✓' if ok else '✗'}"
             )
         )
+        if not ok:
+            raise CommandError(
+                "history read-model diverged: "
+                f"snapshots={snapshots_faithful} markers={markers_ok} "
+                f"actors={actors_ok} correction={correction_ok}"
+            )
         for r in ir108:
             self.stdout.write(
                 f"    {r.submission_id[:8]}…  v{r.version}  {r.marker}  by {r.actor}"
@@ -293,12 +307,16 @@ class Command(BaseCommand):
                 + ("identical ✓" if ok else "DIVERGED ✗")
             )
         )
-        if not ok:  # pragma: no cover - defensive; should not happen
+        if not ok:
             for key in ("visits", "activities"):
                 r, ref = replay_snap[key], reference_snap[key]
                 for a, b in zip(r, ref, strict=True):
                     if a != b:
                         self.stdout.write(self.style.ERROR(f"  {key}: {a} != {b}"))
+            raise CommandError(
+                "replay does not reproduce direct to_model() — the whole claim "
+                "of this example"
+            )
 
     def _report_value_add(self, replay_snap: dict, naive_snap: dict) -> None:
         drifted = [

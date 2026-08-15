@@ -118,6 +118,10 @@ class Command(BaseCommand):
                     f"{'idempotent ✓' if ok else 'NOT idempotent ✗'}"
                 )
             )
+            if not ok:
+                raise CommandError(
+                    f"replay is not idempotent: {before} -> {after} rows"
+                )
 
     def _print_result(self, result: Any) -> None:
         self.stdout.write(

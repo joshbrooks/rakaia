@@ -78,6 +78,41 @@ demo:
     @echo "    just polyglot-dev  # polyglot  -> http://localhost:8001"
     @echo "==========================================================="
 
+# Run EVERY demo and fail on the first one that breaks.
+#
+# `just demo` is the narrated two-part tour for a human reader. This is the
+# regression gate: all eleven demos, no narration budget, non-zero exit on the
+# first failure. CI runs it, which is what makes the examples a tested surface
+# rather than a directory of prose that happened to compile.
+#
+# Each demo asserts its own claims and raises CommandError when one does not
+# hold, so "it ran" and "it was right" are the same outcome.
+demos:
+    @echo ">> protocol layer (no Django)"
+    @just protocol-demo
+    @echo ">> effect primitives (no Django)"
+    @just multi-owner-demo
+    @echo ">> orders — versioned handlers, upcasters, replay"
+    @just orders-demo
+    @echo ">> formkit — projections, fan-out, migration parity"
+    @just formkit-demo
+    @echo ">> formkit stream — append log as source of truth"
+    @just formkit-stream-demo
+    @echo ">> projection cookbook — staged replay + verification"
+    @just cookbook-demo
+    @echo ">> partisipa history — pghistory retirement"
+    @just partisipa-history-demo
+    @echo ">> partisipa staged — late-arriving cross-form links"
+    @just partisipa-demo
+    @echo ">> partisipa close — guarded transition"
+    @just partisipa-close-demo
+    @echo ">> partisipa merge — multi-stream deterministic replay"
+    @just partisipa-merge-demo
+    @echo ">> partisipa repeaters — tree reconcile, no orphans"
+    @just partisipa-tree-demo
+    @echo ""
+    @echo "All demos passed."
+
 # ---------------------------------------------------------------------------
 # Redis (podman)
 # ---------------------------------------------------------------------------

@@ -4,28 +4,46 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='OrderSummary',
+            name="OrderSummary",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('order_id', models.CharField(max_length=64, unique=True)),
-                ('status', models.CharField(default='', max_length=32)),
-                ('currency', models.CharField(default='USD', max_length=8)),
-                ('subtotal', models.DecimalField(decimal_places=2, default=0, max_digits=12)),
-                ('tax_rate', models.DecimalField(decimal_places=4, default=0, max_digits=5)),
-                ('tax', models.DecimalField(decimal_places=2, default=0, max_digits=12)),
-                ('total', models.DecimalField(decimal_places=2, default=0, max_digits=12)),
-                ('loyalty_points', models.IntegerField(default=0)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("order_id", models.CharField(max_length=64, unique=True)),
+                ("status", models.CharField(default="", max_length=32)),
+                ("currency", models.CharField(default="USD", max_length=8)),
+                (
+                    "subtotal",
+                    models.DecimalField(decimal_places=2, default=0, max_digits=12),
+                ),
+                (
+                    "tax_rate",
+                    models.DecimalField(decimal_places=4, default=0, max_digits=5),
+                ),
+                (
+                    "tax",
+                    models.DecimalField(decimal_places=2, default=0, max_digits=12),
+                ),
+                (
+                    "total",
+                    models.DecimalField(decimal_places=2, default=0, max_digits=12),
+                ),
+                ("loyalty_points", models.IntegerField(default=0)),
             ],
             options={
-                'ordering': ['order_id'],
+                "ordering": ["order_id"],
             },
         ),
     ]

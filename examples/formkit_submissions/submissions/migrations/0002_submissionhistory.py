@@ -4,27 +4,34 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('submissions', '0001_initial'),
+        ("submissions", "0001_initial"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='SubmissionHistory',
+            name="SubmissionHistory",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('submission_id', models.CharField(max_length=64)),
-                ('version', models.IntegerField()),
-                ('marker', models.CharField(default='~', max_length=1)),
-                ('actor', models.CharField(blank=True, max_length=64, null=True)),
-                ('label', models.CharField(default='', max_length=32)),
-                ('ts', models.FloatField(default=0.0)),
-                ('snapshot', models.JSONField(default=dict)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("submission_id", models.CharField(max_length=64)),
+                ("version", models.IntegerField()),
+                ("marker", models.CharField(default="~", max_length=1)),
+                ("actor", models.CharField(blank=True, max_length=64, null=True)),
+                ("label", models.CharField(default="", max_length=32)),
+                ("ts", models.FloatField(default=0.0)),
+                ("snapshot", models.JSONField(default=dict)),
             ],
             options={
-                'ordering': ['submission_id', 'version'],
-                'unique_together': {('submission_id', 'version')},
+                "ordering": ["submission_id", "version"],
+                "unique_together": {("submission_id", "version")},
             },
         ),
     ]

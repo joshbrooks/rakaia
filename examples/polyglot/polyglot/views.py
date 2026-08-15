@@ -80,4 +80,6 @@ def update_translation(request: HttpRequest, pk: int) -> HttpResponse:
         obj.save()  # post_save → SSE update event
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return HttpResponse(status=204)
-    return redirect(reverse("polyglot:landing") + f"?lang={obj.langcode if obj else DEFAULT_LANG}")
+    return redirect(
+        reverse("polyglot:landing") + f"?lang={obj.langcode if obj else DEFAULT_LANG}"
+    )

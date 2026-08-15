@@ -116,7 +116,10 @@ def readiness_reasons(suku: str, refs: Any) -> list[str]:
     projects = list(refs.filter(PROJECT, suku=suku))
     if not projects or any(p.percent < 100 for p in projects):
         reasons.append("incomplete_projects")
-    if refs.filter(MEETING, suku=suku, verified=True).count() < REQUIRED_VERIFIED_MEETINGS:
+    if (
+        refs.filter(MEETING, suku=suku, verified=True).count()
+        < REQUIRED_VERIFIED_MEETINGS
+    ):
         reasons.append("insufficient_meetings")
     balance = refs.get(BALANCE, suku=suku)
     if balance is None or balance.operational < 0:
@@ -128,9 +131,11 @@ def readiness_reasons(suku: str, refs: Any) -> list[str]:
 
 def readiness_rollup(refs: Any) -> list[Effect]:
     """One Readiness row per suku seen in any stream — the SQL-stitch analogue."""
-    sukus = {p.suku for p in refs.query(PROJECT)} | {
-        m.suku for m in refs.query(MEETING)
-    } | {line.suku for line in refs.query(FINANCE_LINE)}
+    sukus = (
+        {p.suku for p in refs.query(PROJECT)}
+        | {m.suku for m in refs.query(MEETING)}
+        | {line.suku for line in refs.query(FINANCE_LINE)}
+    )
     effects: list[Effect] = []
     for suku in sorted(sukus):
         reasons = readiness_reasons(suku, refs)
