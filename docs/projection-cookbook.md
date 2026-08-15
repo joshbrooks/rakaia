@@ -120,13 +120,41 @@ ex = CollectingExecutor()
 replay(store, "cookbook", ex, reader=DjangoProjectionReader())
 
 report = diff_effects_against_rows(ex.effects)   # UUID/Decimal normalised by default
-assert report.ok, report                         # or: report.raise_if_diff()
+assert report.certified, report                  # or: report.raise_if_diff()
 ```
 
-`diff_effects_against_rows` returns a `DiffReport` (`.ok` / `.problems` /
-`.raise_if_diff()`); its default normalizers handle the two representation
-mismatches that produce false diffs — a `UUID` column read back vs a string in
-the effect, and a JSON float vs the column's rounded `Decimal`.
+`diff_effects_against_rows` returns a `DiffReport` (`.verdict` / `.certified` /
+`.compared` / `.problems` / `.raise_if_diff()`); its default normalizers handle
+the two representation mismatches that produce false diffs — a `UUID` column read
+back vs a string in the effect, and a JSON float vs the column's rounded
+`Decimal`.
+
+### Don't accept a vacuous green
+
+Note `assert report.certified` above, not `assert report.ok`. `.ok` answers "did
+anything disagree?", which is vacuously true when **nothing was compared** — and
+the ways a sweep silently compares zero rows are all ordinary: a store on the
+wrong backend, a replay over a stream path that was renamed, an `event_match`
+filter that stopped matching, a handler registry that failed to autodiscover.
+Each yields an empty effect list, and `.ok` reports a clean bill of health with
+nothing behind it.
+
+`.verdict` separates the three outcomes that matter:
+
+| Verdict | Meaning |
+|---|---|
+| `GREEN` | Rows were compared and all of them matched — real evidence. |
+| `RED` | Something was compared and disagreed. |
+| `VACUOUS` | Nothing was compared. This run certifies nothing. |
+
+Failures are checked **before** vacuity: if anything disagreed then something was
+evidently compared, so a real failure is never hidden behind "empty".
+
+`.raise_if_diff()` raises `VerificationError` on `RED` and `VacuousVerification`
+on `VACUOUS`. If an empty population is genuinely expected, say so explicitly at
+the call site with `raise_if_diff(allow_empty=True)` — which still raises on a
+real failure. `.ok` keeps its original meaning, so existing callers are
+unaffected; `.certified` is the stricter property a migration proof wants.
 
 ### Verifying a large sweep in bulk
 
