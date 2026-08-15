@@ -453,9 +453,13 @@ class HandlerRegistry:
         # standalone bytes blob (one JSON object per message). We avoid
         # application/json mode because it appends a trailing comma and
         # treats the whole stream as a flattened JSON array.
+        #
+        # `create()` unguarded: creation is idempotent by contract, and a
+        # redundant create cannot truncate a populated stream or rewind its
+        # offsets (`tests/store_contract.py`). The `has()` it replaces was a
+        # second round trip buying nothing.
         assert self._store is not None
-        if not self._store.has(self._stream_path):
-            self._store.create(self._stream_path)
+        self._store.create(self._stream_path)
 
     def _load_persisted_ids(self) -> None:
         assert self._store is not None
@@ -500,8 +504,7 @@ class HandlerRegistry:
 
     def _ensure_reducer_stream(self) -> None:
         assert self._store is not None
-        if not self._store.has(self._reducer_stream_path):
-            self._store.create(self._reducer_stream_path)
+        self._store.create(self._reducer_stream_path)
 
     def _load_reducer_ids(self) -> None:
         assert self._store is not None
@@ -801,8 +804,7 @@ class UpcasterRegistry:
 
     def _ensure_stream(self) -> None:
         assert self._store is not None
-        if not self._store.has(self._stream_path):
-            self._store.create(self._stream_path)
+        self._store.create(self._stream_path)
 
     def _load_persisted_ids(self) -> None:
         assert self._store is not None

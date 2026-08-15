@@ -60,6 +60,29 @@ is not yet tagged in a release.
   `except KeyError` code and tests are unaffected. A new failure type without a
   status now fails the suite rather than 500ing at runtime.
 
+- **`append_event` and `fold_events` — the two rituals every consumer retypes.**
+  Appending an enveloped event (JSON-encode with `DjangoJSONEncoder`,
+  create-the-stream-if-missing, wrap label/actor/`event_ts` in `AppendOptions`)
+  and folding a batch live (seed a scratch in-memory `StreamStore`, replay it
+  through a registry with a reader bound) were hand-written at nearly every
+  durable call site — ~37 and 11 copies respectively in the first production
+  consumer, whose own module carried the warning that motivates this: *"a second
+  write path which re-implements the envelope is a path no gate covers."* Both
+  now ship from `django_rakaia.envelope`, pinned byte-for-byte against the
+  longhand they replace — with one deliberate departure: `append_event` omits
+  `metadata["user"]` when no actor is passed, rather than writing `None`.
+  `merge_provenance` layers ambient under explicit, so the copies in the wild
+  clobber the actor `ProvenanceMiddleware` stamped on the request whenever a
+  call site doesn't repeat it, and `envelope_actor` then falls back to the
+  payload's owner FK. Upstreamed as its ADR-0020 anticipated.
+
+  The store contract also gained the property that makes the create-if-missing
+  shorthand safe: a redundant `create()` on a populated stream preserves its
+  messages and does not rewind its offsets. Both stores already satisfied it;
+  nothing had said so, and `test_create_is_idempotent` would have passed a
+  `create()` that truncated. With it pinned, the `has()`/`create()` dance is
+  provably redundant — `registry.py`'s three copies are now a single `create()`.
+
 - **`PreloadedProjectionReader` — bulk-fetch a verification sweep.**
   `diff_effects_against_rows` does one `reader.get` per effect (one round-trip
   each), which is thousands of round-trips on a full reconcile. Pass the same
