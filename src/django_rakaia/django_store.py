@@ -129,6 +129,64 @@ def decode_payload(data: Any, payload_encoding: str | None) -> bytes:
     return json.dumps(data).encode("utf-8")
 
 
+def write_enveloped_event(
+    streams: Iterable[Stream],
+    data: Any,
+    *,
+    label: str = "",
+    metadata: Any = None,
+    event_ts: float | None = None,
+    payload_encoding: str | None = None,
+) -> tuple[StreamEvent, list[StreamEntry]]:
+    """Write one enveloped event into `streams`. The **only** writer of one.
+
+    Returns the `StreamEvent` and its `StreamEntry` rows, in `streams` order.
+
+    Every rule that turns an envelope into columns is resolved here, once:
+
+    * **the label** becomes `event_type`, with a labelless event recorded under
+      the stable `"append"` sentinel that `_read_since` inverts. `event_type` is
+      required metadata for the dashboard, so there is no "no type" to write;
+    * **the metadata** is merged with the ambient `provenance()` block —
+      explicit over ambient — and stored as `{}` rather than NULL when there is
+      none;
+    * **`event_ts`** is passed through, NULL included. NULL means "no logical
+      time was set", and readers surface the append time instead. The caller
+      decides whether to set one: a raw protocol append has none unless the
+      producer supplied it, while `@stream_model` always stamps one;
+    * **the offsets** come from `Stream.get_next_offset`, which locks the
+      per-path high-water — so this must run inside a transaction.
+
+    **Fan-out is `streams`, plural.** One event appearing in several streams is
+    one `StreamEvent` with one envelope and N `StreamEntry` rows, each with its
+    own offset in its own stream — not N events that happen to look alike. The
+    protocol store only ever passes one stream; `@stream_model` passes as many
+    as its `stream_paths` resolved to.
+
+    This exists because there were two of it. `DjangoStreamStore._write` and
+    `create_stream_event` each had a copy, and the copies disagreed about the
+    sentinel and about which offset helper to call — the drift
+    `django_rakaia.envelope`'s module docstring warns about, in the module it
+    warns about it in (#131).
+    """
+    event = StreamEvent.objects.create(
+        data=data,
+        event_type=label or _APPEND_EVENT_TYPE,
+        metadata=merge_provenance(metadata) or {},
+        event_ts=event_ts,
+        payload_encoding=payload_encoding,
+    )
+    entries = [
+        StreamEntry.objects.create(
+            stream=stream,
+            event=event,
+            offset=stream.get_next_offset(),
+        )
+        for stream in streams
+    ]
+    return event, entries
+
+
 # Long-poll poll interval. The in-memory store wakes waiters with an
 # asyncio.Event, which only works in-process; a durable stream can be appended
 # to by another process entirely, so this store polls instead. 50ms keeps
@@ -514,28 +572,27 @@ class DjangoStreamStore:
         One message per stored payload — more than one only for a JSON-mode
         array append (see `_payloads_for`). The envelope on `opts` is copied
         onto each, as the in-memory store does when it flattens.
+
+        The rows themselves are written by `write_enveloped_event`, shared with
+        `@stream_model`; what stays here is turning the written rows back into
+        protocol messages.
         """
         payloads = self._payloads_for(stream, data, is_initial_create=is_initial_create)
         if not payloads:
             return []
 
         label = getattr(opts, "label", "") or ""
-        metadata = merge_provenance(getattr(opts, "metadata", None))
         event_ts = getattr(opts, "event_ts", None)
 
         messages: list[StreamMessage] = []
         for value, encoding in payloads:
-            event = StreamEvent.objects.create(
-                data=value,
-                event_type=label or _APPEND_EVENT_TYPE,
-                metadata=metadata or {},
+            event, (entry,) = write_enveloped_event(
+                [stream],
+                value,
+                label=label,
+                metadata=getattr(opts, "metadata", None),
                 event_ts=event_ts,
                 payload_encoding=encoding,
-            )
-            entry = StreamEntry.objects.create(
-                stream=stream,
-                event=event,
-                offset=stream.get_next_offset(),
             )
             messages.append(
                 StreamMessage(
@@ -548,7 +605,7 @@ class DjangoStreamStore:
                         else entry.created_at.timestamp()
                     ),
                     label=label,
-                    metadata=metadata or None,
+                    metadata=event.metadata or None,
                 )
             )
         return messages

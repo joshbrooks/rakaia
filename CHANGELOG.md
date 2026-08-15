@@ -292,6 +292,29 @@ protocol is covered by both stores.
 
 ### Changed
 
+- **One writer for the enveloped event** (#131). "Write an event into the Django
+  models" was implemented twice — once in `DjangoStreamStore._write`, once in
+  `create_stream_event`, the `@stream_model` decorator's door — and the two
+  copies had drifted. The store records a labelless append under a stable
+  `"append"` sentinel that its reader inverts back to "no label"; the decorator
+  wrote the label through raw, so an event from that door could never be
+  recognised as labelless. Each also called its own offset helper and resolved
+  `metadata` its own way. `django_rakaia.envelope`'s module docstring already
+  warned that a second copy of the envelope "produces events that replay
+  differently from every other event in the same stream, and no test anywhere is
+  looking at the difference" — this was that copy.
+
+  Both doors now write through `write_enveloped_event`, which owns the sentinel,
+  the ambient-`provenance()` merge, `{}` rather than NULL metadata, `event_ts`
+  passthrough, and locking offset allocation. It takes a *list* of streams, so
+  `@stream_model`'s fan-out is still one event with one envelope shared by N
+  entries. `tests/test_django_rakaia/test_envelope_writer.py` drives both doors
+  with the same envelope and compares the rows.
+
+  Behaviour is unchanged except that a `@stream_model` event with an empty
+  action string is now stored as `"append"` rather than `""` — the same shape
+  the store has always written, and the same thing both read back as.
+
 - **One producer response table instead of three.** The five-arm `isinstance`
   ladder over `ProducerValidationResult` — duplicate → 204, stale epoch → 403,
   bad epoch opening → 400, sequence gap → 409, closed stream → 409, each with

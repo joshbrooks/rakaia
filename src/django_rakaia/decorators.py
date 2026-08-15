@@ -16,8 +16,8 @@ from django.db import models, transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from django_rakaia.models import Stream, StreamEntry, StreamEvent
-from rakaia.context import merge_provenance
+from django_rakaia.django_store import write_enveloped_event
+from django_rakaia.models import Stream, StreamEvent
 
 StreamPathResolver = (
     str
@@ -33,15 +33,6 @@ def _get_or_create_stream(stream_id: str) -> Stream:
     """Get or create a Stream record."""
     stream, _ = Stream.objects.get_or_create(stream_id=stream_id)
     return stream
-
-
-def _get_next_offset(stream: Stream) -> int:
-    """Locking offset allocation — see ``Stream.get_next_offset``.
-
-    Thin wrapper kept for backwards compatibility; the canonical, row-locking
-    implementation now lives on the model so every write path shares it.
-    """
-    return stream.get_next_offset()
 
 
 def create_stream_event(
@@ -118,45 +109,32 @@ def create_stream_event(
         json.dumps(dataclasses.asdict(dc_instance), cls=DjangoJSONEncoder)
     )
 
-    # The envelope, resolved exactly as the stores resolve it. `@stream_model`
-    # used to write `StreamEvent` rows with neither field, so `metadata` was
-    # always `{}` and `event_ts` always NULL on the busiest append path in the
-    # integration:
+    # `event_ts` is the deterministic merge key (ADR 0002 item 5), and this door
+    # always stamps one: leaving it NULL would force `merge_replay` onto
+    # transport time, which is the ordering trap that item closed. A raw
+    # protocol append is the other case — no logical time unless the producer
+    # set one — which is why the shared writer takes it as an argument rather
+    # than deciding it.
     #
-    #   * `ProvenanceMiddleware` exists to stamp actor + URL onto envelopes, and
-    #     could not reach the appends it was built for. `history.envelope_actor`
-    #     then fell back to the payload's owner FK — turning "who saved this"
-    #     into "who owns this", a different question with often a different
-    #     answer.
-    #   * `event_ts` is the deterministic merge key (ADR 0002 item 5). Leaving it
-    #     NULL forces `merge_replay` onto transport time, which is the ordering
-    #     trap that item closed.
-    #
-    # `merge_provenance(None)` returns None when no block is active, so an append
-    # outside `provenance()` still records `{}` — this is additive.
-    metadata = merge_provenance(None) or {}
+    # Everything else about the envelope — the `"append"` sentinel, merging the
+    # ambient `provenance()` block into `metadata`, `{}` rather than NULL,
+    # locking offset allocation — is `write_enveloped_event`'s to decide, shared
+    # with `DjangoStreamStore.append`. `@stream_model` used to have its own copy
+    # of those rules and the copies had drifted (#131).
     event_ts = time.time()
 
-    # Create event and entries atomically
+    # Atomic because `get_next_offset` locks the per-path high-water for the
+    # duration of the transaction. A savepoint when the caller already has one
+    # open, so the event stays inside the save that produced it.
     with transaction.atomic():
-        # Create the event (data stored once) — one envelope shared by every
-        # entry, since a fan-out is one event appearing in several streams.
-        event = StreamEvent.objects.create(
-            data=payload,
-            event_type=action,
-            metadata=metadata,
+        # One envelope shared by every entry: a fan-out is one event appearing
+        # in several streams, not several events that look alike.
+        event, _entries = write_enveloped_event(
+            [_get_or_create_stream(stream_id) for stream_id in stream_ids],
+            payload,
+            label=action,
             event_ts=event_ts,
         )
-
-        # Create an entry for each stream
-        for stream_id in stream_ids:
-            stream = _get_or_create_stream(stream_id)
-            next_offset = _get_next_offset(stream)
-            StreamEntry.objects.create(
-                stream=stream,
-                event=event,
-                offset=next_offset,
-            )
 
     return event
 
