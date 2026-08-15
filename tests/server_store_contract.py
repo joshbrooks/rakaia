@@ -407,6 +407,104 @@ class ServerStoreContract:
         assert isinstance(accepted.producer_result, ProducerAccepted)
 
     # =========================================================================
+    # Producer options on the plain `append` path
+    # =========================================================================
+    #
+    # A protocol server routes fenced writes to `append_with_producer`, so every
+    # case above goes through that door. Nothing said what the *other* door does
+    # with the same options — and the two stores answered differently:
+    # `StreamStore.append` validated the producer inline and recognised the
+    # idempotent close-duplicate, while `DjangoStreamStore.append` ignored
+    # `options.producer_id` entirely, all while its docstring claimed "outcomes,
+    # all now matching the in-memory store".
+    #
+    # `WritableStore.append` is public and takes an `AppendOptions` with those
+    # fields on it, so a consumer calling it directly got adapter-dependent
+    # behaviour. These cases make the two doors agree.
+
+    async def test_append_honours_producer_fencing(self, store):
+        """The same options through `append` reach the same verdict."""
+        await self._sync(store.create, "s")
+        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
+
+        stale = await self._sync(
+            store.append, "s", b'{"id": 2}', self._producer("p", 0, 0)
+        )
+        assert isinstance(stale.producer_result, ProducerDuplicate)
+        assert stale.message is None
+
+        messages, _ = await self._sync(store.read, "s")
+        assert len(messages) == 1, "a duplicate must not write a second time"
+
+    async def test_append_refuses_a_stale_epoch(self, store):
+        await self._sync(store.create, "s")
+        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 5, 0))
+        result = await self._sync(
+            store.append, "s", b'{"id": 2}', self._producer("p", 4, 0)
+        )
+        assert isinstance(result.producer_result, ProducerStaleEpoch)
+        assert result.message is None
+
+    async def test_append_refuses_a_sequence_gap(self, store):
+        await self._sync(store.create, "s")
+        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
+        result = await self._sync(
+            store.append, "s", b'{"id": 2}', self._producer("p", 0, 5)
+        )
+        assert isinstance(result.producer_result, ProducerSequenceGap)
+        assert result.producer_result.expected_seq == 1
+
+    async def test_append_accepts_a_well_formed_producer_write(self, store):
+        await self._sync(store.create, "s")
+        result = await self._sync(
+            store.append, "s", b'{"id": 1}', self._producer("p", 0, 0)
+        )
+        assert isinstance(result.producer_result, ProducerAccepted)
+        assert result.message is not None
+
+    async def test_append_shares_producer_state_with_append_with_producer(self, store):
+        """One producer, one sequence — whichever door each write came through."""
+        await self._sync(store.create, "s")
+        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
+        result = await store.append_with_producer(
+            "s", b'{"id": 2}', self._producer("p", 0, 1)
+        )
+        assert isinstance(result.producer_result, ProducerAccepted)
+
+    async def test_append_to_a_closed_stream_reports_the_duplicate_close(self, store):
+        """Re-sending the append that closed the stream is idempotent, not a
+        bare refusal — the producer needs to tell "my close landed" apart from
+        "someone else closed this"."""
+        await self._sync(store.create, "s")
+        opts = AppendOptions(
+            producer_id="p", producer_epoch=0, producer_seq=0, close=True
+        )
+        await self._sync(store.append, "s", b'{"id": 1}', opts)
+
+        again = await self._sync(store.append, "s", b'{"id": 1}', opts)
+        assert again.stream_closed is True
+        assert isinstance(again.producer_result, ProducerDuplicate)
+
+    async def test_append_to_a_closed_stream_by_another_producer_is_refused(
+        self, store
+    ):
+        await self._sync(store.create, "s")
+        await self._sync(
+            store.append,
+            "s",
+            b'{"id": 1}',
+            AppendOptions(
+                producer_id="p", producer_epoch=0, producer_seq=0, close=True
+            ),
+        )
+        other = await self._sync(
+            store.append, "s", b'{"id": 2}', self._producer("other", 0, 0)
+        )
+        assert other.stream_closed is True
+        assert other.producer_result is None
+        assert other.message is None
+
+    # =========================================================================
     # Long-poll
     # =========================================================================
 

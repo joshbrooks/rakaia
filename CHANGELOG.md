@@ -241,6 +241,26 @@ is not yet tagged in a release.
   a signal that its own write strategy bypasses. Restoring the signal by saving
   rows one at a time would have undone the reason `append_many` exists.
 
+- **`append` now honours producer options on both stores.** `StreamStore.append`
+  validated producer epoch/seq inline and recognised the idempotent
+  close-duplicate; `DjangoStreamStore.append` ignored `options.producer_id`
+  entirely — while its docstring claimed "outcomes, all now matching the
+  in-memory store". Nothing caught it because every producer test routed through
+  `append_with_producer`, but `WritableStore.append` is public and its
+  `AppendOptions` carries those fields, so a consumer calling it directly got
+  adapter-dependent behaviour.
+
+  The whole admission sequence — closed → content-type → producer fencing →
+  Stream-Seq — now lives in one pure module, `rakaia.append_decision`, which both
+  stores ask. The ordering is the subtle part and was previously encoded only as
+  the order of if-statements in two separate methods: fencing runs **before**
+  Stream-Seq, because a retried append carries the same `Stream-Seq` it did the
+  first time, so checking Stream-Seq first would raise `SequenceConflict` on
+  exactly the retry that fencing exists to absorb. Seven new cases in
+  `tests/server_store_contract.py` hold both stores to the same verdicts, and the
+  rules themselves are now unit-testable as a table with no store, no database
+  and no async.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong

@@ -45,6 +45,7 @@ from asgiref.sync import sync_to_async
 from django.db import transaction
 from django.db.models import Max
 
+from rakaia.append_decision import StreamFacts, decide_append
 from rakaia.context import merge_provenance
 from rakaia.json_mode import (
     format_json_response,
@@ -414,7 +415,11 @@ class DjangoStreamStore:
         concurrent appends serialize on offset allocation instead of racing to
         the same value and failing `unique_together(stream, offset)`.
 
-        Outcomes, all now matching the in-memory store:
+        Admission (closed / content-type / producer fencing / Stream-Seq) is
+        decided by `rakaia.append_decision`, shared with the in-memory store, so
+        the two cannot reach different verdicts on the same options.
+
+        Outcomes, all matching the in-memory store:
 
         - Raises `StreamNotFound` if the stream is absent or expired.
         - Returns `AppendResult(stream_closed=True, message=None)` if closed.
@@ -428,13 +433,35 @@ class DjangoStreamStore:
         with transaction.atomic():
             stream = self._require(path, for_update=True)
 
-            if stream.closed:
-                return AppendResult(message=None, stream_closed=True)
-
-            self._check_content_type(stream, opts)
-            self._check_seq(stream, opts)
+            # Admission is decided in `rakaia.append_decision`, shared with the
+            # in-memory store. This path used to inline its own shorter sequence
+            # and ignore `opts.producer_id` entirely, so the same options
+            # reached different verdicts on the two stores while this method's
+            # docstring claimed they matched.
+            verdict = decide_append(
+                StreamFacts(
+                    closed=stream.closed,
+                    closed_by=stream.closed_by,
+                    content_type=stream.content_type,
+                    last_seq=stream.last_seq,
+                ),
+                opts,
+                producer_state=self._producer_state(
+                    stream, getattr(opts, "producer_id", None)
+                ),
+                now=time.time(),
+            )
+            if not verdict.write:
+                return AppendResult(
+                    message=None,
+                    stream_closed=verdict.stream_closed,
+                    producer_result=verdict.producer_result,
+                )
 
             messages = self._write(stream, data, opts)
+
+            if verdict.producer_result is not None:
+                self._commit_producer(stream, verdict.producer_result)
 
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
@@ -447,7 +474,9 @@ class DjangoStreamStore:
             # carries the last, whose offset is the stream's new head — which
             # is what a caller resumes from.
             return AppendResult(
-                message=messages[-1] if messages else None, stream_closed=close
+                message=messages[-1] if messages else None,
+                stream_closed=close,
+                producer_result=verdict.producer_result,
             )
 
     # =========================================================================
@@ -595,6 +624,26 @@ class DjangoStreamStore:
             )
         )
         return validate_producer(state, producer_id, epoch, seq, time.time())
+
+    @staticmethod
+    def _producer_state(
+        stream: Stream, producer_id: str | None
+    ) -> ProducerState | None:
+        """The last known state for `producer_id`, or None.
+
+        The one fact `decide_append` cannot work out for itself, since only the
+        store knows where producer state lives — here, a `StreamProducer` row.
+        """
+        if producer_id is None:
+            return None
+        row = StreamProducer.objects.filter(
+            stream=stream, producer_id=producer_id
+        ).first()
+        if row is None:
+            return None
+        return ProducerState(
+            epoch=row.epoch, last_seq=row.last_seq, last_updated=row.last_updated
+        )
 
     @staticmethod
     def _commit_producer(stream: Stream, result: ProducerValidationResult) -> None:
