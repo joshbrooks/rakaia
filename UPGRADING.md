@@ -21,6 +21,63 @@ Everything in this file so far. `0.1.0` was the initial groundwork and `0.2.0`
 is the first release describing the library, so a consumer moving off a pinned
 revision is crossing all of the below at once.
 
+## Start here if you installed `rakaia-streams==0.1.0` from PyPI
+
+The sections below are keyed to the revisions their changes landed in, which is
+what a SHA-pinned consumer needs — but the **published** `0.1.0` is not the
+oldest of those revisions, so part of the work below is already behind you.
+
+`v0.1.0` is `f676302`, which is `5e4a6e3` plus exactly two commits: `5d576b6`
+(the issue #80 Django fixes) and the packaging commit itself. So from published
+`0.1.0`:
+
+| Change | From published `0.1.0` |
+|---|---|
+| The distribution rename to `rakaia-streams` | **Already done** — `f676302` *is* that commit, so you installed under the new name. |
+| Migration `0006` | **Already applied** — it shipped in `0.1.0`. |
+| `DjangoStreamStore.get()` returns metadata, not the ORM row | **Still to cross.** This is your one code change. |
+| Migrations `0007` and `0008` | **New.** Apply both; `0008` drops a table. |
+
+### The one break that matters, and why testing may not show it
+
+`store.get()` no longer returns the `django_rakaia.models.Stream` ORM row, so
+anything that hands the result to the ORM breaks:
+
+```python
+stream = store.get(path)
+entries = StreamEntry.objects.filter(stream=stream)   # <-- TypeError
+```
+
+```
+TypeError: Field 'id' expected a number but got Stream(path='history/tf',
+  content_type=None, messages=[], current_offset='00000000000000014678', ...)
+```
+
+The fix is one line, and it is one query instead of two:
+
+```diff
+-entries = StreamEntry.objects.filter(stream=store.get(path))
++entries = StreamEntry.objects.filter(stream__stream_id=path)
+```
+
+**Test this against a database that already has streams in it.** In the first
+production consumer every one of these calls sat behind an `if store.has(path):`
+guard, so on an empty database the branch is never taken, the upgrade looks
+clean, and the failure only appears on the *second* run once the stream exists.
+A consumer who validates the upgrade on a fresh database will conclude it is
+clean and ship the break. Grep for `store.get(` and check what each result is
+passed to.
+
+### `0007` walks every `Stream` row
+
+`0007` carries a data migration seeding `last_activity_at` from `created_at`,
+one row at a time. On a fresh install that costs nothing — a consumer whose
+production database had never installed `django_rakaia` measured the entire
+`migrate`, `0001` through `0008`, at **8 seconds** against empty tables. On a
+database that already holds streams the cost is proportional to how many: that
+same deployment reached **95,635 events across 31 streams** once seeded. If your
+log is already large, plan a window.
+
 ## Upgrading past `5e4a6e3` (`append_many`, 2026-08-08)
 
 Three changes need action. Nothing else in this range requires a code change.

@@ -46,6 +46,35 @@ another alias. A ``DjangoStreamStore`` on ``default`` would itself trip the
 guard, which is correct: a truly hermetic rebuild reads its log from somewhere
 other than the database it is proving it can reconstruct.
 
+That is the whole obstacle in practice, and it is six lines to clear. Drain the
+durable log into memory *first*, with the guard down, then arm it around the
+replay alone::
+
+    durable = get_store()                       # DjangoStreamStore on "default"
+    mem = StreamStore()
+    mem.create(path)
+    messages, _has_more = durable.read(path)
+    for m in messages:
+        # m.data is already the encoded bytes — re-encoding double-wraps it.
+        mem.append(path, m.data,
+                   AppendOptions(label=m.label, metadata=m.metadata,
+                                 event_ts=m.event_ts))
+
+    with deny_database_access("default"):
+        replay(mem, path, DjangoExecutor(using="rebuild"),
+               reader=DjangoProjectionReader(using="rebuild"), ...)
+
+Worth stating because the first production consumer left this guard unwired for
+months, having recorded "a blanket deny on ``default`` trips on the store's own
+reads" as the blocker. It is not a blocker; it is the drain above.
+
+**A pass only means something if you have watched the guard fail.** Nothing here
+distinguishes "no handler read the database" from "the guard was never armed",
+so pair the run with a deliberate ambient read and check that it raises::
+
+    with deny_database_access("default"):
+        SomeModel.objects.filter(pk=1).exists()   # must raise AmbientDatabaseAccess
+
 See ADR 0003 (``docs/adr/0003-handler-hermeticity.md``).
 """
 
