@@ -633,8 +633,14 @@ class HandlerRegistry(_LogBackedRegistry):
         self._reducers.clear()
         self._reset_logs()
 
-    def reducers_for_stage(self, stage: int) -> list[ReducerVersion]:
-        """Reducers registered for `stage`, in deterministic (name) order."""
+    def reducers_for_stage(self, stage: int | None) -> list[ReducerVersion]:
+        """Reducers registered for `stage`, in deterministic (name) order.
+
+        `stage=None` is the single, non-staged pass, and it is a defined input
+        rather than an accident: a reducer always registers against a numbered
+        stage, so a non-staged pass has no reducers and this returns an empty
+        list. Callers on that path (``replay._run_stage_reducers``) rely on it.
+        """
         return sorted(
             (r for r in self._reducers.values() if r.stage == stage),
             key=lambda r: r.name,

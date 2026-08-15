@@ -457,6 +457,10 @@ class StreamStore:
                     producer_result=verdict.producer_result,
                 )
             producer_result = verdict.producer_result
+            # `decide_append` leaves `producer_result` unset only when no
+            # producer tuple was supplied. This method's producer parameters
+            # are required, so fencing always ran and a verdict always exists.
+            assert producer_result is not None
 
             # Commit and close
             self._commit_producer_state(stream, producer_result)

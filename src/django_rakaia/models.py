@@ -5,6 +5,8 @@ Provides a normalized model structure with Stream, StreamEvent, and StreamEntry
 for efficient querying and real-time updates via Unix sockets.
 """
 
+from typing import TYPE_CHECKING
+
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from django.db.models import Max
@@ -12,6 +14,14 @@ from django.db.models import Max
 from rakaia.types import ClosedBy
 
 from .offsets import format_offset
+
+if TYPE_CHECKING:
+    # `RelatedManager` and the implicit `id` column are synthesised by Django at
+    # class-construction time, so no static checker can see them on its own —
+    # django-types ships the stub but leaves the per-model declaration to us.
+    # These blocks are type-checker-only: nothing here runs, so Django still
+    # builds the real reverse accessors and the real AutoField primary key.
+    from django.db.models.manager import RelatedManager
 
 
 class Stream(models.Model):
@@ -34,6 +44,11 @@ class Stream(models.Model):
     on either store. Streams created purely for event-sourcing leave them at
     their defaults and behave exactly as before.
     """
+
+    if TYPE_CHECKING:
+        id: int
+        entries: RelatedManager["StreamEntry"]
+        producers: RelatedManager["StreamProducer"]
 
     stream_id = models.CharField(max_length=255, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -224,6 +239,10 @@ class StreamEvent(models.Model):
         created_at: When the event was created
     """
 
+    if TYPE_CHECKING:
+        id: int
+        entries: RelatedManager["StreamEntry"]
+
     data = models.JSONField(encoder=DjangoJSONEncoder)  # type: ignore[assignment]
     """The event payload. Encoded with ``DjangoJSONEncoder`` so the types Django
     models actually hold — ``UUID``, ``datetime``/``date``, ``Decimal`` — are
@@ -296,6 +315,9 @@ class StreamEntry(models.Model):
         offset: Monotonically increasing offset within the stream
         created_at: When the entry was created
     """
+
+    if TYPE_CHECKING:
+        id: int
 
     stream = models.ForeignKey(
         Stream,

@@ -37,10 +37,11 @@ jobs:
       - name: Format check with ruff
         run: uv run ruff format --check src/ tests/ examples/
 
-      - name: Type check with pyright (informational)
-        # Pre-existing Django ORM dynamism complaints; tracked separately.
-        # Migrate to django-stubs and flip this back to a hard failure.
-        continue-on-error: true
+      - name: Type check with pyright
+        # A hard gate since #143. Django's synthesised attributes (reverse
+        # accessors, implicit `id`, `annotate()` aliases) are declared on the
+        # models and at the query sites rather than waved through, so a new
+        # type error here is a real one. Keep it failing.
         run: uv run pyright src/
 
       - name: Run tests

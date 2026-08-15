@@ -52,8 +52,8 @@ See ADR 0003 (``docs/adr/0003-handler-hermeticity.md``).
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
-from typing import TYPE_CHECKING
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.db.models import Model
@@ -110,7 +110,16 @@ def deny_database_access(*aliases: str) -> Iterator[None]:
 
     with ExitStack() as stack:
         for alias in aliases:
-            stack.enter_context(connections[alias].execute_wrapper(_blocker(alias)))
+            # `execute_wrapper` is a `@contextmanager` at runtime, but the
+            # django-types stub annotates the *undecorated* generator, so it
+            # advertises `Iterator[None]`. Say what the call actually returns
+            # rather than suppress the mismatch.
+            stack.enter_context(
+                cast(
+                    AbstractContextManager[None],
+                    connections[alias].execute_wrapper(_blocker(alias)),
+                )
+            )
         yield
 
 

@@ -25,16 +25,14 @@ class StreamAdmin(admin.ModelAdmin):
     ordering = ["-created_at"]
     list_per_page = 50
 
+    @admin.display(description="Events")
     def event_count(self, obj):
         return obj.entries.count()
 
-    event_count.short_description = "Events"
-
+    @admin.display(description="Last Offset")
     def last_entry_offset(self, obj):
         last = obj.entries.order_by("-offset").first()
         return last.offset if last else None
-
-    last_entry_offset.short_description = "Last Offset"
 
 
 @admin.register(StreamEvent)
@@ -54,6 +52,7 @@ class StreamEventAdmin(admin.ModelAdmin):
     ordering = ["-created_at"]
     list_per_page = 50
 
+    @admin.display(description="Type")
     def event_type_badge(self, obj):
         colors = {
             "create": "#28a745",
@@ -68,8 +67,7 @@ class StreamEventAdmin(admin.ModelAdmin):
             obj.event_type.upper(),
         )
 
-    event_type_badge.short_description = "Type"
-
+    @admin.display(description="Data")
     def data_preview(self, obj: StreamEvent) -> str:
         try:
             # Explicitly type the JSONField data
@@ -81,13 +79,11 @@ class StreamEventAdmin(admin.ModelAdmin):
         except (TypeError, ValueError):
             return str(obj.data)  # type: ignore[call-overload]
 
-    data_preview.short_description = "Data"
-
+    @admin.display(description="Streams")
     def stream_count(self, obj):
         return obj.entries.count()
 
-    stream_count.short_description = "Streams"
-
+    @admin.display(description="Streams")
     def streams_list(self, obj):
         streams = obj.get_streams()
         if not streams:
@@ -95,8 +91,6 @@ class StreamEventAdmin(admin.ModelAdmin):
         return format_html_join(
             mark_safe("<br>"), "<code>{}</code>", ((s,) for s in streams)
         )
-
-    streams_list.short_description = "Streams"
 
 
 @admin.register(StreamEntry)
@@ -117,18 +111,17 @@ class StreamEntryAdmin(admin.ModelAdmin):
     list_per_page = 50
     date_hierarchy = "created_at"
 
+    @admin.display(description="Stream")
     def stream_link(self, obj):
         url = f"/admin/django_rakaia/stream/{obj.stream.id}/change/"
         return format_html('<a href="{}">{}</a>', url, obj.stream.stream_id)
 
-    stream_link.short_description = "Stream"
-
+    @admin.display(description="Event")
     def event_link(self, obj):
         url = f"/admin/django_rakaia/streamevent/{obj.event.id}/change/"
         return format_html('<a href="{}">Event #{}</a>', url, obj.event.id)
 
-    event_link.short_description = "Event"
-
+    @admin.display(description="Type")
     def event_type_badge(self, obj):
         colors = {
             "create": "#28a745",
@@ -142,8 +135,6 @@ class StreamEntryAdmin(admin.ModelAdmin):
             color,
             obj.event.event_type.upper(),
         )
-
-    event_type_badge.short_description = "Type"
 
 
 def register_stream_event_admin(event_model_class):
@@ -182,6 +173,7 @@ def register_stream_event_admin(event_model_class):
         ordering = ["-created_at"]
         list_per_page = 50
 
+        @admin.display(description="Type")
         def event_type_badge(self, obj):
             colors = {
                 "create": "#28a745",
@@ -196,8 +188,7 @@ def register_stream_event_admin(event_model_class):
                 obj.event_type.upper(),
             )
 
-        event_type_badge.short_description = "Type"
-
+        @admin.display(description="Data")
         def data_preview(self, obj):
             try:
                 data_str = json.dumps(obj.data, indent=2)
@@ -207,13 +198,11 @@ def register_stream_event_admin(event_model_class):
             except (TypeError, ValueError):
                 return str(obj.data)
 
-        data_preview.short_description = "Data"
-
+        @admin.display(description="Streams")
         def stream_count(self, obj):
             return obj.entries.count()
 
-        stream_count.short_description = "Streams"
-
+        @admin.display(description="Streams")
         def streams_list(self, obj):
             streams = obj.get_streams()
             if not streams:
@@ -221,7 +210,5 @@ def register_stream_event_admin(event_model_class):
             return format_html_join(
                 mark_safe("<br>"), "<code>{}</code>", ((s,) for s in streams)
             )
-
-        streams_list.short_description = "Streams"
 
     admin.site.register(event_model_class, StreamEventSubclassAdmin)
