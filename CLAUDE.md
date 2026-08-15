@@ -13,6 +13,22 @@
   then `uv run zensical build`. Without `--extra docs` that step fails with
   `Failed to spawn: zensical`.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `joshbrooks/rakaia`, via the `gh` CLI. Issue and PR
+titles and bodies must be short and jargon-free — two paragraphs at most, with any
+technical detail appended as a comment instead. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical five-label vocabulary, unmapped. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. Domain language lives in `docs/glossary.md` (not `CONTEXT.md`); decisions in `docs/adr/`. See `docs/agents/domain.md`.
+
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
