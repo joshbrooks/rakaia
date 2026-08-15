@@ -20,9 +20,14 @@ from django.core.management.base import BaseCommand, CommandError
 from cookbook.models import Project, Task
 from cookbook.seed import SAMPLE_EVENTS
 from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.hermeticity import assert_no_live_writes
 from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.store import get_store
-from django_rakaia.verification import diff_effects_against_rows
+from django_rakaia.verification import (
+    VACUOUS,
+    VacuousVerification,
+    diff_effects_against_rows,
+)
 from rakaia import CollectingExecutor
 from rakaia.replay import replay
 
@@ -66,6 +71,8 @@ class Command(BaseCommand):
         # 3. Checks.
         self._check_out_of_order_link()
         self._check_replay_reproduces_rows(store)
+        self._check_a_sweep_that_compared_nothing_is_refused(store)
+        self._check_the_rebuild_does_not_touch_live(store)
         self._check_idempotent(store)
 
         self.stdout.write(self.style.SUCCESS("\nAll checks passed."))
@@ -95,12 +102,78 @@ class Command(BaseCommand):
         ex = CollectingExecutor()
         replay(store, STREAM, ex, reader=DjangoProjectionReader())
         report = diff_effects_against_rows(ex.effects)
-        if not report.ok:
+        # `certified`, not `ok`: `ok` asks "did anything disagree?", which is
+        # vacuously true when nothing was compared. `raise_if_diff()` refuses an
+        # empty population outright — see the next check.
+        if not report.certified:
             raise CommandError(f"Replay does not reproduce current rows:\n{report}")
         self.stdout.write(
             self.style.SUCCESS(
                 f"[2] verification: replay reproduces all "
-                f"{len(report.rows)} projected rows ✓"
+                f"{report.compared} projected rows — verdict {report.verdict} ✓"
+            )
+        )
+
+    def _check_a_sweep_that_compared_nothing_is_refused(self, store: Any) -> None:
+        """A verification that examined no rows must not report success.
+
+        The failure this guards against is not a wrong answer, it is a confident
+        one with nothing behind it. Every way a sweep silently compares zero rows
+        is mundane — a store on the wrong backend, a replay over a renamed
+        stream, a filter that stopped matching, a registry that failed to load —
+        and each one used to print a clean bill of health.
+
+        Here we cause it deliberately the way a rename does: replay a stream
+        that exists but holds no events. Nothing errors, nothing is compared,
+        and the sweep has no evidence either way.
+        """
+        renamed = f"{STREAM}-renamed"
+        store.create(renamed)
+
+        ex = CollectingExecutor()
+        replay(store, renamed, ex, reader=DjangoProjectionReader())
+        report = diff_effects_against_rows(ex.effects)
+
+        if report.ok:
+            # True, and worthless: `ok` is vacuous on an empty population. This
+            # is exactly the shape a false green takes.
+            pass
+        if report.certified or report.verdict != VACUOUS:
+            raise CommandError(
+                f"An empty sweep certified itself: verdict={report.verdict}"
+            )
+        try:
+            report.raise_if_diff()
+        except VacuousVerification:
+            pass
+        else:
+            raise CommandError("raise_if_diff() accepted a population of zero")
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                "[3] vacuous green: a sweep that compared 0 rows reports "
+                f"{report.verdict.upper()} and refuses to certify ✓"
+            )
+        )
+
+    def _check_the_rebuild_does_not_touch_live(self, store: Any) -> None:
+        """Prove the read-only verification really is read-only.
+
+        `assert_no_live_writes` is the write half of the rebuild gate: it
+        compares row counts across the block and raises if anything moved. Here
+        it certifies that the diff sweep above — which runs a full replay —
+        wrote nothing, which is the claim `CollectingExecutor` makes and which
+        nothing otherwise checks.
+        """
+        with assert_no_live_writes(Project, Task):
+            ex = CollectingExecutor()
+            replay(store, STREAM, ex, reader=DjangoProjectionReader())
+            diff_effects_against_rows(ex.effects)
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                "[4] rebuild isolation: a dry-run replay left every live row "
+                "untouched ✓"
             )
         )
 
@@ -116,7 +189,7 @@ class Command(BaseCommand):
         if before != after or Project.objects.count() != 2 or Task.objects.count() != 3:
             raise CommandError("Second replay changed the projection — not idempotent.")
         self.stdout.write(
-            self.style.SUCCESS("[3] idempotent: a second replay is a no-op ✓")
+            self.style.SUCCESS("[5] idempotent: a second replay is a no-op ✓")
         )
 
     # ----------------------------------------------------------------- display
