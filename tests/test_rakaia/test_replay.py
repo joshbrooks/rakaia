@@ -7,6 +7,7 @@ import json
 import pytest
 
 from rakaia.effects import ApplyReport, Effect
+from rakaia.executors import InMemoryProjections
 from rakaia.registry import (
     HandlerDriftError,
     HandlerGapError,
@@ -559,67 +560,6 @@ class TestMatchFieldRouting:
 # Staged replay (stage= handlers + a projection reader)
 # ---------------------------------------------------------------------------
 
-from types import SimpleNamespace  # noqa: E402
-
-
-class DictProjections:
-    """In-memory materialiser: an Executor that applies update_or_create/delete
-    effects, and a ProjectionReader over the same rows. Enough to exercise
-    staged replay without Django — stage 1 reads what stage 0 committed."""
-
-    def __init__(self) -> None:
-        self.rows: dict[str, list[dict]] = {}
-
-    # -- Executor side --
-    def apply(self, effects) -> None:
-        for e in effects:
-            table = self.rows.setdefault(e.model_label, [])
-            if e.op == "update_or_create":
-                row = self._find(table, e.lookup)
-                if row is None:
-                    row = dict(e.lookup)
-                    table.append(row)
-                row.update(e.defaults or {})
-            elif e.op == "delete":
-                self.rows[e.model_label] = [
-                    r
-                    for r in table
-                    if not (
-                        self._match(r, e.lookup or {})
-                        and not self._excluded(r, e.exclude or {})
-                    )
-                ]
-
-    @staticmethod
-    def _find(table, lookup):
-        return next((r for r in table if DictProjections._match(r, lookup)), None)
-
-    @staticmethod
-    def _match(row, lookup):
-        return all(row.get(k) == v for k, v in lookup.items())
-
-    @staticmethod
-    def _excluded(row, exclude):
-        for key, val in exclude.items():
-            if key.endswith("__in") and row.get(key[:-4]) in val:
-                return True
-        return False
-
-    # -- ProjectionReader side --
-    def get(self, model_label, **lookup):
-        row = self._find(self.rows.get(model_label, []), lookup)
-        return SimpleNamespace(**row) if row is not None else None
-
-    def filter(self, model_label, **lookup):
-        return [
-            SimpleNamespace(**r)
-            for r in self.rows.get(model_label, [])
-            if self._match(r, lookup)
-        ]
-
-    def query(self, model_label):
-        return [SimpleNamespace(**r) for r in self.rows.get(model_label, [])]
-
 
 def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see call)
     return Effect(
@@ -681,7 +621,7 @@ class TestStagedReplay:
     def test_late_reference_still_links(self, store: StreamStore):
         seed_stream("s", _STAGED_EVENTS, store=store)
         reg = _staged_registry()
-        proj = DictProjections()
+        proj = InMemoryProjections()
         result = replay(
             store,
             "s",
@@ -703,7 +643,7 @@ class TestStagedReplay:
             replay(
                 store,
                 "s",
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=reg,
                 upcaster_registry=UpcasterRegistry(),
             )  # no reader=
@@ -712,7 +652,7 @@ class TestStagedReplay:
         # Only the SF exists: its project is unresolved.
         seed_stream("s", [_STAGED_EVENTS[0]], store=store)
         reg = _staged_registry()
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -725,7 +665,7 @@ class TestStagedReplay:
 
         # The TF finally arrives; re-replaying links it — no backfill.
         store.append("s", json.dumps(_STAGED_EVENTS[1]).encode("utf-8"))
-        proj2 = DictProjections()
+        proj2 = InMemoryProjections()
         replay(
             store,
             "s",
@@ -749,7 +689,7 @@ class TestStagedReplay:
             match_field="form_type",
             stage=0,
         )
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store, "s", proj, handler_registry=reg, upcaster_registry=UpcasterRegistry()
         )  # no reader needed
@@ -818,7 +758,7 @@ def _finance_registry(reducer=_balance_reducer):
 class TestReducers:
     def test_reducer_recomputes_aggregate(self, store: StreamStore):
         seed_stream("s", _FINANCE_EVENTS, store=store)
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -838,7 +778,7 @@ class TestReducers:
             calls.append(1)
             return []
 
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -855,7 +795,7 @@ class TestReducers:
             replay(
                 store,
                 "s",
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=_finance_registry(),
                 upcaster_registry=UpcasterRegistry(),
             )  # no reader=
@@ -863,7 +803,7 @@ class TestReducers:
     def test_reducer_recompute_is_replay_safe(self, store: StreamStore):
         seed_stream("s", _FINANCE_EVENTS, store=store)
         reg = _finance_registry()
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -886,7 +826,7 @@ class TestReducers:
     def test_reducer_sees_only_committed_stage0_rows(self, store: StreamStore):
         # A reducer at stage 1 reads FinanceLine rows all built in stage 0.
         seed_stream("s", _FINANCE_EVENTS, store=store)
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -915,7 +855,7 @@ class TestReducerTouchedSubjects:
     def test_two_arg_reducer_receives_touched_subjects(self, store: StreamStore):
         seed_stream("s", _FINANCE_EVENTS, store=store)  # keys f1, f2, f3
         sink: list = []
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -937,7 +877,7 @@ class TestReducerTouchedSubjects:
     def test_one_arg_reducer_is_called_unchanged(self, store: StreamStore):
         # A legacy fn(reader) reducer keeps working — no touched arg is forced.
         seed_stream("s", _FINANCE_EVENTS, store=store)
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -953,7 +893,7 @@ class TestReducerTouchedSubjects:
         # reducer scopes to what the pass changed, no code change at the reducer.
         seed_stream("s", _FINANCE_EVENTS, store=store)
         sink: list = []
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -979,7 +919,7 @@ class TestReducerTouchedSubjects:
         )
         reg.register_reducer("a_writes", 1, _balance_reducer)
         reg.register_reducer("b_captures", 1, _capturing_reducer(sink))
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -1012,7 +952,7 @@ class TestReducerTouchedSubjects:
         ]
         seed_stream("s", events, store=store)
         sink: list = []
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(
             store,
             "s",
@@ -1056,7 +996,7 @@ class TestReducerTouchedSubjects:
             store=store,
         )
         sink: list = []
-        proj = DictProjections()
+        proj = InMemoryProjections()
         merge_replay(
             store,
             ["fin/a", "fin/b"],
@@ -1114,7 +1054,7 @@ class TestMergeReplay:
 
     def test_tie_resolved_by_stream_path(self, store: StreamStore):
         self._seed_two(store)
-        proj = DictProjections()
+        proj = InMemoryProjections()
         merge_replay(
             store,
             ["forms/a", "forms/b"],
@@ -1128,7 +1068,7 @@ class TestMergeReplay:
 
     def test_deterministic_regardless_of_path_order(self, store: StreamStore):
         self._seed_two(store)
-        proj = DictProjections()
+        proj = InMemoryProjections()
         merge_replay(
             store,
             ["forms/b", "forms/a"],
@@ -1140,7 +1080,7 @@ class TestMergeReplay:
 
     def test_parity_with_single_combined_stream(self, store: StreamStore):
         self._seed_two(store)
-        merged = DictProjections()
+        merged = InMemoryProjections()
         merge_replay(
             store,
             ["forms/a", "forms/b"],
@@ -1150,7 +1090,7 @@ class TestMergeReplay:
         )
 
         seed_stream("combined", _CANONICAL, store=store)
-        single = DictProjections()
+        single = InMemoryProjections()
         replay(
             store,
             "combined",
@@ -1175,7 +1115,7 @@ class TestMergeReplay:
             merge_replay(
                 store,
                 ["forms/a"],
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=_touch_registry(),
                 upcaster_registry=UpcasterRegistry(),
             )
@@ -1186,7 +1126,7 @@ class TestMergeReplay:
             merge_replay(
                 store,
                 ["forms/a", "forms/a"],  # same stream twice
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=_touch_registry(),
                 upcaster_registry=UpcasterRegistry(),
             )
@@ -1224,7 +1164,7 @@ class TestMergeReplay:
             merge_replay(
                 store,
                 ["forms/a", "forms/b"],
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=_touch_registry(),
                 upcaster_registry=UpcasterRegistry(),
             )
@@ -1239,7 +1179,7 @@ class TestMergeReplay:
             merge_replay(
                 store,
                 ["forms/a"],
-                DictProjections(),
+                InMemoryProjections(),
                 handler_registry=reg,
                 upcaster_registry=UpcasterRegistry(),
             )
@@ -1281,7 +1221,7 @@ class TestMergeReplay:
             ],
             store=store,
         )
-        proj = DictProjections()
+        proj = InMemoryProjections()
         merge_replay(
             store,
             ["fin/a", "fin/b"],
@@ -1311,7 +1251,7 @@ class TestMergeReplay:
         seed_stream("forms/a", [_touch("a0", 100.0), _touch("a1", 400.0)], store=store)
         seed_stream("forms/b", [_touch("b0", 200.0), _touch("b1", 300.0)], store=store)
 
-        proj = DictProjections()
+        proj = InMemoryProjections()
         merge_replay(
             store,
             ["forms/a", "forms/b"],
@@ -1341,7 +1281,7 @@ class TestMergeReplay:
             merge_replay(
                 _HandBuilt(),
                 ["forms/a"],
-                DictProjections(),
+                InMemoryProjections(),
                 order_key=ENVELOPE_TS,
                 handler_registry=_touch_registry(),
                 upcaster_registry=UpcasterRegistry(),

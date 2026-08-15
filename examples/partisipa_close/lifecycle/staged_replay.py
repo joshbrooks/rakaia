@@ -6,8 +6,9 @@ the staged idea in two ways this workflow needs:
 
 * a stage may have **reduce steps** (`fn(refs) -> [Effect]`) that run once against
   the prior stages' projections — used for the ``Balance`` aggregate; and
-* later stages read earlier ones through the read-only ``Refs`` accessor, so the
-  ``CycleClose`` guard is a pure function of the log.
+* later stages read earlier ones through rakaia's read-only
+  ``DjangoProjectionReader``, so the ``CycleClose`` guard is a pure function of
+  the log.
 
 Determinism holds because every stage's inputs are committed projections, which
 are themselves pure functions of the stream.
@@ -18,23 +19,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from django.apps import apps
-
 from django_rakaia import DjangoExecutor
+from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia import upcast
-
-
-class Refs:
-    """Read-only view over projections materialized by earlier stages."""
-
-    def get(self, model_label: str, **lookup: Any) -> Any:
-        return apps.get_model(model_label).objects.filter(**lookup).first()
-
-    def filter(self, model_label: str, **lookup: Any) -> Any:
-        return apps.get_model(model_label).objects.filter(**lookup)
-
-    def query(self, model_label: str) -> Any:
-        return apps.get_model(model_label).objects.all()
 
 
 def _events(store: Any, stream_path: str) -> list[dict[str, Any]]:
@@ -58,7 +45,7 @@ def staged_replay(
     executor = DjangoExecutor()
     for stage in sorted(stages):
         spec = stages[stage]
-        refs = Refs()
+        refs = DjangoProjectionReader()
         for event in events:
             for form_type, fn in spec.get("events", []):
                 if event.get("form_type") == form_type:

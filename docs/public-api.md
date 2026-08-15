@@ -114,7 +114,7 @@ Note the distribution is `rakaia-streams`; the import names are `rakaia` and
 
 ## Contracts inside Tier 1
 
-Being in `__all__` is not the whole promise. Three behavioural contracts are
+Being in `__all__` is not the whole promise. Four behavioural contracts are
 documented where they are declared, and are worth naming here because breaking
 them is easy and the failure is quiet:
 
@@ -127,6 +127,13 @@ them is easy and the failure is quiet:
   [the glossary](glossary.md).
 - **`store.get()` returns metadata**, not your backend's row. It is a
   `rakaia.types.Stream` from every store.
+- **Every executor and reader answers alike.** `InMemoryProjections` and
+  `DjangoExecutor` converge to the same rows from the same batch, and
+  `DjangoProjectionReader`, `PreloadedProjectionReader` and `InMemoryProjections`
+  answer the same lookup the same way — including `model_label` being
+  positional-only. Enforced by `tests/executor_contract.py` and
+  `tests/projection_reader_contract.py`, the executor and reader twins of the
+  store conformance suite.
 
 ## What is *not* a promise
 

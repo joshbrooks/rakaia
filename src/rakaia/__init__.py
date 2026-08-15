@@ -31,7 +31,7 @@ from .effects import (
     UnresolvedRefError,
     check_disjoint_defaults,
 )
-from .executors import CollectingExecutor
+from .executors import CollectingExecutor, InMemoryProjections
 from .handler import ServerOptions, create_app
 from .history import (
     envelope_actor,
@@ -196,6 +196,7 @@ __all__ = [
     "UnresolvedRefError",
     "check_disjoint_defaults",
     "CollectingExecutor",
+    "InMemoryProjections",
     # Versioned handlers — projections
     "reconcile_by_key",
     "reconcile_children",

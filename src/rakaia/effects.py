@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 EffectOp = Literal["update_or_create", "update", "delete", "external", "retire"]
 
@@ -326,6 +326,7 @@ class ApplyReport:
     )
 
 
+@runtime_checkable
 class Executor(Protocol):
     """
     Applies a batch of effects to durable storage.
@@ -333,6 +334,11 @@ class Executor(Protocol):
     Concrete implementations live outside rakaia core (e.g. DjangoExecutor
     in django_rakaia). The replay orchestrator filters external effects
     before calling apply().
+
+    ``runtime_checkable`` so ``isinstance(x, Executor)`` works — every protocol
+    in ``protocols.py`` carries it, and the shared conformance suite
+    (``tests/executor_contract.py``) opens with that assertion. It checks method
+    *presence* only, which is why the suite goes on to pin behaviour.
     """
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport | None: ...

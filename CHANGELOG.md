@@ -14,6 +14,33 @@ is not yet tagged in a release.
 
 ### Added
 
+- **`rakaia.InMemoryProjections`, and shared contracts for the executor and reader
+  seams.** Rakaia had four ways to apply effects and four ways to read
+  projections back, and — unlike the store seam, which has two adapters and two
+  shared conformance suites — nothing checked that any of them agreed. Rebuild
+  verification rests entirely on `DjangoProjectionReader` and
+  `PreloadedProjectionReader` giving identical answers, and a disagreement there
+  would not have failed; it would have reported a clean rebuild that was not.
+
+  Two suites close that: `tests/executor_contract.py` pins the batch semantics a
+  handler author relies on (three ordered passes — every write, then every
+  delete, then every retire, so convergence never depends on emission order; one
+  `RefResolver` per `apply()`; `check_disjoint_defaults` before the first write;
+  `retire_flips` only for retires that opted in), and
+  `tests/projection_reader_contract.py` pins the reader surface, **including
+  `model_label` being positional-only** — a signature divergence `isinstance`
+  cannot see. `Executor` is now `@runtime_checkable`, matching every protocol in
+  `protocols.py`.
+
+  `InMemoryProjections` is the one in-memory implementation both halves are bound
+  to: an `Executor` *and* a `ProjectionReader` over dict-backed tables, with all
+  five ops, real `Ref` resolution against synthetic primary keys, and
+  `__in`/`__isnull` matching. It replaces two half-implementations — a
+  reader-only one in the replay tests and a writer-only one in
+  `examples/multi_owner` — and the three example `Refs` classes are now
+  `DjangoProjectionReader`, which they were strictly weaker copies of (no
+  `using=` alias, so none of them could take part in rebuild verification).
+
 - **`rakaia.seed_stream` — putting events into a stream is one call.** Getting a
   handful of events into a stream took four lines (create, loop, `json.dumps`,
   `.encode()`) and rakaia never shipped a way to do it, so the test suite carried
