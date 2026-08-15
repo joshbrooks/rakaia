@@ -5,7 +5,7 @@ Autodiscovered by django_rakaia on app ready(): importing this module runs the
 UpcasterRegistry.
 """
 
-from rakaia.registry import register_upcaster
+from rakaia import register_upcaster
 
 
 def _rename_qty(item: dict) -> dict:

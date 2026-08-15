@@ -24,8 +24,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from django_rakaia.effect_executor import DjangoExecutor
-from rakaia.effects import Effect
+from django_rakaia import DjangoExecutor
+from rakaia import Effect
 
 NODE = "repeaters.Node"
 TOTAL = "repeaters.Total"

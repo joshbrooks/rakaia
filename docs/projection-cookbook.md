@@ -95,9 +95,9 @@ Point `replay()` at the stream with a real executor and reader. It requires
 is a single pass and no reader is needed (backward compatible).
 
 ```python
-from rakaia.replay import replay
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.projection_reader import DjangoProjectionReader
+from rakaia import replay
+from django_rakaia import DjangoExecutor
+from django_rakaia import DjangoProjectionReader
 
 replay(store, "cookbook", DjangoExecutor(), reader=DjangoProjectionReader())
 ```
@@ -114,7 +114,7 @@ each write effect's `defaults` against the live rows.
 
 ```python
 from rakaia import CollectingExecutor
-from django_rakaia.verification import diff_effects_against_rows
+from django_rakaia import diff_effects_against_rows
 
 ex = CollectingExecutor()
 replay(store, "cookbook", ex, reader=DjangoProjectionReader())
@@ -166,7 +166,7 @@ bulk-fetches every lookup up front, one query per `(model, lookup-shape)` group,
 then serves each `get` from an in-memory snapshot:
 
 ```python
-from django_rakaia.verification import (
+from django_rakaia import (
     PreloadedProjectionReader,
     diff_effects_against_rows,
 )

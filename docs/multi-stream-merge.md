@@ -8,9 +8,9 @@
 ## Using it
 
 ```python
-from rakaia.replay import merge_replay, ENVELOPE_TS
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.projection_reader import DjangoProjectionReader
+from rakaia import merge_replay, ENVELOPE_TS
+from django_rakaia import DjangoExecutor
+from django_rakaia import DjangoProjectionReader
 
 merge_replay(
     store,

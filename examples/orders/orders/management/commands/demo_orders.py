@@ -20,12 +20,10 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.store import get_store
+from django_rakaia import DjangoExecutor, get_store
 from orders.models import OrderSummary
 from orders.seed import SAMPLE_BONUSES, SAMPLE_ORDERS, TAX_CHANGE_SEQ
-from rakaia import CollectingExecutor
-from rakaia.replay import replay
+from rakaia import CollectingExecutor, replay
 
 STREAM = "orders"
 

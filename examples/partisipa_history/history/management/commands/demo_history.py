@@ -28,7 +28,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from django_rakaia.store import get_store
+from django_rakaia import get_store
 from history import pghistory_today, stream_history
 from history.envelope import PGH_TO_LABEL, canonical
 from history.models import (

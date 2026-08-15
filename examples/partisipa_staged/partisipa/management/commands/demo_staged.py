@@ -24,7 +24,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from django_rakaia.store import get_store
+from django_rakaia import get_store
 from partisipa import staged_replay as sr
 from partisipa.handlers import ALL_ONE_STAGE, STAGED
 from partisipa.models import Project, Sf12

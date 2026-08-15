@@ -214,7 +214,7 @@ def _update(eff):
     </p>
     {% verbatim %}
     <pre><code>from rakaia.replay import replay
-from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia import DjangoExecutor
 
 replay(store=store, stream_path="orders", executor=DjangoExecutor())
 # start_seq=N replays only the tail — that's what the live producer does each tick.

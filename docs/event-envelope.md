@@ -112,7 +112,7 @@ context manager that sets **ambient** envelope metadata: every append inside the
 block merges it in automatically.
 
 ```python
-from rakaia.context import provenance
+from rakaia import provenance
 
 with provenance(user=request.user.pk, url=request.path):
     obj.save()          # any append this triggers is now attributed to the user

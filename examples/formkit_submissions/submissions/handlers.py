@@ -27,9 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rakaia import reconcile_children
-from rakaia.effects import Effect
-from rakaia.registry import register_handler
+from rakaia import Effect, reconcile_children, register_handler
 
 from . import mapping
 from .seed import POLICY_CHANGE_SEQ

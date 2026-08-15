@@ -19,7 +19,7 @@ from django.db import models
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from django_rakaia.decorators import create_stream_event
+from django_rakaia import create_stream_event
 from polyglot.models import Translatable
 
 

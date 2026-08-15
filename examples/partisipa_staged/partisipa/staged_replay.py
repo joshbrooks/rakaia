@@ -28,7 +28,7 @@ from typing import Any
 
 from django.apps import apps
 
-from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia import DjangoExecutor
 from rakaia import upcast
 
 Handler = Callable[[dict[str, Any], "Refs"], Any]

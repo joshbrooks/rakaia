@@ -91,7 +91,7 @@ CHANNEL_LAYERS = {
 # models.py
 from dataclasses import dataclass
 from django.db import models
-from django_rakaia.decorators import stream_model
+from django_rakaia import stream_model
 
 @dataclass
 class RoomData:

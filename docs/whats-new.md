@@ -259,7 +259,7 @@ payload — a change **label** (create/update/delete → `+`/`~`/`-`) and an ope
 shipped middleware opens the block for you.
 
 ```python
-from rakaia.context import provenance
+from rakaia import provenance
 
 with provenance(user=request.user.pk, url=request.path):
     obj.save()          # every append inside is attributed to this user
@@ -390,7 +390,7 @@ drifted produced events that replay differently from their neighbours, with
 nothing looking at the difference. `append_event` is those four lines:
 
 ```python
-from django_rakaia.envelope import append_event
+from django_rakaia import append_event
 
 append_event(store, "submissions", payload, label="create", actor=user_id)
 ```
