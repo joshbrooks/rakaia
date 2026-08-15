@@ -199,3 +199,13 @@ These are not API breaks — nothing to edit — but each changes what your code
 - **Bulk appends now reach SSE subscribers.** `append_many` was invisible to the
   channel layer. If you worked around that by also sending your own frame, you
   will now get two.
+- **Timestamps now compare equal to the column they were encoded from.**
+  `DEFAULT_NORMALIZERS` gained `normalize_temporal`, so a `DateTimeField`,
+  `DateField` or `TimeField` no longer reports a difference on every replay.
+  Two consequences worth checking: a replay with
+  `DjangoExecutor(skip_unchanged=True)` stops re-`UPDATE`ing rows it used to
+  rewrite every time — so `auto_now` columns, `post_save` receivers and
+  replication go quiet for those rows — and a difference smaller than a
+  millisecond now reads as unchanged, because that is all the event log can
+  carry. If you pass your own `normalizers=` set, add `normalize_temporal` to
+  it; the default set is only used when you pass nothing.
