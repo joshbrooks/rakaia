@@ -8,6 +8,12 @@ class DjangoRakaiaConfig(AppConfig):
     verbose_name = "Rakaia Streams"
 
     def ready(self) -> None:
+        # Registering the checks is what runs them: importing the module binds
+        # them to Django's registry via @register(). Kept first and dependency
+        # -free so `manage.py check` reports a bad RAKAIA_STORE even when the
+        # rest of `ready()` would fail for the same reason.
+        from django_rakaia import checks  # noqa: F401
+
         # Framework tier: always wire handler/upcaster autodiscovery. This path
         # has no `channels` dependency, so it must load for a projections-only
         # consumer that never touches the protocol server (ADR-0002 / #41).

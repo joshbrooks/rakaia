@@ -149,6 +149,20 @@ is not yet tagged in a release.
 
 ### Fixed
 
+- **`RAKAIA_STORE` no longer fails open.** `get_store()` returned the
+  *in-memory* store for any backend string that wasn't exactly `"durable"`, so a
+  one-character typo (`"durrable"`, a stray space from a `.env` file, `"Durable"`)
+  selected a process-local dict while the deployment believed it was durable:
+  appends succeeded, nothing warned, and the entire event log vanished on the
+  next restart. An unknown backend now raises `ImproperlyConfigured` naming the
+  valid choices, and a refused backend is not cached, so correcting the setting
+  works without a restart. A new system check reports the same problem at
+  startup (`rakaia.E001`) rather than on the first append — which in a worker
+  process could be hours in — and `"memory"` with `DEBUG = False` warns
+  (`rakaia.W001`). ADR 0002 named this gap ("`RAKAIA_STORE` swaps stores by
+  string with no interface check"); the first production consumer had written
+  its own check downstream to catch it.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong
