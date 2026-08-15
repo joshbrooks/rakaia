@@ -71,6 +71,21 @@ is not yet tagged in a release.
   staged replay. Upstreamed from the Partisipa migration's `PreloadReader`
   workaround. → [`docs/projection-cookbook.md`](docs/projection-cookbook.md).
 
+- **`assert_no_live_writes` — the rebuild gate's write-side guard** (ADR 0003).
+  `django_rakaia.hermeticity` has documented this as the mirror of
+  `deny_database_access` since ADR 0003 landed, but only shipped the read half;
+  the write half lived in the first consumer's tree and every adopter would have
+  re-derived it. It now ships here: wrap a from-scratch rebuild in
+  `assert_no_live_writes(*models, using="default")` and any change to the live
+  database's row counts raises `LiveWriteLeaked` naming the drift. The leak it
+  exists to catch is a `post_save`/`pre_save` receiver saving without a `using=`
+  — which Postgres' `session_replication_role = replica` does *not* disable, so
+  a rebuild can silently mutate production while reporting itself green.
+  Unlike the read guard (an `execute_wrapper`, so it cannot be armed where any
+  legitimate query to the alias happens), counting rows tolerates reads — so this
+  is the guard that can wrap a whole rebuild whose event log lives on the
+  guarded alias.
+
 - **Handler hermeticity guard** (P1, [ADR 0003](docs/adr/0003-handler-hermeticity.md)).
   `django_rakaia.hermeticity.deny_database_access(*aliases)` raises
   `AmbientDatabaseAccess` on any query to the named aliases — the read-side

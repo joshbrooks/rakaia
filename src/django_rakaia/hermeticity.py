@@ -1,11 +1,17 @@
-"""Assert a replay is *hermetic* — its handlers read only through the injected
-reader (the alias under rebuild), never an ambient default-DB manager.
+"""The two halves of a rebuild gate: a from-scratch replay must neither **read**
+nor **write** the live database it is proving it can reconstruct.
 
-The Partisipa rebuild gate already carries a *write*-side guard
-(``assert_no_live_writes``): it proves a from-scratch rebuild does not **write**
-the production database. This is its mirror — it proves the rebuild does not
-**read** it either. Together they make "the log alone rebuilt this" a checkable
-property rather than a convention a reviewer has to remember.
+* :func:`deny_database_access` — the *read* guard. Handlers must read only
+  through the injected reader (the alias under rebuild), never an ambient
+  default-DB manager.
+* :func:`assert_no_live_writes` — the *write* guard. The live database's row
+  counts must be unchanged across the rebuild.
+
+Together they make "the log alone rebuilt this" a checkable property rather than
+a convention a reviewer has to remember. Neither subsumes the other: a ``SELECT``
+changes no row counts, and a row count says nothing about what was read. They
+also differ in where they can be armed — see `assert_no_live_writes` for why the
+write guard is the one you can wrap a whole rebuild in.
 
 **Why reads matter as much as writes.** A pure rakaia handler is
 ``event -> Effect``; a stage > 0 handler is ``event, reader -> Effect``. Every
@@ -20,14 +26,19 @@ A handler — or a helper it calls — that instead reaches for
 Such a read is invisible to the write-side guard (a ``SELECT`` changes no row
 counts), so it needs its own gate.
 
-Usage — wrap the handler-dispatch region of a rebuild::
+Usage — the write guard around the whole rebuild, the read guard around the
+handler-dispatch region inside it::
 
     from rakaia.store import StreamStore
-    from django_rakaia.hermeticity import deny_database_access
+    from django_rakaia.hermeticity import (
+        assert_no_live_writes,
+        deny_database_access,
+    )
 
-    with deny_database_access("default"):
-        replay(store, path, DjangoExecutor(using="rebuild"),
-               reader=DjangoProjectionReader(using="rebuild"), ...)
+    with assert_no_live_writes(Submission, ProjectLink):
+        with deny_database_access("default"):
+            replay(store, path, DjangoExecutor(using="rebuild"),
+                   reader=DjangoProjectionReader(using="rebuild"), ...)
 
 **The event source must not read the denied alias either.** Read the log from a
 store that does not touch it — an in-memory ``StreamStore``, or a store on
@@ -42,12 +53,21 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from django.db.models import Model
 
 
 class AmbientDatabaseAccess(RuntimeError):
     """A guarded connection alias was queried inside ``deny_database_access`` —
     a handler (or a helper it calls) read the database directly instead of
     through the injected reader."""
+
+
+class LiveWriteLeaked(RuntimeError):
+    """A guarded model's row count changed inside ``assert_no_live_writes`` — a
+    rebuild mutated the live database it was only supposed to reconstruct."""
 
 
 def _preview(sql: str, limit: int = 120) -> str:
@@ -89,3 +109,72 @@ def deny_database_access(*aliases: str) -> Iterator[None]:
         for alias in aliases:
             stack.enter_context(connections[alias].execute_wrapper(_blocker(alias)))
         yield
+
+
+@contextmanager
+def assert_no_live_writes(
+    *models: type[Model], using: str = "default"
+) -> Iterator[None]:
+    """Assert the ``using`` row counts of ``models`` are unchanged across the block.
+
+    The write-side mirror of :func:`deny_database_access`. Raises
+    :class:`LiveWriteLeaked` naming the drift if a write leaked — a rebuild that
+    mutates the database it is proving it can reconstruct is a defect, not a
+    warning. Called with no models it is a no-op.
+
+    Wrap the **whole** rebuild::
+
+        with assert_no_live_writes(Submission, ProjectLink):
+            replay(store, path, DjangoExecutor(using="rebuild"),
+                   reader=DjangoProjectionReader(using="rebuild"), ...)
+
+    **Why this exists alongside the read-side guard.** `deny_database_access`
+    installs a statement wrapper, so it can only be armed around a region where
+    *no* legitimate query to the alias happens — and a rebuild often cannot meet
+    that bar, because the event log itself may live on the alias being guarded
+    (the constraint noted in this module's docstring). Counting rows tolerates
+    arbitrary reads and still catches a mutation, so this is the guard you can
+    put around everything. Use both where you can: they catch different leaks,
+    and a ``SELECT`` is invisible here just as a row count is invisible there.
+
+    **The leak it is built for.** Postgres' ``session_replication_role =
+    replica`` disables *triggers* but **not** Django ``post_save``/``pre_save``
+    receivers, so a receiver that saves without a ``using=`` writes to the live
+    alias from inside a rebuild — silently, while the gate reports green.
+    Suppressing the receiver prevents it; this *verifies* the prevention held,
+    which is the part a reviewer cannot be expected to remember.
+
+    **What it does not catch.** It compares counts, so an in-place ``UPDATE`` of
+    an existing row leaves it silent. Counts are what a rebuild leak actually
+    looks like (a receiver minting rows), they are cheap enough to wrap a whole
+    replay, and they need no per-model knowledge of which columns matter. For
+    field-level assurance, diff the projection afterwards with
+    :func:`django_rakaia.verification.diff_effects_against_rows`.
+    """
+    if not models:
+        yield
+        return
+
+    def _counts() -> dict[type[Model], int]:
+        return {m: m.objects.using(using).count() for m in models}
+
+    before = _counts()
+    try:
+        yield
+    finally:
+        # `finally`, not `else`: a rebuild that raised half-way must still be
+        # held to the invariant — a leak that happened before the failure is
+        # exactly the kind that would otherwise go unnoticed.
+        drift = {
+            m.__name__: (before[m], after)
+            for m, after in _counts().items()
+            if after != before[m]
+        }
+        if drift:
+            raise LiveWriteLeaked(
+                f"rebuild isolation VIOLATED — the {using!r} database changed "
+                f"during the block: {drift} (model: before -> after). A rebuild "
+                f"must write only to its disposable alias. Something wrote "
+                f"without a `using=` — most often a post_save/pre_save receiver, "
+                f"which `session_replication_role = replica` does not disable."
+            )
