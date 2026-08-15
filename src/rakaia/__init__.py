@@ -105,7 +105,32 @@ from .types import (
     StreamNotFound,
 )
 
-__version__ = "0.1.0"
+
+def _installed_version() -> str:
+    """The version of the installed distribution.
+
+    Read from package metadata rather than declared here, so there is exactly one
+    place the version lives (`pyproject.toml`) instead of two that must be kept in
+    step by hand. They drifted: this literal stayed `"0.1.0"` across 23 commits
+    and several breaking changes, so `rakaia.__version__` reported a number that
+    no longer described the code — to a consumer, confidently.
+
+    The distribution is `rakaia-streams`; the import name is `rakaia` (plain
+    `rakaia` was taken on PyPI), so the lookup cannot use `__name__`.
+
+    Falls back to ``"0.0.0+unknown"`` when the package is not installed at all —
+    running straight from a source tree with no metadata. A sentinel is better
+    than a plausible-looking number: it cannot be mistaken for a release.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("rakaia-streams")
+    except PackageNotFoundError:  # pragma: no cover - source tree without install
+        return "0.0.0+unknown"
+
+
+__version__ = _installed_version()
 
 # Default ASGI app for uvicorn: `uvicorn rakaia:app`
 app = create_app()
