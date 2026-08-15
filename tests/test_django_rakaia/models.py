@@ -370,6 +370,14 @@ class Measure(models.Model):
     ref = models.UUIDField(unique=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    # The temporal columns exercise the third "log carries a different
+    # representation than the column" case: `DjangoJSONEncoder` truncates a
+    # datetime to milliseconds and a date/time to their ISO forms, so the
+    # payload never round-trips to what the column holds without a normalizer.
+    observed_at = models.DateTimeField(null=True, blank=True)
+    observed_on = models.DateField(null=True, blank=True)
+    observed_time = models.TimeField(null=True, blank=True)
+
     class Meta:
         app_label = "test_django_rakaia"
 

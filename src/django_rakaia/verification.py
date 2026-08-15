@@ -25,6 +25,7 @@ diff and are ignored.
 
 from __future__ import annotations
 
+import datetime as _dt
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -33,7 +34,8 @@ from uuid import UUID
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
-from django.db.models import DecimalField, Q
+from django.db.models import DateField, DateTimeField, DecimalField, Q, TimeField
+from django.utils.dateparse import parse_date, parse_datetime, parse_time
 
 from rakaia.effects import Effect
 
@@ -261,7 +263,119 @@ def normalize_decimal(model: type, field_name: str, value: Any) -> Any:
     return dec.quantize(quantum)
 
 
-DEFAULT_NORMALIZERS: tuple[Normalizer, ...] = (normalize_uuid, normalize_decimal)
+#: Microseconds the event encoder keeps. `DjangoJSONEncoder` renders a datetime
+#: as ``o.isoformat()`` sliced to ``r[:23]``, i.e. **milliseconds, truncated not
+#: rounded**, and omits the fractional part entirely when ``microsecond == 0``.
+#: A `TimeField` gets the same treatment via ``r[:12]``.
+_ENCODER_PRECISION_US = 1000
+
+
+def _truncate_to_encoder_precision(value: Any) -> Any:
+    """Drop sub-millisecond microseconds, matching what the encoder kept."""
+    micro = getattr(value, "microsecond", 0)
+    if not micro:
+        return value
+    return value.replace(
+        microsecond=(micro // _ENCODER_PRECISION_US) * _ENCODER_PRECISION_US
+    )
+
+
+def normalize_temporal(model: type, field_name: str, value: Any) -> Any:
+    """Put a datetime/date/time and its encoded payload in the same form.
+
+    Two things go wrong without this, and both are permanent rather than
+    intermittent:
+
+    * **Precision.** The encoder truncates to milliseconds; the database stores
+      microseconds. So a stored ``…05.123456`` never equals the log's
+      ``…05.123`` — for essentially every value, since most have non-zero
+      microseconds.
+    * **Type.** A `DateField` payload is the string ``"2026-01-02"`` while the
+      column reads back as `datetime.date`. Those are never equal at all.
+
+    **Both sides are truncated to milliseconds.** Parsing the payload is not
+    sufficient on its own — a parsed ``…05.123`` still won't equal a stored
+    ``…05.123456``, so the column value has to come down to meet it. The cost is
+    that a genuine sub-millisecond change reads as unchanged; that is accepted,
+    because sub-millisecond precision cannot survive the log in the first place,
+    and the alternative is a phantom difference on every row forever (#83).
+
+    This is a **comparison** device only: it never writes a truncated value back,
+    so the column keeps its full precision.
+
+    A string the parser cannot interpret is returned unchanged — reporting a
+    difference beats silently swallowing a value we failed to understand.
+    """
+    if value is None:
+        return value
+
+    model_field = _resolve_field(model, field_name)
+
+    # DateTimeField subclasses DateField, so it must be tested first — otherwise
+    # every timestamp would be truncated to its calendar date.
+    if isinstance(model_field, DateTimeField):
+        if isinstance(value, str):
+            parsed = parse_datetime(value)
+            if parsed is None:
+                return value
+            value = parsed
+        if not isinstance(value, _dt.datetime):
+            return value
+        return _truncate_to_encoder_precision(value)
+
+    if isinstance(model_field, DateField):
+        if isinstance(value, str):
+            parsed = parse_date(value)
+            if parsed is None:
+                return value
+            return parsed
+        # A datetime is also a date; keep it as-is rather than guessing.
+        return value
+
+    if isinstance(model_field, TimeField):
+        if isinstance(value, str):
+            parsed = parse_time(value)
+            if parsed is None:
+                return value
+            value = parsed
+        if not isinstance(value, _dt.time):
+            return value
+        return _truncate_to_encoder_precision(value)
+
+    return value
+
+
+#: The normalizers applied unless a caller passes its own set.
+#:
+#: Each exists because one representation survives the log and a different one
+#: comes back from the column, so a value that never changed would otherwise
+#: read as a difference forever:
+#:
+#: * `normalize_uuid` — ``uuid.UUID`` from the column vs. its string in the log.
+#: * `normalize_decimal` — a JSON float (``2.1``) vs. the column's ``Decimal("2.10")``.
+#: * `normalize_temporal` — millisecond-truncated timestamps, and dates/times
+#:   that arrive as strings.
+#:
+#: **Truncation semantics (temporal).** `DjangoJSONEncoder` truncates — does not
+#: round — a datetime to milliseconds, and omits the fractional part entirely
+#: when ``microsecond == 0``; a `TimeField` gets the same treatment. Since the
+#: database keeps microseconds, **both** sides are truncated to milliseconds
+#: before comparing. The deliberate cost: a genuine sub-millisecond change is
+#: reported as unchanged and skipped. That is the right trade because
+#: sub-millisecond precision cannot survive the log at all, so a value the log
+#: can never distinguish is not a difference the projection should act on —
+#: whereas not truncating means a phantom difference on essentially every row
+#: with a timestamp, forever (#83).
+#:
+#: This set is shared by `diff_effects_against_rows` and the executor's
+#: ``skip_unchanged`` compare, so "unchanged" means the same thing on the read
+#: and write paths. A diff given a custom ``normalizers=`` set is **not**
+#: mirrored on the skip path.
+DEFAULT_NORMALIZERS: tuple[Normalizer, ...] = (
+    normalize_uuid,
+    normalize_decimal,
+    normalize_temporal,
+)
 
 
 def canonical_value(

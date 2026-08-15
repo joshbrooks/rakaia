@@ -261,6 +261,28 @@ is not yet tagged in a release.
   and the docstrings say plainly that the value is arbitrary but must match
   `event_match`.
 
+- **A payload timestamp now compares equal to the column it was encoded from**
+  (#83). `canonical_value` had no temporal normalizer, so a `DateTimeField`
+  projection reported a difference on every replay and never stopped: the event
+  encoder truncates a datetime to **milliseconds** while the database stores
+  microseconds, so a stored `…05.123456` never equalled the log's `…05.123`. A
+  `DateField` was worse — its payload is the string `"2026-01-02"` and the
+  column reads back as a `date`, which are never equal at all. Because
+  `canonical_value` is shared with `DjangoExecutor(skip_unchanged=True)`, this
+  also meant every replay re-`UPDATE`d every row carrying a timestamp, churning
+  `auto_now` fields, `post_save` receivers and replication for a value that had
+  not changed.
+
+  `normalize_temporal` joins `DEFAULT_NORMALIZERS`, covering `DateTimeField`,
+  `DateField` and `TimeField`. **Both sides truncate to milliseconds** —
+  parsing the payload alone is not enough, since a parsed `…05.123` still would
+  not equal a stored `…05.123456`. The accepted cost is that a genuine
+  sub-millisecond change reads as unchanged; sub-millisecond precision cannot
+  survive the log in the first place. It is a comparison device only: the column
+  keeps its full precision. Note `DateTimeField` subclasses `DateField` in
+  Django, so the checks are ordered — otherwise every timestamp would be
+  truncated to its calendar date.
+
 - **`RAKAIA_STORE` no longer fails open.** `get_store()` returned the
   *in-memory* store for any backend string that wasn't exactly `"durable"`, so a
   one-character typo (`"durrable"`, a stray space from a `.env` file, `"Durable"`)
