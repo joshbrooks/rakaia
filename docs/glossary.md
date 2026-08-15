@@ -122,6 +122,28 @@ A handler registered for a specific **range of sequence numbers**, so old events
 run through the logic that was correct *when they happened*. Fixing a rule going
 forward never rewrites the past. → *[versioned handlers](versioned-handlers.md)*
 
+### Handler dependencies
+
+A stage-0 handler is called `fn(event)` and a stage > 0 handler `fn(event, reader)`,
+so there is nowhere to pass anything else. When a handler genuinely needs an
+injected dependency — the usual case is a probe bound to the connection alias a
+rebuild is replaying into, which [ADR 0003](adr/0003-handler-hermeticity.md)
+forbids reading ambiently — bind it with `functools.partial`:
+
+```python
+registry.register(
+    name="project", event_match="PROJECT", effective_from=0,
+    fn=functools.partial(project_row, fk_exists=probe),
+)
+```
+
+**Not a closure.** A closure works and is quietly worse: its recorded path
+contains `<locals>`, which `rehydrate()` cannot import, so a registry restored
+from its meta-stream silently loses that handler — and its **drift** hash covers
+the wrapper only, so an edit to the function the wrapper calls is invisible. A
+`partial` is unwrapped, so both describe the wrapped function. A persisting
+registry warns if you use a closure anyway.
+
 ### Upcaster
 
 A small pure function that upgrades an *old* event to the current shape (e.g.
