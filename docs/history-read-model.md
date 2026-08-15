@@ -131,20 +131,18 @@ Two small helpers cover the fiddly bits the audit consumers need:
 
 ## Recovering the peak snapshot
 
-`recover_peak_snapshot` is the streams edition of Partisipa's
-`repair_blank_save_dataloss`. It scans a subject's history and returns the
-**most complete** snapshot — the one with the most fields — restoring a subject
-that a legacy *blank/truncating save* corrupted:
+The **peak snapshot** is a subject's most complete historical snapshot — the one
+with the most fields. Recovering it is Partisipa's `repair_blank_save_dataloss`
+in stream form: a subject corrupted by a legacy *blank/truncating save* is
+restored from the pre-truncation snapshot, which never left the log.
+
+rakaia ships no helper for this — once the audit rows exist, recovery is a
+one-line scan over them, and each application's idea of "the snapshot" differs
+enough that a shared signature earns nothing:
 
 ```python
-from rakaia import recover_peak_snapshot
-
-messages, _ = store.read("submissions")
-recovered = recover_peak_snapshot(
-    messages, subject="sub-water-01",
-    subject_of=lambda ev: ev["submission_id"],
-    snapshot_of=lambda ev: ev["fields"],
-)
+rows = SubmissionHistoryEntry.objects.filter(submission_id="sub-water-01")
+recovered = max((r.fields for r in rows), key=len, default={})
 ```
 
 ```mermaid
@@ -156,10 +154,12 @@ flowchart LR
 ```
 
 On a tie (equal field counts) the **newest** snapshot wins — recovery restores
-the latest good state, not the earliest. It's a **legacy-only** tool: it recovers
+the latest good state, not the earliest. It's a **legacy-only** move: it recovers
 from a bug, and with [`append_if_changed`](event-envelope.md#append_if_changed-suppress-no-op-appends)
 suppressing no-op writes, stream-native writes needn't produce blank snapshots at
-all. Carry it to heal old pghistory data, not as an ongoing need.
+all. Reach for it to heal old pghistory data, not as an ongoing need. The
+[`partisipa_history`](../examples/partisipa_history/) example runs it against
+both a stream-derived audit log and pghistory, and asserts they agree.
 
 ## Where to go next
 

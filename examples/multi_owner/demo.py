@@ -15,7 +15,8 @@ tiny in-memory executor (`executor.py`, standing in for `DjangoExecutor`):
   * `reconcile_by_key(retire=)`  — reconcile rows on a composite natural key,
                                 soft-deleting (not hard-deleting) stale rows.
   * `check_disjoint_defaults`    — the guard that makes multi-owner rows safe.
-  * `dispatch_external`          — route the `op="external"` effects rakaia won't.
+  * `op="external"` effects      — the ones rakaia deliberately never applies;
+                                the app routes them itself in a two-line loop.
 
 Runs as a plain script (no Django):
 
@@ -32,7 +33,6 @@ from rakaia import (
     EffectCollisionError,
     Ref,
     check_disjoint_defaults,
-    dispatch_external,
     reconcile_aggregate,
     reconcile_by_key,
 )
@@ -238,8 +238,8 @@ def section_disjoint_guard() -> None:
         raise AssertionError("expected EffectCollisionError")
 
 
-def section_dispatch_external() -> None:
-    _hdr("[5] dispatch_external: route the effects rakaia deliberately won't apply")
+def section_external_effects() -> None:
+    _hdr("[5] external effects: route the ones rakaia deliberately won't apply")
     sent: list[str] = []
     effects = [
         Effect(
@@ -255,14 +255,16 @@ def section_dispatch_external() -> None:
         ),
         Effect(op="external", kind="webhook", payload={"url": "/hooks/closed"}),
     ]
-    count = dispatch_external(
-        effects,
-        {
-            "email": lambda e: sent.append(f"email->{e.payload['to']}"),
-            "webhook": lambda e: sent.append(f"webhook->{e.payload['url']}"),
-        },
-    )
-    assert count == 2 and len(sent) == 2  # the write effect is ignored
+    handlers = {
+        "email": lambda e: sent.append(f"email->{e.payload['to']}"),
+        "webhook": lambda e: sent.append(f"webhook->{e.payload['url']}"),
+    }
+    count = 0
+    for eff in effects:  # the write effect is ignored — it is not external
+        if eff.op == "external" and eff.kind in handlers:
+            handlers[eff.kind](eff)
+            count += 1
+    assert count == 2 and len(sent) == 2
     print(f"    dispatched {count} external effects: {sent} ✓")
 
 
@@ -274,7 +276,7 @@ def main() -> None:
     section_multi_owner_aggregate()
     section_reconcile_by_key()
     section_disjoint_guard()
-    section_dispatch_external()
+    section_external_effects()
     print("\nAll multi-owner effect checks passed ✓")
 
 

@@ -135,25 +135,3 @@ async def send_body_chunk(
             "more_body": more_body,
         }
     )
-
-
-async def send_sse_event(
-    send: Send,
-    event_type: str,
-    data: str,
-) -> None:
-    """
-    Send a Server-Sent Event.
-
-    Format per SSE spec:
-        event: <type>
-        data: <line1>
-        data: <line2>
-        <blank line>
-    """
-    lines = data.split("\n")
-    event = f"event: {event_type}\n"
-    for line in lines:
-        event += f"data:{line}\n"
-    event += "\n"
-    await send_body_chunk(send, event.encode("utf-8"))

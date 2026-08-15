@@ -747,12 +747,9 @@ async def _handle_read(
 
 def _encode_sse_data(payload: str) -> str:
     """Encode data for SSE format, handling multi-line payloads and preventing CRLF injection."""
-    # Replace carriage returns with a safe alternative or strip them
-    # Protocol Section 5.7: "Implementations MUST prevent CRLF injection in SSE events."
-    # We replace \r\n with \n, and then stray \r with \n so that they are formatted as separate lines.
-    # The tests explicitly check that `\r` becomes a newline `\n` which manifests as `data: `
-    # wait the test does "expect(controlContent.cr_injected).toBeUndefined()" so maybe replacing \r with nothing or space is better so it doesn't break JSON?
-    # Actually the spec says "Any \r\n or \r characters in payload data MUST be normalized to \n before framing."
+    # Protocol Section 5.7: any \r\n or stray \r in payload data is normalized to
+    # \n before framing, so each becomes its own `data:` line rather than
+    # terminating the frame early (CRLF injection).
     sanitized = payload.replace("\r\n", "\n").replace("\r", "\n")
     lines = sanitized.split("\n")
     result = ""
@@ -787,6 +784,15 @@ def _build_sse_control(
         if at_tail and up_to_date:
             control_data[SSE_UP_TO_DATE_FIELD] = True
     return f"event: control\n{_encode_sse_data(json.dumps(control_data))}".encode()
+
+
+def _closed_control(offset: str) -> bytes:
+    """The terminal ``control`` frame: this offset is the tail and it is closed.
+
+    A closed-at-tail frame carries ``closed`` instead of a cursor, so the cursor
+    arguments are never read.
+    """
+    return _build_sse_control(offset, offset, True, False, None, CursorOptions())
 
 
 async def _handle_sse(
@@ -904,14 +910,7 @@ async def _handle_sse(
         if up_to_date:
             if current_stream.closed:
                 # Send final control
-                final_data: dict[str, str | bool] = {
-                    SSE_OFFSET_FIELD: current_offset,
-                    SSE_CLOSED_FIELD: True,
-                }
-                sse_final = (
-                    f"event: control\n{_encode_sse_data(json.dumps(final_data))}"
-                )
-                await send_body_chunk(send, sse_final.encode("utf-8"))
+                await send_body_chunk(send, _closed_control(current_offset))
                 break
 
             try:
@@ -926,38 +925,27 @@ async def _handle_sse(
                 break
 
             if stream_closed:
-                final_data = {
-                    SSE_OFFSET_FIELD: current_offset,
-                    SSE_CLOSED_FIELD: True,
-                }
-                sse_final = (
-                    f"event: control\n{_encode_sse_data(json.dumps(final_data))}"
-                )
-                await send_body_chunk(send, sse_final.encode("utf-8"))
+                await send_body_chunk(send, _closed_control(current_offset))
                 break
 
             if timed_out:
                 # Keep-alive control event
-                keep_cursor = generate_response_cursor(cursor, opts.cursor_options)
                 stream_after = await store.run_sync(store.get, path)
                 if stream_after and stream_after.closed:
-                    closed_data: dict[str, str | bool] = {
-                        SSE_OFFSET_FIELD: current_offset,
-                        SSE_CLOSED_FIELD: True,
-                    }
-                    sse_closed = (
-                        f"event: control\n{_encode_sse_data(json.dumps(closed_data))}"
-                    )
-                    await send_body_chunk(send, sse_closed.encode("utf-8"))
+                    await send_body_chunk(send, _closed_control(current_offset))
                     break
 
-                keep_data: dict[str, str | bool] = {
-                    SSE_OFFSET_FIELD: current_offset,
-                    SSE_CURSOR_FIELD: keep_cursor,
-                    SSE_UP_TO_DATE_FIELD: True,
-                }
-                sse_keep = f"event: control\n{_encode_sse_data(json.dumps(keep_data))}"
-                await send_body_chunk(send, sse_keep.encode("utf-8"))
+                await send_body_chunk(
+                    send,
+                    _build_sse_control(
+                        current_offset,
+                        current_offset,
+                        False,
+                        True,
+                        cursor,
+                        opts.cursor_options,
+                    ),
+                )
             # Loop continues to read new messages
 
     # End the SSE connection

@@ -83,7 +83,7 @@ One command each: seed a stream, replay it, assert the projection.
 | [`formkit_submissions`](https://github.com/joshbrooks/rakaia/tree/main/examples/formkit_submissions) | Projections/fan-out, `reconcile_children`, migration parity vs a direct `to_model()` | `just formkit-demo` |
 | `formkit_submissions` (stream) | Arrow-flip: append log = source of truth → latest-version projection (`project_latest`) | `just formkit-stream-demo` |
 | [`projection_cookbook`](https://github.com/joshbrooks/rakaia/tree/main/examples/projection_cookbook) | Staged replay, `ProjectionReader`, `register_simple`, `diff_effects_against_rows` verification | `just cookbook-demo` |
-| [`partisipa_history`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_history) | pghistory-parity audit log + `recover_peak_snapshot` from an enveloped stream | `just partisipa-history-demo` |
+| [`partisipa_history`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_history) | pghistory-parity audit log + peak-snapshot recovery from an enveloped stream | `just partisipa-history-demo` |
 | [`partisipa_staged`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_staged) | Staged replay resolving late-arriving cross-form links | `just partisipa-demo` |
 | [`partisipa_close`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_close) | Close-precondition state machine decided purely from projected state; stage reducers | `just partisipa-close-demo` |
 | [`partisipa_merge`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_merge) | `merge_replay` of N streams into one deterministic order; cross-stream rollup | `just partisipa-merge-demo` |
@@ -97,7 +97,7 @@ that isn't Django at all.
 | Example | Proves | Run |
 |---|---|---|
 | [`protocol_streams`](https://github.com/joshbrooks/rakaia/tree/main/examples/protocol_streams) | `StreamStore` append/read, `append_if_changed`, producer fencing, `close`, `poll` subscriber cursors, CDN cursors | `just protocol-demo` |
-| [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, `dispatch_external` | `just multi-owner-demo` |
+| [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, routing `op="external"` effects | `just multi-owner-demo` |
 
 ## Concept → example coverage matrix
 
@@ -121,7 +121,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 |---|---|
 | `AppendOptions(label=…, metadata=…)`, `provenance()` | `formkit_submissions`, `formkit_submissions` (stream) |
 | History read-model — `history_effects`, materialized audit rows | `formkit_submissions`, `partisipa_history` |
-| `recover_peak_snapshot` (blank-save recovery) | `partisipa_history` |
+| Peak-snapshot recovery (blank-save repair, hand-rolled over audit rows) | `partisipa_history` |
 
 ### Versioned handlers, upcasters, replay
 
@@ -145,7 +145,6 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | `DjangoExecutor` | every Django demo |
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
 | `check_disjoint_defaults` (multi-owner guard) | `multi_owner` |
-| `dispatch_external` (route `op="external"`) | `multi_owner` |
 | `diff_effects_against_rows` (replay-vs-rows verification) | `projection_cookbook` |
 
 ### Projections & fan-out

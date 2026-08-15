@@ -30,7 +30,6 @@ from .effects import (
     RefResolver,
     UnresolvedRefError,
     check_disjoint_defaults,
-    dispatch_external,
 )
 from .executors import CollectingExecutor
 from .handler import ServerOptions, create_app
@@ -38,7 +37,6 @@ from .history import (
     envelope_actor,
     history_effects,
     label_marker,
-    recover_peak_snapshot,
 )
 from .projections import (
     project_latest,
@@ -152,7 +150,6 @@ __all__ = [
     "append_if_changed",
     "snapshots_equal",
     "history_effects",
-    "recover_peak_snapshot",
     "label_marker",
     "envelope_actor",
     # Options
@@ -196,7 +193,6 @@ __all__ = [
     "RefResolver",
     "UnresolvedRefError",
     "check_disjoint_defaults",
-    "dispatch_external",
     "CollectingExecutor",
     # Versioned handlers — projections
     "reconcile_by_key",

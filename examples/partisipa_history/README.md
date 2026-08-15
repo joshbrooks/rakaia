@@ -72,7 +72,7 @@ exits non-zero.
 |---|---|---|
 | `GET /history` audit API — per-version fields + `+`/`~`/`-` diff | `SubmissionHistoryEntry` derived from the stream | `[1] PARITY` |
 | Per-change actor (`HistoryMiddleware` context) | `actor` on the envelope → on every audit row | `[2] ENVELOPE` |
-| `repair_blank_save_dataloss` — restore peak snapshot | `recover_peak_snapshot()` — one query over history | `[3] RECOVERY` |
+| `repair_blank_save_dataloss` — restore peak snapshot | `stream_history.recover_peak_snapshot()` — one query over history | `[3] RECOVERY` |
 
 `[1]` asserts the stream-derived audit log reproduces a golden `pgh_event` table
 **byte-for-byte** (same order, label, actor, timestamp, and canonical field snapshot)
