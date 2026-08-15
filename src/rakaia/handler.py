@@ -240,13 +240,17 @@ class InjectedFault:
     count: int = 1
     status: int | None = None
     retry_after: int | None = None
-    delay_ms: int | None = None
-    drop_connection: bool = False
-    truncate_body_bytes: int | None = None
     method: str | None = None
-    corrupt_body: bool = False
-    jitter_ms: int | None = None
-    inject_sse_event: dict[str, str] | None = None
+
+
+def _fault_injection_enabled_by_env() -> bool:
+    """Whether ``RAKAIA_ENABLE_FAULT_INJECTION`` asks for the test endpoint."""
+    return os.environ.get("RAKAIA_ENABLE_FAULT_INJECTION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @dataclass
@@ -263,6 +267,21 @@ class ServerOptions:
 
     cursor_options: CursorOptions = field(default_factory=CursorOptions)
     """Cursor calculation options."""
+
+    enable_fault_injection: bool = field(
+        default_factory=_fault_injection_enabled_by_env
+    )
+    """Whether to route the ``/_test/inject-error`` fault-injection endpoint.
+
+    Off unless the ``RAKAIA_ENABLE_FAULT_INJECTION`` environment variable is set
+    to a truthy value (``1``/``true``/``yes``/``on``). The endpoint is
+    unauthenticated and lets any caller make an arbitrary stream path fail, so
+    it must never be reachable on a deployed server. While off the path is not
+    routed at all and answers ``404`` like any other unknown path, rather than
+    ``403``, so its existence is not advertised. The environment variable is the
+    load-bearing switch: the module-level ``rakaia:app`` is built with default
+    ``ServerOptions()``, so a constructor argument alone cannot reach it.
+    """
 
 
 def create_app(
@@ -315,8 +334,9 @@ def create_app(
             await send_response(send, 204, cors_headers)
             return
 
-        # Handle test control endpoints
-        if path == "/_test/inject-error":
+        # Handle test control endpoints. Gated off by default: when disabled the
+        # path is not routed at all, so it 404s like any other unknown path.
+        if opts.enable_fault_injection and path == "/_test/inject-error":
             await _handle_test_inject(
                 method, scope, receive, send, cors_headers, injected_faults
             )
@@ -1242,13 +1262,7 @@ async def _handle_test_inject(
             count=config.get("count", 1),
             status=config.get("status"),
             retry_after=config.get("retryAfter"),
-            delay_ms=config.get("delayMs"),
-            drop_connection=config.get("dropConnection", False),
-            truncate_body_bytes=config.get("truncateBodyBytes"),
             method=config.get("method"),
-            corrupt_body=config.get("corruptBody", False),
-            jitter_ms=config.get("jitterMs"),
-            inject_sse_event=config.get("injectSseEvent"),
         )
 
         await send_response(

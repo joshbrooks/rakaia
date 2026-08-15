@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 from rakaia import StreamStore, create_app
-from rakaia.handler import ServerOptions
+from rakaia.handler import ServerOptions, _fault_injection_enabled_by_env
 from rakaia.types import INITIAL_OFFSET
 
 
@@ -285,6 +285,99 @@ class TestMethods:
     async def test_patch_returns_405(self, client: httpx.AsyncClient):
         response = await client.patch("/foo")
         assert response.status_code == 405
+
+
+# =============================================================================
+# Fault injection gate
+# =============================================================================
+
+
+def _fault_client(*, enabled: bool) -> httpx.AsyncClient:
+    """A client whose server has the fault-injection endpoint on or off."""
+    app = create_app(
+        store=StreamStore(), options=ServerOptions(enable_fault_injection=enabled)
+    )
+    transport = httpx.ASGITransport(app=app)
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+
+class TestFaultInjectionGate:
+    async def test_default_app_does_not_route_the_endpoint(
+        self, client: httpx.AsyncClient
+    ):
+        """Off by default, and a 404 — not a 403 that would advertise it."""
+        response = await client.post(
+            "/_test/inject-error", json={"path": "/foo", "status": 500, "count": 999}
+        )
+        assert response.status_code == 404
+
+    async def test_default_app_ignores_delete_too(self, client: httpx.AsyncClient):
+        response = await client.delete("/_test/inject-error")
+        assert response.status_code == 404
+
+    async def test_disabled_endpoint_cannot_fault_a_stream(
+        self, client: httpx.AsyncClient
+    ):
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"hi")
+        await client.post(
+            "/_test/inject-error", json={"path": "/foo", "status": 500, "count": 999}
+        )
+        response = await client.get("/foo")
+        assert response.status_code == 200
+
+    async def test_enabled_flag_injects_a_fault(self):
+        async with _fault_client(enabled=True) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"hi"
+            )
+            registered = await client.post(
+                "/_test/inject-error",
+                json={"path": "/foo", "status": 503, "retryAfter": 7, "count": 1},
+            )
+            assert registered.status_code == 200
+
+            faulted = await client.get("/foo")
+            assert faulted.status_code == 503
+            assert faulted.headers.get("retry-after") == "7"
+
+            # The fault is consumed after `count` responses.
+            assert (await client.get("/foo")).status_code == 200
+
+    async def test_enabled_flag_clears_faults_on_delete(self):
+        async with _fault_client(enabled=True) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"hi"
+            )
+            await client.post(
+                "/_test/inject-error",
+                json={"path": "/foo", "status": 500, "count": 999},
+            )
+            cleared = await client.delete("/_test/inject-error")
+            assert cleared.status_code == 200
+            assert (await client.get("/foo")).status_code == 200
+
+
+class TestFaultInjectionEnvFlag:
+    """The conformance runner starts `rakaia:app`, so the env var is the only
+    way in — a constructor argument alone cannot reach the default app."""
+
+    async def test_env_var_unset_is_off(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("RAKAIA_ENABLE_FAULT_INJECTION", raising=False)
+        assert _fault_injection_enabled_by_env() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+    async def test_truthy_env_values_enable_it(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ):
+        monkeypatch.setenv("RAKAIA_ENABLE_FAULT_INJECTION", value)
+        assert _fault_injection_enabled_by_env() is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+    async def test_falsy_env_values_leave_it_off(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ):
+        monkeypatch.setenv("RAKAIA_ENABLE_FAULT_INJECTION", value)
+        assert _fault_injection_enabled_by_env() is False
 
 
 # =============================================================================
