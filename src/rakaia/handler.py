@@ -55,6 +55,7 @@ from .types import (
     EmptyJsonArray,
     InvalidJson,
     InvalidOffset,
+    ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
     ProducerSequenceGap,
@@ -100,6 +101,97 @@ def _status_for(failure: BaseException) -> tuple[int, bytes] | None:
         if mapped is not None:
             return mapped
     return None
+
+
+def producer_response(
+    result: Any,
+    *,
+    producer_epoch: int | None,
+    offset: str | None = None,
+    stream_closed: bool = False,
+) -> tuple[int, bytes, dict[str, str]] | None:
+    """The HTTP response a refused fenced write becomes, or `None` if it was not
+    refused.
+
+    The union-typed twin of `_status_for`, which does the same job for store
+    *exceptions*. Both halves of "what status does this become" now live beside
+    each other instead of one being a lookup table and the other a ladder of
+    `isinstance` checks written out three times in `_handle_append`.
+
+    Returns `(status, body, extra_headers)`; the caller merges CORS and sends it.
+    An empty body means 204 — that arm is sent with `send_response`, the rest
+    with `_send_error`, which adds ``content-type: text/plain``.
+
+    The three call sites differ only in what they can supply, so those are
+    parameters rather than duplication:
+
+    * ``offset`` — the stream's next offset, when the caller has one to report.
+      Omitted rather than sent empty when it does not (the append-result path).
+    * ``stream_closed`` — whether to flag a duplicate as landing on a now-closed
+      stream.
+
+    A duplicate is **204, not an error**: the producer's write did land, it just
+    landed on an earlier attempt, and echoing `Producer-Epoch`/`Producer-Seq`
+    lets it resume from the right place rather than retrying forever.
+    """
+    if result is None or isinstance(result, ProducerAccepted):
+        return None
+
+    if isinstance(result, ProducerDuplicate):
+        headers = {
+            PRODUCER_EPOCH_HEADER: str(producer_epoch),
+            PRODUCER_SEQ_HEADER: str(result.last_seq),
+        }
+        if offset is not None:
+            headers[STREAM_OFFSET_HEADER_RESP] = offset
+        if stream_closed:
+            headers[STREAM_CLOSED_HEADER_RESP] = "true"
+        return 204, b"", headers
+
+    if isinstance(result, ProducerStaleEpoch):
+        # The epoch in force, not the one the client sent — that is what lets a
+        # fenced-out producer discover it has been superseded.
+        return (
+            403,
+            b"Stale producer epoch",
+            {PRODUCER_EPOCH_HEADER: str(result.current_epoch)},
+        )
+
+    if isinstance(result, ProducerInvalidEpochSeq):
+        return 400, b"New epoch must start with sequence 0", {}
+
+    if isinstance(result, ProducerSequenceGap):
+        return (
+            409,
+            b"Producer sequence gap",
+            {
+                PRODUCER_EXPECTED_SEQ_HEADER: str(result.expected_seq),
+                PRODUCER_RECEIVED_SEQ_HEADER: str(result.received_seq),
+            },
+        )
+
+    if isinstance(result, ProducerStreamClosed):
+        headers = {STREAM_CLOSED_HEADER_RESP: "true"}
+        if offset is not None:
+            headers[STREAM_OFFSET_HEADER_RESP] = offset
+        return 409, b"Stream is closed", headers
+
+    return None
+
+
+async def _send_producer_response(
+    send: Send, decided: tuple[int, bytes, dict[str, str]], cors: dict[str, str]
+) -> None:
+    """Send what `producer_response` decided.
+
+    A bodiless 204 goes through `send_response`; anything else through
+    `_send_error`, which stamps ``content-type: text/plain``.
+    """
+    status, body, extra = decided
+    if not body:
+        await send_response(send, status, {**cors, **extra})
+    else:
+        await _send_error(send, status, body, cors, extra)
 
 
 # Header names used in responses (title case for HTTP convention)
@@ -999,57 +1091,19 @@ async def _handle_append(
                 return
 
             pr = close_result.producer_result
-            if isinstance(pr, ProducerDuplicate):
-                await send_response(
-                    send,
-                    204,
-                    {
-                        **cors,
-                        STREAM_OFFSET_HEADER_RESP: close_result.final_offset,
-                        STREAM_CLOSED_HEADER_RESP: "true",
-                        PRODUCER_EPOCH_HEADER: str(producer_epoch),
-                        PRODUCER_SEQ_HEADER: str(pr.last_seq),
-                    },
-                )
-                return
-            if isinstance(pr, ProducerStaleEpoch):
-                await _send_error(
-                    send,
-                    403,
-                    b"Stale producer epoch",
-                    cors,
-                    {PRODUCER_EPOCH_HEADER: str(pr.current_epoch)},
-                )
-                return
-            if isinstance(pr, ProducerInvalidEpochSeq):
-                await _send_error(
-                    send, 400, b"New epoch must start with sequence 0", cors
-                )
-                return
-            if isinstance(pr, ProducerSequenceGap):
-                await _send_error(
-                    send,
-                    409,
-                    b"Producer sequence gap",
-                    cors,
-                    {
-                        PRODUCER_EXPECTED_SEQ_HEADER: str(pr.expected_seq),
-                        PRODUCER_RECEIVED_SEQ_HEADER: str(pr.received_seq),
-                    },
-                )
-                return
             if isinstance(pr, ProducerStreamClosed):
-                s = await store.run_sync(store.get, path)
-                await _send_error(
-                    send,
-                    409,
-                    b"Stream is closed",
-                    cors,
-                    {
-                        STREAM_CLOSED_HEADER_RESP: "true",
-                        STREAM_OFFSET_HEADER_RESP: s.current_offset if s else "",
-                    },
-                )
+                # Only this arm needs the stream's current offset, and fetching
+                # it costs a round trip — so it is resolved here rather than
+                # unconditionally before the decision.
+                st = await store.run_sync(store.get, path)
+                offset = st.current_offset if st else ""
+            else:
+                offset = close_result.final_offset
+            decided = producer_response(
+                pr, producer_epoch=producer_epoch, offset=offset, stream_closed=True
+            )
+            if decided is not None:
+                await _send_producer_response(send, decided, cors)
                 return
 
             # Success
@@ -1109,33 +1163,22 @@ async def _handle_append(
 
     # Handle closed stream
     if result.stream_closed and result.message is None:
-        pr = result.producer_result
-        if isinstance(pr, ProducerDuplicate):
-            s = await store.run_sync(store.get, path)
-            await send_response(
-                send,
-                204,
-                {
-                    **cors,
-                    STREAM_OFFSET_HEADER_RESP: s.current_offset if s else "",
-                    STREAM_CLOSED_HEADER_RESP: "true",
-                    PRODUCER_EPOCH_HEADER: str(producer_epoch),
-                    PRODUCER_SEQ_HEADER: str(pr.last_seq),
-                },
-            )
-            return
-
-        s = await store.run_sync(store.get, path)
-        await _send_error(
-            send,
-            409,
-            b"Stream is closed",
-            cors,
-            {
-                STREAM_CLOSED_HEADER_RESP: "true",
-                STREAM_OFFSET_HEADER_RESP: s.current_offset if s else "",
-            },
+        st = await store.run_sync(store.get, path)
+        offset = st.current_offset if st else ""
+        decided = producer_response(
+            result.producer_result,
+            producer_epoch=producer_epoch,
+            offset=offset,
+            stream_closed=True,
         )
+        if decided is None:
+            # Nothing to report about the producer — an unfenced append, or one
+            # whose fencing was fine. The closed stream is itself the answer.
+            decided = producer_response(
+                ProducerStreamClosed(), producer_epoch=producer_epoch, offset=offset
+            )
+        assert decided is not None
+        await _send_producer_response(send, decided, cors)
         return
 
     pr = result.producer_result
@@ -1156,42 +1199,11 @@ async def _handle_append(
         return
 
     # Producer validation failures
-    if isinstance(pr, ProducerDuplicate):
-        dup_headers: dict[str, str] = {
-            **cors,
-            PRODUCER_EPOCH_HEADER: str(producer_epoch),
-            PRODUCER_SEQ_HEADER: str(pr.last_seq),
-        }
-        if result.stream_closed:
-            dup_headers[STREAM_CLOSED_HEADER_RESP] = "true"
-        await send_response(send, 204, dup_headers)
-        return
-
-    if isinstance(pr, ProducerStaleEpoch):
-        await _send_error(
-            send,
-            403,
-            b"Stale producer epoch",
-            cors,
-            {PRODUCER_EPOCH_HEADER: str(pr.current_epoch)},
-        )
-        return
-
-    if isinstance(pr, ProducerInvalidEpochSeq):
-        await _send_error(send, 400, b"New epoch must start with sequence 0", cors)
-        return
-
-    if isinstance(pr, ProducerSequenceGap):
-        await _send_error(
-            send,
-            409,
-            b"Producer sequence gap",
-            cors,
-            {
-                PRODUCER_EXPECTED_SEQ_HEADER: str(pr.expected_seq),
-                PRODUCER_RECEIVED_SEQ_HEADER: str(pr.received_seq),
-            },
-        )
+    decided = producer_response(
+        pr, producer_epoch=producer_epoch, stream_closed=result.stream_closed
+    )
+    if decided is not None:
+        await _send_producer_response(send, decided, cors)
         return
 
 

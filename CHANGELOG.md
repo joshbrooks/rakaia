@@ -203,6 +203,20 @@ is not yet tagged in a release.
   recipe** that runs the scripted demos end-to-end.
   → [`docs/whats-new.md`](docs/whats-new.md).
 
+### Changed
+
+- **One producer response table instead of three.** The five-arm `isinstance`
+  ladder over `ProducerValidationResult` — duplicate → 204, stale epoch → 403,
+  bad epoch opening → 400, sequence gap → 409, closed stream → 409, each with
+  its own headers — was written out three times inside `_handle_append`, the
+  largest function in the largest module. The exception half of the same mapping
+  had already been deepened into a single `_status_for` lookup; the union-typed
+  half never followed. `producer_response(result, *, producer_epoch, offset,
+  stream_closed)` now sits beside `_status_for`, and the three call sites pass
+  what differs rather than restating the table. `_handle_append` drops from 244
+  to 164 lines, and the status/header mapping is testable as a table — no ASGI
+  round trip, no live store.
+
 ### Fixed
 
 - **`RAKAIA_STORE` no longer fails open.** `get_store()` returned the
