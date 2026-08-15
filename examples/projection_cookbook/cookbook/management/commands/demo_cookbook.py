@@ -134,10 +134,15 @@ class Command(BaseCommand):
         replay(store, renamed, ex, reader=DjangoProjectionReader())
         report = diff_effects_against_rows(ex.effects)
 
-        if report.ok:
-            # True, and worthless: `ok` is vacuous on an empty population. This
-            # is exactly the shape a false green takes.
-            pass
+        # The false green itself: `ok` is True here and means nothing, because
+        # it asks "did anything disagree?" of a population of zero. Asserting it
+        # is the demonstration — a demo that only checked the new properties
+        # would show the fix while hiding what it fixes.
+        if not report.ok:
+            raise CommandError(
+                "expected the vacuous case to still report ok=True — that is "
+                "precisely the false green this check exists to show"
+            )
         if report.certified or report.verdict != VACUOUS:
             raise CommandError(
                 f"An empty sweep certified itself: verdict={report.verdict}"
