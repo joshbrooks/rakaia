@@ -303,17 +303,33 @@ protocol is covered by both stores.
   warned that a second copy of the envelope "produces events that replay
   differently from every other event in the same stream, and no test anywhere is
   looking at the difference" — this was that copy.
-
   Both doors now write through `write_enveloped_event`, which owns the sentinel,
   the ambient-`provenance()` merge, `{}` rather than NULL metadata, `event_ts`
   passthrough, and locking offset allocation. It takes a *list* of streams, so
   `@stream_model`'s fan-out is still one event with one envelope shared by N
   entries. `tests/test_django_rakaia/test_envelope_writer.py` drives both doors
   with the same envelope and compares the rows.
-
   Behaviour is unchanged except that a `@stream_model` event with an empty
   action string is now stored as `"append"` rather than `""` — the same shape
   the store has always written, and the same thing both read back as.
+
+- **One content-routing rule, one registration record** (#132). Handlers and
+  upcasters each answered the same question — *what string does this
+  registration's glob get tested against?* — in their own method, the second
+  carrying a comment saying it mirrored the first. `reset()` and `rehydrate()`
+  were written out twice; the "a frozenset serialises as a sorted list" rule
+  three times; and `identity` / `to_payload` / `identity_from_payload` once per
+  record type, nine methods that had to agree pairwise with nothing checking
+  that they did. Content routing is now one function both registries call, the
+  meta-stream mechanics are one base class both registries inherit, and each
+  record type declares its persisted fields once and derives the round trip from
+  the declaration. `rakaia.registration_log` made the same move one level down;
+  its module docstring says why. Routing behaviour is unchanged, and pinned
+  first by tests that put identical inputs through both registries — including
+  the two edges that carry the weight: a missing key routes as `""` and does not
+  match, and a content-routed registration matched with no event raises.
+  Content routing for upcasters (ADR 0002 item 3) is untouched; this is where
+  that decision lands rather than a walk-back of it.
 
 - **One producer response table instead of three.** The five-arm `isinstance`
   ladder over `ProducerValidationResult` — duplicate → 204, stale epoch → 403,
@@ -357,7 +373,6 @@ protocol is covered by both stores.
   service any anonymous caller could aim at any stream. Harmless while the
   server only ever ran on a laptop; not once the package is published and
   someone deploys it.
-
   The endpoint is now off unless `RAKAIA_ENABLE_FAULT_INJECTION` is set to a
   truthy value, via a new `ServerOptions.enable_fault_injection` that reads it
   the same way `long_poll_timeout` reads `LONG_POLL_TIMEOUT`. The environment
@@ -368,12 +383,29 @@ protocol is covered by both stores.
   endpoint exists. Nothing needs the flag today: the upstream conformance suite
   never calls the endpoint, so `conformance/run.sh` does not set it and the
   baseline in `conformance/expected-failures.txt` is unchanged.
-
   Six of `InjectedFault`'s ten fields were also stored and never read —
   `delayMs`, `dropConnection`, `truncateBodyBytes`, `corruptBody`, `jitterMs`
   and `injectSseEvent` — so a caller asking for a 200ms delay got no delay and
   no error either. They are gone; `count`, `status`, `retryAfter` and `method`
   are the four that ever did anything.
+
+- **A handler registered somewhere other than where it is defined comes back
+  from a restart** (#117). `rehydrate()` restores registrations by re-importing
+  modules and letting their `@register_handler` decorators run again, and it
+  worked out which modules to import by chopping the last segment off the
+  function's dotted path. That assumed the decorator ran in the module the
+  function was defined in. Binding a dependency with
+  `functools.partial(fn, **deps)` — the documented way to do it — breaks that
+  assumption by design: the partial is built in your app's `handlers.py` while
+  `fn` lives in a shared module, so rakaia imported the shared module, no
+  decorator ran, and the handler was simply absent after a restart with nothing
+  logged. The same line mis-derived a handler defined as a method, whose
+  qualname `pkg.mod.Class.method` chopped down to the *class*. A registration
+  now records `registered_in` — the module of the frame that registered it —
+  and that is what `rehydrate()` imports; `dotted_path` keeps meaning "where the
+  logic is" for drift reporting. Meta-streams written before the field existed
+  fall back to the old derivation, which is correct for exactly the cases that
+  used to work, so upgrading does not re-append an existing log.
 - **The dashboard views refuse an offset the durable store never issued** (#122).
   Two Django views parsed a client-supplied offset with bare `int()`, outside
   any store's ownership check: `after_offset` on the JSON events endpoint, and

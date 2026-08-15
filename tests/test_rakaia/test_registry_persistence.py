@@ -16,6 +16,13 @@ from rakaia.registry import (
 from rakaia.store import StreamStore
 
 
+def _identity_index(field: str) -> int:
+    """Position of `field` in a `HandlerVersion.identity` tuple, looked up from
+    the declared field list rather than hard-coded — adding a field must not
+    silently move an assertion onto its neighbour."""
+    return [f.name for f in HandlerVersion._PAYLOAD_FIELDS].index(field)
+
+
 def _fn(tag: str):
     def handler(event):  # noqa: ARG001
         return tag
@@ -153,7 +160,7 @@ class TestPersistence:
         store.append(HANDLERS_META_STREAM, json.dumps(payload).encode("utf-8"))
         reg = HandlerRegistry(store=store)
         ident = next(iter(reg._handler_log.known()))  # type: ignore[attr-defined]
-        assert ident[-1] == 0  # stage defaulted to 0
+        assert ident[_identity_index("stage")] == 0  # stage defaulted to 0
 
 
 class TestIdempotency:

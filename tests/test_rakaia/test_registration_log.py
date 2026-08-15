@@ -35,17 +35,30 @@ from rakaia.store import StreamStore
 PATH = "_meta/test"
 
 
-def _handler(name="h", event_match="orders", stage=0, match_field=None):
+def _at(field: str) -> int:
+    """Position of `field` in an identity tuple, from the declared field list."""
+    return [f.name for f in HandlerVersion._PAYLOAD_FIELDS].index(field)
+
+
+def _handler(
+    name="h",
+    event_match="orders",
+    stage=0,
+    match_field=None,
+    registered_in="pkg.mod",
+    dotted_path=None,
+):
     return HandlerVersion(
         name=name,
         event_match=event_match,
         effective_from=0,
         effective_to=None,
         fn=lambda _event: [],
-        dotted_path=f"pkg.mod.{name}",
+        dotted_path=dotted_path or f"pkg.mod.{name}",
         source_hash="abc123",
         stage=stage,
         match_field=match_field,
+        registered_in=registered_in,
     )
 
 
@@ -131,6 +144,25 @@ class TestModulesAreResolvedByName:
         _log(store).record(_handler())
         assert _log(store).modules() == {"pkg.mod"}
 
+    def test_modules_names_the_registration_site_not_the_function(self):
+        """The module to re-import is the one whose decorator ran. Those differ
+        as soon as a function is wired up somewhere other than where it lives —
+        the normal shape once a dependency is bound with `functools.partial`."""
+        log = _log()
+        log.record(_handler(registered_in="app.wiring"))
+        assert log.modules() == {"app.wiring"}
+
+    def test_a_method_qualname_does_not_leak_a_class_into_the_modules(self):
+        """`pkg.mod.Class.method` chopped by one segment is `pkg.mod.Class`,
+        which is not importable — the registration site sidesteps it."""
+        log = _log()
+        log.record(
+            _handler(
+                registered_in="app.wiring", dotted_path="pkg.mod.Projector.project"
+            )
+        )
+        assert log.modules() == {"app.wiring"}
+
 
 class TestIdentityRoundTrip:
     """The bug class the hand-mirrored function pairs invited: an object's
@@ -167,12 +199,22 @@ class TestBackwardCompatibilityWithOlderPayloads:
     def test_a_payload_without_match_field_loads(self):
         payload = _handler().to_payload()
         del payload["match_field"]
-        assert HandlerVersion.identity_from_payload(payload)[6] is None
+        assert HandlerVersion.identity_from_payload(payload)[_at("match_field")] is None
 
     def test_a_payload_without_stage_loads_as_stage_zero(self):
         payload = _handler().to_payload()
         del payload["stage"]
-        assert HandlerVersion.identity_from_payload(payload)[7] == 0
+        assert HandlerVersion.identity_from_payload(payload)[_at("stage")] == 0
+
+    def test_a_payload_without_a_registration_site_falls_back_to_the_module(self):
+        """Meta-streams written before `registered_in` existed still restore —
+        via the derivation they were written under, which is right whenever the
+        function was registered where it was defined."""
+        payload = _handler().to_payload()
+        del payload["registered_in"]
+        assert HandlerVersion.identity_from_payload(payload)[_at("registered_in")] == (
+            "pkg.mod"
+        )
 
 
 class TestUnreadableMessagesAreSkipped:
