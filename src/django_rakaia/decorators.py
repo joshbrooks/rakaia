@@ -7,6 +7,7 @@ streams with independent, monotonic offsets per stream.
 
 import dataclasses
 import json
+import time
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -16,6 +17,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
+from rakaia.context import merge_provenance
 
 StreamPathResolver = (
     str
@@ -116,12 +118,34 @@ def create_stream_event(
         json.dumps(dataclasses.asdict(dc_instance), cls=DjangoJSONEncoder)
     )
 
+    # The envelope, resolved exactly as the stores resolve it. `@stream_model`
+    # used to write `StreamEvent` rows with neither field, so `metadata` was
+    # always `{}` and `event_ts` always NULL on the busiest append path in the
+    # integration:
+    #
+    #   * `ProvenanceMiddleware` exists to stamp actor + URL onto envelopes, and
+    #     could not reach the appends it was built for. `history.envelope_actor`
+    #     then fell back to the payload's owner FK — turning "who saved this"
+    #     into "who owns this", a different question with often a different
+    #     answer.
+    #   * `event_ts` is the deterministic merge key (ADR 0002 item 5). Leaving it
+    #     NULL forces `merge_replay` onto transport time, which is the ordering
+    #     trap that item closed.
+    #
+    # `merge_provenance(None)` returns None when no block is active, so an append
+    # outside `provenance()` still records `{}` — this is additive.
+    metadata = merge_provenance(None) or {}
+    event_ts = time.time()
+
     # Create event and entries atomically
     with transaction.atomic():
-        # Create the event (data stored once)
+        # Create the event (data stored once) — one envelope shared by every
+        # entry, since a fan-out is one event appearing in several streams.
         event = StreamEvent.objects.create(
             data=payload,
             event_type=action,
+            metadata=metadata,
+            event_ts=event_ts,
         )
 
         # Create an entry for each stream

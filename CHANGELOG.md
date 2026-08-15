@@ -194,6 +194,18 @@ is not yet tagged in a release.
   green** and had built the same guard downstream.
   → [`docs/projection-cookbook.md`](docs/projection-cookbook.md)
 
+- **`@stream_model` now records the ambient envelope.** The decorator wrote
+  `StreamEvent` rows directly rather than through a store, so `metadata` was
+  always `{}` and `event_ts` always `NULL` — on the most-used append path in the
+  Django integration. Two consequences: `ProvenanceMiddleware`, which exists to
+  stamp actor and URL onto envelopes, could not reach the appends it was built
+  for, and `history.envelope_actor` silently fell back to the payload's owner FK,
+  answering "who owns this" in place of "who saved this". `event_ts` being NULL
+  also forced `merge_replay` onto transport time, the ordering trap ADR 0002
+  item 5 closed. The decorator now calls `merge_provenance` and sets `event_ts`
+  exactly as both stores do; a fan-out to several streams shares one envelope,
+  since it is one event. Appends outside a `provenance()` block are unchanged.
+
 - **A store now refuses an offset it did not issue.** Both stores accepted the
   other's offset format and resolved it to an unrelated position instead of
   failing: `int("0_5")` is `5` in Python, so the durable store read the wrong
