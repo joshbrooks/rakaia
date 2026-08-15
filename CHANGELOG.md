@@ -9,8 +9,25 @@ runnable demo for each.
 
 ## [Unreleased]
 
-Everything below has landed on `main` since the initial `0.1.0` groundwork and
-is not yet tagged in a release.
+Nothing yet.
+
+## [0.2.0] - 2026-08-15
+
+The first release that describes the library. `0.1.0` was the initial
+groundwork; everything below landed on `main` afterwards and, until now, was
+reachable only by pinning a git revision — which is what every consumer was
+doing, because the version number could not tell them what they had.
+
+Several entries are breaking. See [UPGRADING.md](UPGRADING.md) for what to do
+about each; it is organised by release from this version on.
+
+**Known limitation.** Rakaia passes the Durable Streams conformance suite except
+the stream-forking family — `Stream-Forked-From`, `Stream-Fork-Offset` and
+`Stream-Fork-Sub-Offset`, 56 tests. Forking is not implemented. The gap is
+baselined in `conformance/expected-failures.txt` so a real regression stays
+distinguishable from it, and tracked in
+[#61](https://github.com/joshbrooks/rakaia/issues/61). Everything else in the
+protocol is covered by both stores.
 
 ### Added
 

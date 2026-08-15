@@ -54,3 +54,6 @@ conformance/node_modules/
 conformance/conformance-results.json
 conformance-results.log
 conformance-server.log
+
+# Agent worktrees — transient checkouts, never part of the tree
+.claude/worktrees/

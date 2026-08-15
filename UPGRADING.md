@@ -4,15 +4,22 @@ icon: lucide/arrow-up-circle
 
 # Upgrading
 
-Breaking changes, and what to do about each. Rakaia is pre-1.0 and the version
-number has not moved yet, so this file is organised by the change rather than by
-release — find the ones you are crossing and apply them in order.
+Breaking changes, and what to do about each, organised by the release that
+carries them. Find the releases you are crossing and apply their changes in
+order.
 
-If you pin rakaia to a git revision (which every current consumer does, since
-`0.1.0` predates most of what follows), the relevant question is *which
-revision*, not which version.
+If you pin rakaia to a git revision rather than a version — which every consumer
+did before `0.2.0`, since `0.1.0` predates nearly everything here — each section
+below also names the revision the change landed in, so you can work out which
+ones you are crossing.
 
 ---
+
+# 0.2.0
+
+Everything in this file so far. `0.1.0` was the initial groundwork and `0.2.0`
+is the first release describing the library, so a consumer moving off a pinned
+revision is crossing all of the below at once.
 
 ## Upgrading past `5e4a6e3` (`append_many`, 2026-08-08)
 
@@ -199,6 +206,18 @@ These are not API breaks — nothing to edit — but each changes what your code
 - **Bulk appends now reach SSE subscribers.** `append_many` was invisible to the
   channel layer. If you worked around that by also sending your own frame, you
   will now get two.
+- **A refused append to a closed stream now always carries a producer result.**
+  `AppendResult.producer_result` was `None` for anything but a retry of the
+  closing tuple; it is now `ProducerStreamClosed`. The HTTP response is
+  unchanged — the server already synthesised that result — so this only affects
+  code calling `store.append()` directly and testing the field for `None`.
+- **The dashboard views refuse a stream position they did not issue.** The JSON
+  events endpoint and the SSE `Last-Event-ID` header now answer `400` for an
+  offset in the other store's format, where they used to resolve it to an
+  unrelated position and answer `200`. An absent `Last-Event-ID` still means a
+  fresh connection. If a client of yours was passing a compound
+  `{seq}_{byte}` offset to the durable dashboard, it was already getting the
+  wrong window and will now be told so.
 - **Timestamps now compare equal to the column they were encoded from.**
   `DEFAULT_NORMALIZERS` gained `normalize_temporal`, so a `DateTimeField`,
   `DateField` or `TimeField` no longer reports a difference on every replay.
