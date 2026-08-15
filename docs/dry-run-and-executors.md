@@ -46,7 +46,7 @@ replication. Pass `skip_unchanged=True` to fetch the row, compare the effect's
 when nothing changed):
 
 ```python
-from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia import DjangoExecutor
 
 replay(store, "orders", DjangoExecutor(skip_unchanged=True))
 ```
@@ -60,8 +60,8 @@ To preview a replay without side effects, run it with a `CollectingExecutor` and
 inspect `.effects`:
 
 ```python
-from rakaia.executors import CollectingExecutor
-from rakaia.replay import replay
+from rakaia import CollectingExecutor
+from rakaia import replay
 
 ex = CollectingExecutor()
 replay(store, "orders", ex)          # zero writes

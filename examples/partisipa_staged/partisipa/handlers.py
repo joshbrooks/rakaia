@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rakaia.effects import Effect
+from rakaia import Effect
 
 PROJECT_MODEL = "partisipa.Project"
 SF12_MODEL = "partisipa.Sf12"

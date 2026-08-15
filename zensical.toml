@@ -21,6 +21,7 @@ nav = [
     { "What's new" = "whats-new.md" },
     { "Examples & concept coverage" = "examples.md" },
     { "Glossary" = "glossary.md" },
+    { "The public API" = "public-api.md" },
     { "Framework vs. protocol server" = "framework-vs-protocol-server.md" },
     { "Django integration" = "django-integration.md" },
     { "Versioned handlers" = "versioned-handlers.md" },

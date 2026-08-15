@@ -17,7 +17,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from rakaia.effects import Effect
+from rakaia import Effect
 
 PROJECT = "subproject.Project"
 MEETING = "subproject.Meeting"

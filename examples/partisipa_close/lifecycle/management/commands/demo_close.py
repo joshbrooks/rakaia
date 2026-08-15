@@ -30,7 +30,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from django_rakaia.store import get_store
+from django_rakaia import get_store
 from lifecycle import staged_replay as sr
 from lifecycle.handlers import STAGES
 from lifecycle.models import (

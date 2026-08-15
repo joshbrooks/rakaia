@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from django.contrib.auth import get_user_model
 from django.db import models
 
-from django_rakaia.decorators import stream_model
+from django_rakaia import stream_model
 
 User = get_user_model()
 

@@ -77,7 +77,7 @@ the row with a `defaults_of(msg, event)` callback, so the audit model can match
 whatever `/history` returns:
 
 ```python
-from django_rakaia.history import materialize_history
+from django_rakaia import materialize_history
 from rakaia import label_marker, envelope_actor
 
 materialize_history(

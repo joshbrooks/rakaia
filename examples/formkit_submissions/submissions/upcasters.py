@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rakaia.registry import register_upcaster
+from rakaia import register_upcaster
 
 
 def _rename_pct(activity: dict[str, Any]) -> dict[str, Any]:

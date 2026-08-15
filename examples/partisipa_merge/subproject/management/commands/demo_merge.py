@@ -27,7 +27,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from django_rakaia.store import get_store
+from django_rakaia import get_store
 from subproject import merge_replay as mr
 from subproject.handlers import STAGES
 from subproject.models import (

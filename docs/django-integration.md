@@ -144,7 +144,7 @@ Django model and supply two callables:
 ```python
 from dataclasses import dataclass
 from django.db import models
-from django_rakaia.decorators import stream_model
+from django_rakaia import stream_model
 
 
 @dataclass
@@ -253,7 +253,7 @@ from dataclasses import dataclass
 from django.contrib.auth import get_user_model
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django_rakaia.decorators import create_stream_event
+from django_rakaia import create_stream_event
 
 
 @dataclass
@@ -315,7 +315,7 @@ is mounted in `asgi.py` rather than in `urls.py`:
 ```python
 # asgi.py
 from django.core.asgi import get_asgi_application
-from django_rakaia.integration import get_asgi_app
+from django_rakaia import get_asgi_app
 
 django_app = get_asgi_application()
 protocol_app = get_asgi_app()  # create_app() over the configured store
@@ -359,7 +359,7 @@ inspect event payloads. To register your own concrete `StreamEvent` subclass
 in the admin, call:
 
 ```python
-from django_rakaia.admin import register_stream_event_admin
+from django_rakaia import register_stream_event_admin
 from myapp.models import MyStreamEvent
 
 register_stream_event_admin(MyStreamEvent)

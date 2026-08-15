@@ -87,8 +87,8 @@ Two real changes from Partisipa's recent history are easy to express:
 Django autodiscovery picks up this module on app `ready()`.
 
 ```python
-from rakaia.effects import Effect
-from rakaia.registry import register_handler, register_upcaster
+from rakaia import Effect
+from rakaia import register_handler, register_upcaster
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ upcasters will normalise on read.
 
 ```python
 import json
-from rakaia.store import StreamStore   # or your durable store of choice
+from rakaia import StreamStore   # or your durable store of choice
 
 store: StreamStore = ...               # singleton
 

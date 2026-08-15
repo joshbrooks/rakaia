@@ -12,10 +12,10 @@ Declare a handler's stage; replay runs stages in ascending order, and a stage > 
 handler is called `fn(event, reader)` with a read-only projection reader:
 
 ```python
-from rakaia.registry import register_handler
-from rakaia.replay import replay
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.projection_reader import DjangoProjectionReader
+from rakaia import register_handler
+from rakaia import replay
+from django_rakaia import DjangoExecutor
+from django_rakaia import DjangoProjectionReader
 
 @register_handler(name="project", event_match="TF_6_1_1",
                   match_field="form_type", stage=0)
@@ -50,7 +50,7 @@ projections and returning idempotent Effects (typically via
 [`reconcile_aggregate`](projections-and-fan-out.md)):
 
 ```python
-from rakaia.registry import register_reducer
+from rakaia import register_reducer
 from rakaia import reconcile_aggregate
 
 @register_reducer(name="balance", stage=1)

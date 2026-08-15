@@ -31,9 +31,8 @@ from collections import deque
 from queue import Empty, Queue
 from typing import Any
 
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.store import get_store
-from rakaia.replay import replay
+from django_rakaia import DjangoExecutor, get_store
+from rakaia import replay
 
 STREAM = "orders"
 

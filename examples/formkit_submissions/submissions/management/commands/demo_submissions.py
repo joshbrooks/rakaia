@@ -28,17 +28,15 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
-from django_rakaia.effect_executor import DjangoExecutor
-from django_rakaia.envelope import append_event
-from django_rakaia.store import get_store
+from django_rakaia import DjangoExecutor, append_event, get_store
 from rakaia import (
     CollectingExecutor,
     envelope_actor,
     history_effects,
     label_marker,
+    replay,
     upcast,
 )
-from rakaia.replay import replay
 from submissions import reference
 from submissions.models import ActivityProgress, MonitoringVisit, SubmissionHistory
 from submissions.seed import POLICY_CHANGE_SEQ, SAMPLE_SUBMISSIONS

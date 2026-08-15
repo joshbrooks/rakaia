@@ -25,7 +25,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from django_rakaia.store import get_store
+from django_rakaia import get_store
 from repeaters import tree_replay as tr
 from repeaters.models import Node, Total
 from repeaters.seed import (

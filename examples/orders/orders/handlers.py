@@ -29,8 +29,7 @@ Handlers are pure: they take an (already upcasted) event dict and return an
 
 from decimal import Decimal
 
-from rakaia.effects import Effect
-from rakaia.registry import register_handler
+from rakaia import Effect, register_handler
 
 from .seed import TAX_CHANGE_SEQ
 

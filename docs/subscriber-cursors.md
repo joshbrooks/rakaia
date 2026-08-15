@@ -76,8 +76,8 @@ cursor.
 (`(consumer_id, stream_path) → offset`) so a consumer survives restarts:
 
 ```python
-from django_rakaia.django_store import DjangoStreamStore
-from django_rakaia.subscription import poll_consumer, commit_cursor
+from django_rakaia import DjangoStreamStore
+from django_rakaia import poll_consumer, commit_cursor
 
 store = DjangoStreamStore()
 result = poll_consumer(store, consumer_id="reporting", stream_path="submissions")

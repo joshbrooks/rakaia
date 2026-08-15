@@ -14,6 +14,28 @@ is not yet tagged in a release.
 
 ### Added
 
+- **A declared public API, and a contract for it.**
+  [`docs/public-api.md`](docs/public-api.md) sets out three tiers: **Tier 1**
+  (`rakaia.__all__` + the new `django_rakaia.__all__`) which does not change
+  without a major bump and an `UPGRADING.md` entry; **Tier 2**, the ORM models
+  and schema — usable, deliberately *not* exported, and free to change in a
+  minor release; and **Tier 3**, everything else. It also says plainly to depend
+  on rakaia with an **upper bound** (`>=0.2,<0.3`), because on a pre-1.0 library
+  an unbounded `>=` admits every future breaking change and takes it silently on
+  the next lockfile refresh.
+
+  `django_rakaia` previously exported **nothing** — 44 lines of docstring naming
+  a "Public API" that was not importable — so every consumer import had to name
+  an internal module, pinning the module *layout* rather than the surface. It now
+  exports 34 names, resolved lazily (PEP 562) so importing the package still does
+  not pull in the ORM, which is what made eager exports impossible and is now
+  pinned by a test. Both surfaces are pinned name-by-name, so changing one is a
+  deliberate act rather than a diff.
+
+  The examples and docs were the main offender and are converted: **72
+  submodule imports** now use the package root.
+
+
 - **`StreamServerStore` — the protocol-server store surface, named.** `create_app`
   was typed against the concrete in-memory `StreamStore`, so nothing else could
   back the protocol server. The new protocol (exported from `rakaia`) covers
