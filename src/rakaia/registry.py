@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import fnmatch
 import importlib
+import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .registration_log import RegistrationLog
-from .source_hash import hash_function_source
+from .source_hash import hash_function_source, is_importable, unwrap_handler
 
 if TYPE_CHECKING:
     from .store import StreamStore
@@ -58,6 +59,44 @@ class HandlerDriftError(Exception):
 # =============================================================================
 # Data structures
 # =============================================================================
+
+
+def _dotted_path(fn: Any, *, persisted: bool = False) -> str:
+    """The importable path recorded for `fn`, warning when there isn't one.
+
+    Taken from the *unwrapped* callable so a `functools.partial` records the
+    function it binds rather than being unrecordable.
+
+    A closure or a nested lambda has a `<locals>` qualname, which `rehydrate()`
+    cannot import — it splits the recorded path and imports the module part, and
+    `pkg.factory.<locals>` is not a module. Such a registration therefore
+    survives in memory but vanishes on a restore, and its `source_hash` covers
+    only the wrapper, so drift detection is blind to whatever it calls.
+
+    Warned rather than refused: a closure is legitimate in a test, and rakaia's
+    own suite registers lambdas. The point is that it stops being silent. Bind
+    dependencies with `functools.partial` instead, which records the wrapped
+    function and keeps both properties.
+
+    Only warned when the registry **persists** (`persisted=True`). A registry
+    with no backing store records nothing and restores nothing, so an
+    unimportable path costs it nothing — warning there would fire on every
+    throwaway registry in every test suite, which is how a real warning gets
+    filtered out and stops being read. The drift caveat applies either way, and
+    is stated in the message.
+    """
+    target = unwrap_handler(fn)
+    path = f"{target.__module__}.{target.__qualname__}"
+    if persisted and not is_importable(fn):
+        warnings.warn(
+            f"Handler {path!r} is not importable, so `rehydrate()` cannot "
+            f"restore it from a meta-stream and drift detection covers only the "
+            f"wrapper, not the function it calls. Bind dependencies with "
+            f"functools.partial(fn, **deps) instead of a closure.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return path
 
 
 @dataclass(frozen=True)
@@ -313,7 +352,7 @@ class HandlerRegistry:
             effective_from=effective_from,
             effective_to=effective_to,
             fn=fn,
-            dotted_path=f"{fn.__module__}.{fn.__qualname__}",
+            dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
             match_field=match_field,
             stage=stage,
@@ -355,7 +394,7 @@ class HandlerRegistry:
             name=name,
             stage=stage,
             fn=fn,
-            dotted_path=f"{fn.__module__}.{fn.__qualname__}",
+            dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
         )
 
@@ -640,7 +679,7 @@ class UpcasterRegistry:
             event_match=event_match,
             from_version=from_version,
             fn=fn,
-            dotted_path=f"{fn.__module__}.{fn.__qualname__}",
+            dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
             match_field=match_field,
         )

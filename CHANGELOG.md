@@ -239,6 +239,22 @@ is not yet tagged in a release.
 
 ### Fixed
 
+- **A handler can take an injected dependency without losing drift detection.**
+  A stage-0 handler is called `fn(event)`, so a dependency had nowhere to go, and
+  both routes out were broken. `functools.partial` was rejected outright by
+  `hash_function_source` — with a message claiming the handler was not in an
+  importable source file, which was untrue — pushing callers to a closure
+  factory, which was accepted and silently harmful: its `dotted_path` carries
+  `<locals>` so `rehydrate()` cannot restore it, and its `source_hash` covers the
+  four-line wrapper rather than the function holding the logic. Rewriting the
+  wrapped function entirely produced an **identical hash**, so drift detection —
+  the feature that exists to catch exactly that edit — was blind, with the
+  library reporting success throughout. `partial` is now unwrapped for both, and
+  a *persisting* registry warns when a registration is not importable. Found in
+  the first production consumer, which had four handlers in this state and a
+  comment explaining why it had chosen the closure.
+
+
 - **The two rebuild guards compose in either nesting order** (#101).
   `assert_no_live_writes` counts rows on the alias `deny_database_access`
   forbids reading, so nesting them the "wrong" way round made the closing
