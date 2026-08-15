@@ -63,7 +63,7 @@ Each check is asserted hard — a regression raises `CommandError` and the comma
 |---|---|
 | `@register_handler(..., stage=0)` reference handler | `handlers.project_registry` (TF_6_1_1 → `Project`) |
 | `@register_handler(..., stage=1)` handler taking `(event, refs)` | `handlers.sf12_link` (SF_1_2 → `Sf12`, resolves project via `refs`) |
-| `refs` read-only view of earlier stages | `staged_replay.Refs` (queries committed projections) |
+| `refs` read-only view of earlier stages | `DjangoProjectionReader` (rakaia ships it; held to `tests/projection_reader_contract.py`) |
 | `staged_replay(store, stages)` in core | `staged_replay.staged_replay(...)` (example-local) |
 | "signals today" baseline | `staged_replay.naive_replay(...)` (one pass, per-event apply) |
 
@@ -74,7 +74,7 @@ The contrast between `naive_replay` (check [1]) and `staged_replay` (checks [2]/
 
 * **`seed.py`** — submissions ordered so every `SF_1_2` precedes its `TF_6_1_1`.
 * **`handlers.py`** — the two stage-aware handlers + their grouping.
-* **`staged_replay.py`** — `naive_replay` vs `staged_replay`, and the `Refs` accessor.
+* **`staged_replay.py`** — `naive_replay` vs `staged_replay`, over `DjangoProjectionReader`.
 * **`models.py`** — `Project` (reference, keyed by `(suku, output)`) and `Sf12`
   (dependent, with a `link_reason` mirroring Partisipa's `NM`/`NPO`).
 * **`management/commands/demo_staged.py`** — seeds, runs all three asserted checks.
@@ -84,5 +84,5 @@ The contrast between `naive_replay` (check [1]) and `staged_replay` (checks [2]/
 - Single stream, two form types, one dependency edge. Real Partisipa spans many
   forms across streams (see #7 feature #2, multi-stream merge) and deeper
   dependency graphs.
-- `Refs` reads the *latest* projection (correct for link resolution). Time-correct
+- The reader reads the *latest* projection (correct for link resolution). Time-correct
   aggregates would want an as-of snapshot — an open question for the core API.

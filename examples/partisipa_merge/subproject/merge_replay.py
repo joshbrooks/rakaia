@@ -22,23 +22,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from django.apps import apps
-
 from django_rakaia import DjangoExecutor
+from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia import upcast
-
-
-class Refs:
-    """Read-only view over projections materialized by earlier stages."""
-
-    def get(self, model_label: str, **lookup: Any) -> Any:
-        return apps.get_model(model_label).objects.filter(**lookup).first()
-
-    def filter(self, model_label: str, **lookup: Any) -> Any:
-        return apps.get_model(model_label).objects.filter(**lookup)
-
-    def query(self, model_label: str) -> Any:
-        return apps.get_model(model_label).objects.all()
 
 
 def read_events(store: Any, stream_path: str) -> list[dict[str, Any]]:
@@ -80,7 +66,7 @@ def staged_replay_events(
     executor = DjangoExecutor()
     for stage in sorted(stages):
         spec = stages[stage]
-        refs = Refs()
+        refs = DjangoProjectionReader()
         for event in events:
             for form_type, fn in spec.get("events", []):
                 if event.get("form_type") == form_type:

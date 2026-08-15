@@ -70,6 +70,7 @@ RAKAIA_PUBLIC = {
     "generate_response_cursor",
     # effects
     "CollectingExecutor",
+    "DictProjections",
     "DuplicateProducesError",
     "Effect",
     "EffectCollisionError",

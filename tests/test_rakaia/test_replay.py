@@ -7,6 +7,7 @@ import json
 import pytest
 
 from rakaia.effects import ApplyReport, Effect
+from rakaia.executors import DictProjections
 from rakaia.registry import (
     HandlerDriftError,
     HandlerGapError,
@@ -558,67 +559,6 @@ class TestMatchFieldRouting:
 # ---------------------------------------------------------------------------
 # Staged replay (stage= handlers + a projection reader)
 # ---------------------------------------------------------------------------
-
-from types import SimpleNamespace  # noqa: E402
-
-
-class DictProjections:
-    """In-memory materialiser: an Executor that applies update_or_create/delete
-    effects, and a ProjectionReader over the same rows. Enough to exercise
-    staged replay without Django — stage 1 reads what stage 0 committed."""
-
-    def __init__(self) -> None:
-        self.rows: dict[str, list[dict]] = {}
-
-    # -- Executor side --
-    def apply(self, effects) -> None:
-        for e in effects:
-            table = self.rows.setdefault(e.model_label, [])
-            if e.op == "update_or_create":
-                row = self._find(table, e.lookup)
-                if row is None:
-                    row = dict(e.lookup)
-                    table.append(row)
-                row.update(e.defaults or {})
-            elif e.op == "delete":
-                self.rows[e.model_label] = [
-                    r
-                    for r in table
-                    if not (
-                        self._match(r, e.lookup or {})
-                        and not self._excluded(r, e.exclude or {})
-                    )
-                ]
-
-    @staticmethod
-    def _find(table, lookup):
-        return next((r for r in table if DictProjections._match(r, lookup)), None)
-
-    @staticmethod
-    def _match(row, lookup):
-        return all(row.get(k) == v for k, v in lookup.items())
-
-    @staticmethod
-    def _excluded(row, exclude):
-        for key, val in exclude.items():
-            if key.endswith("__in") and row.get(key[:-4]) in val:
-                return True
-        return False
-
-    # -- ProjectionReader side --
-    def get(self, model_label, **lookup):
-        row = self._find(self.rows.get(model_label, []), lookup)
-        return SimpleNamespace(**row) if row is not None else None
-
-    def filter(self, model_label, **lookup):
-        return [
-            SimpleNamespace(**r)
-            for r in self.rows.get(model_label, [])
-            if self._match(r, lookup)
-        ]
-
-    def query(self, model_label):
-        return [SimpleNamespace(**r) for r in self.rows.get(model_label, [])]
 
 
 def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see call)

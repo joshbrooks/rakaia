@@ -5,8 +5,9 @@ The projection helpers most examples use (`reconcile_children`, `project_latest`
 own a *whole* row. The primitives here are for the harder case where a single
 projection row is composed by **several independent owners**, or where a child
 FK must point at a sibling row whose primary key doesn't exist until apply time.
-None of the other examples exercise them, so this one does — end to end, through a
-tiny in-memory executor (`executor.py`, standing in for `DjangoExecutor`):
+None of the other examples exercise them, so this one does — end to end, through
+rakaia's own in-memory `DictProjections`, which the shared executor contract
+holds to the same behaviour as `DjangoExecutor`:
 
   * `Ref` / `RefResolver`     — an effect binds an FK to a *sibling* effect's
                                 generated primary key, no staging split.
@@ -26,9 +27,8 @@ Runs as a plain script (no Django):
 
 from __future__ import annotations
 
-from executor import DictExecutor
-
 from rakaia import (
+    DictProjections,
     Effect,
     EffectCollisionError,
     Ref,
@@ -50,7 +50,7 @@ def _hdr(title: str) -> None:
 
 def section_refs() -> None:
     _hdr("[1] Ref / RefResolver: bind an FK to a sibling's generated pk")
-    ex = DictExecutor()
+    ex = DictProjections()
     # One batch: create an Area, then a Project whose area_id must point at the
     # Area's primary key — which does not exist until the first effect applies.
     # `produces=`/`Ref` wires them without a natural-key reader lookup.
@@ -94,7 +94,7 @@ def section_refs() -> None:
 
 def section_multi_owner_aggregate() -> None:
     _hdr("[2] reconcile_aggregate(owns=): two reducers, one shared row")
-    ex = DictExecutor()
+    ex = DictProjections()
 
     # A per-suku Balance row is co-owned. Because owns= per-group effects are
     # update-if-exists (they never mint a row), one owner owns the row's
@@ -147,7 +147,7 @@ def section_multi_owner_aggregate() -> None:
 
 def section_reconcile_by_key() -> None:
     _hdr("[3] reconcile_by_key(retire=patch): soft-delete on a natural key")
-    ex = DictExecutor()
+    ex = DictProjections()
 
     # QA alerts keyed by (alert_type, field_key). A re-derivation should stamp
     # `resolved_at` on alerts that no longer fire — NOT hard-delete them, so the

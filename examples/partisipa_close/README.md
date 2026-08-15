@@ -72,7 +72,7 @@ Each check is asserted hard — a regression raises `CommandError` and exits non
 |---|---|
 | **Guarded transition** — an event ACCEPTED/REJECTED by a predicate over the projected state | `handlers.cycle_close` + `close_preconditions` (stage 2) |
 | **Replay-safe aggregate** — recomputed from contributing rows, never incremented | `handlers.balance_rollup` (stage 1 `reduce`) |
-| Staged replay + `refs` (from `partisipa_staged`) | `staged_replay.staged_replay` / `Refs` |
+| Staged replay + `refs` (from `partisipa_staged`) | `staged_replay.staged_replay` / `DjangoProjectionReader` |
 | Per-event fold within a stage (last-write-wins, no batch collision) | `staged_replay.staged_replay` |
 
 The three-stage plan: **stage 0** builds `Project`/`Meeting`/`FinanceLine` per event;
@@ -96,7 +96,7 @@ non-replay-safe aggregate by clearing it first.
 
 * **`seed.py`** — two sukus (one passing, one failing three ways) + the heal events, and the expected initial verdicts.
 * **`handlers.py`** — the stage plan: per-event facts, the balance aggregate, and the `close_preconditions` guard.
-* **`staged_replay.py`** — the staged orchestrator with per-stage `reduce` steps and the read-only `Refs`.
+* **`staged_replay.py`** — the staged orchestrator with per-stage `reduce` steps and the read-only `DjangoProjectionReader`.
 * **`models.py`** — the five projections, incl. the replay-safe `Balance` and the `CycleClose` state.
 * **`management/commands/demo_close.py`** — seeds and runs all four asserted checks.
 

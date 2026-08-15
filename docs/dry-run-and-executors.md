@@ -26,15 +26,44 @@ flowchart LR
 ```
 
 `replay()` calls `apply()` with each batch of effects a handler produces. Rakaia
-ships two implementations:
+ships three implementations:
 
 | Executor | Package | What it does |
 |---|---|---|
 | `DjangoExecutor` | `django_rakaia.effect_executor` | Applies effects for real — `update_or_create`, `delete`, and (optionally) external effects. |
 | `CollectingExecutor` | `rakaia.executors` | Records effects into `.effects` **without applying them**. The building block for a dry run. |
+| `DictProjections` | `rakaia.executors` | Applies effects to in-memory dicts, and reads them back — an `Executor` and a `ProjectionReader` in one, with no database. |
 
 You can write your own — anything that satisfies the protocol works (e.g. an
 executor that streams effects to a log, or applies them to a non-Django store).
+
+### Applying effects without a database
+
+`DictProjections` is the no-Django applying executor: it upserts, updates,
+deletes and retires into dict-backed tables, mints a synthetic primary key per
+row so `Ref` resolves as it does on Django, and serves the same rows back
+through `get`/`filter`/`query`. It is what lets a test or an example exercise
+the whole surface — `Ref`/`RefResolver`, the `reconcile_*` helpers, staged
+replay where stage 1 reads what stage 0 committed — in memory:
+
+```python
+from rakaia import DictProjections, replay
+
+proj = DictProjections()
+replay(store, "submissions", proj, reader=proj)
+proj.get("app.Balance", suku="A").total
+```
+
+Because it is what the demos and tests rehearse on, "it worked in memory" has to
+mean something on Django. Two shared conformance suites enforce that:
+`tests/executor_contract.py` holds `DictProjections` and `DjangoExecutor` to the
+same batch semantics (writes, then deletes, then retires; one `RefResolver` per
+`apply()`; collision detection before the first write), and
+`tests/projection_reader_contract.py` does the same for its reader half against
+`DjangoProjectionReader` and `PreloadedProjectionReader`.
+
+It is deliberately not an ORM: exact match, `__in` and `__isnull` are the only
+lookups it understands, and there are no relations, constraints or transactions.
 
 ### Skipping no-op writes
 
