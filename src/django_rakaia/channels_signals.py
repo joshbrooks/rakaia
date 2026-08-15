@@ -141,10 +141,13 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
 def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: ARG001
     """Broadcast an ORM-written stream entry to the stream's channel group.
 
-    Covers the write paths that do not go through `DjangoStreamStore` — chiefly
-    `@stream_model`. The store publishes its own appends via `broadcast_entries`
-    and writes with `bulk_create`, so this receiver does not double-fire for
-    them.
+    Covers every entry written through the ORM: `@stream_model`, and
+    `DjangoStreamStore.append`, which persists one entry with `create()`.
+
+    It does *not* cover `DjangoStreamStore.append_many`, which persists with
+    `bulk_create` — that path calls `broadcast_entries` itself. So the two
+    mechanisms partition the write paths rather than overlapping, and no entry is
+    published twice.
     """
     # Skip fixture rows. Beyond the phantom frame, the `instance.stream` /
     # `instance.event` dereferences are separate queries that raise DoesNotExist
