@@ -34,7 +34,14 @@ pytestmark = pytest.mark.django_db
 
 
 def _hand_rolled(store, path, payload, *, label, actor=None, event_ts=None):
-    """The longhand `append_event` replaces, kept here as the oracle."""
+    """The longhand `append_event` replaces, kept here as the oracle.
+
+    Faithful to the copies in the wild, including the one bug they share: with
+    no actor this writes `{"user": None}`, which out-ranks an ambient
+    `provenance(user=...)`. The helper omits the key instead — the single
+    deliberate divergence, pinned by
+    `test_no_actor_does_not_clobber_the_ambient_one`.
+    """
     if not store.has(path):
         store.create(path)
     store.append(
@@ -110,6 +117,31 @@ class TestAppendEventMatchesTheLonghand:
         (msg,), _ = store.read("p")
         assert msg.metadata["user"] == 5
         assert msg.metadata["url"] == "/imports/"
+
+    def test_no_actor_does_not_clobber_the_ambient_one(self):
+        """The one place the helper deliberately departs from the longhand.
+
+        `merge_provenance` layers ambient *under* explicit, so writing
+        `{"user": None}` for a caller who simply didn't pass an actor would beat
+        the user `ProvenanceMiddleware` already stamped on the request — the
+        caller's silence would become a positive assertion that nobody did this,
+        and `envelope_actor` would fall back to the payload's owner FK. Omit the
+        key instead, and the ambient actor survives.
+        """
+        store = StreamStore()
+        with provenance(user=7, url="/imports/"):
+            append_event(store, "p", {"n": 1}, label="create")
+        (msg,), _ = store.read("p")
+        assert msg.metadata["user"] == 7
+        assert msg.metadata["url"] == "/imports/"
+
+    def test_no_actor_and_no_ambient_block_keeps_the_bare_default(self):
+        """With nothing to record, the message keeps rakaia's no-envelope
+        default rather than carrying a `user: None` that means nothing."""
+        store = StreamStore()
+        append_event(store, "p", {"n": 1}, label="create")
+        (msg,), _ = store.read("p")
+        assert msg.metadata is None
 
 
 def _handler(event):

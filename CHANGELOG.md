@@ -69,7 +69,12 @@ is not yet tagged in a release.
   consumer, whose own module carried the warning that motivates this: *"a second
   write path which re-implements the envelope is a path no gate covers."* Both
   now ship from `django_rakaia.envelope`, pinned byte-for-byte against the
-  longhand they replace. Upstreamed as its ADR-0020 anticipated.
+  longhand they replace — with one deliberate departure: `append_event` omits
+  `metadata["user"]` when no actor is passed, rather than writing `None`.
+  `merge_provenance` layers ambient under explicit, so the copies in the wild
+  clobber the actor `ProvenanceMiddleware` stamped on the request whenever a
+  call site doesn't repeat it, and `envelope_actor` then falls back to the
+  payload's owner FK. Upstreamed as its ADR-0020 anticipated.
 
   The store contract also gained the property that makes the create-if-missing
   shorthand safe: a redundant `create()` on a populated stream preserves its

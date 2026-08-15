@@ -59,9 +59,13 @@ def append_event(
     * the payload is JSON-encoded with `DjangoJSONEncoder`, so a `UUID`,
       `datetime` or `Decimal` survives the trip rather than raising `TypeError`
       at insert time;
-    * ``metadata`` is always a dict carrying ``user`` — the key
+    * an ``actor`` is recorded under ``user`` — the key
       `rakaia.history.envelope_actor` reads. Ambient `provenance()` still merges
-      underneath, so a request-scoped `url`/`causation` is not shut out;
+      underneath, so a request-scoped `url`/`causation` is not shut out. A
+      ``None`` actor is *omitted* rather than written: `merge_provenance` layers
+      ambient under explicit, so an explicit ``{"user": None}`` would beat the
+      actor `ProvenanceMiddleware` had already stamped on the block — turning
+      the caller's silence into a positive assertion that nobody did this;
     * ``event_ts`` is passed through. ``None`` means "order by append time",
       which is the pre-existing default, not a silent loss of ordering.
 
@@ -75,7 +79,11 @@ def append_event(
     store.append(
         stream_path,
         json.dumps(payload, cls=DjangoJSONEncoder).encode(),
-        AppendOptions(label=label, metadata={"user": actor}, event_ts=event_ts),
+        AppendOptions(
+            label=label,
+            metadata={"user": actor} if actor is not None else None,
+            event_ts=event_ts,
+        ),
     )
 
 
