@@ -11,7 +11,6 @@ non-zero on failure, so it doubles as a smoke test.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from django.core.management import call_command
@@ -28,7 +27,7 @@ from django_rakaia import (
     diff_effects_against_rows,
     get_store,
 )
-from rakaia import CollectingExecutor, replay
+from rakaia import CollectingExecutor, replay, seed_stream
 
 STREAM = "cookbook"
 
@@ -49,9 +48,7 @@ class Command(BaseCommand):
         store.delete(STREAM)
         Task.objects.all().delete()
         Project.objects.all().delete()
-        store.create(STREAM)
-        for event in SAMPLE_EVENTS:
-            store.append(STREAM, json.dumps(event).encode("utf-8"))
+        seed_stream(STREAM, SAMPLE_EVENTS, store=store)
         self.stdout.write(
             f"Seeded {len(SAMPLE_EVENTS)} events "
             "(the P-100 tasks arrive before the P-100 project)."
@@ -127,7 +124,7 @@ class Command(BaseCommand):
         and the sweep has no evidence either way.
         """
         renamed = f"{STREAM}-renamed"
-        store.create(renamed)
+        seed_stream(renamed, store=store)
 
         ex = CollectingExecutor()
         replay(store, renamed, ex, reader=DjangoProjectionReader())

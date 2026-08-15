@@ -7,19 +7,17 @@ with the Django store's non-zero-padded integer offsets.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.subscription import commit_cursor, load_cursor, poll_consumer
+from rakaia.seed import seed_stream
 
 CONSUMER = "reporting"
 
 
 def _append(store: DjangoStreamStore, path: str, n: int) -> None:
-    for i in range(n):
-        store.append(path, json.dumps({"i": i}).encode())
+    seed_stream(path, [{"i": i} for i in range(n)], store=store)
 
 
 @pytest.mark.django_db

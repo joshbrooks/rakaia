@@ -8,7 +8,6 @@ issue #68 item #1.
 
 from __future__ import annotations
 
-import json
 import uuid
 from decimal import Decimal
 
@@ -23,6 +22,7 @@ from rakaia.effects import Effect
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
+from rakaia.seed import seed_stream
 
 from .models import FinanceLine, Measure
 
@@ -196,24 +196,26 @@ class TestEndToEndCollectingExecutorProof:
 
         store = get_store()
         store.delete("s")
-        store.create("s")
-        for event in (
-            {
-                "schema_version": 1,
-                "kind": "FINANCE",
-                "key": "f1",
-                "suku": "A",
-                "delta": 100,
-            },
-            {
-                "schema_version": 1,
-                "kind": "FINANCE",
-                "key": "f2",
-                "suku": "B",
-                "delta": 50,
-            },
-        ):
-            store.append("s", json.dumps(event).encode("utf-8"))
+        seed_stream(
+            "s",
+            [
+                {
+                    "schema_version": 1,
+                    "kind": "FINANCE",
+                    "key": "f1",
+                    "suku": "A",
+                    "delta": 100,
+                },
+                {
+                    "schema_version": 1,
+                    "kind": "FINANCE",
+                    "key": "f2",
+                    "suku": "B",
+                    "delta": 50,
+                },
+            ],
+            store=store,
+        )
 
         reg = HandlerRegistry()
         reg.register(

@@ -14,6 +14,27 @@ is not yet tagged in a release.
 
 ### Added
 
+- **`rakaia.seed_stream` — putting events into a stream is one call.** Getting a
+  handful of events into a stream took four lines (create, loop, `json.dumps`,
+  `.encode()`) and rakaia never shipped a way to do it, so the test suite carried
+  six hand-rolled copies in three different shapes and the examples twelve more,
+  four of them wrapped in a locally-defined `_append`. Setup in the worst test ran
+  to sixty-eight lines before the first assertion.
+
+  `seed_stream(path, events, store=..., encoder=...)` builds an in-memory
+  `StreamStore` when no store is given, accepts any `WritableStore` when one is,
+  and returns it either way. Payloads may be dicts or pre-encoded bytes; the
+  label/metadata/`event_ts` envelope is **per event** — pair a payload with an
+  `AppendOptions` — because a batch-level label is not what the callers needed.
+  Creation is idempotent and non-destructive, so seeding an existing path appends
+  and no caller needs a `has()` guard.
+
+  The `encoder` parameter is the point: `django_rakaia.envelope.append_event` and
+  `fold_events` are now built on it, passing `DjangoJSONEncoder` in, so there is
+  exactly one `json.dumps` rule in the codebase rather than the drifting second
+  copy `envelope.py` warns about. `append_event`'s output is unchanged, byte for
+  byte, and a test pins that.
+
 - **A declared public API, and a contract for it.**
   [`docs/public-api.md`](docs/public-api.md) sets out three tiers: **Tier 1**
   (`rakaia.__all__` + the new `django_rakaia.__all__`) which does not change

@@ -12,7 +12,6 @@ never touches authored alerts.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -23,7 +22,7 @@ from rakaia.effects import Effect
 from rakaia.projections import reconcile_by_key
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
-from rakaia.store import StreamStore
+from rakaia.seed import seed_stream
 
 from .models import Alert
 
@@ -385,14 +384,6 @@ class TestMachineResolutionTransitions:
     by default, delivered when ``include_external=True``, never re-spammed."""
 
     @staticmethod
-    def _seed_stream(events: list[dict]) -> StreamStore:
-        store = StreamStore()
-        store.create("sub:1")
-        for ev in events:
-            store.append("sub:1", json.dumps(ev).encode("utf-8"))
-        return store
-
-    @staticmethod
     def _registry() -> HandlerRegistry:
         reg = HandlerRegistry()
 
@@ -419,7 +410,7 @@ class TestMachineResolutionTransitions:
         ]
 
     def test_one_transition_per_real_resolution(self):
-        store = self._seed_stream(self._events)
+        store = seed_stream("sub:1", self._events)
         ex = _CapturingDjangoExecutor()
         replay(
             store, "sub:1", ex, handler_registry=self._registry(), include_external=True
@@ -437,7 +428,7 @@ class TestMachineResolutionTransitions:
         assert t.payload["resolved_at"] == "t2"
 
     def test_still_violating_key_emits_no_transition(self):
-        store = self._seed_stream(self._events)
+        store = seed_stream("sub:1", self._events)
         ex = _CapturingDjangoExecutor()
         replay(
             store, "sub:1", ex, handler_registry=self._registry(), include_external=True
@@ -446,14 +437,14 @@ class TestMachineResolutionTransitions:
         assert "ff4_operational_exceeds_ksp" not in fired  # A stayed open
 
     def test_transition_skipped_on_replay_by_default(self):
-        store = self._seed_stream(self._events)
+        store = seed_stream("sub:1", self._events)
         ex = _CapturingDjangoExecutor()
         result = replay(store, "sub:1", ex, handler_registry=self._registry())
         assert ex.externals == []  # not delivered
         assert result.external_effects_skipped == 1  # but counted
 
     def test_rebuild_is_silent_by_default(self):
-        store = self._seed_stream(self._events)
+        store = seed_stream("sub:1", self._events)
         reg = self._registry()
         for _ in range(2):  # a rebuild replays from scratch at the default gate
             ex = _CapturingDjangoExecutor()
@@ -589,10 +580,7 @@ def _staged_registry() -> HandlerRegistry:
 
 
 def _run(events: list[dict], **kw: Any):
-    store = StreamStore()
-    store.create("sub:1")
-    for e in events:
-        store.append("sub:1", json.dumps(e).encode("utf-8"))
+    store = seed_stream("sub:1", events)
     return replay(
         store,
         "sub:1",

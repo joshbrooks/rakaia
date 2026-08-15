@@ -23,7 +23,6 @@ it enqueues the order for the producer to append on its next tick.
 
 from __future__ import annotations
 
-import json
 import random
 import threading
 import time
@@ -32,7 +31,7 @@ from queue import Empty, Queue
 from typing import Any
 
 from django_rakaia import DjangoExecutor, get_store
-from rakaia import replay
+from rakaia import replay, seed_stream
 
 STREAM = "orders"
 
@@ -82,7 +81,7 @@ class LiveProducer:
 
         store = get_store()
         store.delete(STREAM)
-        store.create(STREAM)
+        seed_stream(STREAM, store=store)
         OrderSummary.objects.all().delete()
         self._thread = threading.Thread(
             target=self._run, name="orders-live-producer", daemon=True
@@ -123,7 +122,7 @@ class LiveProducer:
         store = get_store()
         start = self._seq
         for event in batch:
-            store.append(STREAM, json.dumps(event).encode("utf-8"))
+            seed_stream(STREAM, [event], store=store)
             self._seq += 1
             # Track placed PAID orders (invented *or* browser-submitted) so a
             # later bonus can target a real row; do this before _note_event so

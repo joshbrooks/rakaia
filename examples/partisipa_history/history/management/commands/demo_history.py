@@ -72,7 +72,6 @@ class Command(BaseCommand):
         store = get_store()
         for path in (STREAM, NAIVE_STREAM):
             store.delete(path)
-            store.create(path)
 
         # The "today" path: pghistory records the golden audit table.
         pghistory_today.simulate(SAVES)

@@ -23,7 +23,6 @@ Four checks, each asserted hard (a failure raises CommandError):
 
 from __future__ import annotations
 
-import json
 from decimal import Decimal
 from typing import Any
 
@@ -41,6 +40,7 @@ from lifecycle.models import (
     Project,
 )
 from lifecycle.seed import EXPECTED_INITIAL, HEAL_EVENTS, SAMPLE_EVENTS
+from rakaia import seed_stream
 
 STREAM = "subproject-lifecycle"
 
@@ -48,10 +48,6 @@ STREAM = "subproject-lifecycle"
 def _reset() -> None:
     for model in (CycleClose, Balance, FinanceLine, Meeting, Project):
         model.objects.all().delete()
-
-
-def _append(store: Any, event: dict) -> None:
-    store.append(STREAM, json.dumps(event).encode("utf-8"))
 
 
 def _close_state() -> dict[str, tuple[str, list]]:
@@ -73,9 +69,7 @@ class Command(BaseCommand):
         call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
         store.delete(STREAM)
-        store.create(STREAM)
-        for event in SAMPLE_EVENTS:
-            _append(store, event)
+        seed_stream(STREAM, SAMPLE_EVENTS, store=store)
         _reset()
         sr.staged_replay(store, STREAM, STAGES)
         self.stdout.write(
@@ -109,8 +103,7 @@ class Command(BaseCommand):
     # -- [2] self-heal ------------------------------------------------------
 
     def _check_self_heal(self, store: Any) -> None:
-        for event in HEAL_EVENTS:
-            _append(store, event)
+        seed_stream(STREAM, HEAL_EVENTS, store=store)
         _reset()
         sr.staged_replay(store, STREAM, STAGES)
         state = _close_state()

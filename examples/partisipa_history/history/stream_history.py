@@ -27,7 +27,7 @@ import json
 from typing import Any
 
 from django_rakaia import DjangoExecutor
-from rakaia import Effect
+from rakaia import Effect, seed_stream
 
 from .envelope import OP_TO_LABEL, canonical, make_event
 from .models import SubmissionHistoryEntry
@@ -41,15 +41,16 @@ HISTORY_MODEL = "history.SubmissionHistoryEntry"
 
 def append_saves(store: Any, stream: str, saves: list[dict[str, Any]]) -> None:
     """Write each save to the stream as a full envelope event."""
-    for save in saves:
-        store.append(stream, json.dumps(make_event(save)).encode("utf-8"))
+    seed_stream(stream, [make_event(save) for save in saves], store=store)
 
 
 def naive_append(store: Any, stream: str, saves: list[dict[str, Any]]) -> None:
     """The strawman: append only the fields — no actor, no op, no timestamp."""
-    for save in saves:
-        payload = {"key": save["key"], "fields": save["fields"]}
-        store.append(stream, json.dumps(payload).encode("utf-8"))
+    seed_stream(
+        stream,
+        [{"key": save["key"], "fields": save["fields"]} for save in saves],
+        store=store,
+    )
 
 
 # -- replaying into projections ---------------------------------------------

@@ -11,6 +11,7 @@ import pytest
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.history import materialize_history
 from rakaia.history import envelope_actor, label_marker
+from rakaia.seed import seed_stream
 from rakaia.types import AppendOptions
 
 from .models import History
@@ -26,19 +27,18 @@ def _defaults(msg, event):
 
 
 def _seed() -> DjangoStreamStore:
-    store = DjangoStreamStore()
-    store.create("submissions")
-    store.append(
+    return seed_stream(
         "submissions",
-        b'{"key": "s1", "user_id": 9, "a": 1}',
-        AppendOptions(label="insert", metadata={"user": 42}),
+        [
+            (
+                b'{"key": "s1", "user_id": 9, "a": 1}',
+                AppendOptions(label="insert", metadata={"user": 42}),
+            ),
+            # no context -> actor falls back to owner
+            (b'{"key": "s1", "user_id": 9, "a": 2}', AppendOptions(label="update")),
+        ],
+        store=DjangoStreamStore(),
     )
-    store.append(
-        "submissions",
-        b'{"key": "s1", "user_id": 9, "a": 2}',
-        AppendOptions(label="update"),  # no context -> actor falls back to owner
-    )
-    return store
 
 
 def _materialize(store, **kw):

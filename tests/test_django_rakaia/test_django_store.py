@@ -19,7 +19,7 @@ from rakaia import CollectingExecutor
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
-from rakaia.store import StreamStore
+from rakaia.seed import seed_stream
 from rakaia.types import AppendOptions, SequenceConflict, StreamConfigConflict
 
 
@@ -392,17 +392,11 @@ class TestDjangoStreamStoreReplay:
         events = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
         reg = self._register()
 
-        mem = StreamStore()
-        mem.create("s")
-        for ev in events:
-            mem.append("s", json.dumps(ev).encode("utf-8"))
+        mem = seed_stream("s", events)
         mem_ex = CollectingExecutor()
         replay(mem, "s", mem_ex, handler_registry=reg)
 
-        dj = DjangoStreamStore()
-        dj.create("s")
-        for ev in events:
-            dj.append("s", json.dumps(ev).encode("utf-8"))
+        dj = seed_stream("s", events, store=DjangoStreamStore())
         dj_ex = CollectingExecutor()
         replay(dj, "s", dj_ex, handler_registry=reg)
 

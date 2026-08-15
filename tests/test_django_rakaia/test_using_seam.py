@@ -9,8 +9,6 @@ instead of a bespoke in-memory engine.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
@@ -19,6 +17,7 @@ from django_rakaia.store import get_store
 from rakaia.effects import Effect, Ref
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
+from rakaia.seed import seed_stream
 
 from .models import Area, FinanceLine
 
@@ -114,9 +113,7 @@ class TestFromScratchRebuildProof:
     def test_staged_rebuild_links_in_overlay_leaving_default_empty(self):
         store = get_store()
         store.delete("s")
-        store.create("s")
-        for event in _EVENTS:
-            store.append("s", json.dumps(event).encode("utf-8"))
+        seed_stream("s", _EVENTS, store=store)
 
         reg = HandlerRegistry()
         reg.register("ref", "REF", _ref_handler, 0, None, match_field="kind", stage=0)

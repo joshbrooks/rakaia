@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
@@ -12,6 +10,7 @@ from django_rakaia.store import get_store
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import merge_replay, replay
+from rakaia.seed import seed_stream
 
 from .models import Area
 
@@ -64,9 +63,7 @@ class TestStagedReplayOverOrm:
     def test_stage1_reads_stage0_committed_rows(self):
         store = get_store()
         store.delete("s")
-        store.create("s")
-        for event in _EVENTS:
-            store.append("s", json.dumps(event).encode("utf-8"))
+        seed_stream("s", _EVENTS, store=store)
 
         reg = HandlerRegistry()
         reg.register("ref", "REF", _ref_handler, 0, None, match_field="kind", stage=0)
@@ -117,6 +114,18 @@ _FINANCE_EVENTS = [
 ]
 
 
+def _line(key: str, suku: str, delta: int, hour: str) -> dict:
+    """A finance line with an explicit `ts`, for the merge ordering test."""
+    return {
+        "schema_version": 1,
+        "kind": "FINANCE",
+        "key": key,
+        "suku": suku,
+        "delta": delta,
+        "ts": f"2026-01-01T{hour}:00:00Z",
+    }
+
+
 @pytest.mark.django_db
 class TestReducerOverOrm:
     def test_reducer_recomputes_aggregate_via_reconcile_aggregate(self):
@@ -124,9 +133,7 @@ class TestReducerOverOrm:
 
         store = get_store()
         store.delete("s")
-        store.create("s")
-        for event in _FINANCE_EVENTS:
-            store.append("s", json.dumps(event).encode("utf-8"))
+        seed_stream("s", _FINANCE_EVENTS, store=store)
 
         reg = HandlerRegistry()
         reg.register(
@@ -215,45 +222,11 @@ class TestMergeReplayOverOrm:
         store = get_store()
         for path in ("fin/a", "fin/b"):
             store.delete(path)
-            store.create(path)
-        store.append(
-            "fin/a",
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "FINANCE",
-                    "key": "f1",
-                    "suku": "A",
-                    "delta": 100,
-                    "ts": "2026-01-01T00:00:00Z",
-                }
-            ).encode("utf-8"),
-        )
-        store.append(
+        seed_stream("fin/a", [_line("f1", "A", 100, "00")], store=store)
+        seed_stream(
             "fin/b",
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "FINANCE",
-                    "key": "f2",
-                    "suku": "A",
-                    "delta": -30,
-                    "ts": "2026-01-01T01:00:00Z",
-                }
-            ).encode("utf-8"),
-        )
-        store.append(
-            "fin/b",
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "FINANCE",
-                    "key": "f3",
-                    "suku": "B",
-                    "delta": 50,
-                    "ts": "2026-01-01T02:00:00Z",
-                }
-            ).encode("utf-8"),
+            [_line("f2", "A", -30, "01"), _line("f3", "B", 50, "02")],
+            store=store,
         )
 
         reg = HandlerRegistry()
