@@ -87,6 +87,7 @@ class DjangoExecutor:
         # and a sibling's Ref values are substituted before that sibling applies.
         resolver = RefResolver()
         retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
+        created = written = skipped = 0
         with transaction.atomic(using=self._using):
             # Writes first, then deletes, then retires: reconcile batches
             # (upsert current rows, prune/soft-delete the rest) converge
@@ -95,7 +96,14 @@ class DjangoExecutor:
             # refs it.
             for eff in effects_list:
                 if isinstance(eff, Upsert):
-                    obj = self._upsert(resolver.resolve_effect(eff))
+                    obj, outcome = self._upsert(resolver.resolve_effect(eff))
+                    if outcome == "created":
+                        created += 1
+                        written += 1
+                    elif outcome == "written":
+                        written += 1
+                    else:
+                        skipped += 1
                     if eff.produces is not None:
                         resolver.record(eff.produces, _row_accessor(obj))
                 elif isinstance(eff, Update):
@@ -109,16 +117,27 @@ class DjangoExecutor:
                     flipped = self._retire(reff)
                     if reff.transition is not None:
                         retire_flips.append((reff, flipped))
-        return ApplyReport(retire_flips=retire_flips)
+        return ApplyReport(
+            retire_flips=retire_flips,
+            upserts_created=created,
+            upserts_written=written,
+            upserts_skipped=skipped,
+        )
 
-    def _upsert(self, eff: Upsert) -> Any:
+    def _upsert(self, eff: Upsert) -> tuple[Any, str]:
+        """Apply one upsert; return the row and how it resolved.
+
+        The outcome is `"created"`, `"written"` or `"skipped"` — see
+        :class:`ApplyReport` for what the three mean. Only the `skip_unchanged`
+        path can report `"skipped"`; `update_or_create` always writes.
+        """
         model = apps.get_model(eff.model_label)
         defaults = eff.defaults or {}
         if not self._skip_unchanged:
-            obj, _ = self._manager(model).update_or_create(
+            obj, was_created = self._manager(model).update_or_create(
                 **eff.lookup, defaults=defaults
             )
-            return obj
+            return obj, ("created" if was_created else "written")
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
     def _update(self, eff: Update) -> None:
@@ -134,7 +153,9 @@ class DjangoExecutor:
         model = apps.get_model(eff.model_label)
         self._manager(model).filter(**eff.lookup).update(**defaults)
 
-    def _upsert_skip_unchanged(self, model: type, lookup: dict, defaults: dict) -> Any:
+    def _upsert_skip_unchanged(
+        self, model: type, lookup: dict, defaults: dict
+    ) -> tuple[Any, str]:
         try:
             row = self._manager(model).get(**lookup)
         except model.DoesNotExist:
@@ -142,7 +163,7 @@ class DjangoExecutor:
             # dropping any lookup that isn't a concrete field assignment.
             params = {k: v for k, v in lookup.items() if "__" not in k}
             params.update(defaults)
-            return self._manager(model).create(**params)
+            return self._manager(model).create(**params), "created"
         # Compare through the field's canonical form, not raw ``!=`` (P4): the log
         # can carry a representation the column would round or re-type — a JSON
         # float for a DecimalField, a UUID string for a UUIDField — which is not a
@@ -159,11 +180,11 @@ class DjangoExecutor:
             != canonical_value(model, k, v)
         }
         if not changed:
-            return row  # nothing to write — skip the UPDATE entirely
+            return row, "skipped"  # nothing to write — skip the UPDATE entirely
         for field, value in changed.items():
             setattr(row, field, value)
         row.save(using=self._using, update_fields=list(changed))
-        return row
+        return row, "written"
 
     @staticmethod
     def _spare(qs: Any, spare_keys: list[dict[str, Any]] | None) -> Any:
