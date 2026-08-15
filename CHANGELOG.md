@@ -205,6 +205,28 @@ is not yet tagged in a release.
 
 ### Fixed
 
+- **The two rebuild guards compose in either nesting order** (#101).
+  `assert_no_live_writes` counts rows on the alias `deny_database_access`
+  forbids reading, so nesting them the "wrong" way round made the closing
+  `COUNT(*)` trip the read guard — and the `AmbientDatabaseAccess` it raised
+  said *"replay touched the 'default' database directly"*, blaming the rebuild
+  for a query the guard itself issued. In a tool whose only job is to say where
+  a leak is, that sends the reader after one that does not exist. The guard now
+  suspends rakaia's own deny wrappers while taking its counts — checking for a
+  leak is bookkeeping, not the rebuild reading live data. A consumer's own
+  `execute_wrapper` is left armed, and a genuine leak is still caught in either
+  order.
+
+- **`fold_events` no longer defaults to another project's vocabulary** (#100).
+  `SCRATCH_PATH` was `"produce/submission"` — domain language from the first
+  consumer, sitting in the generic Django integration. The value is arbitrary
+  (the store is in-memory and discarded per call) but *load-bearing*, because a
+  registry's `event_match` has to name it, so every other consumer was
+  registering handlers against a stranger's stream naming. It is now
+  `"_scratch/fold"`, namespaced so it cannot collide with a consumer's paths,
+  and the docstrings say plainly that the value is arbitrary but must match
+  `event_match`.
+
 - **`RAKAIA_STORE` no longer fails open.** `get_store()` returned the
   *in-memory* store for any backend string that wasn't exactly `"durable"`, so a
   one-character typo (`"durrable"`, a stray space from a `.env` file, `"Durable"`)

@@ -26,7 +26,11 @@ from __future__ import annotations
 
 import pytest
 
-from django_rakaia.hermeticity import LiveWriteLeaked, assert_no_live_writes
+from django_rakaia.hermeticity import (
+    LiveWriteLeaked,
+    assert_no_live_writes,
+    deny_database_access,
+)
 
 from .models import FinanceLine
 
@@ -118,8 +122,6 @@ class TestPairingWithTheReadSideGuard:
     def test_both_guards_compose(self):
         """The documented shape of a full gate: deny reads of the live alias,
         and assert nothing was written to it."""
-        from django_rakaia.hermeticity import deny_database_access
-
         with assert_no_live_writes(FinanceLine), deny_database_access("default"):
             _line("rebuilt", using="overlay")
 
@@ -129,3 +131,77 @@ class TestPairingWithTheReadSideGuard:
         """Matches `AmbientDatabaseAccess` — a rebuild that mutates live is a
         defect, not a warning."""
         assert issubclass(LiveWriteLeaked, RuntimeError)
+
+
+class TestTheTwoGuardsComposeInEitherOrder:
+    """Nesting order must not change the outcome (#101).
+
+    `assert_no_live_writes` counts rows on the alias `deny_database_access`
+    forbids reading. Nested the wrong way round, the closing `COUNT(*)` tripped
+    the read guard — and the resulting `AmbientDatabaseAccess` said *"replay
+    touched the 'default' database directly"*, blaming the rebuild for a query
+    the guard itself issued. Someone reading that goes hunting for a leak that
+    is not there, in a tool whose whole job is to tell them where the leak is.
+
+    Every docstring and test shipped with the guard used the working order, so
+    this was latent rather than live — which is exactly the kind of thing that
+    surfaces months later in someone else's rebuild.
+
+    The fix makes the order irrelevant rather than merely documented: the
+    guard's own bookkeeping is suspended from the deny wrapper, because counting
+    rows to *check* for a leak is not the rebuild reading live data.
+    """
+
+    def test_write_guard_outside_read_guard(self):
+        with assert_no_live_writes(FinanceLine), deny_database_access("default"):
+            _line("rebuilt", using="overlay")
+        assert FinanceLine.objects.using("default").count() == 0
+
+    def test_read_guard_outside_write_guard(self):
+        """The order that used to raise from the guard's own COUNT(*)."""
+        with deny_database_access("default"), assert_no_live_writes(FinanceLine):
+            _line("rebuilt", using="overlay")
+        assert FinanceLine.objects.using("default").count() == 0
+
+    def test_a_real_leak_is_still_caught_in_the_hard_order(self):
+        """Suspending the deny wrapper for the count must not blind the write
+        guard — otherwise the fix would trade a confusing error for no error."""
+        with (
+            pytest.raises(LiveWriteLeaked),
+            deny_database_access("overlay"),
+            assert_no_live_writes(FinanceLine),
+        ):
+            _line("leaked")
+
+    def test_the_read_guard_still_catches_a_real_ambient_read(self):
+        """And the deny wrapper must be restored afterwards, still armed."""
+        from django_rakaia.hermeticity import AmbientDatabaseAccess
+
+        with (
+            pytest.raises(AmbientDatabaseAccess),
+            deny_database_access("default"),
+            assert_no_live_writes(FinanceLine),
+        ):
+            FinanceLine.objects.using("default").count()
+
+    def test_an_unrelated_execute_wrapper_is_not_disturbed(self):
+        """Only rakaia's own deny wrapper is suspended for the count. A
+        consumer's query logger keeps seeing everything it would otherwise."""
+        from django.db import connections
+
+        seen: list[str] = []
+
+        def _spy(execute, sql, params, many, context):
+            seen.append(sql)
+            return execute(sql, params, many, context)
+
+        with (
+            connections["default"].execute_wrapper(_spy),
+            deny_database_access("default"),
+            assert_no_live_writes(FinanceLine),
+        ):
+            pass
+
+        assert any("COUNT" in sql.upper() for sql in seen), (
+            "the guard's own counts should still reach an unrelated wrapper"
+        )
