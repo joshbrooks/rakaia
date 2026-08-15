@@ -116,19 +116,36 @@ class TestContentType:
 class TestStreamSeq:
     def test_a_replayed_seq_conflicts(self):
         with pytest.raises(SequenceConflict):
-            _decide(StreamFacts(last_seq=5), AppendOptions(seq=5))
+            _decide(StreamFacts(last_seq="5"), AppendOptions(seq="5"))
 
     def test_a_lower_seq_conflicts(self):
         with pytest.raises(SequenceConflict):
-            _decide(StreamFacts(last_seq=5), AppendOptions(seq=4))
+            _decide(StreamFacts(last_seq="5"), AppendOptions(seq="4"))
 
     def test_a_higher_seq_is_allowed(self):
-        assert _decide(StreamFacts(last_seq=5), AppendOptions(seq=6)).write is True
+        assert _decide(StreamFacts(last_seq="5"), AppendOptions(seq="6")).write is True
 
-    def test_seq_is_compared_as_a_number(self):
-        """`"10" < "9"` lexicographically — the bug that broke every producer on
-        reaching double digits."""
-        assert _decide(StreamFacts(last_seq=9), AppendOptions(seq=10)).write is True
+    def test_seq_is_compared_lexicographically(self):
+        """`Stream-Seq` is an opaque string compared byte-wise, so `"10"` after
+        `"9"` is a conflict — `"10" < "9"`. That is the protocol's rule, not a
+        bug: a writer that needs its values to order pads them to a fixed width
+        or uses a ULID. Rakaia's own offsets zero-pad for exactly this reason
+        (`src/rakaia/store.py`), so `"09"` then `"10"` is accepted below."""
+        with pytest.raises(SequenceConflict):
+            _decide(StreamFacts(last_seq="9"), AppendOptions(seq="10"))
+        assert (
+            _decide(StreamFacts(last_seq="09"), AppendOptions(seq="10")).write is True
+        )
+
+    def test_a_non_numeric_seq_is_a_valid_opaque_string(self):
+        """ULIDs are the idiomatic conforming value; nothing may reject them."""
+        assert (
+            _decide(
+                StreamFacts(last_seq="01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+                AppendOptions(seq="01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+            ).write
+            is True
+        )
 
 
 class TestProducerFencing:
@@ -194,8 +211,8 @@ class TestOrdering:
         SequenceConflict on exactly the retry that fencing exists to absorb."""
         state = ProducerState(epoch=0, last_seq=3, last_updated=NOW)
         verdict = _decide(
-            StreamFacts(last_seq=9),
-            AppendOptions(producer_id="p", producer_epoch=0, producer_seq=3, seq=9),
+            StreamFacts(last_seq="9"),
+            AppendOptions(producer_id="p", producer_epoch=0, producer_seq=3, seq="9"),
             producer_state=state,
         )
         # Reported as a duplicate, not raised as a sequence conflict.

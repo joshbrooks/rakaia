@@ -117,9 +117,15 @@ consumer was — nothing changes. The entry is still reachable via `read()`.
 `create()` gained keyword-only options (`content_type`, `ttl_seconds`,
 `expires_at`, `initial_data`, `closed`). `create(path)` is unchanged.
 
-`StreamMessage.seq` and `Stream.last_seq` are now `int | None` where they were
-`str | None`. The header is parsed strictly, which is what fixed `Stream-Seq: 10`
-being rejected after `9` because `"10" < "9"` as text.
+`AppendOptions.seq` and `Stream.last_seq` are `str | None`, and the durable
+`Stream.last_seq` column is text — migration `0009` widens it. `Stream-Seq` is
+an opaque string compared byte-wise, as the protocol requires, so any value is
+accepted and none is rejected as malformed.
+
+**If your writer sends unpadded decimals, pad them.** Byte-wise, `"10"` sorts
+below `"9"`, so `Stream-Seq: 10` after `9` is a `409 Conflict`. Send `"09"` then
+`"10"` — zero-padded to whatever width your writer will reach — or use a ULID.
+A writer already padding, or not sending `Stream-Seq` at all, needs no change.
 
 ---
 

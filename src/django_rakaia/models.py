@@ -51,8 +51,12 @@ class Stream(models.Model):
     last_activity_at = models.FloatField(default=0.0)
     """Unix time of the last TTL-extending activity (read/write/close)."""
 
-    last_seq = models.IntegerField(null=True, blank=True)
-    """Last `Stream-Seq` accepted, for writer coordination."""
+    last_seq = models.CharField(max_length=255, null=True, blank=True)
+    """Last `Stream-Seq` accepted, for writer coordination.
+
+    Text, not a number: the protocol makes `Stream-Seq` an opaque string
+    compared byte-wise lexicographically.
+    """
 
     closed = models.BooleanField(default=False)
     """Whether the stream is closed to further appends."""

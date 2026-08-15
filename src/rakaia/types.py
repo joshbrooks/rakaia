@@ -211,8 +211,12 @@ class Stream:
     current_offset: str = INITIAL_OFFSET
     """Current offset (next offset to write to)."""
 
-    last_seq: int | None = None
-    """Last sequence number for writer coordination (Stream-Seq)."""
+    last_seq: str | None = None
+    """Last `Stream-Seq` accepted, for writer coordination.
+
+    An opaque string, compared byte-wise lexicographically as the protocol
+    requires — never parsed as a number.
+    """
 
     ttl_seconds: int | None = None
     """TTL in seconds."""
@@ -313,7 +317,8 @@ ProducerValidationResult = (
 class AppendOptions:
     """Options for append operations."""
 
-    seq: int | None = None
+    seq: str | None = None
+    """`Stream-Seq`: an opaque string compared byte-wise lexicographically."""
     content_type: str | None = None
     producer_id: str | None = None
     producer_epoch: int | None = None

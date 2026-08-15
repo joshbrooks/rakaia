@@ -65,7 +65,7 @@ class StreamFacts:
     closed: bool = False
     closed_by: ClosedBy | None = None
     content_type: str | None = None
-    last_seq: int | None = None
+    last_seq: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,9 @@ def decide_append(
         if producer_result.status != "accepted":
             return AppendVerdict(write=False, producer_result=producer_result)
 
-    # 4. Stream-Seq monotonicity.
+    # 4. Stream-Seq monotonicity. The values are opaque strings and `<=` on
+    #    `str` is Python's byte-wise lexicographic comparison, which is exactly
+    #    what the protocol asks for — no numeric interpretation anywhere.
     seq = getattr(opts, "seq", None)
     if seq is not None and facts.last_seq is not None and seq <= facts.last_seq:
         raise SequenceConflict(f"Sequence conflict: {seq} <= {facts.last_seq}")

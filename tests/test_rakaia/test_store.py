@@ -702,7 +702,7 @@ class TestClosedStreamAppend:
         store.append("s", b"a")
         store.close_stream("s")
 
-        result = store.append("s", b"b", AppendOptions(seq=5))
+        result = store.append("s", b"b", AppendOptions(seq="5"))
         assert result.stream_closed is True
         assert result.message is None
 

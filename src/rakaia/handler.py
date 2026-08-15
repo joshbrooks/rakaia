@@ -1060,18 +1060,12 @@ async def _handle_append(
     cors: dict[str, str],
 ) -> None:
     content_type = get_header(scope, "content-type")
-    # Stream-Seq is a number, and must be parsed as one. It used to be passed
-    # through as the raw header string, so the store's `opts.seq <=
-    # stream.last_seq` compared text: seq=10 after seq=9 was rejected as a
-    # conflict, because "10" < "9" lexicographically. Any producer reaching
-    # double digits started failing.
-    seq_str = get_header(scope, STREAM_SEQ_HEADER)
-    seq: int | None = None
-    if seq_str is not None:
-        if not STRICT_INTEGER_PATTERN.match(seq_str):
-            await _send_error(send, 400, b"Invalid Stream-Seq", cors)
-            return
-        seq = int(seq_str)
+    # Stream-Seq is an opaque string, compared byte-wise lexicographically
+    # (PROTOCOL.md). Any value is well-formed, so there is nothing to validate
+    # and nothing to parse — pass the header through untouched. A writer that
+    # needs its values to order pads them or uses a ULID, the same way rakaia's
+    # own offsets zero-pad (see `store.py`).
+    seq = get_header(scope, STREAM_SEQ_HEADER)
     closed_header = get_header(scope, STREAM_CLOSED_HEADER)
     close_stream = closed_header == "true"
 

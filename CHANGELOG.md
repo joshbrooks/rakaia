@@ -636,12 +636,22 @@ protocol is covered by both stores.
   broadcast, after the write had landed. Anything outside the channel layer's
   allowed set is now replaced, and over-long names are truncated.
 
-- **Stream-Seq was compared as text, not as a number.** The header reached the
-  store unparsed, so the conflict check `opts.seq <= stream.last_seq` compared
-  strings: sending `Stream-Seq: 10` after `9` was rejected with a 409, because
-  `"10" < "9"` lexicographically. Every producer broke on reaching double
-  digits. The header is now parsed strictly (400 on a non-integer, matching the
-  producer headers) and both fields are typed `int | None`.
+- **`Stream-Seq` is an opaque string, compared byte-wise**
+  ([#137](https://github.com/joshbrooks/rakaia/issues/137)). Rakaia spent part
+  of this cycle parsing the header as a decimal integer, comparing it
+  numerically, and returning `400 Bad Request` for anything that was not one.
+  The protocol specifies none of that: `Stream-Seq` values are opaque strings
+  that **MUST** compare using simple byte-wise lexicographic ordering, so any
+  value is well-formed and a ULID is as valid as a digit string.
+
+  **If you send unpadded decimals, pad them.** Byte-wise, `"10"` sorts below
+  `"9"`, so `Stream-Seq: 10` after `9` is a `409 Conflict` — correctly. Send
+  `"09"` then `"10"`, at whatever fixed width your writer will reach; rakaia's
+  own offsets zero-pad for exactly this reason. Nothing else in the header's
+  behaviour changed, and a writer already padding or using a ULID is unaffected.
+
+  Seven conformance tests were failing on the numeric comparison. They pass now,
+  leaving the stream-forking family as the only known gap.
 
 - **`@stream_model` no longer appends phantom events for fixture loads** (#80).
   `handle_post_save` now honours Django's `raw` kwarg, so `manage.py loaddata`
@@ -744,8 +754,10 @@ protocol is covered by both stores.
   Both changes need the accompanying migration (`0007`), which adds the
   lifecycle columns to `Stream` and the `StreamProducer` table.
 
-- **BREAKING — `AppendOptions.seq` and `Stream.last_seq` are `int | None`,** not
-  `str | None`. See the Stream-Seq fix under Fixed.
+- **BREAKING — `AppendOptions.seq` and `Stream.last_seq` are `str | None`,** and
+  the durable `Stream.last_seq` column is text rather than an integer. See the
+  `Stream-Seq` entry under Fixed. Needs migration `0009`, which widens the
+  column; the values it held were decimal digits and survive unchanged.
 
 - **BREAKING — `StreamServerStore` requires `run_sync`.** The protocol server
   is async but most of the store surface is synchronous, and how that sync work

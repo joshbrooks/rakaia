@@ -144,9 +144,9 @@ class TestStoreRaisesTheNamedFailure:
 
         store = StreamStore()
         store.create("s")
-        store.append("s", b"a", AppendOptions(seq=5))
+        store.append("s", b"a", AppendOptions(seq="5"))
         with pytest.raises(SequenceConflict):
-            store.append("s", b"b", AppendOptions(seq=5))
+            store.append("s", b"b", AppendOptions(seq="5"))
 
     def test_invalid_json(self) -> None:
         store = StreamStore()
@@ -214,62 +214,58 @@ class TestFailureBecomesStatus:
         assert r.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_seq_compares_numerically_not_textually(
+    async def test_seq_compares_lexicographically_not_numerically(
         self, client: httpx.AsyncClient
     ) -> None:
-        """Stream-Seq 10 follows 9.
+        """Stream-Seq "10" after "9" is a conflict, as the protocol requires.
 
-        The header used to reach the store unparsed, so `opts.seq <=
-        stream.last_seq` compared text and "10" < "9" made seq=10 a conflict.
-        Every producer broke on reaching double digits.
-        """
-        await client.put("/s", headers={"content-type": "text/plain"})
-        first = await client.post(
-            "/s",
-            content=b"a",
-            headers={"content-type": "text/plain", "stream-seq": "9"},
-        )
-        second = await client.post(
-            "/s",
-            content=b"b",
-            headers={"content-type": "text/plain", "stream-seq": "10"},
-        )
-        assert first.status_code in (200, 204)
-        assert second.status_code in (200, 204), "seq=10 must follow seq=9"
-
-    @pytest.mark.asyncio
-    async def test_seq_regression_across_digit_lengths_is_409(
-        self, client: httpx.AsyncClient
-    ) -> None:
-        """Stream-Seq 9 after 10 is a conflict.
-
-        The other half of the numeric-parse fix: text comparison put "9" above
-        "10", so this regression was wrongly *accepted*. Without this test a
-        revert to string comparison would keep the sibling test green and only
-        lose this one.
+        The values are opaque strings compared byte-wise, and "10" < "9". A
+        writer that wants its values to order pads them to a fixed width — the
+        same idiom rakaia's own offsets use — so "09" then "10" is accepted.
         """
         await client.put("/s", headers={"content-type": "text/plain"})
         await client.post(
             "/s",
             content=b"a",
-            headers={"content-type": "text/plain", "stream-seq": "10"},
+            headers={"content-type": "text/plain", "stream-seq": "9"},
         )
         r = await client.post(
             "/s",
             content=b"b",
-            headers={"content-type": "text/plain", "stream-seq": "9"},
+            headers={"content-type": "text/plain", "stream-seq": "10"},
         )
         assert r.status_code == 409
 
+        await client.put("/padded", headers={"content-type": "text/plain"})
+        first = await client.post(
+            "/padded",
+            content=b"a",
+            headers={"content-type": "text/plain", "stream-seq": "09"},
+        )
+        second = await client.post(
+            "/padded",
+            content=b"b",
+            headers={"content-type": "text/plain", "stream-seq": "10"},
+        )
+        assert first.status_code in (200, 204)
+        assert second.status_code in (200, 204), '"10" must follow padded "09"'
+
     @pytest.mark.asyncio
-    async def test_non_numeric_seq_is_400(self, client: httpx.AsyncClient) -> None:
+    async def test_a_non_numeric_seq_is_accepted(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """The header is an opaque string, so a ULID is a conforming value and
+        must not be refused as malformed."""
         await client.put("/s", headers={"content-type": "text/plain"})
         r = await client.post(
             "/s",
             content=b"a",
-            headers={"content-type": "text/plain", "stream-seq": "not-a-number"},
+            headers={
+                "content-type": "text/plain",
+                "stream-seq": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            },
         )
-        assert r.status_code == 400
+        assert r.status_code in (200, 204)
 
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, client: httpx.AsyncClient) -> None:
