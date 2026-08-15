@@ -1159,12 +1159,10 @@ async def _handle_append(
             offset=offset,
             stream_closed=True,
         )
-        if decided is None:
-            # Nothing to report about the producer — an unfenced append, or one
-            # whose fencing was fine. The closed stream is itself the answer.
-            decided = producer_response(
-                ProducerStreamClosed(), producer_epoch=producer_epoch, offset=offset
-            )
+        # A refused append on a closed stream always carries a producer result:
+        # `ProducerDuplicate` for a retry of the closing tuple, otherwise
+        # `ProducerStreamClosed` — the stores agree on that via
+        # `rakaia.append_decision`, so there is nothing left to synthesise here.
         assert decided is not None
         await _send_producer_response(send, decided, cors)
         return

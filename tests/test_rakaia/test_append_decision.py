@@ -24,6 +24,7 @@ from rakaia.types import (
     ProducerSequenceGap,
     ProducerStaleEpoch,
     ProducerState,
+    ProducerStreamClosed,
     SequenceConflict,
 )
 
@@ -58,7 +59,7 @@ class TestClosed:
         verdict = _decide(StreamFacts(closed=True))
         assert verdict.write is False
         assert verdict.stream_closed is True
-        assert verdict.producer_result is None
+        assert isinstance(verdict.producer_result, ProducerStreamClosed)
 
     def test_the_producer_that_closed_it_gets_a_duplicate(self):
         """A retry of the closing append must be distinguishable from someone
@@ -79,7 +80,9 @@ class TestClosed:
             ("p", 2, 8),  # same producer, different seq
         ],
     )
-    def test_any_other_tuple_is_a_bare_refusal(self, producer_id, epoch, seq):
+    def test_any_other_tuple_is_told_the_stream_is_closed(
+        self, producer_id, epoch, seq
+    ):
         facts = StreamFacts(closed=True, closed_by=ClosedBy("p", epoch=2, seq=7))
         verdict = _decide(
             facts,
@@ -88,7 +91,7 @@ class TestClosed:
             ),
         )
         assert verdict.stream_closed is True
-        assert verdict.producer_result is None
+        assert isinstance(verdict.producer_result, ProducerStreamClosed)
 
 
 class TestContentType:
@@ -169,6 +172,21 @@ class TestOrdering:
         )
         assert verdict.write is False
         assert verdict.stream_closed is True
+
+    def test_closed_is_checked_before_producer_fencing(self):
+        """A closed stream is the answer even when the fencing tuple is also
+        wrong — reporting the gap instead would tell a producer to fix its
+        sequence and retry a write that can never land, and it is what the
+        durable store did before this sequence was shared."""
+        state = ProducerState(epoch=0, last_seq=0, last_updated=NOW)
+        verdict = _decide(
+            StreamFacts(closed=True, closed_by=ClosedBy("p", epoch=0, seq=0)),
+            AppendOptions(producer_id="p", producer_epoch=0, producer_seq=9),
+            producer_state=state,
+        )
+        assert verdict.write is False
+        assert verdict.stream_closed is True
+        assert isinstance(verdict.producer_result, ProducerStreamClosed)
 
     def test_fencing_is_checked_before_stream_seq(self):
         """The load-bearing one. A retried append carries the same Stream-Seq it

@@ -280,6 +280,21 @@ is not yet tagged in a release.
   duplicated `DjangoStreamStore.get_current_offset`'s watermark query verbatim.
   The store now delegates to the model property; all it adds is the expiry
   check and the absent-stream `None`.
+- **A closed stream answers the same way on both stores, whichever append door
+  you use** (#119). `append_with_producer` on the durable store ran its own
+  admission sequence — producer fencing *before* the closed check, and never
+  reading who closed the stream. A producer whose sequence had also drifted was
+  told about the gap instead of being told the stream was closed, and a producer
+  retrying its own closing append was never recognised as a duplicate; the
+  in-memory store got both right. Both doors on both stores now ask
+  `rakaia.append_decision`, the one shared admission sequence, and the shared
+  store contract drives the combination that was missing, which is why the drift
+  had gone unseen. A refusal on a closed stream now always carries a producer
+  result — `ProducerDuplicate` for a retry of the closing tuple, otherwise
+  `ProducerStreamClosed` — which is the same 409 (or 204) on the wire as before,
+  since the server already synthesised the closed result when the store gave it
+  nothing.
+
 
 - **A handler can take an injected dependency without losing drift detection.**
   A stage-0 handler is called `fn(event)`, so a dependency had nowhere to go, and

@@ -452,6 +452,42 @@ class ServerStoreContract:
         )
         assert isinstance(accepted.producer_result, ProducerAccepted)
 
+    async def test_append_with_producer_to_a_closed_stream_reports_closed(self, store):
+        """Closed is decided before fencing, on this door too.
+
+        Nothing drove `append_with_producer` against a closed stream, and the
+        two stores had drifted underneath: one answered with the fencing
+        outcome for a write that could never land anyway, so a producer whose
+        seq happened to be wrong learned about the gap instead of learning the
+        stream was closed.
+        """
+        await self._sync(store.create, "s")
+        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
+        await self._sync(store.close_stream, "s")
+
+        result = await store.append_with_producer(
+            "s", b'{"id": 2}', self._producer("p", 0, 9)
+        )
+        assert result.stream_closed is True
+        assert result.message is None
+        assert isinstance(result.producer_result, ProducerStreamClosed)
+
+    async def test_append_with_producer_retrying_a_closing_tuple_is_a_duplicate(
+        self, store
+    ):
+        """A producer that loses the response to its own closing append must be
+        able to tell "my close landed" from "someone else closed this"."""
+        await self._sync(store.create, "s")
+        opts = AppendOptions(
+            producer_id="p", producer_epoch=0, producer_seq=0, close=True
+        )
+        await store.append_with_producer("s", b'{"id": 1}', opts)
+
+        again = await store.append_with_producer("s", b'{"id": 1}', opts)
+        assert again.stream_closed is True
+        assert isinstance(again.producer_result, ProducerDuplicate)
+        assert again.message is None
+
     # =========================================================================
     # Producer options on the plain `append` path
     # =========================================================================
@@ -547,7 +583,7 @@ class ServerStoreContract:
             store.append, "s", b'{"id": 2}', self._producer("other", 0, 0)
         )
         assert other.stream_closed is True
-        assert other.producer_result is None
+        assert isinstance(other.producer_result, ProducerStreamClosed)
         assert other.message is None
 
     # =========================================================================

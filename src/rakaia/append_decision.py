@@ -18,10 +18,13 @@ persist — so a new backend implements *storage*, not protocol semantics.
 
 **The order is the subtle part** and is the reason this is worth centralising:
 
-1. **Closed** is checked first, and a matching `closed_by` tuple is reported as a
-   duplicate rather than a bare refusal — a producer retrying the append that
-   closed the stream must be able to tell "my close landed" from "someone else
-   closed this".
+1. **Closed** is checked first — before fencing, so a producer whose sequence is
+   also wrong is told the stream is closed rather than told to fix a sequence
+   and retry a write that can never land. A matching `closed_by` tuple is
+   reported as a duplicate rather than a bare refusal, so a producer retrying
+   the append that closed the stream can tell "my close landed" from "someone
+   else closed this"; any other tuple gets `ProducerStreamClosed`, the same
+   answer the close paths give.
 2. **Content type** next: a mismatch is a caller error regardless of fencing.
 3. **Producer fencing before Stream-Seq.** A retried append carries the same
    `Stream-Seq` it did the first time, so checking Stream-Seq first would raise
@@ -45,6 +48,7 @@ from .types import (
     ContentTypeMismatch,
     ProducerDuplicate,
     ProducerState,
+    ProducerStreamClosed,
     ProducerValidationResult,
     SequenceConflict,
 )
@@ -110,7 +114,9 @@ def decide_append(
                 stream_closed=True,
                 producer_result=ProducerDuplicate(last_seq=producer_seq or 0),
             )
-        return AppendVerdict(write=False, stream_closed=True)
+        return AppendVerdict(
+            write=False, stream_closed=True, producer_result=ProducerStreamClosed()
+        )
 
     # 2. Content type.
     provided_ct = getattr(opts, "content_type", None)

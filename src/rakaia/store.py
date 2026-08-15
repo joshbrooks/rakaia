@@ -23,7 +23,7 @@ from .json_mode import (
     normalize_content_type,
     process_json_append,
 )
-from .producer import is_producer_state_expired, validate_producer
+from .producer import is_producer_state_expired
 from .types import (
     INITIAL_OFFSET,
     AppendOptions,
@@ -32,8 +32,6 @@ from .types import (
     ContentTypeMismatch,
     InvalidOffset,
     ProducerAccepted,
-    ProducerDuplicate,
-    ProducerStreamClosed,
     ProducerValidationResult,
     SequenceConflict,
     Stream,
@@ -432,36 +430,26 @@ class StreamStore:
             if stream is None:
                 return None
 
-            if stream.closed:
-                # Check for duplicate (same producer tuple)
-                if (
-                    stream.closed_by is not None
-                    and stream.closed_by.producer_id == producer_id
-                    and stream.closed_by.epoch == producer_epoch
-                    and stream.closed_by.seq == producer_seq
-                ):
-                    return CloseResult(
-                        final_offset=stream.current_offset,
-                        already_closed=True,
-                        producer_result=ProducerDuplicate(last_seq=producer_seq),
-                    )
-                return CloseResult(
-                    final_offset=stream.current_offset,
-                    already_closed=True,
-                    producer_result=ProducerStreamClosed(),
-                )
-
-            # Validate producer
-            producer_result = self._validate_producer(
-                stream, producer_id, producer_epoch, producer_seq
+            # A close is admitted on the same terms as a fenced append with no
+            # body: already closed is reported (as a duplicate for a retry of
+            # the closing tuple), then the producer is fenced.
+            verdict = decide_append(
+                StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
+                AppendOptions(
+                    producer_id=producer_id,
+                    producer_epoch=producer_epoch,
+                    producer_seq=producer_seq,
+                ),
+                producer_state=self._producer_state(stream, producer_id),
+                now=time.time(),
             )
-
-            if producer_result.status != "accepted":
+            if not verdict.write:
                 return CloseResult(
                     final_offset=stream.current_offset,
-                    already_closed=False,
-                    producer_result=producer_result,
+                    already_closed=verdict.stream_closed,
+                    producer_result=verdict.producer_result,
                 )
+            producer_result = verdict.producer_result
 
             # Commit and close
             self._commit_producer_state(stream, producer_result)
@@ -604,28 +592,6 @@ class StreamStore:
             return None
         self._cleanup_expired_producers(stream)
         return stream.producers.get(producer_id)
-
-    def _validate_producer(
-        self,
-        stream: Stream,
-        producer_id: str,
-        epoch: int,
-        seq: int,
-    ) -> ProducerValidationResult:
-        """Validate producer state WITHOUT mutating.
-
-        The rules themselves live in `.producer` so this store and the durable
-        `DjangoStreamStore` decide identically; all this does is supply the
-        last known state and drop it if it has aged out.
-        """
-        self._cleanup_expired_producers(stream)
-        return validate_producer(
-            stream.producers.get(producer_id),
-            producer_id,
-            epoch,
-            seq,
-            time.time(),
-        )
 
     def _commit_producer_state(
         self, stream: Stream, result: ProducerValidationResult
