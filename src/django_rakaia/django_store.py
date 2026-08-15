@@ -51,16 +51,13 @@ from rakaia.json_mode import (
     normalize_content_type,
     process_json_append,
 )
-from rakaia.producer import validate_producer
 from rakaia.types import (
     AppendOptions,
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
     ProducerAccepted,
-    ProducerDuplicate,
     ProducerState,
-    ProducerStreamClosed,
     ProducerValidationResult,
     SequenceConflict,
     StreamConfigConflict,
@@ -335,35 +332,27 @@ class DjangoStreamStore:
             if stream is None:
                 return None
 
-            if stream.closed:
-                # Mirror the in-memory store: an already-closed stream is
-                # reported, never re-closed — a different producer's close must
-                # not overwrite `closed_by`, which is what makes a retry of the
-                # *original* closing tuple recognisable as a duplicate.
-                by = stream.closed_by
-                if by is not None and (by.producer_id, by.epoch, by.seq) == (
-                    producer_id,
-                    epoch,
-                    seq,
-                ):
-                    return CloseResult(
-                        final_offset=stream.current_offset,
-                        already_closed=True,
-                        producer_result=ProducerDuplicate(last_seq=seq),
-                    )
+            # A close is admitted on the same terms as a fenced append with no
+            # body, so it asks the same question: an already-closed stream is
+            # reported, never re-closed — a different producer's close must not
+            # overwrite `closed_by`, which is what makes a retry of the
+            # *original* closing tuple recognisable as a duplicate.
+            verdict = decide_append(
+                StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
+                AppendOptions(
+                    producer_id=producer_id, producer_epoch=epoch, producer_seq=seq
+                ),
+                producer_state=self._producer_state(stream, producer_id),
+                now=time.time(),
+            )
+            if not verdict.write:
                 return CloseResult(
                     final_offset=stream.current_offset,
-                    already_closed=True,
-                    producer_result=ProducerStreamClosed(),
+                    already_closed=verdict.stream_closed,
+                    producer_result=verdict.producer_result,
                 )
 
-            result = self._validate_producer(stream, producer_id, epoch, seq)
-            if not isinstance(result, ProducerAccepted):
-                return CloseResult(
-                    final_offset=stream.current_offset, producer_result=result
-                )
-
-            self._commit_producer(stream, result)
+            self._commit_producer(stream, verdict.producer_result)
             stream.closed = True
             stream.closed_at = time.time()
             stream.last_activity_at = time.time()
@@ -464,25 +453,6 @@ class DjangoStreamStore:
     # =========================================================================
     # Append helpers
     # =========================================================================
-
-    @staticmethod
-    def _check_content_type(stream: Stream, opts: Any) -> None:
-        provided = getattr(opts, "content_type", None)
-        if (
-            provided
-            and stream.content_type
-            and normalize_content_type(provided)
-            != normalize_content_type(stream.content_type)
-        ):
-            raise ContentTypeMismatch(
-                f"Content-type mismatch: expected {stream.content_type}, got {provided}"
-            )
-
-    @staticmethod
-    def _check_seq(stream: Stream, opts: Any) -> None:
-        seq = getattr(opts, "seq", None)
-        if seq is not None and stream.last_seq is not None and seq <= stream.last_seq:
-            raise SequenceConflict(f"Sequence conflict: {seq} <= {stream.last_seq}")
 
     @staticmethod
     def _close_from_append(stream: Stream, opts: Any) -> None:
@@ -587,26 +557,6 @@ class DjangoStreamStore:
     # Producer fencing
     # =========================================================================
 
-    def _validate_producer(
-        self, stream: Stream, producer_id: str, epoch: int, seq: int
-    ) -> ProducerValidationResult:
-        """Decide the outcome for one fenced write, without mutating.
-
-        The rules live in `rakaia.producer`, shared with the in-memory store,
-        so the two cannot drift. This only supplies the last known state.
-        """
-        row = StreamProducer.objects.filter(
-            stream=stream, producer_id=producer_id
-        ).first()
-        state = (
-            None
-            if row is None
-            else ProducerState(
-                epoch=row.epoch, last_seq=row.last_seq, last_updated=row.last_updated
-            )
-        )
-        return validate_producer(state, producer_id, epoch, seq, time.time())
-
     @staticmethod
     def _producer_state(
         stream: Stream, producer_id: str | None
@@ -677,27 +627,33 @@ class DjangoStreamStore:
             # per-producer asyncio.Lock is this lock's in-process analogue.)
             stream = self._require(path, for_update=True)
 
-            result = self._validate_producer(stream, producer_id, epoch, seq)
-
-            if stream.closed:
+            # The same shared sequence `append` uses. This path used to run its
+            # own: fencing first, then closed, and it never read `closed_by` —
+            # so a closed stream answered with the fencing outcome instead of
+            # the close, and a producer retrying its own closing append was
+            # never recognised.
+            verdict = decide_append(
+                StreamFacts(
+                    closed=stream.closed,
+                    closed_by=stream.closed_by,
+                    content_type=stream.content_type,
+                    last_seq=stream.last_seq,
+                ),
+                opts,
+                producer_state=self._producer_state(stream, producer_id),
+                now=time.time(),
+            )
+            if not verdict.write:
                 return AppendResult(
                     message=None,
-                    stream_closed=True,
-                    producer_result=(
-                        result
-                        if not isinstance(result, ProducerAccepted)
-                        else ProducerStreamClosed()
-                    ),
+                    stream_closed=verdict.stream_closed,
+                    producer_result=verdict.producer_result,
                 )
-
-            if not isinstance(result, ProducerAccepted):
-                return AppendResult(message=None, producer_result=result)
-
-            self._check_content_type(stream, opts)
-            self._check_seq(stream, opts)
+            result = verdict.producer_result
 
             messages = self._write(stream, data, opts)
-            self._commit_producer(stream, result)
+            if result is not None:
+                self._commit_producer(stream, result)
             if getattr(opts, "seq", None) is not None:
                 stream.last_seq = opts.seq
                 stream.save(update_fields=["last_seq"])
@@ -772,7 +728,17 @@ class DjangoStreamStore:
             last_seq = stream.last_seq
             cut = len(items)
             for i, (_data, options) in enumerate(items):
-                self._check_content_type(stream, options)
+                provided_ct = getattr(options, "content_type", None)
+                if (
+                    provided_ct
+                    and stream.content_type
+                    and normalize_content_type(provided_ct)
+                    != normalize_content_type(stream.content_type)
+                ):
+                    raise ContentTypeMismatch(
+                        f"Content-type mismatch: expected "
+                        f"{stream.content_type}, got {provided_ct}"
+                    )
                 seq = getattr(options, "seq", None)
                 if seq is not None:
                     if last_seq is not None and seq <= last_seq:
