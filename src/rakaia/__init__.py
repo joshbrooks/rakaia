@@ -76,6 +76,7 @@ from .registry import (
     upcast,
 )
 from .replay import ENVELOPE_TS, ReplayResult, TouchedSubject, merge_replay, replay
+from .seed import seed_stream
 from .store import StreamStore
 from .subscription import Poll, PollStatus, poll
 from .types import (
@@ -139,6 +140,7 @@ __all__ = [
     "app",
     # Store
     "StreamStore",
+    "seed_stream",
     # Extension protocols (storage / projection seams)
     "ReadableStore",
     "WritableStore",

@@ -404,6 +404,29 @@ Its sibling `fold_events` runs a batch of events through your handlers *now*,
 via a throwaway in-memory stream, so write-time projection and rebuild-time
 projection run the same code rather than two implementations that can disagree.
 
+Underneath both is `rakaia.seed_stream`, which is the same idea one tier down:
+getting a handful of events into a stream, without Django in the picture.
+
+```python
+from rakaia import AppendOptions, seed_stream
+
+store = seed_stream("submissions", [
+    ({"key": "s1", "a": 1}, AppendOptions(label="insert")),
+    ({"key": "s1", "a": 2}, AppendOptions(label="update")),
+])
+```
+
+Omit `store=` and you get a fresh in-memory one back; pass any `WritableStore`
+— the durable Django store, the `get_store()` singleton — and it is used and
+returned. Payloads may be dicts or already-encoded bytes, the envelope is per
+event rather than per batch, and the stream is created idempotently, so seeding
+the same path twice appends rather than truncating.
+
+The `encoder=` parameter is why `append_event` can be built on it without the
+core package growing a Django dependency, and it is what keeps a single
+`json.dumps` rule in the codebase instead of the drifting second copy the
+envelope docstring warns about.
+
 ---
 
 ## 13. Protocol conformance

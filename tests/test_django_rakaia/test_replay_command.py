@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import io
-import json
 
 import pytest
 from django.core.management import call_command
 
 from django_rakaia.store import get_store
 from rakaia.registry import HandlerDriftError
+from rakaia.seed import seed_stream
 
 # Importing handlers for the side effect of registering the autodiscovered
 # handler that the management command tests dispatch against.
@@ -18,12 +18,9 @@ from .models import Area
 
 
 def _seed(stream_path: str, events: list[dict]) -> None:
-    store = get_store()
-    # The store is a process-wide singleton; tolerate the stream already existing.
-    if not store.has(stream_path):
-        store.create(stream_path)
-    for ev in events:
-        store.append(stream_path, json.dumps(ev).encode("utf-8"))
+    # The store is a process-wide singleton, and seeding is additive: `create()`
+    # is idempotent and cannot truncate, so an existing stream needs no guard.
+    seed_stream(stream_path, events, store=get_store())
 
 
 @pytest.fixture(autouse=True)

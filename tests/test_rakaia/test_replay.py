@@ -20,6 +20,7 @@ from rakaia.replay import (
     merge_replay,
     replay,
 )
+from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 from rakaia.types import AppendOptions
 
@@ -46,12 +47,6 @@ def store() -> StreamStore:
     return StreamStore()
 
 
-def _seed_stream(store: StreamStore, path: str, events: list[dict]) -> None:
-    store.create(path)
-    for ev in events:
-        store.append(path, json.dumps(ev).encode("utf-8"))
-
-
 # ---------------------------------------------------------------------------
 # Basic dispatch + apply
 # ---------------------------------------------------------------------------
@@ -70,7 +65,7 @@ class TestBasicReplay:
             )
 
         reg.register("h", "stream", h, 0, None)
-        _seed_stream(store, "stream", [{"id": 1, "name": "alice"}])
+        seed_stream("stream", [{"id": 1, "name": "alice"}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "stream", ex, handler_registry=reg)
@@ -91,7 +86,7 @@ class TestBasicReplay:
 
         reg.register("h1", "stream", h1, 0, None)
         reg.register("h2", "stream", h2, 0, None)
-        _seed_stream(store, "stream", [{"id": 1}])
+        seed_stream("stream", [{"id": 1}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "stream", ex, handler_registry=reg)
@@ -113,7 +108,7 @@ class TestBasicReplay:
             ]
 
         reg.register("h", "stream", h, 0, None)
-        _seed_stream(store, "stream", [{"id": 1}])
+        seed_stream("stream", [{"id": 1}], store=store)
         ex = CaptureExecutor()
 
         replay(store, "stream", ex, handler_registry=reg)
@@ -126,7 +121,7 @@ class TestBasicReplay:
             return None
 
         reg.register("h", "stream", h, 0, None)
-        _seed_stream(store, "stream", [{"id": 1}])
+        seed_stream("stream", [{"id": 1}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "stream", ex, handler_registry=reg)
@@ -152,10 +147,10 @@ class TestVersioning:
 
         reg.register("h", "s", h_v1, 0, 3)
         reg.register("h", "s", h_v2, 3, None)
-        _seed_stream(
-            store,
+        seed_stream(
             "s",
             [{"id": 0}, {"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}],
+            store=store,
         )
         ex = CaptureExecutor()
 
@@ -179,7 +174,7 @@ class TestIdempotency:
             )
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
+        seed_stream("s", [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}], store=store)
 
         ex1 = CaptureExecutor()
         replay(store, "s", ex1, handler_registry=reg)
@@ -206,7 +201,7 @@ class TestExternalEffects:
             ]
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"x": 1}])
+        seed_stream("s", [{"x": 1}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "s", ex, handler_registry=reg)
@@ -222,7 +217,7 @@ class TestExternalEffects:
             return Effect(op="external", kind="email", payload={"to": "x"})
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"x": 1}])
+        seed_stream("s", [{"x": 1}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "s", ex, handler_registry=reg, include_external=True)
@@ -254,7 +249,7 @@ class TestUpcasting:
             return None
 
         handlers.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"id": 1, "schema_version": 1}])
+        seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
         ex = CaptureExecutor()
 
         replay(
@@ -285,7 +280,7 @@ class TestRangeBounds:
             return None
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"id": i} for i in range(5)])
+        seed_stream("s", [{"id": i} for i in range(5)], store=store)
 
         result = replay(
             store, "s", CaptureExecutor(), handler_registry=reg, start_seq=2
@@ -304,7 +299,7 @@ class TestRangeBounds:
             return None
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"id": i} for i in range(5)])
+        seed_stream("s", [{"id": i} for i in range(5)], store=store)
 
         replay(store, "s", CaptureExecutor(), handler_registry=reg, end_seq=3)
 
@@ -325,7 +320,7 @@ class TestErrors:
 
         reg.register("h", "s", h, 0, 2)
         reg.register("h", "s", h, 5, None)
-        _seed_stream(store, "s", [{"id": i} for i in range(6)])
+        seed_stream("s", [{"id": i} for i in range(6)], store=store)
 
         with pytest.raises(HandlerGapError):
             replay(store, "s", CaptureExecutor(), handler_registry=reg)
@@ -355,7 +350,7 @@ class TestErrors:
 class TestNoHandlers:
     def test_replay_with_no_handlers_just_counts_events(self, store: StreamStore):
         reg = HandlerRegistry()
-        _seed_stream(store, "s", [{"id": 1}, {"id": 2}])
+        seed_stream("s", [{"id": 1}, {"id": 2}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "s", ex, handler_registry=reg)
@@ -378,7 +373,7 @@ class TestDrift:
             return None
 
         reg.register("h", "s", h, 0, None)
-        _seed_stream(store, "s", [{"id": 1}])
+        seed_stream("s", [{"id": 1}], store=store)
 
         result = replay(store, "s", CaptureExecutor(), handler_registry=reg)
 
@@ -395,7 +390,7 @@ class TestDrift:
         # Tamper with the stored hash to simulate the live source having drifted
         object.__setattr__(version, "source_hash", "deadbeef" * 8)
 
-        _seed_stream(store, "s", [{"id": 1}, {"id": 2}])
+        seed_stream("s", [{"id": 1}, {"id": 2}], store=store)
 
         result = replay(store, "s", CaptureExecutor(), handler_registry=reg)
 
@@ -415,7 +410,7 @@ class TestDrift:
         version = reg.register("h", "s", h, 0, None)
         object.__setattr__(version, "source_hash", "deadbeef" * 8)
 
-        _seed_stream(store, "s", [{"id": 1}])
+        seed_stream("s", [{"id": 1}], store=store)
 
         with pytest.raises(HandlerDriftError, match="handler='h'"):
             replay(
@@ -440,7 +435,7 @@ class TestDrift:
         up_version = upcasters.register("s", 1, upcast)
         object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
 
-        _seed_stream(store, "s", [{"id": 1, "schema_version": 1}])
+        seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
 
         result = replay(
             store,
@@ -467,7 +462,7 @@ class TestDrift:
         up_version = upcasters.register("s", 1, upcast)
         object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
 
-        _seed_stream(store, "s", [{"id": 1, "schema_version": 1}])
+        seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
 
         with pytest.raises(HandlerDriftError, match="upcaster"):
             replay(
@@ -498,7 +493,7 @@ class TestDeleteEffects:
             )
 
         reg.register("h", "stream", h, 0, None)
-        _seed_stream(store, "stream", [{"id": 1, "keep": [0, 1]}])
+        seed_stream("stream", [{"id": 1, "keep": [0, 1]}], store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "stream", ex, handler_registry=reg)
@@ -540,14 +535,14 @@ class TestMatchFieldRouting:
         reg.register("tf", "tf_*", tf, 0, None, match_field="form_type")
         reg.register("sf", "sf_*", sf, 0, None, match_field="form_type")
 
-        _seed_stream(
-            store,
+        seed_stream(
             "submissions",
             [
                 {"id": 1, "form_type": "tf_611"},
                 {"id": 2, "form_type": "sf_12"},
                 {"id": 3, "form_type": "tf_611"},
             ],
+            store=store,
         )
         ex = CaptureExecutor()
         replay(store, "submissions", ex, handler_registry=reg)
@@ -684,7 +679,7 @@ def _staged_registry():
 
 class TestStagedReplay:
     def test_late_reference_still_links(self, store: StreamStore):
-        _seed_stream(store, "s", _STAGED_EVENTS)
+        seed_stream("s", _STAGED_EVENTS, store=store)
         reg = _staged_registry()
         proj = DictProjections()
         result = replay(
@@ -702,7 +697,7 @@ class TestStagedReplay:
         assert result.events_processed == 2  # counted once, not per stage
 
     def test_missing_reader_raises(self, store: StreamStore):
-        _seed_stream(store, "s", _STAGED_EVENTS)
+        seed_stream("s", _STAGED_EVENTS, store=store)
         reg = _staged_registry()
         with pytest.raises(ValueError, match="reader"):
             replay(
@@ -715,7 +710,7 @@ class TestStagedReplay:
 
     def test_self_heals_on_re_replay(self, store: StreamStore):
         # Only the SF exists: its project is unresolved.
-        _seed_stream(store, "s", [_STAGED_EVENTS[0]])
+        seed_stream("s", [_STAGED_EVENTS[0]], store=store)
         reg = _staged_registry()
         proj = DictProjections()
         replay(
@@ -743,7 +738,7 @@ class TestStagedReplay:
 
     def test_stage_zero_only_is_single_pass_without_reader(self, store: StreamStore):
         # A registry with only stage-0 handlers needs no reader (backward compat).
-        _seed_stream(store, "s", [_STAGED_EVENTS[1]])
+        seed_stream("s", [_STAGED_EVENTS[1]], store=store)
         reg = HandlerRegistry()
         reg.register(
             "project",
@@ -822,7 +817,7 @@ def _finance_registry(reducer=_balance_reducer):
 
 class TestReducers:
     def test_reducer_recomputes_aggregate(self, store: StreamStore):
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         proj = DictProjections()
         replay(
             store,
@@ -836,7 +831,7 @@ class TestReducers:
         assert proj.get("app.Balance", suku="B").total == 50
 
     def test_reducer_runs_once_per_stage_not_per_event(self, store: StreamStore):
-        _seed_stream(store, "s", _FINANCE_EVENTS)  # 3 events
+        seed_stream("s", _FINANCE_EVENTS, store=store)  # 3 events
         calls: list[int] = []
 
         def counting(reader):  # noqa: ARG001
@@ -855,7 +850,7 @@ class TestReducers:
         assert len(calls) == 1  # once for stage 1, not 3x (per event)
 
     def test_reducer_requires_reader(self, store: StreamStore):
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         with pytest.raises(ValueError, match="reader"):
             replay(
                 store,
@@ -866,7 +861,7 @@ class TestReducers:
             )  # no reader=
 
     def test_reducer_recompute_is_replay_safe(self, store: StreamStore):
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         reg = _finance_registry()
         proj = DictProjections()
         replay(
@@ -890,7 +885,7 @@ class TestReducers:
 
     def test_reducer_sees_only_committed_stage0_rows(self, store: StreamStore):
         # A reducer at stage 1 reads FinanceLine rows all built in stage 0.
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         proj = DictProjections()
         replay(
             store,
@@ -918,7 +913,7 @@ class TestReducerTouchedSubjects:
     of subjects the pass's per-event handlers wrote (#51)."""
 
     def test_two_arg_reducer_receives_touched_subjects(self, store: StreamStore):
-        _seed_stream(store, "s", _FINANCE_EVENTS)  # keys f1, f2, f3
+        seed_stream("s", _FINANCE_EVENTS, store=store)  # keys f1, f2, f3
         sink: list = []
         proj = DictProjections()
         replay(
@@ -941,7 +936,7 @@ class TestReducerTouchedSubjects:
 
     def test_one_arg_reducer_is_called_unchanged(self, store: StreamStore):
         # A legacy fn(reader) reducer keeps working — no touched arg is forced.
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         proj = DictProjections()
         replay(
             store,
@@ -956,7 +951,7 @@ class TestReducerTouchedSubjects:
     def test_touched_is_incremental_on_a_tail_replay(self, store: StreamStore):
         # Replaying only the tail touches only the tail's subjects — the same
         # reducer scopes to what the pass changed, no code change at the reducer.
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         sink: list = []
         proj = DictProjections()
         replay(
@@ -976,7 +971,7 @@ class TestReducerTouchedSubjects:
         # reducer at the same stage emitted. Two stage-1 reducers, name-ordered:
         # "a_writes" recomputes app.Balance; "b_captures" runs after and must not
         # see app.Balance in its touched set.
-        _seed_stream(store, "s", _FINANCE_EVENTS)
+        seed_stream("s", _FINANCE_EVENTS, store=store)
         sink: list = []
         reg = HandlerRegistry()
         reg.register(
@@ -1015,7 +1010,7 @@ class TestReducerTouchedSubjects:
                 "delta": 5,
             },
         ]
-        _seed_stream(store, "s", events)
+        seed_stream("s", events, store=store)
         sink: list = []
         proj = DictProjections()
         replay(
@@ -1032,8 +1027,7 @@ class TestReducerTouchedSubjects:
     def test_touched_flows_through_merge_replay(self, store: StreamStore):
         # merge_replay shares the same pipeline; a two-arg reducer gets the
         # touched subjects merged across streams, in merged order.
-        _seed_stream(
-            store,
+        seed_stream(
             "fin/a",
             [
                 {
@@ -1045,9 +1039,9 @@ class TestReducerTouchedSubjects:
                     "ts": "2026-01-01T00:00:00Z",
                 }
             ],
+            store=store,
         )
-        _seed_stream(
-            store,
+        seed_stream(
             "fin/b",
             [
                 {
@@ -1059,6 +1053,7 @@ class TestReducerTouchedSubjects:
                     "ts": "2026-01-01T01:00:00Z",
                 }
             ],
+            store=store,
         )
         sink: list = []
         proj = DictProjections()
@@ -1114,8 +1109,8 @@ _CANONICAL = [_A[0], _B[0], _A[1], _B[1]]
 
 class TestMergeReplay:
     def _seed_two(self, store: StreamStore):
-        _seed_stream(store, "forms/a", _A)
-        _seed_stream(store, "forms/b", _B)
+        seed_stream("forms/a", _A, store=store)
+        seed_stream("forms/b", _B, store=store)
 
     def test_tie_resolved_by_stream_path(self, store: StreamStore):
         self._seed_two(store)
@@ -1154,7 +1149,7 @@ class TestMergeReplay:
             upcaster_registry=UpcasterRegistry(),
         )
 
-        _seed_stream(store, "combined", _CANONICAL)
+        seed_stream("combined", _CANONICAL, store=store)
         single = DictProjections()
         replay(
             store,
@@ -1171,10 +1166,10 @@ class TestMergeReplay:
         )
 
     def test_missing_order_key_raises(self, store: StreamStore):
-        _seed_stream(
-            store,
+        seed_stream(
             "forms/a",
             [{"schema_version": 1, "form_type": "TOUCH", "key": "x", "slot": "S"}],
+            store=store,
         )  # no ts
         with pytest.raises(ValueError, match="order_key"):
             merge_replay(
@@ -1186,7 +1181,7 @@ class TestMergeReplay:
             )
 
     def test_duplicate_stream_paths_raise(self, store: StreamStore):
-        _seed_stream(store, "forms/a", _A)
+        seed_stream("forms/a", _A, store=store)
         with pytest.raises(ValueError, match="duplicate"):
             merge_replay(
                 store,
@@ -1199,8 +1194,7 @@ class TestMergeReplay:
     def test_incomparable_order_key_raises_clearly(self, store: StreamStore):
         # One stream's ts is an int, the other's a str -> sort would TypeError;
         # merge_replay should surface a clear ValueError, not the bare crash.
-        _seed_stream(
-            store,
+        seed_stream(
             "forms/a",
             [
                 {
@@ -1211,9 +1205,9 @@ class TestMergeReplay:
                     "ts": 1,
                 }
             ],
+            store=store,
         )
-        _seed_stream(
-            store,
+        seed_stream(
             "forms/b",
             [
                 {
@@ -1224,6 +1218,7 @@ class TestMergeReplay:
                     "ts": "2026-01-01T00:00:00Z",
                 }
             ],
+            store=store,
         )
         with pytest.raises(ValueError, match="not mutually comparable"):
             merge_replay(
@@ -1235,7 +1230,7 @@ class TestMergeReplay:
             )
 
     def test_requires_reader_when_staged(self, store: StreamStore):
-        _seed_stream(store, "forms/a", _A)
+        seed_stream("forms/a", _A, store=store)
         reg = _touch_registry()
         reg.register(
             "dep", "TOUCH", lambda *_: None, 0, None, match_field="form_type", stage=1
@@ -1250,8 +1245,7 @@ class TestMergeReplay:
             )
 
     def test_reducer_runs_over_merged_streams(self, store: StreamStore):
-        _seed_stream(
-            store,
+        seed_stream(
             "fin/a",
             [
                 {
@@ -1263,9 +1257,9 @@ class TestMergeReplay:
                     "ts": "2026-01-01T00:00:00Z",
                 }
             ],
+            store=store,
         )
-        _seed_stream(
-            store,
+        seed_stream(
             "fin/b",
             [
                 {
@@ -1285,6 +1279,7 @@ class TestMergeReplay:
                     "ts": "2026-01-01T02:00:00Z",
                 },
             ],
+            store=store,
         )
         proj = DictProjections()
         merge_replay(
@@ -1302,25 +1297,19 @@ class TestMergeReplay:
         # Backfill scenario: events are appended in an order that differs from
         # their logical event order, and the payloads carry NO "ts" field — so
         # ordering can only come from the producer-set envelope event_ts.
-        def _seed(path, rows):
-            store.create(path)
-            for key, logical_ts in rows:
-                ev = {
-                    "schema_version": 1,
-                    "form_type": "TOUCH",
-                    "key": key,
-                    "slot": "S",
-                }
-                store.append(
-                    path,
-                    json.dumps(ev).encode("utf-8"),
-                    AppendOptions(event_ts=logical_ts),
-                )
+        def _touch(key: str, logical_ts: float):
+            event = {
+                "schema_version": 1,
+                "form_type": "TOUCH",
+                "key": key,
+                "slot": "S",
+            }
+            return event, AppendOptions(event_ts=logical_ts)
 
         # Append order (transport) would make b1 the last write; but by logical
         # envelope ts the last event is a1 (400), so a1 must win the slot.
-        _seed("forms/a", [("a0", 100.0), ("a1", 400.0)])
-        _seed("forms/b", [("b0", 200.0), ("b1", 300.0)])
+        seed_stream("forms/a", [_touch("a0", 100.0), _touch("a1", 400.0)], store=store)
+        seed_stream("forms/b", [_touch("b0", 200.0), _touch("b1", 300.0)], store=store)
 
         proj = DictProjections()
         merge_replay(

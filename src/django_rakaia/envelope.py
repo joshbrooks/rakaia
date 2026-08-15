@@ -25,13 +25,12 @@ models. The core package stays dependency-free.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 
 from django.core.serializers.json import DjangoJSONEncoder
 
-from rakaia import AppendOptions, StreamStore
+from rakaia import AppendOptions, seed_stream
 from rakaia.protocols import ProjectionReader, WritableStore
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
@@ -78,21 +77,32 @@ def append_event(
     * ``event_ts`` is passed through. ``None`` means "order by append time",
       which is the pre-existing default, not a silent loss of ordering.
 
+    The create-and-append itself is `rakaia.seed_stream`, handed the Django
+    encoder: this module's whole warning is about a second `json.dumps` rule
+    drifting from the first, so there is one and it lives in the core package.
+    What stays here is the Django-shaped part — which encoder, and where an
+    actor goes.
+
     ``create()`` is called unconditionally rather than guarded by ``has()``:
     creation is idempotent by contract and — as
     ``tests/store_contract.py::test_create_on_an_existing_stream_preserves_its_messages``
     pins — a redundant create cannot truncate a populated stream or rewind its
     offsets. One round trip instead of two.
     """
-    store.create(stream_path)
-    store.append(
+    seed_stream(
         stream_path,
-        json.dumps(payload, cls=DjangoJSONEncoder).encode(),
-        AppendOptions(
-            label=label,
-            metadata={"user": actor} if actor is not None else None,
-            event_ts=event_ts,
-        ),
+        [
+            (
+                payload,
+                AppendOptions(
+                    label=label,
+                    metadata={"user": actor} if actor is not None else None,
+                    event_ts=event_ts,
+                ),
+            )
+        ],
+        store=store,
+        encoder=DjangoJSONEncoder,
     )
 
 
@@ -132,14 +142,11 @@ def fold_events(
 
     from .effect_executor import DjangoExecutor
 
-    scratch = StreamStore()
-    scratch.create(scratch_path)
-    for event in events:
-        scratch.append(
-            scratch_path,
-            json.dumps(event, cls=DjangoJSONEncoder).encode(),
-            AppendOptions(label=label),
-        )
+    scratch = seed_stream(
+        scratch_path,
+        [(event, AppendOptions(label=label)) for event in events],
+        encoder=DjangoJSONEncoder,
+    )
 
     replay(
         scratch,

@@ -11,8 +11,6 @@ lie. See ADR 0003.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
@@ -21,6 +19,7 @@ from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
+from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 
 # A *plain* model (no `@stream_model`): saving it fires no post_save append, so
@@ -53,11 +52,7 @@ def _impure_handler(event):
 def _mem_store(events: list[dict]) -> StreamStore:
     """An in-memory log so the *event source* never touches a guarded alias —
     only the handlers' own reads can trip the guard."""
-    store = StreamStore()
-    store.create("s")
-    for event in events:
-        store.append("s", json.dumps(event).encode("utf-8"))
-    return store
+    return seed_stream("s", events)
 
 
 def _replay(store: StreamStore, registry: HandlerRegistry) -> None:

@@ -14,7 +14,6 @@ today. That is the time-correctness guarantee.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from django.core.management import call_command
@@ -23,7 +22,7 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django_rakaia import DjangoExecutor, get_store
 from orders.models import OrderSummary
 from orders.seed import SAMPLE_BONUSES, SAMPLE_ORDERS, TAX_CHANGE_SEQ
-from rakaia import CollectingExecutor, replay
+from rakaia import CollectingExecutor, replay, seed_stream
 
 STREAM = "orders"
 
@@ -60,12 +59,10 @@ class Command(BaseCommand):
         store.delete(STREAM)
         OrderSummary.objects.all().delete()
 
-        store.create(STREAM)
         # Orders first, then the loyalty-bonus events — so each bonus carries a
         # higher seq than the order it decorates and finds the row already
         # materialised when op="update" applies.
-        for event in [*SAMPLE_ORDERS, *SAMPLE_BONUSES]:
-            store.append(STREAM, json.dumps(event).encode("utf-8"))
+        seed_stream(STREAM, [*SAMPLE_ORDERS, *SAMPLE_BONUSES], store=store)
         self.stdout.write(
             f"Seeded {len(SAMPLE_ORDERS)} order events "
             f"(tax rule changes at seq {TAX_CHANGE_SEQ}) "

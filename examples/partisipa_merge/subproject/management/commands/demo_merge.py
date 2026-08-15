@@ -21,13 +21,13 @@ Four checks, each asserted hard (a failure raises CommandError):
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from django_rakaia import get_store
+from rakaia import seed_stream
 from subproject import merge_replay as mr
 from subproject.handlers import STAGES
 from subproject.models import (
@@ -52,10 +52,6 @@ from subproject.seed import (
 def _reset() -> None:
     for model in (Readiness, Balance, Claim, FinanceLine, Meeting, Project):
         model.objects.all().delete()
-
-
-def _append(store: Any, path: str, event: dict) -> None:
-    store.append(path, json.dumps(event).encode("utf-8"))
 
 
 def _snapshot() -> dict[str, Any]:
@@ -114,16 +110,14 @@ class Command(BaseCommand):
 
     def _build_single(self, store: Any, events: list[dict]) -> None:
         store.delete(SINGLE_STREAM)
-        store.create(SINGLE_STREAM)
-        for event in events:
-            _append(store, SINGLE_STREAM, event)
+        seed_stream(SINGLE_STREAM, events, store=store)
 
     def _build_three(self, store: Any, events: list[dict]) -> None:
         for path in THREE_STREAMS:
             store.delete(path)
-            store.create(path)
+            seed_stream(path, store=store)
         for event in events:
-            _append(store, STREAMS[event["form_type"]], event)
+            seed_stream(STREAMS[event["form_type"]], [event], store=store)
 
     # -- [1] parity ---------------------------------------------------------
 
@@ -214,8 +208,8 @@ class Command(BaseCommand):
     def _check_self_heal(self, store: Any) -> None:
         # Each fix lands on its own pipeline (and on the combined stream).
         for event in HEAL_EVENTS:
-            _append(store, STREAMS[event["form_type"]], event)
-            _append(store, SINGLE_STREAM, event)
+            seed_stream(STREAMS[event["form_type"]], [event], store=store)
+            seed_stream(SINGLE_STREAM, [event], store=store)
 
         baseline = _replay_baseline(store)
         merged = _replay_merged(store)

@@ -9,11 +9,10 @@ upsert is idempotent.
 
 from __future__ import annotations
 
-import json
-
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
+from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 
 ALERT = "app.Alert"
@@ -66,12 +65,6 @@ class CaptureExecutor:
         return [e for b in self.batches for e in b]
 
 
-def _seed(store: StreamStore, path: str, events: list[dict]) -> None:
-    store.create(path)
-    for ev in events:
-        store.append(path, json.dumps(ev).encode("utf-8"))
-
-
 def _registry() -> HandlerRegistry:
     reg = HandlerRegistry()
     reg.register("alert_authored", "sub:1:alerts", alert_authored, 0, None)
@@ -99,7 +92,7 @@ _EVENTS = [
 class TestAuthoredAlertReplayDiscipline:
     def test_transitions_skipped_on_replay_by_default(self):
         store = StreamStore()
-        _seed(store, "sub:1:alerts", _EVENTS)
+        seed_stream("sub:1:alerts", _EVENTS, store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "sub:1:alerts", ex, handler_registry=_registry())
@@ -112,7 +105,7 @@ class TestAuthoredAlertReplayDiscipline:
 
     def test_transitions_delivered_when_included(self):
         store = StreamStore()
-        _seed(store, "sub:1:alerts", _EVENTS)
+        seed_stream("sub:1:alerts", _EVENTS, store=store)
         ex = CaptureExecutor()
 
         replay(
@@ -128,7 +121,7 @@ class TestAuthoredAlertReplayDiscipline:
 
     def test_rereplay_is_idempotent_and_silent(self):
         store = StreamStore()
-        _seed(store, "sub:1:alerts", _EVENTS)
+        seed_stream("sub:1:alerts", _EVENTS, store=store)
         reg = _registry()
 
         first = replay(store, "sub:1:alerts", CaptureExecutor(), handler_registry=reg)

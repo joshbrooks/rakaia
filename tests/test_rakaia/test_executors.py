@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from rakaia.effects import Effect
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
+from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 
 
@@ -45,9 +44,7 @@ class TestCollectingExecutor:
             )
 
         reg.register("h", "s", h, 0, None)
-        store.create("s")
-        for ev in [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]:
-            store.append("s", json.dumps(ev).encode("utf-8"))
+        seed_stream("s", [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}], store=store)
 
         ex = CollectingExecutor()
         result = replay(store, "s", ex, handler_registry=reg)

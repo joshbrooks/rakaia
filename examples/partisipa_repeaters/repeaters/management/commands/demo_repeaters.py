@@ -19,13 +19,13 @@ Four checks, each asserted hard (a failure raises CommandError):
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from django_rakaia import get_store
+from rakaia import seed_stream
 from repeaters import tree_replay as tr
 from repeaters.models import Node, Total
 from repeaters.seed import (
@@ -79,7 +79,7 @@ class Command(BaseCommand):
         call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
         store.delete(STREAM)
-        store.create(STREAM)
+        seed_stream(STREAM, store=store)
         self.stdout.write(f"Submission {SUBMISSION}: v1 tree, then a pruned v2.\n")
 
         self._check_build(store)
@@ -89,13 +89,10 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("\nAll tree-reconcile checks passed ✓"))
 
-    def _append(self, store: Any, event: dict) -> None:
-        store.append(STREAM, json.dumps(event).encode("utf-8"))
-
     # -- [1] build ----------------------------------------------------------
 
     def _check_build(self, store: Any) -> None:
-        self._append(store, V1_EVENT)
+        seed_stream(STREAM, [V1_EVENT], store=store)
         _reset()
         tr.replay_tree(store, STREAM)
         ids, total, dangling = _node_ids(), _total(), _dangling_parents()
@@ -113,7 +110,7 @@ class Command(BaseCommand):
     # -- [2] naive orphans --------------------------------------------------
 
     def _check_naive(self, store: Any) -> None:
-        self._append(store, V2_EVENT)  # the resubmission
+        seed_stream(STREAM, [V2_EVENT], store=store)  # the resubmission
         _reset()
         tr.replay_naive(store, STREAM)
         ids, total = _node_ids(), _total()

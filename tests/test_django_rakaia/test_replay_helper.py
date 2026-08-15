@@ -4,14 +4,13 @@ not fail with "stage > 0 but no reader" (#68 minor)."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from django_rakaia.replay import replay_stream
 from django_rakaia.store import get_store
 from rakaia.effects import Effect
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
+from rakaia.seed import seed_stream
 
 from .models import Area
 
@@ -41,14 +40,16 @@ class TestReplayStream:
     def test_staged_replay_defaults_the_reader(self):
         store = get_store()
         store.delete("s")
-        store.create("s")
         # Dependent arrives before the reference it needs — only a staged replay
         # with a reader resolves it.
-        for event in (
-            {"schema_version": 1, "kind": "DEP", "key": "d1", "ref": "the-ref"},
-            {"schema_version": 1, "kind": "REF", "key": "r1", "name": "the-ref"},
-        ):
-            store.append("s", json.dumps(event).encode("utf-8"))
+        seed_stream(
+            "s",
+            [
+                {"schema_version": 1, "kind": "DEP", "key": "d1", "ref": "the-ref"},
+                {"schema_version": 1, "kind": "REF", "key": "r1", "name": "the-ref"},
+            ],
+            store=store,
+        )
 
         reg = HandlerRegistry()
         reg.register("ref", "REF", _ref, 0, None, match_field="kind", stage=0)
@@ -67,10 +68,10 @@ class TestReplayStream:
     def test_returns_replay_result(self):
         store = get_store()
         store.delete("s2")
-        store.create("s2")
-        store.append(
+        seed_stream(
             "s2",
-            json.dumps({"schema_version": 1, "kind": "REF", "name": "solo"}).encode(),
+            [{"schema_version": 1, "kind": "REF", "name": "solo"}],
+            store=store,
         )
 
         reg = HandlerRegistry()

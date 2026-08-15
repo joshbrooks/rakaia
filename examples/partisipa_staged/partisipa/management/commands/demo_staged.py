@@ -18,7 +18,6 @@ Three checks, each asserted hard (a failure raises CommandError):
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from django.core.management import call_command
@@ -29,6 +28,7 @@ from partisipa import staged_replay as sr
 from partisipa.handlers import ALL_ONE_STAGE, STAGED
 from partisipa.models import Project, Sf12
 from partisipa.seed import LATE_SF, LATE_TF, SAMPLE_SUBMISSIONS
+from rakaia import seed_stream
 
 STREAM = "submissions"
 
@@ -48,10 +48,6 @@ def _link_state() -> tuple[list, list]:
     return links, projects
 
 
-def _append(store: Any, event: dict) -> None:
-    store.append(STREAM, json.dumps(event).encode("utf-8"))
-
-
 class Command(BaseCommand):
     help = "Demonstrate staged replay resolving late-arriving cross-form links."
 
@@ -62,9 +58,7 @@ class Command(BaseCommand):
         call_command("migrate", verbosity=0, interactive=False)
         store = get_store()
         store.delete(STREAM)
-        store.create(STREAM)
-        for event in SAMPLE_SUBMISSIONS:
-            _append(store, event)
+        seed_stream(STREAM, SAMPLE_SUBMISSIONS, store=store)
         self.stdout.write(
             f"Seeded {len(SAMPLE_SUBMISSIONS)} submissions "
             f"(every SF_1_2 precedes its TF_6_1_1 in the stream).\n"
@@ -122,7 +116,7 @@ class Command(BaseCommand):
 
     def _check_self_heal(self, store: Any) -> None:
         # A new SF whose TF has NOT been submitted yet.
-        _append(store, LATE_SF)
+        seed_stream(STREAM, [LATE_SF], store=store)
         _reset_projections()
         sr.staged_replay(store, STREAM, STAGED)
         late = Sf12.objects.get(submission_id=LATE_SF["key"])
@@ -136,7 +130,7 @@ class Command(BaseCommand):
         )
 
         # The TF finally arrives. Re-run staged — no bespoke backfill task.
-        _append(store, LATE_TF)
+        seed_stream(STREAM, [LATE_TF], store=store)
         _reset_projections()
         sr.staged_replay(store, STREAM, STAGED)
         healed = Sf12.objects.get(submission_id=LATE_SF["key"])
