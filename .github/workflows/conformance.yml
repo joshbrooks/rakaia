@@ -1,16 +1,19 @@
 name: Conformance
 
 # Runs the upstream Durable Streams server-conformance-tests suite against a
-# live rakaia server. It is currently INFORMATIONAL (non-blocking): the suite
-# step uses `continue-on-error` so failures are reported without blocking
-# merges while rakaia's protocol coverage matures (stream forking is not yet
-# implemented).
+# live rakaia server. It BLOCKS on a regression.
 #
 # Results are diffed against conformance/expected-failures.txt so a genuine
-# regression is distinguished from the known gap: NEW failures surface as
-# `::error::` annotations and a step summary, while expected fork failures stay
-# quiet. To make regressions block merges later, either flip `continue-on-error`
-# off below or set CONFORMANCE_FAIL_ON_REGRESSION=1 for the run step.
+# regression is distinguished from the known gap: a NEW failure surfaces as an
+# `::error::` annotation and a step summary and fails the job, while the
+# expected stream-forking failures (#61) stay quiet.
+#
+# It was informational until #137. That was defensible when the baseline was
+# untrustworthy, but it meant a green tick here proved only that the job had
+# run: seven unbaselined Stream-Seq failures survived weeks of PRs, each one
+# reporting conformance as passing. If this job fails, either fix the
+# regression or — when the divergence is deliberate — add it to
+# expected-failures.txt with the reason, the way the fork family is recorded.
 
 on:
   push:
@@ -55,14 +58,29 @@ jobs:
         run: npm ci
 
       # Runs the suite and diffs the results against conformance/expected-failures.txt.
-      # check-regressions.mjs writes the GitHub step summary and emits `::error::`
-      # annotations for any NEW failure, so regressions are loud on the PR. The step
-      # stays informational (continue-on-error) — the check exits 0 unless
-      # CONFORMANCE_FAIL_ON_REGRESSION=1, which is the one-line switch to make
-      # regressions a required check later.
-      - name: Run Durable Streams conformance suite (informational)
+      # check-regressions.mjs writes the GitHub step summary, emits `::error::`
+      # annotations for any NEW failure, and — with CONFORMANCE_FAIL_ON_REGRESSION=1
+      # — exits non-zero so the check actually fails.
+      #
+      # This was informational (`continue-on-error: true`) while the baseline was
+      # untrustworthy, which meant a green "conformance" tick carried no signal at
+      # all: seven Stream-Seq failures sat unbaselined for weeks and the job
+      # reported success every time (#137). The baseline is honest now — the only
+      # accepted gap is the stream-forking family (#61), and it is listed in
+      # expected-failures.txt — so a NEW failure is a real regression and should
+      # block. A failure here means either fix it or, if the divergence is
+      # deliberate, baseline it with a reason.
+      #
+      # `shell: bash` is load-bearing, not decoration. The default shell is
+      # `bash -e {0}` with no `pipefail`, so a pipeline reports the exit status of
+      # its *last* command — `tee`, which always succeeds. Without this the script
+      # could exit 1 and the step would still pass, which is the same silent-green
+      # failure this change exists to remove. `shell: bash` runs with `-eo pipefail`.
+      - name: Run Durable Streams conformance suite
         id: conformance
-        continue-on-error: true
+        shell: bash
+        env:
+          CONFORMANCE_FAIL_ON_REGRESSION: "1"
         run: ./conformance/run.sh 4437 2>&1 | tee conformance-results.log
 
       - name: Upload logs and JSON report
