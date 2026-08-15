@@ -132,7 +132,8 @@ the channel layer.
   in one projection, without clobber.
 - [Dry-run & executors](dry-run-and-executors.md) — Preview a replay's writes
   with zero side effects.
-- [Translations](translations.md) — Optional `Translatable` model and UI.
+- [Translations](translations.md) — the `polyglot` example: live-editable
+  translations over SSE.
 - [Deployment](deployment.md) — Production setup, ASGI servers, Redis channel
   layer, scaling.
 - [Protocol specification](protocol.md) — Wire format, headers, semantics.

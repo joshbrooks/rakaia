@@ -16,7 +16,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_http_methods
 
-from django_rakaia.models import Translatable
+from polyglot.models import Translatable
 
 from .strings import CATALOG, DEFAULT_LANG, LANGUAGES
 

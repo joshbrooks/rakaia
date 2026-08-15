@@ -13,10 +13,9 @@ from django_rakaia.admin import (
     StreamAdmin,
     StreamEntryAdmin,
     StreamEventAdmin,
-    TranslatableAdmin,
     register_stream_event_admin,
 )
-from django_rakaia.models import Stream, StreamEntry, StreamEvent, Translatable
+from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 pytestmark = pytest.mark.django_db
 
@@ -96,42 +95,6 @@ class TestStreamEntryAdmin:
         assert "/admin/django_rakaia/streamevent/" in event_link
         badge = self.admin.event_type_badge(entry)
         assert "DELETE" in badge and "#dc3545" in badge  # red
-
-
-class TestTranslatableAdmin:
-    def setup_method(self) -> None:
-        self.admin = TranslatableAdmin(Translatable, django_admin.site)
-
-    def test_msgstr_preview_variants(self) -> None:
-        empty = Translatable.objects.create(msgid="a", msgstr="", langcode="pt")
-        assert "Not translated" in self.admin.msgstr_preview(empty)
-
-        short = Translatable.objects.create(msgid="b", msgstr="hi", langcode="pt")
-        assert self.admin.msgstr_preview(short) == "hi"
-
-        longt = Translatable.objects.create(msgid="c", msgstr="y" * 80, langcode="pt")
-        assert self.admin.msgstr_preview(longt).endswith("...")
-
-    def test_langcode_badge_known_and_unknown(self) -> None:
-        known = Translatable.objects.create(msgid="a", msgstr="x", langcode="pt")
-        assert "#6f42c1" in self.admin.langcode_badge(known)  # purple
-        unknown = Translatable.objects.create(msgid="b", msgstr="x", langcode="zz")
-        assert "#6c757d" in self.admin.langcode_badge(unknown)  # grey fallback
-
-    def test_deleted_status(self) -> None:
-        from django.utils import timezone
-
-        active = Translatable.objects.create(msgid="a", msgstr="x", langcode="pt")
-        assert "Active" in self.admin.deleted_status(active)
-        gone = Translatable.objects.create(
-            msgid="b", msgstr="x", langcode="pt", deleted=timezone.now()
-        )
-        assert "Deleted" in self.admin.deleted_status(gone)
-
-    def test_get_queryset(self, rf) -> None:
-        Translatable.objects.create(msgid="a", msgstr="x", langcode="pt")
-        request = rf.get("/admin/")
-        assert self.admin.get_queryset(request).count() == 1
 
 
 class TestRegisterStreamEventAdmin:

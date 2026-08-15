@@ -459,6 +459,27 @@ is not yet tagged in a release.
   not a Django view, so it does not go in `urls.py`.
   → [`docs/django-integration.md`](docs/django-integration.md#protocol-http-api).
 
+### Removed
+
+- **The `Translatable` demo has left the library.** `django_rakaia` shipped a
+  translations model and manager, an admin, an HTMX dashboard, JSON endpoints, a
+  translations SSE feed and three templates. That is demo domain, not library
+  surface — its `langcode` choices were hard-coded to `tet`/`pt`/`id` — and
+  because the model sat in `0001_initial`, **every** consumer got a
+  `django_rakaia_translatable` table whether they used it or not. It has moved
+  to `examples/polyglot`, which was the only thing that ever used it (and whose
+  own `signals.py` already carried the argument: *"we don't decorate the
+  library's `Translatable` model itself — that would push demo concerns into the
+  library"*).
+
+  Migration `0008` **drops the table**; dump it first if you have rows.
+  [`UPGRADING.md`](UPGRADING.md) carries the model definition to paste into your
+  own app, and the removed URL list. The stream dashboard, the stream SSE
+  endpoint and everything else under `/streams/` are unaffected — nothing in the
+  core imported anything from the translations feature. One incidental routing
+  change: a stream literally named `translations` now resolves to the stream
+  detail page.
+
 ### Changed
 
 - **BREAKING — `DjangoStreamStore.append` and `.append_many` return

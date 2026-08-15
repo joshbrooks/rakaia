@@ -5,14 +5,12 @@ and the JSON API endpoints: happy paths, empty state, 404/absent streams, and
 input validation on pagination/offset parameters.
 """
 
-import json
-
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
-from django_rakaia.models import Stream, StreamEntry, StreamEvent, Translatable
+from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 pytestmark = pytest.mark.django_db
 
@@ -190,69 +188,5 @@ class TestStreamEventsApi:
         resp = auth_client.get(
             reverse("django_rakaia:stream_events_api", args=["s:1"]),
             {"after_offset": "abc"},
-        )
-        assert resp.status_code == 400
-
-
-class TestTranslationsApi:
-    def test_filter_by_langcode_and_msgid(self, auth_client: Client) -> None:
-        Translatable.objects.create(msgid="hello", msgstr="ola", langcode="pt")
-        Translatable.objects.create(msgid="hello", msgstr="halo", langcode="id")
-        Translatable.objects.create(msgid="bye", msgstr="tchau", langcode="pt")
-
-        resp = auth_client.get(
-            reverse("django_rakaia:translations_api"), {"langcode": "pt"}
-        )
-        body = resp.json()
-        assert body["total"] == 2
-        assert {t["langcode"] for t in body["translations"]} == {"pt"}
-
-        resp = auth_client.get(
-            reverse("django_rakaia:translations_api"), {"msgid": "hello"}
-        )
-        body = resp.json()
-        assert body["total"] == 2
-        assert {t["msgid"] for t in body["translations"]} == {"hello"}
-
-
-class TestTranslationCreateUpdateApi:
-    def _url(self) -> str:
-        return reverse("django_rakaia:translation_create_update_api")
-
-    def test_create(self, auth_client: Client) -> None:
-        resp = auth_client.post(
-            self._url(),
-            data=json.dumps({"msgid": "hi", "msgstr": "oi", "langcode": "pt"}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-        assert body["action"] == "create"
-        assert Translatable.objects.filter(msgid="hi", langcode="pt").exists()
-
-    def test_update_existing(self, auth_client: Client) -> None:
-        # msgctxt="" (not NULL) to match the view's ``msgctxt or ""`` lookup key.
-        Translatable.objects.create(msgid="hi", msgstr="old", langcode="pt", msgctxt="")
-        resp = auth_client.post(
-            self._url(),
-            data=json.dumps({"msgid": "hi", "msgstr": "new", "langcode": "pt"}),
-            content_type="application/json",
-        )
-        body = resp.json()
-        assert body["action"] == "update"
-        assert Translatable.objects.get(msgid="hi", langcode="pt").msgstr == "new"
-
-    def test_missing_msgid_returns_400(self, auth_client: Client) -> None:
-        resp = auth_client.post(
-            self._url(),
-            data=json.dumps({"msgstr": "oi"}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
-
-    def test_invalid_json_returns_400(self, auth_client: Client) -> None:
-        resp = auth_client.post(
-            self._url(), data="{not json", content_type="application/json"
         )
         assert resp.status_code == 400
