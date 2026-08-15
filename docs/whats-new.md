@@ -298,8 +298,9 @@ flowchart LR
   H --> HR[("SubmissionHistory — audit")]
 ```
 
-`recover_peak_snapshot` recovers a subject's most-complete historical snapshot —
-the streams edition of `repair_blank_save_dataloss`.
+Because every snapshot stays in the audit log, recovering a subject's
+most-complete historical snapshot — `repair_blank_save_dataloss`, stream edition
+— is a scan over those rows.
 
 → Deep dive: [History read-model](history-read-model.md) · Demo: `just formkit-demo`
 

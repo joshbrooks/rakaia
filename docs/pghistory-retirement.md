@@ -78,7 +78,7 @@ executor.apply([
 |---|---|---|
 | `/history` fields + `+`/`~`/`-` diff | `SubmissionHistoryEntry` | one row per event, `label` from `op` |
 | Editing actor | `actor` on every entry | carried in the envelope |
-| `repair_blank_save_dataloss` | `recover_peak_snapshot()` | `max(history snapshots, key=len)` — the pre-truncation snapshot never left the log |
+| `repair_blank_save_dataloss` | a scan over the audit rows | `max(history snapshots, key=len)` — the pre-truncation snapshot never left the log |
 
 The example asserts the stream-derived audit log reproduces a golden `pgh_event`
 table **byte-for-byte** (order, label, actor, timestamp, canonical field snapshot),
@@ -101,8 +101,8 @@ The spike carries the envelope as a JSON convention. Promoting it to core means:
    as structured metadata rather than payload keys.
 2. Extending the durable **`StreamEvent`** model (which today has `event_type` /
    `created_at`) to persist that envelope.
-3. A **history read-model helper** so adopters get `SubmissionHistoryEntry` +
-   `recover_peak_snapshot` without hand-rolling them.
+3. A **history read-model helper** so adopters get `SubmissionHistoryEntry`
+   without hand-rolling it.
 
 ## Migration path (issue #11)
 

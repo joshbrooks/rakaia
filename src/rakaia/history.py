@@ -2,19 +2,18 @@
 History read-model: materialise a per-event audit log from an enveloped stream.
 
 This is the streams-native replacement for `django-pghistory`'s consumers — the
-`/history` audit API, the admin event log, and blank-save recovery. Because a
-stream carries the event **envelope** (label + metadata) on each message
-(PR A), a history projection is just another fan-out: one audit row per event,
-keyed by ``(subject, version)``, carrying the label, timestamp, actor, metadata,
-and the full payload snapshot.
+`/history` audit API and the admin event log. Because a stream carries the
+event **envelope** (label + metadata) on each message (PR A), a history
+projection is just another fan-out: one audit row per event, keyed by
+``(subject, version)``, carrying the label, timestamp, actor, metadata, and the
+full payload snapshot.
 
 `history_effects` handles the iteration + keying and leaves the row *shape* to
 the caller (a `defaults_of(msg, event)` callback), so the audit model can match
 whatever `/history` returns. Two convenience helpers cover the two fiddly bits
 the audit consumers need: `label_marker` (label → ``+``/``~``/``-``) and
 `envelope_actor` (the ``metadata['user']`` editor, falling back to the payload's
-own owner FK). `recover_peak_snapshot` is the `repair_blank_save_dataloss`
-analogue — recover a truncated subject from its historical peak.
+own owner FK).
 """
 
 from __future__ import annotations
@@ -108,32 +107,3 @@ def history_effects(
             )
         )
     return effects
-
-
-def recover_peak_snapshot(
-    messages: Sequence[StreamMessage],
-    subject: Any,
-    *,
-    subject_of: Callable[[dict[str, Any]], Any],
-    snapshot_of: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Recover a subject's historical **peak** snapshot — the one with the most
-    fields — the streams edition of ``repair_blank_save_dataloss``.
-
-    Legacy-only: it recovers from a *bug* (a blank/truncating save). With no-op
-    suppressed appends, stream-native writes needn't produce blank snapshots at
-    all; carry this to recover old pghistory data, not as an ongoing need.
-
-    Returns the peak snapshot for `subject`, or ``{}`` if it has no events. On a
-    tie (equal key counts) the **newest** snapshot wins — matching pghistory's
-    ``… = maxnk ORDER BY pgh_created_at DESC LIMIT 1`` — so recovery restores the
-    latest good state, not the earliest. (`messages` are oldest-first.)
-    """
-    peak: dict[str, Any] = {}
-    for event in (json.loads(m.data) for m in messages):
-        if subject_of(event) != subject:
-            continue
-        snapshot = snapshot_of(event) if snapshot_of else event
-        if len(snapshot) >= len(peak):  # >= : a later equal-size snapshot wins
-            peak = snapshot
-    return peak

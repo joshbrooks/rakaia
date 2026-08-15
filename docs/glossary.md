@@ -81,9 +81,9 @@ audit trail that replaces `pgh_event`. → *[history read-model](history-read-mo
 ### Peak snapshot
 
 The most complete snapshot in a subject's history — the one with the most fields.
-`recover_peak_snapshot` returns it to restore a subject that a legacy
-blank/truncating save corrupted (newest wins on a tie). A legacy-recovery tool,
-not an everyday one. → *[history read-model](history-read-model.md#recovering-the-peak-snapshot)*
+Recovering it restores a subject that a legacy blank/truncating save corrupted
+(newest wins on a tie). A legacy-recovery move over the audit rows, not an
+everyday one. → *[history read-model](history-read-model.md#recovering-the-peak-snapshot)*
 
 ### Handler
 

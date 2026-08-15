@@ -8,7 +8,6 @@ from rakaia.history import (
     envelope_actor,
     history_effects,
     label_marker,
-    recover_peak_snapshot,
 )
 from rakaia.types import StreamMessage
 
@@ -122,27 +121,3 @@ class TestHistoryEffects:
             version_of=lambda m: m.offset,
         )
         assert tail_effects[0].lookup["version"] == "30"  # not 0 → no collision
-
-
-class TestRecoverPeakSnapshot:
-    def test_recovers_peak_over_a_truncating_save(self):
-        messages = [
-            _msg({"key": "s1", "a": 1, "b": 2, "c": 3}),  # 4 keys (peak)
-            _msg({"key": "s1"}),  # blank save → 1 key
-            _msg({"key": "s2", "x": 1}),  # a different subject
-        ]
-        peak = recover_peak_snapshot(messages, "s1", subject_of=lambda ev: ev["key"])
-        assert peak == {"key": "s1", "a": 1, "b": 2, "c": 3}
-
-    def test_missing_subject_returns_empty(self):
-        assert recover_peak_snapshot([], "s1", subject_of=lambda ev: ev["key"]) == {}
-
-    def test_newest_wins_on_a_tie(self):
-        # Two equal-size snapshots (3 keys each) — recovery must restore the
-        # NEWER one, matching pghistory's ORDER BY created_at DESC.
-        messages = [
-            _msg({"key": "s1", "a": 1, "b": 2}),  # older, 3 keys
-            _msg({"key": "s1", "a": 9, "b": 9}),  # newer, 3 keys
-        ]
-        peak = recover_peak_snapshot(messages, "s1", subject_of=lambda ev: ev["key"])
-        assert peak == {"key": "s1", "a": 9, "b": 9}  # newest

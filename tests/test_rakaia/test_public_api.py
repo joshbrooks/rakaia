@@ -35,7 +35,6 @@ RAKAIA_PUBLIC = {
     "history_effects",
     "label_marker",
     "provenance",
-    "recover_peak_snapshot",
     "snapshots_equal",
     # options
     "CursorOptions",
@@ -79,7 +78,6 @@ RAKAIA_PUBLIC = {
     "RefResolver",
     "UnresolvedRefError",
     "check_disjoint_defaults",
-    "dispatch_external",
     # projections
     "project_latest",
     "reconcile_aggregate",

@@ -10,7 +10,7 @@ state) and keeps handlers trivially testable without a database.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
@@ -377,41 +377,3 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
                     f"{field!r} on {eff.model_label} {eff.lookup!r}"
                 )
             existing[field] = idx
-
-
-# =============================================================================
-# External effect dispatch
-# =============================================================================
-
-
-def dispatch_external(
-    effects: Iterable[Effect],
-    handlers: Mapping[str, Callable[[Effect], Any]],
-    *,
-    on_unknown: Literal["raise", "ignore"] = "raise",
-) -> int:
-    """Route ``op="external"`` effects to per-``kind`` handlers.
-
-    rakaia never applies external effects itself: `replay()` filters them out
-    (unless ``include_external=True``) and executors drop them. This is the seam
-    for the *application* to act on them — email, webhooks, an alert transition —
-    without every consumer re-implementing ``for e in effects: if e.op ==
-    "external" and e.kind == ...``.
-
-    Pass a ``{kind: fn}`` map; each external effect is routed to
-    ``handlers[effect.kind]`` (non-external effects are skipped). Returns the
-    number dispatched. An effect whose ``kind`` has no handler raises ``KeyError``
-    by default, or is skipped with ``on_unknown="ignore"``.
-    """
-    dispatched = 0
-    for eff in effects:
-        if eff.op != "external":
-            continue
-        handler = handlers.get(eff.kind) if eff.kind is not None else None
-        if handler is None:
-            if on_unknown == "ignore":
-                continue
-            raise KeyError(f"No handler for external effect kind={eff.kind!r}")
-        handler(eff)
-        dispatched += 1
-    return dispatched

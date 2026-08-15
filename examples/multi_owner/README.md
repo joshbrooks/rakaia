@@ -30,7 +30,7 @@ just multi-owner-demo
 | 2 | `reconcile_aggregate(owns=…)` | Two reducers share one row, each owning disjoint columns; when a group vanishes in one owner, only *that owner's* columns are null-cleared — the row and the other owner survive. |
 | 3 | `reconcile_by_key(retire=…)` | Reconcile rows on a composite natural key, **soft-deleting** stale rows (stamp `resolved_at`) instead of dropping them, scoped off authored rows via `retire_filter`. |
 | 4 | `check_disjoint_defaults` | The invariant that makes multi-owner rows safe: two owners writing the same column is caught as an `EffectCollisionError`. |
-| 5 | `dispatch_external` | Route the `op="external"` effects rakaia deliberately never applies (email, webhooks) to per-`kind` handlers. |
+| 5 | `op="external"` effects | Route the effects rakaia deliberately never applies (email, webhooks) to per-`kind` handlers — a two-line loop in the app. |
 
 `executor.py` is intentionally minimal — it supports only the lookup operators
 these demos need (`__in`, `__isnull`). For the production executor see

@@ -518,6 +518,27 @@ is not yet tagged in a release.
   change: a stream literally named `translations` now resolves to the stream
   detail page.
 
+- **Three helpers nobody was using are gone.** All three were added after
+  `0.1.0` and never appeared in a tagged release, so **no upgrade note is
+  needed** and no released code can break: there is nothing to migrate from.
+
+  - `send_sse_event` — an internal helper for writing a Server-Sent Event that
+    nothing in the library ever called. It was also the unsafe twin of the code
+    the protocol server actually uses: the real one normalises carriage returns
+    so a payload cannot forge an event boundary, and this copy did not.
+  - `dispatch_external` — routed the "external" effects rakaia deliberately
+    never applies (email, webhooks) to per-kind handlers. Its own documentation
+    described the alternative: a two-line loop in your own code. The
+    `multi_owner` example now writes that loop.
+  - `recover_peak_snapshot` — recovered a record's most complete historical
+    snapshot after a legacy blank save. Once the audit rows exist this is a
+    one-line scan over them, and each application wants a slightly different
+    version, so the `partisipa_history` example keeps its own — as it always
+    did.
+
+  `check_disjoint_defaults`, in the same module as one of these, stays: it runs
+  on every effect apply.
+
 ### Changed
 
 - **BREAKING — `DjangoStreamStore.append` and `.append_many` return

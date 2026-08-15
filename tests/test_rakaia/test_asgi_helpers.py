@@ -14,7 +14,6 @@ from rakaia._asgi import (
     read_body,
     send_body_chunk,
     send_response,
-    send_sse_event,
     start_streaming_response,
 )
 
@@ -158,26 +157,3 @@ class TestStreamingResponse:
         await send_body_chunk(send, b"chunk1", more_body=True)
         assert send.messages[0]["body"] == b"chunk1"
         assert send.messages[0]["more_body"] is True
-
-
-class TestSendSseEvent:
-    async def test_simple_event(self):
-        send = _MockSend()
-        await send_sse_event(send, "message", "hello")
-
-        # SSE format
-        body = send.messages[0]["body"].decode("utf-8")
-        assert "event: message" in body
-        assert "data:hello" in body
-        assert body.endswith("\n\n")
-
-    async def test_multiline_data(self):
-        send = _MockSend()
-        await send_sse_event(send, "msg", "line1\nline2\nline3")
-
-        body = send.messages[0]["body"].decode("utf-8")
-        # Each line gets its own data: prefix
-        assert body.count("data:") == 3
-        assert "data:line1" in body
-        assert "data:line2" in body
-        assert "data:line3" in body

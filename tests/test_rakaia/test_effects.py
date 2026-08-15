@@ -10,7 +10,6 @@ from rakaia.effects import (
     Effect,
     EffectCollisionError,
     check_disjoint_defaults,
-    dispatch_external,
 )
 
 
@@ -231,65 +230,6 @@ class TestEffectValidation:
                 transition_kind="alert_transition",
                 transition_key_fields=("alert_type",),
             )
-
-
-class TestDispatchExternal:
-    def test_routes_by_kind(self):
-        seen = []
-        effects = [
-            Effect(op="update_or_create", model_label="m.M", lookup={"id": 1}),
-            Effect(op="external", kind="email", payload={"to": "a"}),
-            Effect(op="external", kind="webhook", payload={"url": "u"}),
-        ]
-        n = dispatch_external(
-            effects,
-            {
-                "email": lambda e: seen.append(("email", e.payload)),
-                "webhook": lambda e: seen.append(("webhook", e.payload)),
-            },
-        )
-        assert n == 2
-        assert seen == [("email", {"to": "a"}), ("webhook", {"url": "u"})]
-
-    def test_non_external_effects_skipped(self):
-        n = dispatch_external(
-            [Effect(op="delete", model_label="m.M", lookup={"p": 1})],
-            {"email": lambda _e: None},
-        )
-        assert n == 0
-
-    def test_unknown_kind_raises_by_default(self):
-        with pytest.raises(KeyError, match="stripe"):
-            dispatch_external(
-                [Effect(op="external", kind="stripe", payload={})],
-                {"email": lambda _e: None},
-            )
-
-    def test_unknown_kind_ignored_when_configured(self):
-        n = dispatch_external(
-            [Effect(op="external", kind="stripe", payload={})],
-            {"email": lambda _e: None},
-            on_unknown="ignore",
-        )
-        assert n == 0
-
-    def test_kind_none_treated_as_unknown(self):
-        # A kind=None external effect has no handler; pins the behavior so a
-        # future refactor (e.g. handlers.get(eff.kind, default)) can't silently
-        # change it. Raises by default, skipped under on_unknown="ignore".
-        with pytest.raises(KeyError, match="kind=None"):
-            dispatch_external(
-                [Effect(op="external", kind=None, payload={})],
-                {"email": lambda _e: None},
-            )
-        assert (
-            dispatch_external(
-                [Effect(op="external", kind=None, payload={})],
-                {"email": lambda _e: None},
-                on_unknown="ignore",
-            )
-            == 0
-        )
 
 
 class TestCheckDisjointDefaults:
