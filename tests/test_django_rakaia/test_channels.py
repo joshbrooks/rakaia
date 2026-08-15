@@ -235,6 +235,32 @@ class TestChannelLayerSSEViews:
         assert chunks[0]["event"]["data"] == {"from": "mine"}
         assert "stream_id" not in chunks[0], "routing field must not leak to clients"
 
+    async def test_sse_foreign_last_event_id_is_refused(self):
+        """A ``Last-Event-ID`` this store never issued must not resume.
+
+        ``int("0_5")`` is 5 in Python, so the in-memory store's compound
+        ``{seq}_{byte}`` offset parses into an unrelated resume point; a
+        foreign offset that does not parse at all used to fall back to 0 and
+        replay the whole stream. Both are wrong: refuse instead.
+        """
+        from django_rakaia.channels_views import stream_events_sse
+
+        stream = await Stream.objects.acreate(stream_id="foreign-offset")
+        event = await StreamEvent.objects.acreate(event_type="create", data={"n": 1})
+        await StreamEntry.objects.acreate(stream=stream, event=event, offset=1)
+
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        request = factory.get(
+            "/api/streams/foreign-offset/sse/", HTTP_LAST_EVENT_ID="0_5"
+        )
+
+        response = await stream_events_sse(request, "foreign-offset")
+
+        assert response.status_code == 400
+        assert not getattr(response, "streaming", False)
+
     async def test_sse_response_headers(self):
         """SSE response has correct content-type and cache headers."""
         from django_rakaia.channels_views import stream_events_sse

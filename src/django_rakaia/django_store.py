@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -43,7 +42,6 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.db import transaction
-from django.db.models import Max
 
 from rakaia.append_decision import StreamFacts, decide_append
 from rakaia.context import merge_provenance
@@ -59,7 +57,6 @@ from rakaia.types import (
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
-    InvalidOffset,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerState,
@@ -76,28 +73,13 @@ from .models import (
     Stream,
     StreamEntry,
     StreamEvent,
-    StreamOffsetWatermark,
     StreamProducer,
 )
+from .offsets import format_offset, parse_offset
 
 # StreamEvent.event_type is required metadata for the dashboard; raw stream
 # appends carry no type, so they are recorded under a single stable label.
 _APPEND_EVENT_TYPE = "append"
-
-# Offsets are rendered zero-padded so they sort byte-wise lexicographically, as
-# the Durable Streams protocol requires (§3, §5.2). 20 digits covers a
-# BigAutoField's range (< 2**63). `read` still parses them numerically, so the
-# padding is transparent to filtering.
-_OFFSET_WIDTH = 20
-
-# This store's offsets, and nothing else. See `DjangoStreamStore._parse_offset`.
-_PLAIN_INTEGER_OFFSET = re.compile(r"^\d+$")
-
-
-def format_offset(value: int) -> str:
-    """Render an integer offset as the protocol's opaque, sortable string."""
-    return f"{value:0{_OFFSET_WIDTH}d}"
-
 
 # `StreamEvent.payload_encoding` values. `None` means the event's `data` is the
 # payload as a JSON value — the event-sourcing shape, and what every row written
@@ -944,23 +926,8 @@ class DjangoStreamStore:
 
     @staticmethod
     def _parse_offset(offset: str) -> int:
-        """The entry offset `offset` denotes, for this store's own format.
-
-        Strict on purpose. `int()` alone would accept far more than this store
-        ever issues — it treats underscores as digit separators, so the
-        in-memory store's compound `{seq}_{byte}` offset parses cleanly into an
-        unrelated number, and a resume read would quietly return the wrong
-        window instead of failing. `VALID_OFFSET_PATTERN` cannot catch that
-        either: it is a shared syntactic guard, and the protocol makes offsets
-        opaque rather than uniform (§6), so only the issuing store can say
-        whether a token is one of its own.
-        """
-        if not _PLAIN_INTEGER_OFFSET.match(offset):
-            raise InvalidOffset(
-                f"Not an offset this store issued: {offset!r}. Durable-store "
-                f"offsets are plain integers."
-            )
-        return int(offset)
+        """The entry offset `offset` denotes. Delegates to `parse_offset`."""
+        return parse_offset(offset)
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.
@@ -1090,13 +1057,9 @@ class DjangoStreamStore:
         stream = self._get_if_not_expired(path)
         if stream is None:
             return None
-        entries_max = stream.entries.aggregate(max_offset=Max("offset"))["max_offset"]
-        watermark_high = (
-            StreamOffsetWatermark.objects.filter(stream_path=path)
-            .values_list("high", flat=True)
-            .first()
-        )
-        return format_offset(max(entries_max or 0, watermark_high or 0))
+        # The head itself is `Stream.current_offset`; all this method adds is
+        # the expiry check and the absent-stream `None`.
+        return stream.current_offset
 
     def list_paths(self) -> list[str]:
         return list(Stream.objects.values_list("stream_id", flat=True))

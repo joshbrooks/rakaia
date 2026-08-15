@@ -190,3 +190,22 @@ class TestStreamEventsApi:
             {"after_offset": "abc"},
         )
         assert resp.status_code == 400
+
+    def test_foreign_after_offset_is_refused(self, auth_client: Client) -> None:
+        """An offset in the other store's format must fail, not resolve.
+
+        Python reads ``_`` as a digit separator, so ``int("0_5")`` is 5: the
+        in-memory store's compound ``{seq}_{byte}`` offset would silently
+        resolve to an unrelated position and return the wrong window with a
+        200. Only the store that issued an offset can say whether it owns it,
+        and this view serves durable (plain-integer) offsets.
+        """
+        for off in (1, 2, 3, 4, 5, 6):
+            _make_entry("s:1", off)
+        resp = auth_client.get(
+            reverse("django_rakaia:stream_events_api", args=["s:1"]),
+            {"after_offset": "0_5"},
+        )
+        assert resp.status_code == 400, (
+            f"foreign offset resolved instead of being refused: {resp.content!r}"
+        )

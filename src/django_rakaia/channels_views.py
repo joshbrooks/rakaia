@@ -10,11 +10,14 @@ import json
 from typing import Any
 
 from channels.layers import get_channel_layer
-from django.http import StreamingHttpResponse
+from django.http import HttpResponseBadRequest, StreamingHttpResponse
 from django.views.decorators.http import require_GET
+
+from rakaia.types import InvalidOffset
 
 from .channels_signals import _sanitize_group_name
 from .models import StreamEntry
+from .offsets import parse_offset
 
 
 @require_GET
@@ -26,13 +29,23 @@ async def stream_events_sse(_request: Any, stream_id: str) -> Any:
     auto-reconnects). On a fresh connect that header is absent, so we
     replay the full history. Each event is tagged with `id: <offset>`
     so the browser knows where to resume.
+
+    A `Last-Event-ID` this store never issued is refused with a 400 rather
+    than resumed. `int()` would read the in-memory store's compound
+    `{seq}_{byte}` offset as an unrelated number and resume in the wrong
+    place, and the old `except ValueError: 0` fallback turned an unparseable
+    resume token into a silent full replay — a client that believes it is
+    resuming would be handed duplicates it has already processed. Failing the
+    connection is visible; both alternatives are not.
     """
 
     last_event_id = _request.headers.get("Last-Event-ID", "")
     try:
-        after_offset = int(last_event_id) if last_event_id else 0
-    except ValueError:
-        after_offset = 0
+        after_offset = parse_offset(last_event_id) if last_event_id else 0
+    except InvalidOffset:
+        return HttpResponseBadRequest(
+            "Last-Event-ID is not an offset this store issued"
+        )
 
     async def event_generator():
         channel_layer = get_channel_layer()

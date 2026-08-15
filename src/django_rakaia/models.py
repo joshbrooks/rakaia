@@ -11,6 +11,8 @@ from django.db.models import Max
 
 from rakaia.types import ClosedBy
 
+from .offsets import format_offset
+
 
 class Stream(models.Model):
     """
@@ -80,8 +82,6 @@ class Stream(models.Model):
         to keep in step. Named to match the in-memory `Stream.current_offset`,
         which is what lets one protocol server read either.
         """
-        from .django_store import format_offset
-
         entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
         watermark_high = (
             StreamOffsetWatermark.objects.filter(stream_path=self.stream_id)
