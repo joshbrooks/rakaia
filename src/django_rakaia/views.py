@@ -14,7 +14,10 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
+from rakaia.types import InvalidOffset
+
 from .models import Stream, StreamEntry, StreamEvent
+from .offsets import parse_offset
 
 _log = logging.getLogger("django_rakaia.views")
 
@@ -182,9 +185,13 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
     query = stream.entries.select_related("event").order_by("offset")
 
     if after_offset:
+        # Parsed by the durable store's own strict check, not `int()`: this
+        # endpoint reads durable rows, and `int("0_5")` is 5 in Python, so an
+        # in-memory-store offset would resolve to an unrelated position and
+        # return the wrong window with a 200.
         try:
-            after_offset_int = int(after_offset)
-        except (TypeError, ValueError):
+            after_offset_int = parse_offset(after_offset)
+        except InvalidOffset:
             return JsonResponse(
                 {"error": "after_offset must be an integer"}, status=400
             )

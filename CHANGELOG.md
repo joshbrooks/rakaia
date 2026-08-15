@@ -261,6 +261,26 @@ is not yet tagged in a release.
 
 ### Fixed
 
+- **The dashboard views refuse an offset the durable store never issued** (#122).
+  Two Django views parsed a client-supplied offset with bare `int()`, outside
+  any store's ownership check: `after_offset` on the JSON events endpoint, and
+  the `Last-Event-ID` header the browser sends when an `EventSource` reconnects.
+  Python reads `_` as a digit separator, so the in-memory store's compound
+  `{seq}_{byte}` offset — `int("0_5")` is `5` — resolved to an unrelated
+  position: the JSON API returned the wrong window with a `200`, and the SSE
+  endpoint resumed in the wrong place. An offset that did not parse at all fell
+  into `except ValueError: 0` and silently replayed the entire stream to a
+  client that believed it was resuming. Both now parse through the durable
+  store's own strict check and answer `400`; failing a connection is visible,
+  and neither wrong answer was.
+
+  That check has moved to `django_rakaia.offsets` alongside `format_offset`,
+  which also settles a layering inversion: `Stream.current_offset` used to
+  import `format_offset` back out of the store module for its own property, and
+  duplicated `DjangoStreamStore.get_current_offset`'s watermark query verbatim.
+  The store now delegates to the model property; all it adds is the expiry
+  check and the absent-stream `None`.
+
 - **A handler can take an injected dependency without losing drift detection.**
   A stage-0 handler is called `fn(event)`, so a dependency had nowhere to go, and
   both routes out were broken. `functools.partial` was rejected outright by
