@@ -14,7 +14,7 @@ import pytest
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.store import get_store
-from rakaia.effects import Effect, Ref
+from rakaia.effects import Ref, Upsert
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
@@ -28,8 +28,7 @@ class TestExecutorUsing:
     def test_writes_go_to_the_named_alias_only(self):
         DjangoExecutor(using="overlay").apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "OverlayOnly"},
                     defaults={},
@@ -42,8 +41,7 @@ class TestExecutorUsing:
     def test_default_alias_unchanged_when_using_none(self):
         DjangoExecutor().apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "DefaultRow"},
                     defaults={},
@@ -81,8 +79,7 @@ class TestReaderUsing:
 
 
 def _ref_handler(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Area",
         lookup={"name": event["name"]},
         defaults={},
@@ -92,8 +89,7 @@ def _ref_handler(event):
 def _dep_handler(event, reader):
     ref = reader.get("test_django_rakaia.Area", name=event["ref"])
     tag = "FOUND" if ref is not None else "MISSING"
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Area",
         lookup={"name": f"{event['key']}->{tag}"},
         defaults={},
@@ -138,15 +134,13 @@ class TestFromScratchRebuildProof:
         # A produces=/Ref pair also resolves against the overlay connection.
         DjangoExecutor(using="overlay").apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.Area",
                     lookup={"name": "Zone"},
                     defaults={},
                     produces="area",
                 ),
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label="test_django_rakaia.FinanceLine",
                     lookup={"submission_id": "s1"},
                     defaults={"suku": "x", "delta": Ref("area")},

@@ -93,9 +93,69 @@ what makes replay safe, repeatable, and testable. → *[versioned handlers](vers
 
 ### Effect
 
-A *description* of a write — "update-or-create this row", "delete these rows",
-"send this email" — returned by a handler. Nothing actually happens until an
-[executor](#executor) applies it. → *[versioned handlers](versioned-handlers.md), [dry-run & executors](dry-run-and-executors.md)*
+A *description* of a database write, returned by a handler. Nothing actually
+happens until an [executor](#executor) applies it. There are exactly four, one
+per operation — [Upsert](#upsert), [Update](#update), [Delete](#delete) and
+[Retire](#retire) — and `Effect` is the name for "any of those four". Each
+carries only the fields its own operation uses, so a combination that makes no
+sense (a `produces` on a delete, a `patch` on an upsert) cannot be written down
+at all. A write that isn't to the database is an
+[external effect](#external-effect), which is deliberately *not* an Effect.
+→ *[versioned handlers](versioned-handlers.md), [dry-run & executors](dry-run-and-executors.md)*
+
+### Upsert
+
+Create the row matching `lookup`, or update it in place — the replay-safe write,
+and by far the most common effect. Carries `defaults` (the field values) and,
+optionally, `produces`: a batch-local name for the single row it materialises, so
+a sibling effect can point a foreign key at it with `Ref(...)` before the
+database has assigned a primary key. Only an upsert has `produces` — an
+[Update](#update) may match many rows and the other two mint none.
+→ *[versioned handlers](versioned-handlers.md)*
+
+### Update
+
+Update-if-exists: the rows matching `lookup` are updated in place and **never**
+inserted, so it is a clean no-op when nothing matches. This is what a *secondary*
+owner of a shared projection row emits — it writes its own columns without ever
+claiming responsibility for the row's existence. → *[versioned handlers](versioned-handlers.md)*
+
+### Delete
+
+Hard-delete the rows matching `lookup`, minus anything named by its `spare`. The
+two ways to spare rows are alternatives, so they are two shapes of one field
+rather than two fields: [Exclude](#exclude-and-sparekeys) for a flat lookup and
+[SpareKeys](#exclude-and-sparekeys) for composite natural keys.
+→ *[projections & fan-out](projections-and-fan-out.md)*
+
+### Retire
+
+Soft-delete: the rows matching `lookup` (minus its `spare`) are UPDATEd with a
+`patch` instead of being deleted — stamping e.g. `resolved_at` rather than
+destroying an authored row. The patch value must be the *triggering event's*
+timestamp, never `now()`, or replay stops being deterministic. May carry a
+[Transition](#transition) to ask for notifications.
+→ *[alerts projection](alerts-projection.md)*
+
+### Exclude and SpareKeys
+
+The two ways to spare rows from a [Delete](#delete) or [Retire](#retire).
+`Exclude({"idx__in": [0, 1]})` is a single flat lookup — the positional
+`reconcile_children` case. `SpareKeys([{"alert_type": "ff4", "field_key": "a"}])`
+names composite natural keys — the `reconcile_by_key` case. They are alternatives
+(applying both at once was never intended), which is why a delete carries one
+`spare` field with two shapes instead of two fields and a rule forbidding the
+combination. → *[projections & fan-out](projections-and-fan-out.md)*
+
+### Transition
+
+A [Retire](#retire)'s opt-in request for notifications: `kind` names the
+[external effect](#external-effect) to emit, and `key_fields` names the columns
+that identify each affected row. One notification is emitted per row the retire
+*actually* flipped — a real machine resolution — not per row it scanned. The two
+values are a pair (the executor's deterministic identity query needs both), so
+they live in one object rather than as two fields that could be half-set.
+→ *[alerts projection](alerts-projection.md)*
 
 ### Executor
 
@@ -111,7 +171,7 @@ its handlers to (re)build a projection. → *[versioned handlers](versioned-hand
 ### Idempotent
 
 Safe to run more than once with the same result. Replay is idempotent: running it
-twice produces identical rows, because handlers upsert with `update_or_create`
+twice produces identical rows, because handlers emit an [Upsert](#upsert)
 instead of blindly inserting. → *[versioned handlers](versioned-handlers.md)*
 
 ## Evolving safely
@@ -214,6 +274,10 @@ path (globs like `room:*:messages` allowed); `match_field` routes by a field
 
 ### External effect
 
-An effect that isn't a database write — sending an email, calling an API.
-Replay **skips** external effects by default, so re-deriving state never re-sends
-last year's receipts. → *[versioned handlers](versioned-handlers.md), [orders example](../examples/orders/)*
+An `ExternalEffect`: something that isn't a database write — sending an email,
+calling an API. Deliberately **not** an [Effect](#effect): it names no row, and
+no [executor](#executor) ever receives one. Replay collects them and hands them
+back in `ReplayResult.external`, leaving the caller to decide whether to deliver
+them — so re-deriving state never re-sends last year's receipts, and an executor
+never needs a branch for effects it must not apply.
+→ *[versioned handlers](versioned-handlers.md), [orders example](../examples/orders/)*

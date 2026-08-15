@@ -16,7 +16,7 @@ import pytest
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.hermeticity import AmbientDatabaseAccess, deny_database_access
 from django_rakaia.projection_reader import DjangoProjectionReader
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
@@ -32,8 +32,7 @@ pytestmark = pytest.mark.django_db(databases=["default", "overlay"])
 
 def _pure_handler(event):
     """A well-behaved projection: a pure function of the event."""
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.FinanceLine",
         lookup={"submission_id": event["name"]},
         defaults={"suku": "s"},

@@ -42,7 +42,7 @@ import pytest
 from django.core.serializers.json import DjangoJSONEncoder
 
 from django_rakaia.verification import canonical_value, diff_effects_against_rows
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 
 from .models import Measure
 
@@ -159,8 +159,7 @@ class TestTheEndToEndSymptom:
         Measure.objects.create(
             ref=REF, amount=1, observed_at=AWARE, observed_on=ON, observed_time=AT_TIME
         )
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label=MODEL,
             lookup={"ref": REF},
             defaults={
@@ -183,8 +182,7 @@ class TestTheEndToEndSymptom:
 
         DjangoExecutor(skip_unchanged=True).apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=MODEL,
                     lookup={"ref": REF},
                     defaults={"observed_at": _encoded(AWARE)},

@@ -71,7 +71,7 @@
         A background producer invents a random order every ~0.5–1.5&nbsp;s,
         appends it to the event stream, and replays it through the versioned
         handlers into the <strong>OrderSummary</strong> projection. About one in
-        four events is a loyalty bonus applied with <code class="inline">op="update"</code>:
+        four events is a loyalty bonus applied with an <code class="inline">Update</code>:
         it lands on an existing order, or is a clean <strong>no-op</strong> when it
         targets an order that was never placed — watch the feed, and note that no
         <code class="inline">ORD-GHOST-*</code> row ever appears in the table.

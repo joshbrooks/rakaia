@@ -62,11 +62,12 @@ class TestStreamLifecycle:
             store.create("foo", ttl_seconds=120)
 
     def test_create_with_initial_data(self, store: StreamStore):
-        stream = store.create(
+        store.create(
             "foo", content_type="application/octet-stream", initial_data=b"hello"
         )
-        assert len(stream.messages) == 1
-        assert stream.messages[0].data == b"hello"
+        messages, _ = store.read("foo")
+        assert len(messages) == 1
+        assert messages[0].data == b"hello"
 
     def test_create_closed(self, store: StreamStore):
         stream = store.create("foo", closed=True)
@@ -433,7 +434,7 @@ class TestRead:
         store.append("foo", b"a")
         m2 = store.append("foo", b"b")
         # Read from after the first message
-        first = store.get("foo").messages[0]  # type: ignore[union-attr]
+        first = store.read("foo")[0][0]
         messages, _ = store.read("foo", offset=first.offset)
         assert len(messages) == 1
         assert messages[0].offset == m2.message.offset  # type: ignore[union-attr]

@@ -18,9 +18,10 @@ each consumer's ``replay_*`` proof.
     replay(store, "submissions", ex)
     diff_effects_against_rows(ex.effects).raise_if_diff()
 
-By default only ``update_or_create`` and ``update`` effects are checked (the ops
-that carry ``defaults``); delete/retire/external effects have no target values to
-diff and are ignored.
+By default only :class:`~rakaia.effects.Upsert` and
+:class:`~rakaia.effects.Update` effects are checked (the ones that carry
+``defaults``); deletes and retires have no target values to diff and are
+ignored, and external effects never reach a batch of Effects at all.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from django.core.exceptions import FieldDoesNotExist
 from django.db.models import DateField, DateTimeField, DecimalField, Q, TimeField
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 
-from rakaia.effects import Effect
+from rakaia.effects import Effect, Update, Upsert
 
 from .projection_reader import DjangoProjectionReader
 
@@ -47,9 +48,9 @@ from .projection_reader import DjangoProjectionReader
 # normalizer that doesn't apply must return the value unchanged.
 Normalizer = Callable[[type, str, Any], Any]
 
-# Ops whose ``defaults`` describe row values worth verifying. delete/retire/
-# external carry no projected column values to diff.
-_WRITE_OPS = ("update_or_create", "update")
+# The effects whose ``defaults`` describe row values worth verifying. Deletes
+# and retires carry no projected column values to diff.
+_WRITE_EFFECTS: tuple[type, ...] = (Upsert, Update)
 
 
 class _Unset:
@@ -134,8 +135,8 @@ class DiffReport:
         """How many rows this report actually checked.
 
         The population the verdict rests on. Note this counts *checked* rows, not
-        input effects: non-write effects (delete/retire/external) carry no values
-        to diff and are skipped, so a batch of only those compares nothing.
+        input effects: deletes and retires carry no values to diff and are
+        skipped, so a batch of only those compares nothing.
         """
         return len(self.rows)
 
@@ -409,12 +410,12 @@ def diff_effects_against_rows(
     *,
     reader: DjangoProjectionReader | None = None,
     normalizers: Sequence[Normalizer] | None = None,
-    ops: tuple[str, ...] = _WRITE_OPS,
+    kinds: tuple[type, ...] = _WRITE_EFFECTS,
 ) -> DiffReport:
     """Diff each write effect's ``defaults`` against its live projection row.
 
-    For every effect whose ``op`` is in ``ops`` (default: the write ops), the row
-    matching ``lookup`` is fetched via ``reader``. A missing row, or any field in
+    For every effect that is an instance of one of ``kinds`` (default: the two
+    write effects), the row matching ``lookup`` is fetched via ``reader``. A missing row, or any field in
     ``defaults`` whose stored value differs (after ``normalizers`` are applied to
     both sides), is recorded in the returned :class:`DiffReport`.
 
@@ -426,19 +427,15 @@ def diff_effects_against_rows(
 
     rows: list[RowDiff] = []
     for eff in effects:
-        if eff.op not in ops:
+        if not isinstance(eff, kinds):
             continue
-        if eff.model_label is None or eff.lookup is None:
-            raise ValueError(
-                f"Effect with op={eff.op!r} requires model_label and lookup "
-                "to be verified"
-            )
         model = apps.get_model(eff.model_label)
         row = active_reader.get(eff.model_label, **eff.lookup)
         if row is None:
             rows.append(RowDiff(eff.model_label, eff.lookup, missing=True))
             continue
-        field_diffs = _diff_row(model, row, eff.defaults or {}, active_norms)
+        defaults = getattr(eff, "defaults", None) or {}
+        field_diffs = _diff_row(model, row, defaults, active_norms)
         rows.append(
             RowDiff(eff.model_label, eff.lookup, missing=False, field_diffs=field_diffs)
         )
@@ -493,7 +490,7 @@ class PreloadedProjectionReader(DjangoProjectionReader):
         # names) — so one query per shape fetches all of its rows at once.
         by_shape: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
         for eff in effects:
-            if eff.model_label is None or not eff.lookup:
+            if not eff.lookup:
                 continue
             if any("__" in k for k in eff.lookup):
                 continue  # spanning lookup — can't index by exact match; left to live get()

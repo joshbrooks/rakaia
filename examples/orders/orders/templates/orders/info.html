@@ -83,13 +83,13 @@ flowchart LR
     </p>
     {% verbatim %}
     <pre><code># event in the log                         # Effect the handler returns
-{                                          Effect(
-  "order_id": "ORD-1003",                    op="update_or_create",
-  "status": "PAID",                          model_label="orders.OrderSummary",
-  "items": [                                 lookup={"order_id": "ORD-1003"},
-    {"sku": "KETTLE-STEEL",                  defaults={
-     "quantity": 1, "price": "40.00"}         "status": "PAID", "subtotal": 40,
-  ]                                            "tax_rate": 0, "tax": 0, "total": 40,
+{                                          Upsert(
+  "order_id": "ORD-1003",                    model_label="orders.OrderSummary",
+  "status": "PAID",                          lookup={"order_id": "ORD-1003"},
+  "items": [                                 defaults={
+    {"sku": "KETTLE-STEEL",                    "status": "PAID", "subtotal": 40,
+     "quantity": 1, "price": "40.00"}          "tax_rate": 0, "tax": 0, "total": 40,
+  ]
 }                                            },
                                            )</code></pre>
     {% endverbatim %}
@@ -125,7 +125,7 @@ def order_totals_v2(event):        # seq 3, 4, 5, ...
 def _totals_effect(event, rate):
     subtotal = sum(Decimal(i["price"]) * i["quantity"] for i in event["items"])
     tax = (subtotal * rate).quantize(Decimal("0.01"))
-    return Effect(op="update_or_create", model_label="orders.OrderSummary",
+    return Upsert(model_label="orders.OrderSummary",
                   lookup={"order_id": event["order_id"]},
                   defaults={"subtotal": subtotal, "tax_rate": rate,
                             "tax": tax, "total": subtotal + tax, ...})</code></pre>
@@ -167,14 +167,14 @@ flowchart LR
         </tbody>
     </table>
 
-    <h2>5 · <code class="inline">op="update"</code> — update-if-exists</h2>
+    <h2>5 · <code class="inline">Update</code> — update-if-exists</h2>
     <p class="sub">
         <code class="inline">order_totals</code> and
         <code class="inline">order_loyalty</code> use
-        <code class="inline">update_or_create</code> because they legitimately
+        <code class="inline">Upsert</code> because they legitimately
         <em>create</em> the order's row. But a loyalty <em>bonus</em> is a
         <strong>secondary owner</strong>: it should decorate an existing row and
-        never mint one. That's exactly what <code class="inline">op="update"</code>
+        never mint one. That's exactly what <code class="inline">Update</code>
         does — <code class="inline">filter(...).update(...)</code>, which updates in
         place and is a no-op when nothing matches.
     </p>
@@ -191,7 +191,7 @@ flowchart TD
 def order_bonus(event):
     if not _is_bonus(event):
         return None
-    return Effect(op="update", model_label="orders.OrderSummary",
+    return Update(model_label="orders.OrderSummary",
                   lookup={"order_id": event["order_id"]},
                   defaults={"bonus_points": int(event["bonus"])})
 
@@ -225,7 +225,7 @@ replay(store=store, stream_path="orders", executor=DjangoExecutor())
         Source: <code class="inline">orders/handlers.py</code>,
         <code class="inline">orders/models.py</code>,
         <code class="inline">orders/live.py</code> ·
-        the <code class="inline">op="update"</code> primitive lives in
+        the <code class="inline">Update</code> primitive lives in
         <code class="inline">src/rakaia/effects.py</code> and
         <code class="inline">src/django_rakaia/effect_executor.py</code>.
     </footer>

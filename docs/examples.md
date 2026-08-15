@@ -45,7 +45,7 @@ flowchart LR
   S -->|replay| U["Upcasters<br/>normalise old events"]
   U --> H["Versioned handlers<br/>pure: event → Effect"]
   H --> X{Executor}
-  X -->|"update_or_create / delete"| P[("Projection<br/>your tables")]
+  X -->|"Upsert / Delete"| P[("Projection<br/>your tables")]
   X -.->|dry-run| C["CollectingExecutor<br/>records, zero writes"]
 ```
 
@@ -79,7 +79,7 @@ One command each: seed a stream, replay it, assert the projection.
 
 | Example | Proves | Run |
 |---|---|---|
-| [`orders`](https://github.com/joshbrooks/rakaia/tree/main/examples/orders) | Versioned handlers, `effective_from/to`, upcasters, dry-run, `op="external"`, `op="update"` | `just orders-demo` |
+| [`orders`](https://github.com/joshbrooks/rakaia/tree/main/examples/orders) | Versioned handlers, `effective_from/to`, upcasters, dry-run, `ExternalEffect`, `Update` | `just orders-demo` |
 | [`formkit_submissions`](https://github.com/joshbrooks/rakaia/tree/main/examples/formkit_submissions) | Projections/fan-out, `reconcile_children`, migration parity vs a direct `to_model()` | `just formkit-demo` |
 | `formkit_submissions` (stream) | Arrow-flip: append log = source of truth → latest-version projection (`project_latest`) | `just formkit-stream-demo` |
 | [`projection_cookbook`](https://github.com/joshbrooks/rakaia/tree/main/examples/projection_cookbook) | Staged replay, `ProjectionReader`, `register_simple`, `diff_effects_against_rows` verification | `just cookbook-demo` |
@@ -97,7 +97,7 @@ that isn't Django at all.
 | Example | Proves | Run |
 |---|---|---|
 | [`protocol_streams`](https://github.com/joshbrooks/rakaia/tree/main/examples/protocol_streams) | `StreamStore` append/read, `append_if_changed`, producer fencing, `close`, `poll` subscriber cursors, CDN cursors | `just protocol-demo` |
-| [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, routing `op="external"` effects | `just multi-owner-demo` |
+| [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, routing `ExternalEffect`s | `just multi-owner-demo` |
 
 ## Concept → example coverage matrix
 
@@ -140,7 +140,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 | Concept | Demonstrated by |
 |---|---|
-| `Effect` ops: `update_or_create`, `update`, `delete`+`exclude`, `external` | `orders`, `partisipa_repeaters`, `multi_owner` |
+| The effect types: `Upsert`, `Update`, `Delete`+`Exclude`, `ExternalEffect` | `orders`, `partisipa_repeaters`, `multi_owner` |
 | `CollectingExecutor` (dry-run) | `orders`, `projection_cookbook` |
 | `DjangoExecutor` | every Django demo |
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
@@ -171,7 +171,7 @@ No example exercises these yet — a good place to contribute a demo:
 - `register_reducer` as the *public API* (the partisipa demos wire reducers via
   raw `{"reduce": […]}` stage config instead).
 - `reconcile_tree` (the `partisipa_repeaters` spike hand-rolls the equivalent
-  with `delete`+`exclude`).
+  with `Delete`+`Exclude`).
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
 

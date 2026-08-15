@@ -1,15 +1,15 @@
 """Authored-alert replay discipline (Phase 1, no Django).
 
 Proves the notification half of the authored layer: an ``alert_raised`` /
-``alert_dismissed`` handler emits an ``op="external"`` transition alongside its
-natural-key upsert, and replay drops that external effect by default (one
-transition per real state change, **none on replay**) while the materialized
-upsert is idempotent.
+``alert_dismissed`` handler emits an ``ExternalEffect`` transition alongside its
+natural-key upsert, and replay hands that back in ``ReplayResult.external``
+instead of applying it (one transition per real state change, **never delivered
+by the replay itself**) while the materialized upsert is idempotent.
 """
 
 from __future__ import annotations
 
-from rakaia.effects import Effect
+from rakaia.effects import AnyEffect, Effect, ExternalEffect, Upsert
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
@@ -26,20 +26,18 @@ def _key(ev: dict) -> dict:
     }
 
 
-def alert_authored(event: dict) -> list[Effect]:
+def alert_authored(event: dict) -> list[AnyEffect]:
     """Single authored handler: ``op`` in the event selects raise vs dismiss."""
     key = _key(event)
     if event["op"] == "dismiss":
-        upsert = Effect(
-            op="update_or_create",
+        upsert = Upsert(
             model_label=ALERT,
             lookup=key,
             defaults={"resolved_at": event["ts"], "resolved_by": event.get("actor")},
         )
         state = "resolved"
     else:
-        upsert = Effect(
-            op="update_or_create",
+        upsert = Upsert(
             model_label=ALERT,
             lookup=key,
             defaults={"message": event.get("message", ""), "resolved_at": None},
@@ -47,9 +45,7 @@ def alert_authored(event: dict) -> list[Effect]:
         state = "open"
     return [
         upsert,
-        Effect(
-            op="external", kind="alert_transition", payload={"key": key, "state": state}
-        ),
+        ExternalEffect(kind="alert_transition", payload={"key": key, "state": state}),
     ]
 
 
@@ -90,34 +86,34 @@ _EVENTS = [
 
 
 class TestAuthoredAlertReplayDiscipline:
-    def test_transitions_skipped_on_replay_by_default(self):
+    def test_transitions_never_reach_the_executor(self):
         store = StreamStore()
         seed_stream("sub:1:alerts", _EVENTS, store=store)
         ex = CaptureExecutor()
 
         result = replay(store, "sub:1:alerts", ex, handler_registry=_registry())
 
-        # Two external transitions produced, both skipped (none reach executor).
-        assert result.external_effects_skipped == 2
-        assert all(e.op != "external" for e in ex.all_effects)
+        # Two external transitions produced; none of them reach the executor.
+        assert len(result.external) == 2
+        assert all(not isinstance(e, ExternalEffect) for e in ex.all_effects)
         # The materialized upserts still ran.
-        assert sum(1 for e in ex.all_effects if e.op == "update_or_create") == 2
+        assert sum(1 for e in ex.all_effects if isinstance(e, Upsert)) == 2
 
-    def test_transitions_delivered_when_included(self):
+    def test_transitions_are_returned_to_the_caller(self):
         store = StreamStore()
         seed_stream("sub:1:alerts", _EVENTS, store=store)
-        ex = CaptureExecutor()
 
-        replay(
-            store,
-            "sub:1:alerts",
-            ex,
-            handler_registry=_registry(),
-            include_external=True,
+        result = replay(
+            store, "sub:1:alerts", CaptureExecutor(), handler_registry=_registry()
         )
 
-        externals = [e for e in ex.all_effects if e.op == "external"]
-        assert [e.payload["state"] for e in externals] == ["open", "resolved"]
+        # The caller gets the effects themselves, in handler order — enough to
+        # deliver them, which a bare skipped-count never was.
+        assert [e.kind for e in result.external] == [
+            "alert_transition",
+            "alert_transition",
+        ]
+        assert [e.payload["state"] for e in result.external] == ["open", "resolved"]
 
     def test_rereplay_is_idempotent_and_silent(self):
         store = StreamStore()
@@ -127,6 +123,7 @@ class TestAuthoredAlertReplayDiscipline:
         first = replay(store, "sub:1:alerts", CaptureExecutor(), handler_registry=reg)
         second = replay(store, "sub:1:alerts", CaptureExecutor(), handler_registry=reg)
 
-        # Same effect shape each pass; externals never re-spam on the rebuild.
+        # Same effect shape each pass; a rebuild delivers nothing on its own, so
+        # the transitions cannot re-spam however often it is run.
         assert first.effects_applied == second.effects_applied
-        assert second.external_effects_skipped == 2
+        assert len(second.external) == 2

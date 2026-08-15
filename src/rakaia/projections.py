@@ -4,7 +4,7 @@ a set of idempotent, orphan-free Effects.
 
 The canonical shape is "one source record fans out into N child rows" — a
 FormKit repeater, an order's line items, a form's answers. Replaying such a
-projection with plain `update_or_create` leaks orphans: if a later version of
+projection with plain `Upsert` effects leaks orphans: if a later version of
 the parent has *fewer* children, the dropped child rows survive forever because
 nothing deletes them.
 
@@ -30,7 +30,16 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-from .effects import Effect
+from .effects import (
+    Delete,
+    Effect,
+    Exclude,
+    Retire,
+    SpareKeys,
+    Transition,
+    Update,
+    Upsert,
+)
 from .types import StreamMessage
 
 
@@ -61,14 +70,13 @@ def reconcile_children(
         defaults_fn: maps one item to its ``defaults=`` field values.
 
     Returns:
-        One ``update_or_create`` Effect per item, followed by one ``delete``
-        Effect that removes stale children (those whose index is no longer in
+        One :class:`Upsert` per item, followed by one :class:`Delete`
+        that removes stale children (those whose index is no longer in
         the collection). An empty ``items`` yields just the delete, which
         removes every child under ``parent_lookup``.
     """
     effects: list[Effect] = [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=model_label,
             lookup={**parent_lookup, child_key: index},
             defaults=defaults_fn(item),
@@ -76,11 +84,10 @@ def reconcile_children(
         for index, item in enumerate(items)
     ]
     effects.append(
-        Effect(
-            op="delete",
+        Delete(
             model_label=model_label,
             lookup=dict(parent_lookup),
-            exclude={f"{child_key}__in": list(range(len(items)))},
+            spare=Exclude({f"{child_key}__in": list(range(len(items)))}),
         )
     )
     return effects
@@ -102,7 +109,7 @@ def reconcile_by_key(
 
     The natural-key generalisation of `reconcile_children` (which is the special
     case `scope=parent, key=(index,), retire="delete"`). Emits one
-    `update_or_create` per current item plus a single reconcile pass that
+    :class:`Upsert` per current item plus a single reconcile pass that
     retires every row in `scope` (further narrowed by `retire_filter`) whose
     composite key is no longer present.
 
@@ -131,16 +138,17 @@ def reconcile_by_key(
             patch value must be the triggering event's timestamp, never
             ``timezone.now()``.
         transition_kind: opt-in machine-resolution notifications. When set (only
-            valid with a soft-delete ``retire`` patch), the retire Effect is
-            marked so the replay orchestrator emits one ``external`` effect of
-            this ``kind`` per row the retire actually flipped (NULL->set) — the
-            real machine resolutions. Like all external effects it is skipped on
-            replay by default, so a rebuild never re-spams. Omit it (default) and
-            the retire stays silent, exactly as before.
+            valid with a soft-delete ``retire`` patch), the :class:`Retire`
+            carries a :class:`Transition` so the replay orchestrator emits one
+            :class:`ExternalEffect` of this ``kind`` per row the retire actually
+            flipped (NULL->set) — the real machine resolutions. Like every
+            external effect it is returned in ``ReplayResult.external`` rather
+            than applied, so a rebuild never re-spams. Omit it (default) and the
+            retire stays silent, exactly as before.
 
     Returns:
-        One ``update_or_create`` Effect per item, followed by one retire Effect
-        (``op="delete"`` or ``op="retire"``) sparing the present composite keys.
+        One :class:`Upsert` per item, followed by one reconcile effect (a
+        :class:`Delete` or a :class:`Retire`) sparing the present composite keys.
     """
     scope = dict(scope)
     retire_filter = dict(retire_filter or {})
@@ -154,8 +162,7 @@ def reconcile_by_key(
             )
 
     effects: list[Effect] = [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=model_label,
             lookup={**scope, **key},
             defaults=defaults_fn(item),
@@ -170,11 +177,10 @@ def reconcile_by_key(
                 "delete leaves no resolved row to notify about."
             )
         effects.append(
-            Effect(
-                op="delete",
+            Delete(
                 model_label=model_label,
                 lookup={**scope, **retire_filter},
-                spare_keys=keys,
+                spare=SpareKeys(keys),
             )
         )
     else:
@@ -190,21 +196,22 @@ def reconcile_by_key(
         sentinel = next(iter(retire))
         open_guard = {f"{sentinel}__isnull": True}
         effects.append(
-            Effect(
-                op="retire",
+            Retire(
                 model_label=model_label,
                 lookup={**scope, **retire_filter, **open_guard},
-                spare_keys=keys,
+                spare=SpareKeys(keys),
                 patch=dict(retire),
-                transition_kind=transition_kind,
                 # The full ordered identity of a flipped row: the scope-equality
-                # columns plus the natural key, deduped first-seen. Passed
+                # columns plus the natural key, deduped first-seen. Stated
                 # explicitly (rather than re-derived from `lookup` in the
                 # executor) so a scope key written as a lookup span, e.g.
                 # `org__id`, still lands in the transition payload instead of
                 # being mistaken for a filter and dropped.
-                transition_key_fields=(
-                    tuple(dict.fromkeys((*scope, *key_fields)))
+                transition=(
+                    Transition(
+                        kind=transition_kind,
+                        key_fields=tuple(dict.fromkeys((*scope, *key_fields))),
+                    )
                     if transition_kind is not None
                     else None
                 ),
@@ -251,14 +258,13 @@ def reconcile_tree(
             including its ``parent_node_id`` and payload).
 
     Returns:
-        One ``update_or_create`` Effect per node, followed by one ``delete``
-        Effect removing every node under ``scope_lookup`` whose id is no longer
+        One :class:`Upsert` per node, followed by one :class:`Delete`
+        removing every node under ``scope_lookup`` whose id is no longer
         present. Empty ``nodes`` yields just the delete, clearing the subtree.
     """
     kept_ids = [id_fn(node) for node in nodes]
     effects: list[Effect] = [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label=model_label,
             lookup={**scope_lookup, node_key: node_id},
             defaults=defaults_fn(node),
@@ -266,11 +272,10 @@ def reconcile_tree(
         for node_id, node in zip(kept_ids, nodes, strict=True)
     ]
     effects.append(
-        Effect(
-            op="delete",
+        Delete(
             model_label=model_label,
             lookup=dict(scope_lookup),
-            exclude={f"{node_key}__in": kept_ids},
+            spare=Exclude({f"{node_key}__in": kept_ids}),
         )
     )
     return effects
@@ -291,8 +296,8 @@ def reconcile_aggregate(
     The aggregate analogue of `reconcile_children`. An increment is not
     replay-safe (re-running doubles the total), so the caller **recomputes** each
     group's aggregate from its contributing rows and passes the results here as
-    ``{group_value: defaults}``. This emits one idempotent ``update_or_create``
-    per group plus a reconcile ``delete`` that removes aggregate rows for groups
+    ``{group_value: defaults}``. This emits one idempotent :class:`Upsert`
+    per group plus a reconcile :class:`Delete` that removes aggregate rows for groups
     which no longer have any contributors.
 
     **Multi-owner mode (`owns=`).** The default whole-row reconcile is wrong when
@@ -301,10 +306,10 @@ def reconcile_aggregate(
     reducer owns others). Deleting the whole row when *this* reducer's group
     vanishes would clobber the columns owned by the others. Pass ``owns=`` (the
     column names this reducer owns) to switch to a mode that composes on a shared
-    row: each group is an ``op="update"`` (update-if-exists — never mints a row,
+    row: each group is an :class:`Update` (update-if-exists — never mints a row,
     so the row's *existence* stays owned by whoever creates it), and a vanished
     group's row is not deleted but **null-cleared on this owner's columns only**
-    via an ``op="retire"`` patch, leaving the other owners' columns intact. The
+    via a :class:`Retire` patch, leaving the other owners' columns intact. The
     null-out needs no liveness/open-guard (unlike a soft-delete `retire`): setting
     a column to ``None`` converges on re-run, so it is idempotent as-is.
 
@@ -337,7 +342,7 @@ def reconcile_aggregate(
             scope — a simple ``exclude`` cannot express "tuple not in set".)
         groups: mapping of group value to its recomputed ``defaults=`` values.
         owns: the columns this reducer owns on a shared (multi-owned) row. When
-            given, per-group effects are ``op="update"`` and a vanished group's
+            given, per-group effects are :class:`Update` and a vanished group's
             row is null-cleared on these columns instead of deleted. Omit (the
             default) for the single-owner whole-row reconcile. An empty sequence
             is rejected — pass the columns, or omit.
@@ -349,10 +354,11 @@ def reconcile_aggregate(
             ignored otherwise.
 
     Returns:
-        One per-group Effect (``update_or_create``, or ``update`` in multi-owner
-        mode) in mapping order, followed by one reconcile Effect: a ``delete`` of
-        rows whose group is not present (single-owner), or a ``retire`` null-out
-        of this owner's columns on those rows (multi-owner). Empty ``groups``
+        One per-group effect (an :class:`Upsert`, or an :class:`Update` in
+        multi-owner mode) in mapping order, followed by one reconcile effect: a
+        :class:`Delete` of rows whose group is not present (single-owner), or a
+        :class:`Retire` null-out of this owner's columns on those rows
+        (multi-owner). Empty ``groups``
         yields just the reconcile effect, clearing the set.
 
     Raises:
@@ -381,10 +387,9 @@ def reconcile_aggregate(
             "(e.g. a full rebuild that found zero facts)."
         )
     group_values = list(groups)
-    per_group_op = "update" if owns is not None else "update_or_create"
+    per_group: type[Upsert] | type[Update] = Update if owns is not None else Upsert
     effects: list[Effect] = [
-        Effect(
-            op=per_group_op,
+        per_group(
             model_label=model_label,
             lookup={**scope_lookup, group_key: value},
             defaults=dict(groups[value]),
@@ -396,21 +401,19 @@ def reconcile_aggregate(
         # Vanished group: null-clear only this owner's columns, sparing the
         # groups still present, so the shared row survives for its other owners.
         effects.append(
-            Effect(
-                op="retire",
+            Retire(
                 model_label=model_label,
                 lookup=reconcile_lookup,
-                spare_keys=[{group_key: value} for value in group_values],
+                spare=SpareKeys([{group_key: value} for value in group_values]),
                 patch=dict.fromkeys(owns),
             )
         )
     else:
         effects.append(
-            Effect(
-                op="delete",
+            Delete(
                 model_label=model_label,
                 lookup=reconcile_lookup,
-                exclude={f"{group_key}__in": group_values},
+                spare=Exclude({f"{group_key}__in": group_values}),
             )
         )
     return effects
@@ -429,7 +432,7 @@ def project_latest(
     read model behind an event log.
 
     Folds `messages` to the newest event per subject (oldest-first, last wins)
-    and returns one ``update_or_create`` per live subject, plus a ``delete`` for
+    and returns one :class:`Upsert` per live subject, plus a :class:`Delete` for
     any subject whose latest event is a **tombstone** (``label in
     tombstone_labels`` — e.g. a delete, Decision #2). Because every event is a
     full snapshot, "latest" needs no reducer.
@@ -458,16 +461,14 @@ def project_latest(
     for subject, (msg, event) in latest.items():
         if msg.label in tombstones:
             effects.append(
-                Effect(
-                    op="delete",
+                Delete(
                     model_label=model_label,
                     lookup={subject_field: subject},
                 )
             )
         else:
             effects.append(
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=model_label,
                     lookup={subject_field: subject},
                     defaults=defaults_of(msg, event),

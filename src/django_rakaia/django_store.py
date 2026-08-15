@@ -972,7 +972,7 @@ class DjangoStreamStore:
         here, inside the sync call, and handed over inert.
 
         Returns a `rakaia.types.Stream` — the same type the in-memory store
-        returns — carrying metadata only. `messages` stays empty: read the
+        returns — carrying metadata only. It never carried messages; read the
         stream with `read()`.
         """
         row = self._get_if_not_expired(path)

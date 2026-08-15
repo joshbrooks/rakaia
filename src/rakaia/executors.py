@@ -25,7 +25,18 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
-from .effects import ApplyReport, Effect, RefResolver, check_disjoint_defaults
+from .effects import (
+    ApplyReport,
+    Delete,
+    Effect,
+    Exclude,
+    RefResolver,
+    Retire,
+    SpareKeys,
+    Update,
+    Upsert,
+    check_disjoint_defaults,
+)
 
 
 class CollectingExecutor:
@@ -53,10 +64,11 @@ class InMemoryProjections:
     """An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables.
 
     It mirrors `django_rakaia.effect_executor.DjangoExecutor` where that is
-    observable: all five ops, the three ordered passes (every write, then every
-    delete, then every retire), one `RefResolver` per `apply()` call,
-    `check_disjoint_defaults` before the first write, and `retire_flips` for a
-    retire that opted into notifications. `tests/executor_contract.py` and
+    observable: all four database effects, the three ordered passes (every
+    write, then every delete, then every retire), one `RefResolver` per
+    `apply()` call, `check_disjoint_defaults` before the first write, and
+    `retire_flips` for a retire that opted into notifications.
+    `tests/executor_contract.py` and
     `tests/projection_reader_contract.py` hold it and the Django pair to the same
     behaviour::
 
@@ -121,31 +133,29 @@ class InMemoryProjections:
         # One resolver per batch: an upsert declaring produces= records its row,
         # and a sibling's Ref values are substituted before that sibling applies.
         resolver = RefResolver()
-        retire_flips: list[tuple[Effect, list[dict[str, Any]]]] = []
+        retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
         # Writes first, then deletes, then retires — so a reconcile batch
         # converges regardless of the order its handlers emitted, and a produces=
         # row is recorded before any later effect Refs it.
         for eff in effects_list:
-            if eff.op == "update_or_create":
+            if isinstance(eff, Upsert):
                 self._upsert(resolver, resolver.resolve_effect(eff))
-            elif eff.op == "update":
+            elif isinstance(eff, Update):
                 self._update(resolver.resolve_effect(eff))
         for eff in effects_list:
-            if eff.op == "delete":
+            if isinstance(eff, Delete):
                 self._delete(resolver.resolve_effect(eff))
         for eff in effects_list:
-            if eff.op == "retire":
+            if isinstance(eff, Retire):
                 reff = resolver.resolve_effect(eff)
                 flipped = self._retire(reff)
-                if reff.transition_kind is not None:
+                if reff.transition is not None:
                     retire_flips.append((reff, flipped))
-        # op="external" is never applied — replay filters externals, and an
-        # executor that sees one drops it.
         return ApplyReport(retire_flips=retire_flips)
 
-    def _upsert(self, resolver: RefResolver, eff: Effect) -> None:
-        label = eff.model_label or ""
-        lookup = eff.lookup or {}
+    def _upsert(self, resolver: RefResolver, eff: Upsert) -> None:
+        label = eff.model_label
+        lookup = eff.lookup
         existing = self._find(label, lookup)
         if existing:
             row = existing[0]
@@ -167,36 +177,36 @@ class InMemoryProjections:
                 ),
             )
 
-    def _update(self, eff: Effect) -> None:
+    def _update(self, eff: Update) -> None:
         """Update-if-exists: never mints a row (the multi-owner primitive)."""
         if not eff.defaults:
             return
-        for row in self._find(eff.model_label or "", eff.lookup or {}):
+        for row in self._find(eff.model_label, eff.lookup):
             row.update(eff.defaults)
 
-    def _delete(self, eff: Effect) -> None:
-        label = eff.model_label or ""
-        doomed = self._find(label, eff.lookup or {})
-        if eff.exclude:
-            doomed = [r for r in doomed if not self._matches(r, eff.exclude)]
-        if eff.spare_keys is not None:
-            doomed = [r for r in doomed if not self._spared(r, eff.spare_keys)]
+    def _delete(self, eff: Delete) -> None:
+        label = eff.model_label
+        doomed = self._find(label, eff.lookup)
+        if isinstance(eff.spare, Exclude) and eff.spare.lookup:
+            doomed = [r for r in doomed if not self._matches(r, eff.spare.lookup)]
+        elif isinstance(eff.spare, SpareKeys):
+            doomed = [r for r in doomed if not self._spared(r, eff.spare.keys)]
         table = self._table(label)
         for row in doomed:
             del table[row["pk"]]
 
-    def _retire(self, eff: Effect) -> list[dict[str, Any]]:
+    def _retire(self, eff: Retire) -> list[dict[str, Any]]:
         if not eff.patch:
             raise ValueError("retire effect requires a non-empty patch")
-        targets = self._find(eff.model_label or "", eff.lookup or {})
-        if eff.spare_keys is not None:
-            targets = [r for r in targets if not self._spared(r, eff.spare_keys)]
+        targets = self._find(eff.model_label, eff.lookup)
+        if eff.spare is not None:
+            targets = [r for r in targets if not self._spared(r, eff.spare.keys)]
         # The retire is open-guarded, so the rows it matches are exactly the ones
         # that flip. Capture their identities before the patch, and only when the
         # effect asked to notify.
         flipped: list[dict[str, Any]] = []
-        if eff.transition_kind is not None:
-            cols = list(eff.transition_key_fields or ())
+        if eff.transition is not None:
+            cols = list(eff.transition.key_fields)
             flipped = sorted(
                 ({c: r.get(c) for c in cols} for r in targets),
                 key=lambda identity: tuple(str(identity[c]) for c in cols),

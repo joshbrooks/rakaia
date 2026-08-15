@@ -48,15 +48,14 @@ task that needs it.
 
 ```python
 # cookbook/handlers.py
-from rakaia import Effect, register_handler, register_simple
+from rakaia import Upsert, register_handler, register_simple
 
 @register_simple(name="project", event_match="PROJECT", match_field="form_type")
 def project(event):
     # register_simple = the always-on "just project this" case — no
     # effective_from=0 / effective_to=None ceremony. match_field routes on the
     # payload's form_type rather than the stream path.
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="cookbook.Project",
         lookup={"code": event["code"]},
         defaults={"name": event["name"]},
@@ -66,8 +65,7 @@ def project(event):
                   match_field="form_type", stage=1)
 def task(event, reader):                      # stage > 0 ⇒ fn(event, reader)
     linked = reader.get("cookbook.Project", code=event["project_code"])
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="cookbook.Task",
         lookup={"task_id": event["task_id"]},
         defaults={
@@ -213,13 +211,13 @@ fills in the real pk at apply time.
 > Ships with the symbolic-refs change (`produces=` / `Ref`).
 
 ```python
-from rakaia import Effect, Ref
+from rakaia import Ref, Upsert
 
 return [
-    Effect(op="update_or_create", model_label="cookbook.Project",
+    Upsert(model_label="cookbook.Project",
            lookup={"code": event["code"]}, defaults={"name": event["name"]},
            produces="proj"),                                  # names this row
-    Effect(op="update_or_create", model_label="cookbook.Task",
+    Upsert(model_label="cookbook.Task",
            lookup={"task_id": event["task_id"]},
            defaults={"project_id": Ref("proj")}),             # → Project.pk
 ]

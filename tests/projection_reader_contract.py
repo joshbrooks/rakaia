@@ -49,7 +49,7 @@ from typing import Any
 
 import pytest
 
-from rakaia.effects import Effect
+from rakaia.effects import Effect, Upsert
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,7 @@ class ProjectionReaderContract:
     @staticmethod
     def _rows(seam: ReaderSeam, *keys: str, severity: str = "error") -> list[Effect]:
         return [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label=seam.model,
                 lookup={"stream_key": "s", "alert_type": "machine", "field_key": k},
                 defaults={"severity": severity},

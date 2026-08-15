@@ -8,7 +8,7 @@ import pytest
 
 from django_rakaia.replay import replay_stream
 from django_rakaia.store import get_store
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.seed import seed_stream
 
@@ -16,8 +16,7 @@ from .models import Area
 
 
 def _ref(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Area",
         lookup={"name": event["name"]},
         defaults={},
@@ -27,8 +26,7 @@ def _ref(event):
 def _dep(event, reader):
     ref = reader.get("test_django_rakaia.Area", name=event["ref"])
     tag = "FOUND" if ref is not None else "MISSING"
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.Area",
         lookup={"name": f"{event['key']}->{tag}"},
         defaults={},

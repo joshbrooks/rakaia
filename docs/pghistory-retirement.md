@@ -57,16 +57,16 @@ materializes two projections:
   `(submission_id, seq)` so re-replay is idempotent. This is the `/history`
   substrate and the recovery source.
 
-Both are ordinary rakaia `Effect`s (including the `delete` op from #6), so the audit
+Both are ordinary rakaia `Effect`s (including the `Delete` from #6), so the audit
 log is not a special mechanism — it is just another projection of the log.
 
 ```python
 # per event, in stream order — the same fold replay() performs
 executor.apply([
-    Effect(op="update_or_create", model_label="…SubmissionHistoryEntry",
+    Upsert(model_label="…SubmissionHistoryEntry",
            lookup={"submission_id": key, "seq": seq},
            defaults={"label": OP_TO_LABEL[op], "actor": actor, "ts": ts, "fields": fields}),
-    Effect(op="update_or_create", model_label="…SubmissionRecord",
+    Upsert(model_label="…SubmissionRecord",
            lookup={"submission_id": key},
            defaults={"fields": fields, "actor": actor, "updated_at": ts}),
 ])
@@ -89,7 +89,7 @@ and that stream recovery returns the same peak snapshot pghistory recovery does.
 - **Idempotent.** History rows are keyed by `(submission_id, seq)`; re-replaying the
   stream upserts the same rows. Current state is a deterministic fold in stream
   order.
-- **Delete keeps history.** A `delete` op removes the current `SubmissionRecord` but
+- **Delete keeps history.** A `delete` envelope op removes the current `SubmissionRecord` but
   the create/update/delete events remain as history — the row goes away, its audit
   trail does not. That is exactly pghistory's behaviour and what an audit log must do.
 

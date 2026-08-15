@@ -76,7 +76,7 @@ class TestHistoryEffects:
             _msg({"key": "s1", "n": 2}, label="update", metadata={"user": 3}),
         ]
         effects = self._effects(messages)
-        assert [e.op for e in effects] == ["update_or_create", "update_or_create"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Upsert"]
         assert effects[0].lookup == {"submission_id": "s1", "version": 0}
         assert effects[1].lookup == {"submission_id": "s1", "version": 1}
         assert effects[0].defaults["marker"] == "+"

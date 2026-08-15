@@ -38,7 +38,6 @@ def replay_stream(
     start_seq: int = 0,
     end_seq: int | None = None,
     event_match: str | None = None,
-    include_external: bool = False,
     on_drift: OnDriftPolicy = "warn",
     store: object | None = None,
 ) -> ReplayResult:
@@ -58,7 +57,6 @@ def replay_stream(
         start_seq=start_seq,
         end_seq=end_seq,
         event_match=event_match,
-        include_external=include_external,
         on_drift=on_drift,
         reader=reader if reader is not None else DjangoProjectionReader(),
     )

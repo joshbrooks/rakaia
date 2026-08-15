@@ -37,11 +37,6 @@ class Command(BaseCommand):
             help="Replay a second time to demonstrate idempotency.",
         )
         parser.add_argument(
-            "--include-external",
-            action="store_true",
-            help="Apply external effects (receipt emails) instead of skipping them.",
-        )
-        parser.add_argument(
             "--strict-drift",
             action="store_true",
             help="Raise HandlerDriftError on source-hash mismatch instead of warning.",
@@ -61,7 +56,7 @@ class Command(BaseCommand):
 
         # Orders first, then the loyalty-bonus events — so each bonus carries a
         # higher seq than the order it decorates and finds the row already
-        # materialised when op="update" applies.
+        # materialised when the Update applies.
         seed_stream(STREAM, [*SAMPLE_ORDERS, *SAMPLE_BONUSES], store=store)
         self.stdout.write(
             f"Seeded {len(SAMPLE_ORDERS)} order events "
@@ -76,7 +71,6 @@ class Command(BaseCommand):
             store=store,
             stream_path=STREAM,
             executor=preview,
-            include_external=opts["include_external"],
             on_drift="raise" if opts["strict_drift"] else "warn",
         )
         self.stdout.write(
@@ -88,7 +82,6 @@ class Command(BaseCommand):
             store=store,
             stream_path=STREAM,
             executor=DjangoExecutor(),
-            include_external=opts["include_external"],
             on_drift="raise" if opts["strict_drift"] else "warn",
         )
         self._print_result(result)
@@ -101,7 +94,6 @@ class Command(BaseCommand):
                 store=store,
                 stream_path=STREAM,
                 executor=DjangoExecutor(),
-                include_external=opts["include_external"],
                 on_drift="raise" if opts["strict_drift"] else "warn",
             )
             after = OrderSummary.objects.count()
@@ -123,9 +115,13 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"[replay] events={result.events_processed} "
                 f"effects_applied={result.effects_applied} "
-                f"external_skipped={result.external_effects_skipped}"
+                f"external={len(result.external)}"
             )
         )
+        # External effects are handed back, never applied — the app decides.
+        # Here we just show them; a real caller would send the receipt.
+        for ext in result.external:
+            self.stdout.write(f"  would send {ext.kind}: {ext.payload}")
         for w in result.warnings:
             self.stdout.write(self.style.WARNING(w))
 
@@ -144,7 +140,7 @@ class Command(BaseCommand):
             )
 
     def _check_update_if_exists(self) -> None:
-        """Prove the op="update" (update-if-exists) guarantee both ways: the
+        """Prove the Update (update-if-exists) guarantee both ways: the
         bonus for a real order landed, and the bonus for an order that was never
         placed minted no row."""
         landed = OrderSummary.objects.get(order_id="ORD-1003").bonus_points
@@ -155,7 +151,7 @@ class Command(BaseCommand):
                 f"ORD-9999 row exists={phantom} (want False)"
             )
         self.stdout.write(
-            '\nop="update": bonus landed on ORD-1003 (+50) and minted NO row '
+            "\nUpdate: bonus landed on ORD-1003 (+50) and minted NO row "
             "for ORD-9999 (a bonus for an order never placed) — "
-            "update_or_create would have left a phantom row. ✓"
+            "an Upsert would have left a phantom row. ✓"
         )

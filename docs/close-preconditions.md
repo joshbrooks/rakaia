@@ -45,7 +45,7 @@ def close_preconditions(suku, refs) -> list[str]:
 
 def cycle_close(event, refs):                       # stage 2
     reasons = close_preconditions(event["suku"], refs)
-    return Effect(op="update_or_create", model_label=CYCLE_CLOSE,
+    return Upsert(model_label=CYCLE_CLOSE,
                   lookup={"suku": event["suku"]},
                   defaults={"status": "ACCEPTED" if not reasons else "REJECTED",
                             "reasons": reasons})
@@ -67,7 +67,7 @@ def balance_rollup(refs):                           # stage 1 reduce step
     effects = []
     for suku in distinct_sukus(refs):
         rows = refs.filter(FINANCE_LINE, suku=suku)
-        effects.append(Effect(op="update_or_create", model_label=BALANCE,
+        effects.append(Upsert(model_label=BALANCE,
             lookup={"suku": suku},
             defaults={"operational": sum(r.delta for r in rows if r.account == "operational"),
                       "infrastructure": sum(r.delta for r in rows if r.account == "infrastructure")}))

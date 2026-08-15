@@ -16,7 +16,7 @@ from django_rakaia.models import (
     StreamOffsetWatermark,
 )
 from rakaia import CollectingExecutor
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
@@ -384,8 +384,7 @@ class TestDjangoStreamStoreReplay:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="x.X",
                 lookup={"id": event["id"]},
                 defaults={"name": event["name"]},

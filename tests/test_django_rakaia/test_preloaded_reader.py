@@ -22,14 +22,13 @@ from django_rakaia.verification import (
     PreloadedProjectionReader,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect
+from rakaia.effects import Effect, Upsert
 
 from .models import Alert, FinanceLine, Measure
 
 
 def _finance_effect(submission_id: str, suku: str, delta: int) -> Effect:
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.FinanceLine",
         lookup={"submission_id": submission_id},
         defaults={"suku": suku, "delta": delta},
@@ -68,8 +67,7 @@ class TestPreloadedProjectionReader:
                 stream_key=f"sub{i}", alert_type="ff4", field_key="", message="m"
             )
         effects = [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label="test_django_rakaia.Alert",
                 lookup={"stream_key": f"sub{i}", "alert_type": "ff4", "field_key": ""},
                 defaults={"message": "m"},
@@ -90,8 +88,7 @@ class TestPreloadedProjectionReader:
         # ``uuid.UUID``; the canonicalised key must land them in the same slot.
         ref = uuid4()
         Measure.objects.create(ref=ref, amount=Decimal("2.10"))
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label="test_django_rakaia.Measure",
             lookup={"ref": str(ref)},
             defaults={"amount": Decimal("2.10")},

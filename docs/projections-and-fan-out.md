@@ -20,15 +20,14 @@ A handler may return a **list** of `Effect`s. One update per child row, keyed by
 the parent plus the child's index:
 
 ```python
-from rakaia import Effect, register_handler
+from rakaia import Upsert, register_handler
 
 @register_handler(name="activity_rows", event_match="submissions",
                   effective_from=0)
-def activity_rows(event: dict) -> list[Effect]:
+def activity_rows(event: dict) -> list[Upsert]:
     sid = event["submission_id"]
     return [
-        Effect(
-            op="update_or_create",
+        Upsert(
             model_label="submissions.ActivityProgress",
             lookup={"submission_id": sid, "activity_index": i},
             defaults={"name": a["name"], "progress_pct": a["progress_pct"]},
@@ -86,15 +85,13 @@ def activity_rows(event: dict):
     )
 ```
 
-For `items=[A, B]` it returns two `update_or_create` Effects (indices 0 and 1)
-followed by:
+For `items=[A, B]` it returns two `Upsert` effects (indices 0 and 1) followed by:
 
 ```python
-Effect(
-    op="delete",
+Delete(
     model_label="submissions.ActivityProgress",
     lookup={"submission_id": sid},
-    exclude={"activity_index__in": [0, 1]},   # spare the current children
+    spare=Exclude({"activity_index__in": [0, 1]}),   # spare the current children
 )
 ```
 
@@ -105,12 +102,12 @@ The `DjangoExecutor` applies **all upserts before any deletes** within one
 transaction, so a reconcile batch converges regardless of the order handlers
 returned effects in, and the delete never races the writes it's meant to keep.
 
-## Why not a raw `delete` every time?
+## Why not a raw `Delete` every time?
 
-You can build the same thing by hand with an `op="delete"` Effect — that's all
+You can build the same thing by hand with a `Delete` effect — that's all
 `reconcile_children` does. The helper exists so every collection projection gets
 the orphan handling for free instead of re-deriving it (and forgetting the
-`exclude`, which is the whole point). Reach for the raw delete only when the
+`spare`, which is the whole point). Reach for the raw delete only when the
 scope isn't "children of a parent keyed by index".
 
 ## Reorderable collections: key by id, not index
@@ -158,7 +155,7 @@ are the expensive part. It's opt-in because skipping a no-op write is observably
 different — an unchanged row's `auto_now` fields don't advance and its
 `post_save` signal doesn't fire.
 
-## Multi-owner rows: `op="update"` (update-if-exists)
+## Multi-owner rows: `Update` (update-if-exists)
 
 Sometimes one projection row is assembled by **several independent reducers**,
 each owning a disjoint set of columns — a `ProjectProjection` whose status
@@ -166,23 +163,22 @@ columns come from one reducer and whose finance columns come from another. Only
 the *primary* owner should create the row; a secondary owner must write its
 columns **only if the row already exists**, never mint an empty one.
 
-`op="update_or_create"` can't express that — it always inserts on a miss. The
-`op="update"` effect is the missing primitive: it updates the row(s) matching
+An `Upsert` can't express that — it always inserts on a miss. The
+`Update` effect is the missing primitive: it updates the row(s) matching
 `lookup` in place and **never inserts** — a no-op when nothing matches (and a
 no-op when `defaults` is empty). So the secondary owner emits its effect
 unconditionally, with no read:
 
 ```python
 # finance reducer — owns only the ksp_* columns of a shared row
-Effect(
-    op="update",
+Update(
     model_label="ida.ProjectProjection",
     lookup={"project_id": project_id},
     defaults={"ksp_operational": op_total, "ksp_infrastructure": inf_total},
 )
 ```
 
-Before `op="update"`, that reducer had to hand-roll a guard —
+Before `Update`, that reducer had to hand-roll a guard —
 `... and not ProjectProjection.objects.filter(project_id=project_id).exists()` —
 to avoid minting an empty row for a project with no status row yet. That read
 broke the pure `event → Effect` model and cost a query per group. Update-if-exists
@@ -191,7 +187,7 @@ effect with `defaults={"ksp_operational": None, ...}` clears the columns on the
 row that's still there.
 
 The disjoint-defaults invariant still holds across owners: two effects (whether
-`update` or `update_or_create`) that write the **same** column on the same row in
+`Update` or `Upsert`) that write the **same** column on the same row in
 one batch raise `EffectCollisionError`, so overlapping ownership surfaces as a
 loud error rather than a last-writer-wins race.
 
@@ -215,12 +211,12 @@ reconcile_aggregate(
 )
 ```
 
-With `owns=` set, each group is an `op="update"` (never mints the row), and a
-vanished group's row is **not deleted** — its `ksp_total` is null-cleared via an
-`op="retire"` patch that spares the groups still present, leaving the status
+With `owns=` set, each group is an `Update` (never mints the row), and a
+vanished group's row is **not deleted** — its `ksp_total` is null-cleared via a
+`Retire` patch that spares the groups still present, leaving the status
 reducer's columns on that row untouched. The null-out needs no liveness guard: a
 column set to `None` converges on re-run, so it is idempotent as-is (unlike a
-soft-delete `retire`, which stamps a sentinel and must guard on it).
+soft-delete `Retire`, which stamps a sentinel and must guard on it).
 
 Under an **incremental, touched-aware** reducer that recomputes only the touched
 subjects, bound the reconcile with `retire_filter=` so it does not reap groups

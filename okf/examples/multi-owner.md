@@ -19,8 +19,8 @@ effect's generated primary key (with `UnresolvedRefError` on a dangling ref);
 `reconcile_aggregate(owns=)` composing a shared row across two owners so a
 vanished group null-clears only its own columns; `reconcile_by_key(retire=)`
 soft-deleting stale rows on a composite natural key; `check_disjoint_defaults`
-catching a same-column collision; and `dispatch_external` routing
-`op="external"` effects.
+catching a same-column collision; and the app routing the `ExternalEffect`s
+that no executor will apply.
 
 # Run
 

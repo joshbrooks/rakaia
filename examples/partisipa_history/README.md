@@ -87,7 +87,7 @@ exits non-zero.
 | Streams-native recovery | `stream_history.recover_peak_snapshot` |
 | Current-state projection (the `Submission` replacement) | `SubmissionRecord`, folded per event via `DjangoExecutor` |
 
-Everything is applied as ordinary rakaia `Effect`s (including the `delete` op shipped
+Everything is applied as ordinary rakaia `Effect`s (including the `Delete` shipped
 in #6), so nothing about the audit log is bespoke — it is just another projection.
 
 ## Files

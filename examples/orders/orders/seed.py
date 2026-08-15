@@ -20,7 +20,7 @@ the sibling handler returning no effect.
 
 `SAMPLE_BONUSES` (below the orders) are promotional `kind="loyalty_bonus"`
 events, appended after the orders so they carry the highest seqs. They drive the
-`order_bonus` handler's `op="update"` — the update-if-exists showcase.
+`order_bonus` handler's `Update` — the update-if-exists showcase.
 """
 
 # The tax rule changed at this sequence boundary: orders placed before it keep
@@ -91,12 +91,12 @@ SAMPLE_ORDERS: list[dict] = [
 
 # Promotional loyalty-bonus events (kind="loyalty_bonus"), appended *after* all
 # the orders so they carry the highest seqs. Each credits `bonus` points to an
-# order via the `order_bonus` handler's op="update" — update-if-exists:
+# order via the `order_bonus` handler's Update — update-if-exists:
 #
 #   * ORD-1003 exists (seeded above) -> the bonus lands on its row.
-#   * ORD-9999 was never placed       -> op="update" is a clean no-op. NO row is
+#   * ORD-9999 was never placed       -> the Update is a clean no-op. NO row is
 #     minted. (update_or_create would leave a phantom half-row here — the exact
-#     footgun op="update" removes.)
+#     footgun the Update removes.)
 #
 # Because single-stage replay applies each event before the next, a bonus that
 # targets an already-seen order finds the row waiting for it.

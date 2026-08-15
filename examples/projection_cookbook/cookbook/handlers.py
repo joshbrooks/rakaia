@@ -12,7 +12,7 @@ whose event arrives *after* the task that needs it.
 
 from __future__ import annotations
 
-from rakaia import Effect, register_handler, register_simple
+from rakaia import Effect, Upsert, register_handler, register_simple
 
 
 @register_simple(name="project", event_match="PROJECT", match_field="form_type")
@@ -23,8 +23,7 @@ def project(event: dict) -> Effect:
     ``effective_from=0`` / ``effective_to=None`` ceremony. ``match_field`` routes
     on the payload's ``form_type`` rather than the stream path.
     """
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="cookbook.Project",
         lookup={"code": event["code"]},
         defaults={"name": event["name"]},
@@ -46,8 +45,7 @@ def task(event: dict, reader) -> Effect:  # noqa: ANN001 - reader is a Projectio
     the events arrived in.
     """
     linked = reader.get("cookbook.Project", code=event["project_code"])
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="cookbook.Task",
         lookup={"task_id": event["task_id"]},
         defaults={

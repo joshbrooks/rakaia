@@ -74,12 +74,12 @@ they're what makes `Total` double-count (60/65 instead of 35).
 ## The reconcile is one shipped Effect, scoped to the submission
 
 ```python
-Effect(op="delete", model_label="repeaters.Node",
+Delete(model_label="repeaters.Node",
        lookup={"submission_id": sid},           # the whole subtree, any depth
-       exclude={"node_id__in": current_node_ids})
+       spare=Exclude({"node_id__in": current_node_ids}))
 ```
 
-This is the `delete` + `exclude` op from #6 — the only new idea is scoping the
+This is the `Delete` + `Exclude` effect from #6 — the only new idea is scoping the
 reconcile to the **submission**, not a single parent level, so it catches orphans
 at any depth in one pass.
 

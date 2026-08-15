@@ -18,7 +18,7 @@ from django_rakaia.verification import (
     VerificationError,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect
+from rakaia.effects import Delete, Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
@@ -33,14 +33,12 @@ class TestDiffEffectsAgainstRows:
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=100)
         FinanceLine.objects.create(submission_id="s2", suku="B", delta=50)
         effects = [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label="test_django_rakaia.FinanceLine",
                 lookup={"submission_id": "s1"},
                 defaults={"suku": "A", "delta": 100},
             ),
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label="test_django_rakaia.FinanceLine",
                 lookup={"submission_id": "s2"},
                 defaults={"suku": "B", "delta": 50},
@@ -54,8 +52,7 @@ class TestDiffEffectsAgainstRows:
     def test_field_mismatch_is_reported_with_expected_and_actual(self):
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=100)
         effects = [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label="test_django_rakaia.FinanceLine",
                 lookup={"submission_id": "s1"},
                 defaults={"suku": "A", "delta": 999},
@@ -72,8 +69,7 @@ class TestDiffEffectsAgainstRows:
 
     def test_missing_row_is_reported(self):
         effects = [
-            Effect(
-                op="update_or_create",
+            Upsert(
                 model_label="test_django_rakaia.FinanceLine",
                 lookup={"submission_id": "ghost"},
                 defaults={"suku": "A", "delta": 1},
@@ -87,14 +83,12 @@ class TestDiffEffectsAgainstRows:
 
     def test_empty_defaults_only_checks_existence(self):
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
-        present = Effect(
-            op="update_or_create",
+        present = Upsert(
             model_label="test_django_rakaia.FinanceLine",
             lookup={"submission_id": "s1"},
             defaults={},
         )
-        absent = Effect(
-            op="update_or_create",
+        absent = Upsert(
             model_label="test_django_rakaia.FinanceLine",
             lookup={"submission_id": "ghost"},
             defaults={},
@@ -106,8 +100,7 @@ class TestDiffEffectsAgainstRows:
         # A delete effect carries no defaults to verify; it must not be treated
         # as a row to diff (and must not crash the helper).
         effects = [
-            Effect(
-                op="delete",
+            Delete(
                 model_label="test_django_rakaia.FinanceLine",
                 lookup={"submission_id": "whatever"},
             ),
@@ -124,8 +117,7 @@ class TestDefaultNormalizers:
         Measure.objects.create(ref=ref, amount=Decimal("1.00"))
         # Effect carries the UUID as a string (as it would after JSON round-trip);
         # the stored column is a uuid.UUID. Without normalization these differ.
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label="test_django_rakaia.Measure",
             lookup={"ref": str(ref)},
             defaults={"amount": Decimal("1.00")},
@@ -138,8 +130,7 @@ class TestDefaultNormalizers:
         # A JSON payload decodes 2.10 as the float 2.1, which does NOT compare
         # equal to Decimal("2.10"). The decimal normalizer quantizes it to the
         # column's decimal_places so the diff is clean.
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label="test_django_rakaia.Measure",
             lookup={"ref": str(ref)},
             defaults={"amount": 2.1},
@@ -150,8 +141,7 @@ class TestDefaultNormalizers:
     def test_normalization_can_be_disabled(self):
         ref = uuid.uuid4()
         Measure.objects.create(ref=ref, amount=Decimal("2.10"))
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label="test_django_rakaia.Measure",
             lookup={"ref": str(ref)},
             defaults={"amount": 2.1},
@@ -162,11 +152,10 @@ class TestDefaultNormalizers:
 
     def test_custom_normalizer_is_applied(self):
         FinanceLine.objects.create(submission_id="s1", suku="a", delta=1)
-        effect = Effect(
-            op="update_or_create",
+        effect = Upsert(
             model_label="test_django_rakaia.FinanceLine",
             lookup={"submission_id": "s1"},
-            defaults={"suku": "A", "delta": 1},  # note upper-case
+            defaults={"suku": "A", "delta": 1},
         )
         assert not diff_effects_against_rows([effect]).ok
 
@@ -178,8 +167,7 @@ class TestDefaultNormalizers:
 
 
 def _finance_line_handler(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="test_django_rakaia.FinanceLine",
         lookup={"submission_id": event["key"]},
         defaults={"suku": event["suku"], "delta": event["delta"]},
@@ -241,16 +229,14 @@ class TestEndToEndCollectingExecutorProof:
 
     def test_raise_if_diff_raises_on_mismatch_and_is_quiet_when_clean(self):
         FinanceLine.objects.create(submission_id="f1", suku="A", delta=1)
-        good = Effect(
-            op="update_or_create",
+        good = Upsert(
             model_label="test_django_rakaia.FinanceLine",
             lookup={"submission_id": "f1"},
             defaults={"suku": "A", "delta": 1},
         )
         diff_effects_against_rows([good]).raise_if_diff()  # no raise
 
-        bad = Effect(
-            op="update_or_create",
+        bad = Upsert(
             model_label="test_django_rakaia.FinanceLine",
             lookup={"submission_id": "f1"},
             defaults={"suku": "A", "delta": 2},

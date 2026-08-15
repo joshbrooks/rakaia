@@ -14,7 +14,7 @@ different mechanism, scoped so they never touch each other's rows:
 ```mermaid
 flowchart TD
   subgraph L1["Layer 1 · authored"]
-    A1["actor raises / dismisses"] -->|update_or_create<br/>+ external transition| AR[("Alert rows<br/>type ∈ authored")]
+    A1["actor raises / dismisses"] -->|Upsert<br/>+ external transition| AR[("Alert rows<br/>type ∈ authored")]
   end
   subgraph L2["Layer 2 · machine-reconciled"]
     A2["validator run"] -->|reconcile_by_key<br/>retire scoped by retire_filter| MR[("Alert rows<br/>type ∈ machine")]
@@ -29,8 +29,8 @@ flowchart TD
 ```
 
 The three primitives that make this expressible —
-[`reconcile_by_key`](glossary.md#reconcile), `op="retire"` (soft-delete by
-`UPDATE` instead of `DELETE`), and `spare_keys` — are introduced in Phase 2
+[`reconcile_by_key`](glossary.md#reconcile), `Retire` (soft-delete by
+`UPDATE` instead of `DELETE`), and `SpareKeys` — are introduced in Phase 2
 below. The rest of this page is the design and the correctness argument.
 
 ---
@@ -44,19 +44,21 @@ re-derivation must never clobber a human's judgment, and vice-versa.
 
 | Layer | Owner | rakaia mechanism | Status |
 |---|---|---|---|
-| **1. Authored / informational** (`alert`, `backfilled`, …) | an actor | appended `alert_raised` / `alert_dismissed` events → natural-key `update_or_create` (+ `external` transition) | **shipped (Phase 1)** |
-| **2. Machine-reconciled** (validator violations) | the rules | `reconcile_by_key(..., retire={"resolved_at": ts})`, scoped by `retire_filter` to machine types (+ opt-in `external` transition per real resolution) | **shipped (Phase 2 + #32)** |
+| **1. Authored / informational** (`alert`, `backfilled`, …) | an actor | appended `alert_raised` / `alert_dismissed` events → natural-key `Upsert` (+ an `ExternalEffect` transition) | **shipped (Phase 1)** |
+| **2. Machine-reconciled** (validator violations) | the rules | `reconcile_by_key(..., retire={"resolved_at": ts})`, scoped by `retire_filter` to machine types (+ opt-in external transition per real resolution) | **shipped (Phase 2 + #32)** |
 | **3. Dismissable warnings** (derived ⊕ authored) | rules *and* actor | staged replay: stage-1 reconcile reads stage-0 `alert_dismissed` via the `reader` — authored wins for user-resolvable types | **shipped (Phase 3)** |
 
 ## Phase 1 — authored alerts (shipped, zero core changes)
 
 Authored alerts need no new primitive. Raise = upsert the natural key with
 `resolved_at=NULL`; dismiss = upsert the same key with `resolved_at=<event ts>`,
-`resolved_by=<actor>`. Both are plain, idempotent `Effect(op="update_or_create")`.
-The raise/dismiss event each carries its own `Effect(op="external",
-kind="alert_transition")`, so **one event = one transition**, and replay drops
-all `external` effects — a rebuild never re-spams. This satisfies the "one
-transition per real state change, none on replay" rule *by construction*.
+`resolved_by=<actor>`. Both are plain, idempotent `Upsert` effects.
+The raise/dismiss event each carries its own
+`ExternalEffect(kind="alert_transition", ...)`, so **one event = one
+transition**, and no executor ever applies an external effect — replay hands
+them back in `ReplayResult.external`, so a rebuild never re-spams. This
+satisfies the "one transition per real state change, none on replay" rule *by
+construction*.
 
 Reference: `tests/test_django_rakaia/test_alerts.py::TestAuthoredAlerts` and the
 replay-discipline test in `tests/test_rakaia/test_alerts.py`.
@@ -70,13 +72,14 @@ expressible (the gaps the flag spike called G1/G2/G3):
   violation keyed by a *composite* natural key merged into `scope`, plus a
   single retire pass over `scope` narrowed by an independent **`retire_filter`**
   (G1), sparing the composite keys still present (G2).
-- **`op="retire"`** with a **`patch`** dict (`rakaia.effects`) — soft-delete by
+- **`Retire`** with a **`patch`** dict (`rakaia.effects`) — soft-delete by
   UPDATE (`resolved_at = <event ts>`) instead of DELETE (G3). The patch value is
   the triggering event's timestamp, never `timezone.now()`, so replay is
   deterministic. `reconcile_by_key` auto-adds an **open-guard**
   (`<field>__isnull=True` for each patch field) so a re-run neither re-stamps an
   already-resolved row nor re-fires a transition.
-- **`spare_keys`** on delete/retire (`rakaia.effects` + `DjangoExecutor`) — the
+- **`SpareKeys`** as the `spare` of a delete/retire (`rakaia.effects` +
+  `DjangoExecutor`) — the
   executor builds `.exclude(Q(**k0) | Q(**k1) | …)` for composite keys.
 
 The headline property (oracle criterion 2, **zero clobber**): because the retire
@@ -97,10 +100,10 @@ matches are *exactly* the ones flipping NULL→set. Opt in with
 `reconcile_by_key(..., transition_kind="alert_transition")`; the executor then
 captures those rows' identities (a `SELECT` before the `UPDATE`, same txn — paid
 only when opted in) and returns them in `ApplyReport.retire_flips`. The replay
-orchestrator turns each into one `Effect(op="external", kind="alert_transition",
+orchestrator turns each into one `ExternalEffect(kind="alert_transition",
 payload={"key": <natural key>, "state": "resolved", ...})`. Because they're
-`external`, they ride the same replay gate as authored transitions — skipped and
-counted on replay by default, delivered only under `include_external=True` — so a
+external effects, they take the same route as authored transitions — never
+applied by an executor, returned to the caller in `ReplayResult.external` — so a
 rebuild never re-spams. Reference + tests:
 `tests/test_django_rakaia/test_alerts.py::TestRetireFlipReport` and
 `::TestMachineResolutionTransitions`.
@@ -144,7 +147,7 @@ never touches them — zero clobber, preserved. Reference + tests:
 
 ### Machine-resolution transitions — shipped (issue #32)
 
-The one gap Phase 3 deferred — `reconcile_by_key` emitting no `external`
+The one gap Phase 3 deferred — `reconcile_by_key` emitting no external
 transition for a machine resolution — is now closed via the executor-diff. See
 "Machine-resolution transitions (shipped)" under Phase 2 above.
 

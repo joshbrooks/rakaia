@@ -23,7 +23,7 @@ see the executor:
   batch and never across two;
 * `check_disjoint_defaults` runs before any write, so a colliding batch raises
   with nothing applied;
-* `retire_flips` reported only for retires that opted in with `transition_kind`.
+* `retire_flips` reported only for retires that opted in with a `Transition`.
 
 **What it does not pin, and why.**
 
@@ -57,10 +57,18 @@ from typing import Any
 import pytest
 
 from rakaia.effects import (
+    Delete,
     Effect,
     EffectCollisionError,
+    Exclude,
+    ExternalEffect,
     Ref,
+    Retire,
+    SpareKeys,
+    Transition,
     UnresolvedRefError,
+    Update,
+    Upsert,
 )
 
 
@@ -104,8 +112,7 @@ class ExecutorContract:
     @staticmethod
     def _upsert(seam: ExecutorSeam, key: str, **rest: Any) -> Effect:
         """An upsert of one row of `seam.model`, natural-keyed on `field_key`."""
-        return Effect(
-            op="update_or_create",
+        return Upsert(
             model_label=seam.model,
             lookup={"stream_key": "s", "alert_type": "machine", "field_key": key},
             defaults={"severity": "error", "message": f"about {key}", **rest},
@@ -141,20 +148,18 @@ class ExecutorContract:
         assert seam.reader.get(seam.model, field_key="a").severity == "error"
 
     def test_update_writes_matching_rows_and_never_inserts(self, seam):
-        """`op="update"` is the update-if-exists primitive a secondary owner of a
+        """`Update` is the update-if-exists primitive a secondary owner of a
         multi-owned row emits unconditionally: it must write what is there and
         mint nothing when there is not."""
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
             [
-                Effect(
-                    op="update",
+                Update(
                     model_label=seam.model,
                     lookup={"field_key": "a"},
                     defaults={"severity": "warning"},
                 ),
-                Effect(
-                    op="update",
+                Update(
                     model_label=seam.model,
                     lookup={"field_key": "ghost"},
                     defaults={"severity": "warning"},
@@ -168,29 +173,14 @@ class ExecutorContract:
     def test_update_with_empty_defaults_is_a_noop(self, seam):
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
-            [
-                Effect(
-                    op="update",
-                    model_label=seam.model,
-                    lookup={"field_key": "a"},
-                    defaults={},
-                )
-            ]
+            [Update(model_label=seam.model, lookup={"field_key": "a"}, defaults={})]
         )
 
         assert seam.reader.get(seam.model, field_key="a").severity == "error"
 
     def test_delete_removes_the_rows_in_scope(self, seam):
         seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
-        seam.executor.apply(
-            [
-                Effect(
-                    op="delete",
-                    model_label=seam.model,
-                    lookup={"field_key": "a"},
-                )
-            ]
-        )
+        seam.executor.apply([Delete(model_label=seam.model, lookup={"field_key": "a"})])
 
         assert self._keys(seam) == ["b"]
 
@@ -201,11 +191,10 @@ class ExecutorContract:
         )
         seam.executor.apply(
             [
-                Effect(
-                    op="delete",
+                Delete(
                     model_label=seam.model,
                     lookup={"stream_key": "s"},
-                    exclude={"field_key__in": ["a", "c"]},
+                    spare=Exclude({"field_key__in": ["a", "c"]}),
                 )
             ]
         )
@@ -213,15 +202,14 @@ class ExecutorContract:
         assert self._keys(seam) == ["a", "c"]
 
     def test_delete_spares_composite_natural_keys(self, seam):
-        """The `spare_keys` primitive: delete the whole scope *except* these."""
+        """The `SpareKeys` primitive: delete the whole scope *except* these."""
         seam.executor.apply([self._upsert(seam, k) for k in ("a", "b", "c")])
         seam.executor.apply(
             [
-                Effect(
-                    op="delete",
+                Delete(
                     model_label=seam.model,
                     lookup={"stream_key": "s"},
-                    spare_keys=[{"alert_type": "machine", "field_key": "b"}],
+                    spare=SpareKeys([{"alert_type": "machine", "field_key": "b"}]),
                 )
             ]
         )
@@ -232,11 +220,10 @@ class ExecutorContract:
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
             [
-                Effect(
-                    op="delete",
+                Delete(
                     model_label=seam.model,
                     lookup={"stream_key": "s"},
-                    spare_keys=[],
+                    spare=SpareKeys([]),
                 )
             ]
         )
@@ -248,12 +235,11 @@ class ExecutorContract:
         seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
         seam.executor.apply(
             [
-                Effect(
-                    op="retire",
+                Retire(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "resolved_at__isnull": True},
-                    spare_keys=[{"alert_type": "machine", "field_key": "b"}],
                     patch={"resolved_at": "2024-01-01T00:00:00"},
+                    spare=SpareKeys([{"alert_type": "machine", "field_key": "b"}]),
                 )
             ]
         )
@@ -269,7 +255,7 @@ class ExecutorContract:
         is dropped, never applied and never an error."""
         seam.executor.apply(
             [
-                Effect(op="external", kind="email", payload={"to": "a@b.c"}),
+                ExternalEffect(kind="email", payload={"to": "a@b.c"}),
                 self._upsert(seam, "a"),
             ]
         )
@@ -288,7 +274,7 @@ class ExecutorContract:
         the freshly written row is inside its scope and goes."""
         seam.executor.apply(
             [
-                Effect(op="delete", model_label=seam.model, lookup={"stream_key": "s"}),
+                Delete(model_label=seam.model, lookup={"stream_key": "s"}),
                 self._upsert(seam, "a"),
             ]
         )
@@ -298,8 +284,7 @@ class ExecutorContract:
     def test_every_write_applies_before_any_retire(self, seam):
         seam.executor.apply(
             [
-                Effect(
-                    op="retire",
+                Retire(
                     model_label=seam.model,
                     lookup={"stream_key": "s"},
                     patch={"resolved_at": "2024-01-01T00:00:00"},
@@ -316,13 +301,12 @@ class ExecutorContract:
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
             [
-                Effect(
-                    op="retire",
+                Retire(
                     model_label=seam.model,
                     lookup={"stream_key": "s"},
                     patch={"resolved_at": "2024-01-01T00:00:00"},
                 ),
-                Effect(op="delete", model_label=seam.model, lookup={"stream_key": "s"}),
+                Delete(model_label=seam.model, lookup={"stream_key": "s"}),
             ]
         )
 
@@ -331,11 +315,10 @@ class ExecutorContract:
     def test_reconcile_converges_regardless_of_emission_order(self, seam):
         """The property the passes exist for: the same reconcile batch, emitted
         two different ways, lands on the same rows."""
-        prune = Effect(
-            op="delete",
+        prune = Delete(
             model_label=seam.model,
             lookup={"stream_key": "s"},
-            spare_keys=[{"field_key": "a"}, {"field_key": "b"}],
+            spare=SpareKeys([{"field_key": "a"}, {"field_key": "b"}]),
         )
         current = [self._upsert(seam, "a"), self._upsert(seam, "b")]
 
@@ -343,7 +326,7 @@ class ExecutorContract:
         seam.executor.apply([prune, *current])
         prune_first = self._keys(seam)
 
-        seam.executor.apply([Effect(op="delete", model_label=seam.model, lookup={})])
+        seam.executor.apply([Delete(model_label=seam.model, lookup={})])
         seam.executor.apply([self._upsert(seam, "stale")])
         seam.executor.apply([*current, prune])
 
@@ -354,15 +337,13 @@ class ExecutorContract:
     def test_ref_binds_to_the_row_a_sibling_produced(self, seam):
         seam.executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "a"},
                     defaults={"severity": "error"},
                     produces="anchor",
                 ),
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "b"},
                     defaults={"dismissed_version": Ref("anchor")},
@@ -376,15 +357,13 @@ class ExecutorContract:
     def test_ref_can_name_a_column_other_than_the_primary_key(self, seam):
         seam.executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "a"},
                     defaults={"severity": "critical"},
                     produces="anchor",
                 ),
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "b"},
                     defaults={"severity": Ref("anchor", "severity")},
@@ -399,13 +378,11 @@ class ExecutorContract:
         write has already run by the time the delete pass starts."""
         seam.executor.apply(
             [
-                Effect(
-                    op="delete",
+                Delete(
                     model_label=seam.model,
                     lookup={"alert_type": Ref("anchor", "alert_type")},
                 ),
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "a"},
                     defaults={"severity": "error"},
@@ -421,8 +398,7 @@ class ExecutorContract:
         a second batch cannot silently bind to the first one's row."""
         seam.executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "alert_type": "m", "field_key": "a"},
                     defaults={"severity": "error"},
@@ -434,8 +410,7 @@ class ExecutorContract:
         with pytest.raises(UnresolvedRefError):
             seam.executor.apply(
                 [
-                    Effect(
-                        op="update_or_create",
+                    Upsert(
                         model_label=seam.model,
                         lookup={
                             "stream_key": "s",
@@ -470,14 +445,12 @@ class ExecutorContract:
         lookup = {"stream_key": "s", "alert_type": "m", "field_key": "a"}
         seam.executor.apply(
             [
-                Effect(
-                    op="update_or_create",
+                Upsert(
                     model_label=seam.model,
                     lookup=lookup,
                     defaults={"severity": "error"},
                 ),
-                Effect(
-                    op="update",
+                Update(
                     model_label=seam.model,
                     lookup=lookup,
                     defaults={"message": "from the other owner"},
@@ -492,8 +465,8 @@ class ExecutorContract:
 
     def test_retire_flips_reported_only_when_notifications_were_asked_for(self, seam):
         """A plain retire costs no extra query and reports nothing; one with
-        `transition_kind` reports the identity of every row it flipped, in the
-        order `transition_key_fields` names. An executor that observes no flips
+        a `Transition` reports the identity of every row it flipped, in the
+        order its `key_fields` names. An executor that observes no flips
         may return `None` instead of a report — the orchestrator reads that as
         empty — so the report is only inspected when there is one.
         """
@@ -501,8 +474,7 @@ class ExecutorContract:
 
         silent = seam.executor.apply(
             [
-                Effect(
-                    op="retire",
+                Retire(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "field_key": "b"},
                     patch={"resolved_at": "2024-01-01T00:00:00"},
@@ -514,20 +486,23 @@ class ExecutorContract:
 
         report = seam.executor.apply(
             [
-                Effect(
-                    op="retire",
+                Retire(
                     model_label=seam.model,
                     lookup={"stream_key": "s", "resolved_at__isnull": True},
                     patch={"resolved_at": "2024-01-02T00:00:00"},
-                    transition_kind="alert_resolved",
-                    transition_key_fields=("stream_key", "alert_type", "field_key"),
+                    transition=Transition(
+                        kind="alert_resolved",
+                        key_fields=("stream_key", "alert_type", "field_key"),
+                    ),
                 )
             ]
         )
         if report is not None:
-            assert [eff.transition_kind for eff, _ in report.retire_flips] == [
-                "alert_resolved"
-            ]
+            assert [
+                eff.transition.kind
+                for eff, _ in report.retire_flips
+                if eff.transition is not None
+            ] == ["alert_resolved"]
             # Only "a" was still open, so only "a" flipped.
             assert [rows for _, rows in report.retire_flips] == [
                 [{"stream_key": "s", "alert_type": "machine", "field_key": "a"}]

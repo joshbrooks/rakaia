@@ -23,18 +23,15 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.effects import Effect
+from rakaia.effects import Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import build_pipeline, run_passes
 
 
 def _effect(name: str, value):
-    return Effect(
-        op="update_or_create",
-        model_label="app.Model",
-        lookup={"name": name},
-        defaults={"value": value},
+    return Upsert(
+        model_label="app.Model", lookup={"name": name}, defaults={"value": value}
     )
 
 
@@ -71,7 +68,6 @@ def _pipeline(registry, executor, *, reader=None):
         upcaster_registry=None,
         executor=executor,
         reader=reader,
-        include_external=False,
         on_drift="warn",
     )
 

@@ -6,7 +6,16 @@ import json
 
 import pytest
 
-from rakaia.effects import ApplyReport, Effect
+from rakaia.effects import (
+    ApplyReport,
+    Delete,
+    Effect,
+    Exclude,
+    ExternalEffect,
+    Retire,
+    Transition,
+    Upsert,
+)
 from rakaia.executors import InMemoryProjections
 from rakaia.registry import (
     HandlerDriftError,
@@ -58,8 +67,7 @@ class TestBasicReplay:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="update_or_create",
+            return Upsert(
                 model_label="x.X",
                 lookup={"id": event["id"]},
                 defaults={"name": event["name"]},
@@ -80,10 +88,10 @@ class TestBasicReplay:
         reg = HandlerRegistry()
 
         def h1(event):
-            return Effect("update_or_create", "x.X", {"id": event["id"]}, {"a": 1})
+            return Upsert("x.X", {"id": event["id"]}, {"a": 1})
 
         def h2(event):
-            return Effect("update_or_create", "x.X", {"id": event["id"]}, {"b": 2})
+            return Upsert("x.X", {"id": event["id"]}, {"b": 2})
 
         reg.register("h1", "stream", h1, 0, None)
         reg.register("h2", "stream", h2, 0, None)
@@ -104,8 +112,8 @@ class TestBasicReplay:
 
         def h(event):
             return [
-                Effect("update_or_create", "x.X", {"id": event["id"]}, {"a": 1}),
-                Effect("update_or_create", "x.Y", {"id": event["id"]}, {"b": 2}),
+                Upsert("x.X", {"id": event["id"]}, {"a": 1}),
+                Upsert("x.Y", {"id": event["id"]}, {"b": 2}),
             ]
 
         reg.register("h", "stream", h, 0, None)
@@ -141,10 +149,10 @@ class TestVersioning:
         reg = HandlerRegistry()
 
         def h_v1(event):
-            return Effect("update_or_create", "x.X", {"id": event["id"]}, {"v": 1})
+            return Upsert("x.X", {"id": event["id"]}, {"v": 1})
 
         def h_v2(event):
-            return Effect("update_or_create", "x.X", {"id": event["id"]}, {"v": 2})
+            return Upsert("x.X", {"id": event["id"]}, {"v": 2})
 
         reg.register("h", "s", h_v1, 0, 3)
         reg.register("h", "s", h_v2, 3, None)
@@ -170,9 +178,7 @@ class TestIdempotency:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                "update_or_create", "x.X", {"id": event["id"]}, {"name": event["name"]}
-            )
+            return Upsert("x.X", {"id": event["id"]}, {"name": event["name"]})
 
         reg.register("h", "s", h, 0, None)
         seed_stream("s", [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}], store=store)
@@ -192,13 +198,13 @@ class TestIdempotency:
 
 
 class TestExternalEffects:
-    def test_external_skipped_by_default(self, store: StreamStore):
+    def test_external_never_reaches_the_executor(self, store: StreamStore):
         reg = HandlerRegistry()
 
         def h(event):  # noqa: ARG001
             return [
-                Effect(op="external", kind="email", payload={"to": "x@y"}),
-                Effect("update_or_create", "x.X", {"id": 1}, {"a": 1}),
+                ExternalEffect(kind="email", payload={"to": "x@y"}),
+                Upsert("x.X", {"id": 1}, {"a": 1}),
             ]
 
         reg.register("h", "s", h, 0, None)
@@ -207,25 +213,26 @@ class TestExternalEffects:
 
         result = replay(store, "s", ex, handler_registry=reg)
 
-        assert result.external_effects_skipped == 1
+        assert [type(e).__name__ for e in result.external] == ["ExternalEffect"]
         assert len(ex.all_effects) == 1
-        assert ex.all_effects[0].op == "update_or_create"
+        assert isinstance(ex.all_effects[0], Upsert)
 
-    def test_external_included_when_flag_set(self, store: StreamStore):
+    def test_external_is_returned_not_applied(self, store: StreamStore):
         reg = HandlerRegistry()
 
         def h(event):  # noqa: ARG001
-            return Effect(op="external", kind="email", payload={"to": "x"})
+            return ExternalEffect(kind="email", payload={"to": "x"})
 
         reg.register("h", "s", h, 0, None)
         seed_stream("s", [{"x": 1}], store=store)
         ex = CaptureExecutor()
 
-        result = replay(store, "s", ex, handler_registry=reg, include_external=True)
+        result = replay(store, "s", ex, handler_registry=reg)
 
-        assert result.external_effects_skipped == 0
-        assert len(ex.all_effects) == 1
-        assert ex.all_effects[0].op == "external"
+        # The executor is never called at all for an external-only batch.
+        assert ex.all_effects == []
+        assert result.effects_applied == 0
+        assert result.external == [ExternalEffect(kind="email", payload={"to": "x"})]
 
 
 # ---------------------------------------------------------------------------
@@ -486,11 +493,10 @@ class TestDeleteEffects:
         reg = HandlerRegistry()
 
         def h(event):
-            return Effect(
-                op="delete",
+            return Delete(
                 model_label="x.X",
                 lookup={"parent_id": event["id"]},
-                exclude={"idx__in": event["keep"]},
+                spare=Exclude({"idx__in": event["keep"]}),
             )
 
         reg.register("h", "stream", h, 0, None)
@@ -502,9 +508,9 @@ class TestDeleteEffects:
         assert result.effects_applied == 1
         assert len(ex.all_effects) == 1
         eff = ex.all_effects[0]
-        assert eff.op == "delete"
+        assert isinstance(eff, Delete)
         assert eff.lookup == {"parent_id": 1}
-        assert eff.exclude == {"idx__in": [0, 1]}
+        assert eff.spare == Exclude({"idx__in": [0, 1]})
 
 
 # ---------------------------------------------------------------------------
@@ -517,20 +523,10 @@ class TestMatchFieldRouting:
         reg = HandlerRegistry()
 
         def tf(event):
-            return Effect(
-                op="update_or_create",
-                model_label="x.TF",
-                lookup={"id": event["id"]},
-                defaults={},
-            )
+            return Upsert(model_label="x.TF", lookup={"id": event["id"]}, defaults={})
 
         def sf(event):
-            return Effect(
-                op="update_or_create",
-                model_label="x.SF",
-                lookup={"id": event["id"]},
-                defaults={},
-            )
+            return Upsert(model_label="x.SF", lookup={"id": event["id"]}, defaults={})
 
         # Both handlers live on the same stream; routing is by payload field.
         reg.register("tf", "tf_*", tf, 0, None, match_field="form_type")
@@ -562,8 +558,7 @@ class TestMatchFieldRouting:
 
 
 def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see call)
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="app.Project",
         lookup={"suku": event["suku"], "output": event["output"]},
         defaults={"name": event["project_name"]},
@@ -572,8 +567,7 @@ def _project(event, reader):  # noqa: ARG001  (stage 0 ignores reader — see ca
 
 def _sf12(event, reader):
     project = reader.get("app.Project", suku=event["suku"], output=event["output"])
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="app.Sf12",
         lookup={"submission_id": event["key"]},
         defaults={"project_id": project.name if project else None},
@@ -702,8 +696,7 @@ class TestStagedReplay:
 
 
 def _finance_line(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="app.FinanceLine",
         lookup={"submission_id": event["key"]},
         defaults={"suku": event["suku"], "delta": event["delta"]},
@@ -1015,8 +1008,7 @@ class TestReducerTouchedSubjects:
 
 
 def _touch(event):
-    return Effect(
-        op="update_or_create",
+    return Upsert(
         model_label="app.Claim",
         lookup={"slot": event["slot"]},
         defaults={"claimed_by": event["key"]},
@@ -1294,13 +1286,11 @@ class TestSynthTransitions:
 
     @staticmethod
     def _retire(patch):
-        return Effect(
-            op="retire",
+        return Retire(
             model_label="app.Alert",
             lookup={"stream_key": "s"},
             patch=patch,
-            transition_kind="alert_transition",
-            transition_key_fields=("alert_type",),
+            transition=Transition(kind="alert_transition", key_fields=("alert_type",)),
         )
 
     def test_one_transition_per_flipped_row(self):

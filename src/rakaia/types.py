@@ -197,16 +197,19 @@ class ClosedBy:
 
 @dataclass
 class Stream:
-    """Stream metadata and data."""
+    """Stream metadata.
+
+    Deliberately *not* the messages: a store returns this from ``get()`` to
+    describe a stream, and where the messages actually live is the store's own
+    business (the in-memory store keeps them in a side map; a durable store
+    keeps them in the database).
+    """
 
     path: str
     """The stream URL path (key)."""
 
     content_type: str | None = None
     """Content type of the stream."""
-
-    messages: list[StreamMessage] = field(default_factory=list)
-    """Ordered messages in the stream."""
 
     current_offset: str = INITIAL_OFFSET
     """Current offset (next offset to write to)."""

@@ -42,15 +42,15 @@ def reconcile_tree(submission_id, nodes):
     kept = [n["node_id"] for n in nodes]
     return [
         *[upsert(submission_id, n) for n in nodes],
-        Effect(op="delete", model_label=NODE,
+        Delete(model_label=NODE,
                lookup={"submission_id": submission_id},   # whole subtree
-               exclude={"node_id__in": kept}),            # any depth
+               spare=Exclude({"node_id__in": kept})),     # any depth
     ]
 ```
 
 Because the delete is keyed by `submission_id` and excludes every kept node id, a
 pruned subtree is removed no matter how deep its intermediate parent was. This
-reuses the shipped `delete` + `exclude` Effect op (#6); the only new idea is the
+reuses the shipped `Delete` + `Exclude` effect (#6); the only new idea is the
 **scope**.
 
 ## Correctness

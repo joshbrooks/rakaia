@@ -66,7 +66,7 @@ class LiveProducer:
         self._seq = 0  # total events appended so far
         self._order_counter = 2000  # live order ids start at ORD-2001
         # order_ids the producer has placed, so a bonus can target a real order
-        # (lands) or a fabricated one (op="update" no-op — no phantom row).
+        # (lands) or a fabricated one (the Update is a no-op — no phantom row).
         self._placed_paid: list[str] = []
 
     # -- lifecycle ---------------------------------------------------------
@@ -142,7 +142,7 @@ class LiveProducer:
 
     # -- event invention ---------------------------------------------------
     def _invent_event(self) -> dict[str, Any]:
-        # ~1 in 4 ticks is a loyalty bonus (the op="update" showcase); the rest
+        # ~1 in 4 ticks is a loyalty bonus (the Update showcase); the rest
         # are fresh orders.
         if self._placed_paid and self._rng.random() < 0.25:
             return self._invent_bonus()
@@ -169,7 +169,7 @@ class LiveProducer:
 
     def _invent_bonus(self) -> dict[str, Any]:
         # 70% target a real placed order (bonus lands); 30% target a fabricated
-        # order that was never placed (op="update" is a clean no-op — no row is
+        # order that was never placed (an Update is a clean no-op — no row is
         # minted, which is the whole point).
         if self._rng.random() < 0.7:
             order_id = self._rng.choice(self._placed_paid)

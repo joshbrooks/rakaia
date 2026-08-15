@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from rakaia.effects import Delete, Exclude, Retire, SpareKeys, Upsert
 from rakaia.projections import (
     project_latest,
     reconcile_aggregate,
@@ -38,7 +39,7 @@ def _reconcile(items: list[dict]):
 class TestReconcileChildren:
     def test_emits_upsert_per_item(self):
         effects = _reconcile([{"name": "a"}, {"name": "b"}])
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert len(upserts) == 2
         assert all(e.model_label == "app.Child" for e in upserts)
         assert upserts[0].lookup == {"parent_id": 7, "idx": 0}
@@ -48,26 +49,26 @@ class TestReconcileChildren:
 
     def test_emits_reconcile_delete(self):
         effects = _reconcile([{"name": "a"}, {"name": "b"}])
-        deletes = [e for e in effects if e.op == "delete"]
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert len(deletes) == 1
         assert deletes[0].model_label == "app.Child"
         assert deletes[0].lookup == {"parent_id": 7}
-        assert deletes[0].exclude == {"idx__in": [0, 1]}
+        assert deletes[0].spare == Exclude({"idx__in": [0, 1]})
 
     def test_empty_items_deletes_all(self):
         effects = _reconcile([])
-        assert [e for e in effects if e.op == "update_or_create"] == []
-        deletes = [e for e in effects if e.op == "delete"]
+        assert [e for e in effects if isinstance(e, Upsert)] == []
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert len(deletes) == 1
         assert deletes[0].lookup == {"parent_id": 7}
         # exclude on an empty keep-set spares nothing -> deletes every child.
-        assert deletes[0].exclude == {"idx__in": []}
+        assert deletes[0].spare == Exclude({"idx__in": []})
 
     def test_upserts_precede_delete(self):
         # The delete is emitted last so a CaptureExecutor sees the natural
         # "write current, then prune" order (the DjangoExecutor reorders anyway).
         effects = _reconcile([{"name": "a"}])
-        assert [e.op for e in effects] == ["update_or_create", "delete"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Delete"]
 
     def test_parent_lookup_not_mutated(self):
         parent = {"parent_id": 7}
@@ -103,7 +104,7 @@ class TestReconcileByKey:
         effects = _by_key(
             [{"alert_type": "ff4", "field_key": "row0", "severity": "error"}]
         )
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert len(upserts) == 1
         assert upserts[0].model_label == "app.Alert"
         assert upserts[0].lookup == {
@@ -117,13 +118,15 @@ class TestReconcileByKey:
         effects = _by_key(
             [{"alert_type": "ff4", "field_key": "a"}, {"alert_type": "sf11"}]
         )
-        retires = [e for e in effects if e.op == "delete"]
+        retires = [e for e in effects if isinstance(e, Delete)]
         assert len(retires) == 1
         assert retires[0].lookup == {"stream_key": "sub-1"}
-        assert retires[0].spare_keys == [
-            {"alert_type": "ff4", "field_key": "a"},
-            {"alert_type": "sf11", "field_key": ""},
-        ]
+        assert retires[0].spare == SpareKeys(
+            [
+                {"alert_type": "ff4", "field_key": "a"},
+                {"alert_type": "sf11", "field_key": ""},
+            ]
+        )
 
     def test_soft_delete_retire_emits_patch_and_open_guard(self):
         effects = _by_key(
@@ -131,7 +134,7 @@ class TestReconcileByKey:
             retire={"resolved_at": "t1", "resolved_by": "system"},
             retire_filter={"alert_type__in": ["ff4", "sf11"]},
         )
-        retires = [e for e in effects if e.op == "retire"]
+        retires = [e for e in effects if isinstance(e, Retire)]
         assert len(retires) == 1
         r = retires[0]
         # G1: retire is scoped by retire_filter distinct from the upsert key.
@@ -143,47 +146,50 @@ class TestReconcileByKey:
             "resolved_at__isnull": True,
         }
         assert r.patch == {"resolved_at": "t1", "resolved_by": "system"}
-        assert r.spare_keys == [{"alert_type": "ff4", "field_key": "a"}]
+        assert r.spare == SpareKeys([{"alert_type": "ff4", "field_key": "a"}])
 
-    def test_retire_carries_transition_kind_when_requested(self):
-        # R1: opt-in — a soft-delete retire asked to notify stamps the kind on
-        # the retire Effect so the orchestrator can emit one external transition
-        # per row the retire actually flipped.
+    def test_retire_carries_a_transition_when_requested(self):
+        # R1: opt-in — a soft-delete retire asked to notify carries a Transition
+        # so the orchestrator can emit one external transition per row the
+        # retire actually flipped.
         effects = _by_key(
             [{"alert_type": "ff4", "field_key": "a"}],
             retire={"resolved_at": "t1", "resolved_by": "system"},
             transition_kind="alert_transition",
         )
-        retire = next(e for e in effects if e.op == "retire")
-        assert retire.transition_kind == "alert_transition"
+        retire = next(e for e in effects if isinstance(e, Retire))
+        assert retire.transition is not None
+        assert retire.transition.kind == "alert_transition"
 
-    def test_retire_has_no_transition_kind_by_default(self):
+    def test_retire_has_no_transition_by_default(self):
         retire = next(
-            e for e in _by_key([], retire={"resolved_at": "t1"}) if e.op == "retire"
+            e
+            for e in _by_key([], retire={"resolved_at": "t1"})
+            if isinstance(e, Retire)
         )
-        assert retire.transition_kind is None
+        assert retire.transition is None
 
-    def test_upserts_never_carry_transition_kind(self):
+    def test_upserts_never_carry_a_transition(self):
         # Only the retire flips rows silently; the upserts are per-item and
-        # never a machine resolution, so they never carry the marker.
+        # never a machine resolution, so they cannot carry the marker at all.
         effects = _by_key(
             [{"alert_type": "ff4", "field_key": "a"}],
             retire={"resolved_at": "t1"},
             transition_kind="alert_transition",
         )
-        upserts = [e for e in effects if e.op == "update_or_create"]
-        assert upserts and all(e.transition_kind is None for e in upserts)
+        upserts = [e for e in effects if isinstance(e, Upsert)]
+        assert upserts and all(not hasattr(e, "transition") for e in upserts)
 
     def test_empty_items_retire_spares_nothing(self):
         effects = _by_key([], retire={"resolved_at": "t1"})
-        assert [e for e in effects if e.op == "update_or_create"] == []
-        retires = [e for e in effects if e.op == "retire"]
+        assert [e for e in effects if isinstance(e, Upsert)] == []
+        retires = [e for e in effects if isinstance(e, Retire)]
         assert len(retires) == 1
-        assert retires[0].spare_keys == []
+        assert retires[0].spare == SpareKeys([])
 
     def test_upserts_precede_retire(self):
         effects = _by_key([{"alert_type": "ff4"}])
-        assert [e.op for e in effects] == ["update_or_create", "delete"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Delete"]
 
     def test_scope_not_mutated(self):
         scope = {"stream_key": "sub-1"}
@@ -228,7 +234,7 @@ class TestReconcileTree:
                 {"id": "B", "parent": "A", "value": 10},
             ]
         )
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert len(upserts) == 2
         assert all(e.model_label == "app.Node" for e in upserts)
         # keyed by the node's explicit id, not a positional index
@@ -244,11 +250,11 @@ class TestReconcileTree:
                 {"id": "C", "parent": "A", "value": 20},
             ]
         )
-        deletes = [e for e in effects if e.op == "delete"]
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert len(deletes) == 1
         # one submission-scoped delete over the whole subtree, any depth
         assert deletes[0].lookup == {"submission_id": "s1"}
-        assert deletes[0].exclude == {"node_id__in": ["A", "B", "C"]}
+        assert deletes[0].spare == Exclude({"node_id__in": ["A", "B", "C"]})
 
     def test_deep_nodes_keyed_the_same_way_regardless_of_depth(self):
         # A grandchild is keyed and reconciled identically to a top-level node —
@@ -260,22 +266,22 @@ class TestReconcileTree:
                 {"id": "D", "parent": "B", "value": 10},  # grandchild
             ]
         )
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert upserts[2].lookup == {"submission_id": "s1", "node_id": "D"}
-        deletes = [e for e in effects if e.op == "delete"]
-        assert deletes[0].exclude == {"node_id__in": ["A", "B", "D"]}
+        deletes = [e for e in effects if isinstance(e, Delete)]
+        assert deletes[0].spare == Exclude({"node_id__in": ["A", "B", "D"]})
 
     def test_empty_nodes_deletes_whole_subtree(self):
         effects = _tree([])
-        assert [e for e in effects if e.op == "update_or_create"] == []
-        deletes = [e for e in effects if e.op == "delete"]
+        assert [e for e in effects if isinstance(e, Upsert)] == []
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert len(deletes) == 1
         assert deletes[0].lookup == {"submission_id": "s1"}
-        assert deletes[0].exclude == {"node_id__in": []}
+        assert deletes[0].spare == Exclude({"node_id__in": []})
 
     def test_upserts_precede_delete(self):
         effects = _tree([{"id": "A", "parent": "", "value": 0}])
-        assert [e.op for e in effects] == ["update_or_create", "delete"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Delete"]
 
     def test_scope_lookup_not_mutated(self):
         scope = {"submission_id": "s1"}
@@ -302,7 +308,7 @@ def _agg(groups, scope=None):
 class TestReconcileAggregate:
     def test_emits_upsert_per_group(self):
         effects = _agg({"Fatuberliu": {"total": 300}, "Maubara": {"total": -50}})
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert len(upserts) == 2
         assert upserts[0].lookup == {"suku": "Fatuberliu"}
         assert upserts[0].defaults == {"total": 300}
@@ -311,20 +317,20 @@ class TestReconcileAggregate:
 
     def test_reconcile_delete_excludes_present_groups(self):
         effects = _agg({"Fatuberliu": {"total": 300}, "Maubara": {"total": -50}})
-        deletes = [e for e in effects if e.op == "delete"]
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert len(deletes) == 1
         assert deletes[0].lookup == {}
         # groups that vanished (no contributors) get their aggregate removed
-        assert deletes[0].exclude == {"suku__in": ["Fatuberliu", "Maubara"]}
+        assert deletes[0].spare == Exclude({"suku__in": ["Fatuberliu", "Maubara"]})
 
     def test_empty_groups_with_scope_clears_only_that_scope(self):
         # Empty groups under a *non-empty* scope is a safe scoped clear (removes
         # every aggregate row in the scope) and needs no opt-in.
         effects = _agg({}, scope={"report_id": 42})
-        assert [e for e in effects if e.op == "update_or_create"] == []
-        deletes = [e for e in effects if e.op == "delete"]
+        assert [e for e in effects if isinstance(e, Upsert)] == []
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert deletes[0].lookup == {"report_id": 42}
-        assert deletes[0].exclude == {"suku__in": []}
+        assert deletes[0].spare == Exclude({"suku__in": []})
 
     def test_empty_global_scope_and_empty_groups_raises(self):
         # The whole-table-wipe footgun (#50): global scope + no groups matches
@@ -341,27 +347,27 @@ class TestReconcileAggregate:
             groups={},
             allow_full_clear=True,
         )
-        assert [e for e in effects if e.op == "update_or_create"] == []
-        deletes = [e for e in effects if e.op == "delete"]
+        assert [e for e in effects if isinstance(e, Upsert)] == []
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert deletes[0].lookup == {}
-        assert deletes[0].exclude == {"suku__in": []}
+        assert deletes[0].spare == Exclude({"suku__in": []})
 
     def test_global_scope_with_groups_needs_no_flag(self):
         # Global scope but non-empty groups is not a full clear — unaffected.
         effects = _agg({"a": {"total": 1}})
-        assert [e.op for e in effects] == ["update_or_create", "delete"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Delete"]
 
     def test_scope_included_in_lookup_and_delete(self):
         effects = _agg({"north": {"total": 5}}, scope={"report_id": 42})
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert upserts[0].lookup == {"report_id": 42, "suku": "north"}
-        deletes = [e for e in effects if e.op == "delete"]
+        deletes = [e for e in effects if isinstance(e, Delete)]
         assert deletes[0].lookup == {"report_id": 42}
-        assert deletes[0].exclude == {"suku__in": ["north"]}
+        assert deletes[0].spare == Exclude({"suku__in": ["north"]})
 
     def test_upserts_precede_delete(self):
         effects = _agg({"a": {"total": 1}})
-        assert [e.op for e in effects] == ["update_or_create", "delete"]
+        assert [type(e).__name__ for e in effects] == ["Upsert", "Delete"]
 
     def test_scope_lookup_not_mutated(self):
         scope = {"report_id": 42}
@@ -386,7 +392,7 @@ class TestReconcileAggregateMultiOwner:
         # Multi-owner never mints the shared row — the row's existence is owned
         # by whoever creates it, so each group is an update-if-exists.
         effects = self._agg({"north": {"ksp_total": 5}})
-        assert [e.op for e in effects] == ["update", "retire"]
+        assert [type(e).__name__ for e in effects] == ["Update", "Retire"]
         upd = effects[0]
         assert upd.lookup == {"report_id": 7, "suku": "north"}
         assert upd.defaults == {"ksp_total": 5}
@@ -396,25 +402,25 @@ class TestReconcileAggregateMultiOwner:
             {"north": {"ksp_total": 5}}, owns=("ksp_total", "ksp_count")
         )
         retire = effects[-1]
-        assert retire.op == "retire"
+        assert isinstance(retire, Retire)
         assert retire.lookup == {"report_id": 7}
         # only this owner's columns are cleared; other owners' columns untouched
         assert retire.patch == {"ksp_total": None, "ksp_count": None}
         # present groups are spared from the null-out
-        assert retire.spare_keys == [{"suku": "north"}]
+        assert retire.spare == SpareKeys([{"suku": "north"}])
         # a pure null-out needs no liveness/open-guard and fires no transition
-        assert retire.transition_kind is None
+        assert retire.transition is None
 
     def test_retire_spares_every_present_group(self):
         effects = self._agg({"north": {"ksp_total": 1}, "south": {"ksp_total": 2}})
-        assert effects[-1].spare_keys == [{"suku": "north"}, {"suku": "south"}]
+        assert effects[-1].spare == SpareKeys([{"suku": "north"}, {"suku": "south"}])
 
     def test_empty_groups_clears_owner_columns_in_scope(self):
         # This owner has no contributors anywhere in the (bounded) scope: clear
         # its columns on every row in scope, sparing nothing.
         effects = self._agg({})
-        assert [e.op for e in effects] == ["retire"]
-        assert effects[0].spare_keys == []
+        assert [type(e).__name__ for e in effects] == ["Retire"]
+        assert effects[0].spare == SpareKeys([])
         assert effects[0].patch == {"ksp_total": None}
 
     def test_retire_filter_narrows_only_the_reconcile_pass(self):
@@ -442,7 +448,7 @@ class TestReconcileAggregateMultiOwner:
         # A non-empty retire_filter bounds the reconcile, so the wipe guard does
         # not fire even under a global scope with empty groups.
         effects = self._agg({}, scope={}, retire_filter={"report_id__in": [7]})
-        assert [e.op for e in effects] == ["retire"]
+        assert [type(e).__name__ for e in effects] == ["Retire"]
         assert effects[0].lookup == {"report_id__in": [7]}
 
     def test_global_scope_empty_groups_allowed_with_flag(self):
@@ -454,9 +460,9 @@ class TestReconcileAggregateMultiOwner:
             owns=("ksp_total",),
             allow_full_clear=True,
         )
-        assert [e.op for e in effects] == ["retire"]
+        assert [type(e).__name__ for e in effects] == ["Retire"]
         assert effects[0].lookup == {}
-        assert effects[0].spare_keys == []
+        assert effects[0].spare == SpareKeys([])
 
     def test_scope_lookup_not_mutated(self):
         scope = {"report_id": 7}
@@ -481,7 +487,7 @@ class TestProjectLatest:
                 _msg({"key": "b", "fields": {"v": 1}, "status": 0}, label="create"),
             ]
         )
-        upserts = [e for e in effects if e.op == "update_or_create"]
+        upserts = [e for e in effects if isinstance(e, Upsert)]
         assert len(upserts) == 2
         assert {tuple(e.lookup.items()) for e in upserts} == {
             (("key", "a"),),
@@ -497,7 +503,7 @@ class TestProjectLatest:
             ]
         )
         assert len(effects) == 1
-        assert effects[0].op == "update_or_create"
+        assert isinstance(effects[0], Upsert)
         assert effects[0].lookup == {"key": "a"}
         assert effects[0].defaults == {"fields": {"v": 2}, "status": 1}
 
@@ -509,7 +515,7 @@ class TestProjectLatest:
             ]
         )
         assert len(effects) == 1
-        assert effects[0].op == "delete"
+        assert isinstance(effects[0], Delete)
         assert effects[0].lookup == {"key": "a"}
 
     def test_recreate_after_tombstone_upserts(self):
@@ -523,7 +529,7 @@ class TestProjectLatest:
             ]
         )
         assert len(effects) == 1
-        assert effects[0].op == "update_or_create"
+        assert isinstance(effects[0], Upsert)
         assert effects[0].defaults == {"fields": {"v": 3}, "status": 2}
 
     def test_custom_tombstone_labels(self):
@@ -536,7 +542,7 @@ class TestProjectLatest:
             tombstone_labels=("archived",),
         )
         assert len(effects) == 1
-        assert effects[0].op == "delete"
+        assert isinstance(effects[0], Delete)
 
     def test_only_subjects_present_get_effects(self):
         # Incremental: a tail read with only 'a' touches only 'a' — an absent
@@ -546,4 +552,4 @@ class TestProjectLatest:
         )
         assert len(effects) == 1
         assert effects[0].lookup == {"key": "a"}
-        assert effects[0].op == "update_or_create"
+        assert isinstance(effects[0], Upsert)
