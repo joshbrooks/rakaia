@@ -217,6 +217,26 @@ is not yet tagged in a release.
   to 164 lines, and the status/header mapping is testable as a table — no ASGI
   round trip, no live store.
 
+- **`replay` and `merge_replay` share one staging pipeline.** Reading one stream
+  in order and k-way-merging several by an order key are genuinely different
+  jobs — but everything *after* that was written twice: registry defaulting, a
+  byte-identical `_upcaster_drift` closure, a `_ReplayCtx` with the same seven
+  fields, the `any(stage > 0) or has_reducers()` test, the reader-required
+  check, the stage-pass loop, and `events_processed`. Around sixty lines, in two
+  control-flow shapes that had already drifted apart, so any change to staging
+  semantics had to be made twice and correctly in both.
+
+  `build_pipeline()` / `run_passes()` now own that; the two entry points are
+  event *sources* that hand over `(seq, match_str, event)` tuples. `replay`
+  drops 129 → 102 lines and `merge_replay` 144 → 119. Staging is now testable on
+  a fabricated list of events — no store, no bytes, no upcasters — which is what
+  the new tests use.
+
+  `replay`'s single-stage path deliberately keeps its own streaming loop rather
+  than going through `run_passes`: decoding lazily means a malformed event at
+  offset N fails *after* the first N-1 have been dispatched, which is the
+  partial-progress behaviour replay had before staging existed.
+
 ### Fixed
 
 - **The two rebuild guards compose in either nesting order** (#101).

@@ -32,7 +32,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -116,6 +116,113 @@ class _ReplayCtx:
     track_touched: bool = False
     touched: list[TouchedSubject] = field(default_factory=list)
     _touched_seen: set = field(default_factory=set)
+    # Carried so an event source can decode and upcast without re-deriving the
+    # registry or rebuilding the drift callback.
+    upcasters: Any = None
+    drift_callback: Any = None
+
+
+#: One event ready for dispatch: its sequence, the routing subject to match
+#: handlers against, and the decoded + upcasted payload. Whether the seq is an
+#: offset in one stream or a position in a merged order is the *source's*
+#: business, not the pipeline's.
+PipelineEvent = tuple[int, str, dict]
+
+
+def build_pipeline(
+    *,
+    handler_registry: HandlerRegistry | None,
+    upcaster_registry: UpcasterRegistry | None,
+    executor: Executor,
+    reader: ProjectionReader | None,
+    include_external: bool,
+    on_drift: OnDriftPolicy,
+) -> _ReplayCtx:
+    """Assemble everything a replay needs that does not depend on its event source.
+
+    Registry defaulting, the `ReplayResult`, and the upcaster-drift callback were
+    written out identically in `replay()` and `merge_replay()`. So was the
+    `_ReplayCtx` construction — the same seven fields, in two places, where
+    adding an eighth meant remembering both.
+
+    The returned context carries its own `upcasters` and `drift_callback` so a
+    source can decode and upcast events without re-deriving either.
+    """
+    handlers = handler_registry or get_default_registry()
+    result = ReplayResult()
+
+    ctx = _ReplayCtx(
+        handlers=handlers,
+        executor=executor,
+        reader=reader,
+        include_external=include_external,
+        on_drift=on_drift,
+        result=result,
+        track_touched=_wants_touched_reducer(handlers),
+        upcasters=upcaster_registry or get_default_upcaster_registry(),
+    )
+
+    def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
+        _record_drift(
+            kind="upcaster",
+            name=uv.dotted_path,
+            stored_hash=uv.source_hash,
+            live_hash=live_hash,
+            on_drift=on_drift,
+            result=result,
+        )
+
+    ctx.drift_callback = _upcaster_drift
+    return ctx
+
+
+def is_staged(ctx: _ReplayCtx) -> bool:
+    """Whether this replay needs more than one pass over the events.
+
+    True when any handler declares a stage above 0, or any reducer is
+    registered — a reducer runs once after its stage's per-event handlers, which
+    is a second pass even with only stage-0 handlers.
+    """
+    return any(s > 0 for s in ctx.handlers.stages()) or ctx.handlers.has_reducers()
+
+
+def require_reader(ctx: _ReplayCtx, what: str = "Replay") -> None:
+    """Refuse a staged replay with no reader, naming the caller.
+
+    A stage > 0 handler is called `fn(event, reader)` and a reducer `fn(reader)`,
+    so without one they cannot resolve what earlier stages materialised. Failing
+    here beats failing inside the first handler that dereferences `None`.
+    """
+    if is_staged(ctx) and ctx.reader is None:
+        raise ValueError(
+            f"{what} has stage > 0 handlers or reducers but no reader was "
+            f"provided; pass reader= so they can read earlier stages' projections."
+        )
+
+
+def run_passes(
+    ctx: _ReplayCtx, events: Sequence[PipelineEvent], *, what: str = "Replay"
+) -> ReplayResult:
+    """Run `events` through every stage, in order, and return the result.
+
+    One pass per stage in ascending order: that stage's per-event handlers over
+    **every** event, then its reducers once. An unstaged replay is the same
+    shape with a single `None` pass — `_run_stage_reducers(ctx, None)` is a no-op
+    when nothing is registered, so the two cases need no branch.
+
+    The events are already decoded and upcasted. What differs between `replay()`
+    and `merge_replay()` — reading one stream in order versus k-way-merging
+    several by an order key — happens before this, in the source. This is the
+    part that was written twice.
+    """
+    require_reader(ctx, what)
+    passes: list[int | None] = list(ctx.handlers.stages()) if is_staged(ctx) else [None]
+    for stage in passes:
+        for seq, match_str, event in events:
+            _dispatch_event(ctx, seq, match_str, event, stage)
+        _run_stage_reducers(ctx, stage)
+    ctx.result.events_processed = len(events)
+    return ctx.result
 
 
 def _reducer_wants_touched(fn: Any) -> bool:
@@ -299,80 +406,53 @@ def replay(
     only stage 0 handlers and no reducers, replay is a single pass, exactly as
     before.
     """
-    handlers = handler_registry or get_default_registry()
-    upcasters = upcaster_registry or get_default_upcaster_registry()
     match_str = event_match if event_match is not None else stream_path
-
     messages, _ = store.read(stream_path)
 
-    result = ReplayResult()
-
-    def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
-        _record_drift(
-            kind="upcaster",
-            name=uv.dotted_path,
-            stored_hash=uv.source_hash,
-            live_hash=live_hash,
-            on_drift=on_drift,
-            result=result,
-        )
+    ctx = build_pipeline(
+        handler_registry=handler_registry,
+        upcaster_registry=upcaster_registry,
+        executor=executor,
+        reader=reader,
+        include_external=include_external,
+        on_drift=on_drift,
+    )
 
     def _decode_upcast(seq: int, data: bytes) -> dict:
         # Target version is resolved per event so content-routed upcasters
         # (match_field) can key off the event body, not just the stream path.
-        return upcasters.upcast_to_current(
+        return ctx.upcasters.upcast_to_current(
             _decode_event(data, stream_path, seq),
             match_str,
-            drift_callback=_upcaster_drift,
+            drift_callback=ctx.drift_callback,
         )
 
     def _in_range(seq: int) -> bool:
         return seq >= start_seq and (end_seq is None or seq < end_seq)
 
-    ctx = _ReplayCtx(
-        handlers=handlers,
-        executor=executor,
-        reader=reader,
-        include_external=include_external,
-        on_drift=on_drift,
-        result=result,
-        track_touched=_wants_touched_reducer(handlers),
-    )
-    stage_numbers = handlers.stages()
-    staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
-
-    if not staged:
-        # Single stage: stream one event at a time (bounded memory, and drift /
-        # partial-progress semantics identical to pre-staged replay).
+    if not is_staged(ctx):
+        # Single stage keeps its own streaming loop rather than going through
+        # `run_passes`. Not a micro-optimisation: decoding lazily means a
+        # malformed event at offset N fails *after* the first N-1 have been
+        # dispatched, which is the partial-progress behaviour replay had before
+        # staging existed. Materialising first would move that failure earlier.
         for seq, msg in enumerate(messages):
             if end_seq is not None and seq >= end_seq:
                 break
             if not _in_range(seq):
                 continue
             _dispatch_event(ctx, seq, match_str, _decode_upcast(seq, msg.data), None)
-            result.events_processed += 1
-        return result
+            ctx.result.events_processed += 1
+        return ctx.result
 
-    if reader is None:
-        raise ValueError(
-            "Replay has stage > 0 handlers or reducers but no reader was "
-            "provided; pass reader= so they can read earlier stages' projections."
-        )
-    # Staged: decode + upcast each in-range event once, then run one pass per
-    # stage in ascending order — that stage's per-event handlers, then its
-    # reducers once — over the shared list.
-    decoded: list[tuple[int, dict]] = []
+    require_reader(ctx, "Replay")
+    decoded: list[PipelineEvent] = []
     for seq, msg in enumerate(messages):
         if end_seq is not None and seq >= end_seq:
             break
         if _in_range(seq):
-            decoded.append((seq, _decode_upcast(seq, msg.data)))
-    for stage in stage_numbers:
-        for seq, upcasted in decoded:
-            _dispatch_event(ctx, seq, match_str, upcasted, stage)
-        _run_stage_reducers(ctx, stage)
-    result.events_processed = len(decoded)
-    return result
+            decoded.append((seq, match_str, _decode_upcast(seq, msg.data)))
+    return run_passes(ctx, decoded, what="Replay")
 
 
 def merge_replay(
@@ -439,19 +519,14 @@ def merge_replay(
             f"merge_replay received duplicate stream paths ({stream_paths}); "
             f"each stream would be processed twice."
         )
-    handlers = handler_registry or get_default_registry()
-    upcasters = upcaster_registry or get_default_upcaster_registry()
-    result = ReplayResult()
-
-    def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
-        _record_drift(
-            kind="upcaster",
-            name=uv.dotted_path,
-            stored_hash=uv.source_hash,
-            live_hash=live_hash,
-            on_drift=on_drift,
-            result=result,
-        )
+    ctx = build_pipeline(
+        handler_registry=handler_registry,
+        upcaster_registry=upcaster_registry,
+        executor=executor,
+        reader=reader,
+        include_external=include_external,
+        on_drift=on_drift,
+    )
 
     # Decode + upcast every event of every stream, tag with the sort key.
     tagged: list[tuple[tuple[Any, str, int], str, dict]] = []
@@ -460,10 +535,10 @@ def merge_replay(
         messages, _ = store.read(path)
         for offset, msg in enumerate(messages):
             # per-event target so content-routed (match_field) upcasters resolve
-            upcasted = upcasters.upcast_to_current(
+            upcasted = ctx.upcasters.upcast_to_current(
                 _decode_event(msg.data, path, offset),
                 match_str,
-                drift_callback=_upcaster_drift,
+                drift_callback=ctx.drift_callback,
             )
             if order_key is ENVELOPE_TS:
                 if msg.event_ts is None:
@@ -491,32 +566,12 @@ def merge_replay(
             f"not mutually comparable across events (mixed types or None?): {exc}"
         ) from exc
 
-    ctx = _ReplayCtx(
-        handlers=handlers,
-        executor=executor,
-        reader=reader,
-        include_external=include_external,
-        on_drift=on_drift,
-        result=result,
-        track_touched=_wants_touched_reducer(handlers),
-    )
-    stage_numbers = handlers.stages()
-    staged = any(s > 0 for s in stage_numbers) or handlers.has_reducers()
-    if staged and reader is None:
-        raise ValueError(
-            "merge_replay has stage > 0 handlers or reducers but no reader was "
-            "provided; pass reader= so they can read earlier stages' projections."
-        )
-
-    # seq is the event's position in the merged order.
-    merged = [(seq, m, ev) for seq, (_, m, ev) in enumerate(tagged)]
-    passes: list[int | None] = list(stage_numbers) if staged else [None]
-    for stage in passes:
-        for seq, match_str, upcasted in merged:
-            _dispatch_event(ctx, seq, match_str, upcasted, stage)
-        _run_stage_reducers(ctx, stage)
-    result.events_processed = len(merged)
-    return result
+    # seq is the event's position in the merged order, not its offset in any
+    # one stream — which is exactly why the pipeline takes seq per event.
+    merged: list[PipelineEvent] = [
+        (seq, m, ev) for seq, (_, m, ev) in enumerate(tagged)
+    ]
+    return run_passes(ctx, merged, what="merge_replay")
 
 
 def _check_handler_drift(
