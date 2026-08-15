@@ -1,17 +1,17 @@
-"""In-memory DictProjections against the shared ProjectionReader contract."""
+"""In-memory InMemoryProjections against the shared ProjectionReader contract."""
 
 from __future__ import annotations
 
 import pytest
 
-from rakaia.executors import DictProjections
+from rakaia.executors import InMemoryProjections
 from tests.projection_reader_contract import ProjectionReaderContract, ReaderSeam
 
 
-class TestDictProjectionsReaderContract(ProjectionReaderContract):
+class TestInMemoryProjectionsReaderContract(ProjectionReaderContract):
     @pytest.fixture
     def seam(self) -> ReaderSeam:
-        projections = DictProjections()
+        projections = InMemoryProjections()
         return ReaderSeam(
             apply=projections.apply,
             make_reader=lambda _effects: projections,

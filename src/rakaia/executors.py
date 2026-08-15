@@ -9,7 +9,7 @@ database:
   block for a dry run and for migration verification: run `replay()` with one
   and inspect `.effects` to see exactly what a real executor would write, with
   zero side effects.
-* `DictProjections` actually applies them, to dict-backed "tables", and reads
+* `InMemoryProjections` actually applies them, to dict-backed "tables", and reads
   them back through the same object — an `Executor` and a `ProjectionReader` in
   one. It is what lets a test, a demo or an example exercise the full
   effect/projection surface (`Ref`/`RefResolver`, `reconcile_*`, staged replay
@@ -49,7 +49,7 @@ class CollectingExecutor:
         return ApplyReport()
 
 
-class DictProjections:
+class InMemoryProjections:
     """An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables.
 
     It mirrors `django_rakaia.effect_executor.DjangoExecutor` where that is
@@ -60,7 +60,7 @@ class DictProjections:
     `tests/projection_reader_contract.py` hold it and the Django pair to the same
     behaviour::
 
-        proj = DictProjections()
+        proj = InMemoryProjections()
         replay(store, "submissions", proj, reader=proj)
         proj.get("app.Balance", suku="A").total
 

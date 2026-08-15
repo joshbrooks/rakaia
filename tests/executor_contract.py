@@ -1,7 +1,7 @@
 """Shared conformance contract for the effect executor surface (`Executor`).
 
 Rakaia has more than one executor that actually *applies* effects — the durable
-`DjangoExecutor` and the in-memory `DictProjections` — and handlers are written
+`DjangoExecutor` and the in-memory `InMemoryProjections` — and handlers are written
 against whichever one the demo, test or app happens to hold. "Test on the
 in-memory executor, ship on the Django one" is only safe if both converge to the
 same rows from the same batch, so this is the executor twin of

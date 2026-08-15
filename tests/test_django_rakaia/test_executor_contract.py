@@ -1,6 +1,6 @@
 """DjangoExecutor against the shared Executor conformance contract.
 
-Same contract as the in-memory `DictProjections` (tests/executor_contract.py) —
+Same contract as the in-memory `InMemoryProjections` (tests/executor_contract.py) —
 this is what makes "rehearse the batch in memory, apply it on Django" safe.
 """
 

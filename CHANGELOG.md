@@ -14,7 +14,7 @@ is not yet tagged in a release.
 
 ### Added
 
-- **`rakaia.DictProjections`, and shared contracts for the executor and reader
+- **`rakaia.InMemoryProjections`, and shared contracts for the executor and reader
   seams.** Rakaia had four ways to apply effects and four ways to read
   projections back, and — unlike the store seam, which has two adapters and two
   shared conformance suites — nothing checked that any of them agreed. Rebuild
@@ -32,7 +32,7 @@ is not yet tagged in a release.
   cannot see. `Executor` is now `@runtime_checkable`, matching every protocol in
   `protocols.py`.
 
-  `DictProjections` is the one in-memory implementation both halves are bound
+  `InMemoryProjections` is the one in-memory implementation both halves are bound
   to: an `Executor` *and* a `ProjectionReader` over dict-backed tables, with all
   five ops, real `Ref` resolution against synthetic primary keys, and
   `__in`/`__isnull` matching. It replaces two half-implementations — a

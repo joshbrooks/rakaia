@@ -127,9 +127,9 @@ them is easy and the failure is quiet:
   [the glossary](glossary.md).
 - **`store.get()` returns metadata**, not your backend's row. It is a
   `rakaia.types.Stream` from every store.
-- **Every executor and reader answers alike.** `DictProjections` and
+- **Every executor and reader answers alike.** `InMemoryProjections` and
   `DjangoExecutor` converge to the same rows from the same batch, and
-  `DjangoProjectionReader`, `PreloadedProjectionReader` and `DictProjections`
+  `DjangoProjectionReader`, `PreloadedProjectionReader` and `InMemoryProjections`
   answer the same lookup the same way — including `model_label` being
   positional-only. Enforced by `tests/executor_contract.py` and
   `tests/projection_reader_contract.py`, the executor and reader twins of the
