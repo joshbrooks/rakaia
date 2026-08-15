@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import fnmatch
 import importlib
+import inspect
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from .registration_log import RegistrationLog
 from .source_hash import hash_function_source, is_importable, unwrap_handler
@@ -57,6 +58,207 @@ class HandlerDriftError(Exception):
 
 
 # =============================================================================
+# One rule per rule
+# =============================================================================
+#
+# Everything in this section exists once and is used by every registration kind.
+# Each of these used to be written out per kind — content routing twice, the
+# frozenset serialization rule three times, and identity/payload/identity-again
+# nine times across three record types. `rakaia.registration_log` did the same
+# consolidation one level down and its module docstring says why.
+
+
+def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[str]:
+    """Normalise an `event_match` argument to its stored form.
+
+    A plain string is kept as-is (the common single-glob case). Any other
+    iterable of strings becomes a ``frozenset`` — hashable (so it works as the
+    series key and in the identity tuple) and order-independent (so the same
+    members in a different order dedup). Raises on an empty collection or a
+    non-string member, which are always mistakes.
+
+    Also the **decoder** for a persisted `event_match`, which is a string or a
+    list: reading a payload back is the same normalisation as accepting an
+    argument, so there is no second implementation to keep in step.
+    """
+    if isinstance(event_match, str):
+        return event_match
+    members = frozenset(event_match)
+    if not members:
+        raise ValueError(
+            "event_match collection must contain at least one pattern (got empty)"
+        )
+    if not all(isinstance(m, str) for m in members):
+        raise ValueError("event_match collection members must all be strings")
+    return members
+
+
+def _event_match_payload(event_match: str | frozenset[str]) -> str | list[str]:
+    """The JSON form of a stored `event_match`.
+
+    A frozenset serializes as a **sorted** list, so the meta-stream is stable
+    regardless of set iteration order — otherwise every restart would see a
+    "new" identity and re-append the same handler. `_canonical_event_match`
+    reads it back.
+    """
+    return event_match if isinstance(event_match, str) else sorted(event_match)
+
+
+def _pattern_matches(pattern: str | frozenset[str], subject: str) -> bool:
+    """Whether `subject` matches `pattern` — a single glob, or any glob in a set."""
+    if isinstance(pattern, str):
+        return fnmatch.fnmatchcase(subject, pattern)
+    return any(fnmatch.fnmatchcase(subject, p) for p in pattern)
+
+
+def _routing_subject(
+    match_field: str | None,
+    event: dict[str, Any] | None,
+    stream_subject: str,
+    *,
+    registrant: str,
+    remedy: str,
+) -> str:
+    """The string a registration's glob is tested against — the content-routing
+    rule, for handlers and upcasters alike.
+
+    Without a `match_field` the subject is the stream/event-match string and the
+    event is irrelevant. With one, it is ``str(event[match_field])``.
+
+    Two edges carry the weight, and both are the same for both kinds:
+
+    * the field is **absent** from an event that is present → ``""``, which
+      simply does not match. A stream carrying a different form_type is normal
+      traffic, not a configuration error.
+    * the **event** is absent → `ValueError`. A caller who forgot to pass it
+      would otherwise silently leave the event unhandled or un-upcast.
+
+    `registrant` and `remedy` only shape that error, so each caller keeps the
+    wording that names the right entry point.
+    """
+    if match_field is None:
+        return stream_subject
+    if event is None:
+        raise ValueError(
+            f"{registrant} routes on match_field={match_field!r} but {remedy}"
+        )
+    return str(event.get(match_field, ""))
+
+
+def _module_prefix(dotted_path: str | None) -> str | None:
+    """The module part of a dotted path, by chopping the last segment.
+
+    Only correct when the path is ``module.function``, which is why it is no
+    longer how `rehydrate()` finds a module — see `_registration_site`. Kept as
+    the fallback for meta-stream payloads written before `registered_in`
+    existed.
+    """
+    if not dotted_path or "." not in dotted_path:
+        return dotted_path or None
+    return dotted_path.rsplit(".", 1)[0]
+
+
+def _registration_site() -> str | None:
+    """The module that made this registration — what `rehydrate()` re-imports.
+
+    Restoring a registration means re-running its **decorator**, so the module
+    that matters is the one holding the decorator call, not the one holding the
+    function. Those are different whenever a shared function is wired up
+    elsewhere — which `functools.partial(fn, **deps)` dependency binding makes
+    the normal layout, since the partial is built at the wiring site while `fn`
+    lives in a library module.
+
+    Walks out of rakaia's own frames, so it lands on the caller whether they
+    used `@register_handler`, `@register_simple`, or called `register()`
+    directly.
+    """
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            module = frame.f_globals.get("__name__")
+            if module is not None and not (
+                module == "rakaia" or module.startswith("rakaia.")
+            ):
+                return module
+            frame = frame.f_back
+        return None
+    finally:
+        # Frames hold references to their locals, which include this one.
+        del frame
+
+
+_REQUIRED: Any = object()
+
+
+@dataclass(frozen=True)
+class _PayloadField:
+    """One persisted field of a registration record, and how it crosses JSON.
+
+    Declaring the fields is what lets `_MetaStreamRecord` derive `identity`,
+    `to_payload` and `identity_from_payload` from a single list per record type
+    instead of three hand-written methods that had to agree.
+    """
+
+    name: str
+    encode: Callable[[Any], Any] = lambda value: value
+    decode: Callable[[Any], Any] = lambda value: value
+    default: Callable[[dict[str, Any]], Any] = _REQUIRED
+    """Value for a payload written before this field existed. Meta-streams
+    already in the wild still have to load, so every field added after the
+    format shipped needs one."""
+
+    def read(self, payload: dict[str, Any]) -> Any:
+        if self.name in payload:
+            return self.decode(payload[self.name])
+        if self.default is _REQUIRED:
+            raise KeyError(f"registration payload is missing {self.name!r}")
+        return self.default(payload)
+
+
+def _as_int(value: Any) -> int:
+    return int(value)
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+class _MetaStreamRecord:
+    """`identity` / `to_payload` / `identity_from_payload`, derived once.
+
+    Satisfies `rakaia.registration_log.RegistrationRecord` for any subclass that
+    declares `_PAYLOAD_FIELDS`. The three methods were written out per record
+    type — an identity built in one place and rebuilt in another, three times
+    over — which is exactly the pair that drifts. Here the round trip is a
+    property of the field list, so adding a field is one line in one place.
+    """
+
+    _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = ()
+
+    @property
+    def identity(self) -> tuple:
+        """Dedup key for the meta-stream. Excludes the callable itself (not
+        serializable, and two registrations of the same source are the same
+        registration)."""
+        return tuple(getattr(self, f.name) for f in self._PAYLOAD_FIELDS)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {f.name: f.encode(getattr(self, f.name)) for f in self._PAYLOAD_FIELDS}
+
+    @classmethod
+    def identity_from_payload(cls, payload: dict[str, Any]) -> tuple:
+        return tuple(f.read(payload) for f in cls._PAYLOAD_FIELDS)
+
+
+#: The registration-site field, shared by all three record kinds. The fallback
+#: is the old derivation — right whenever the decoration site and the definition
+#: site were the same module, which is the case that used to work.
+_REGISTERED_IN = _PayloadField(
+    "registered_in", default=lambda p: _module_prefix(p.get("dotted_path"))
+)
+
+
+# =============================================================================
 # Data structures
 # =============================================================================
 
@@ -65,13 +267,16 @@ def _dotted_path(fn: Any, *, persisted: bool = False) -> str:
     """The importable path recorded for `fn`, warning when there isn't one.
 
     Taken from the *unwrapped* callable so a `functools.partial` records the
-    function it binds rather than being unrecordable.
+    function it binds rather than being unrecordable. This is "where the logic
+    is", for drift detection; "where it was registered" is a separate field
+    (`registered_in`, from `_registration_site`), because those are not the same
+    module once dependencies are bound at a wiring site.
 
-    A closure or a nested lambda has a `<locals>` qualname, which `rehydrate()`
-    cannot import — it splits the recorded path and imports the module part, and
-    `pkg.factory.<locals>` is not a module. Such a registration therefore
-    survives in memory but vanishes on a restore, and its `source_hash` covers
-    only the wrapper, so drift detection is blind to whatever it calls.
+    A closure or a nested lambda has a `<locals>` qualname. Its `source_hash`
+    then covers only the wrapper, so drift detection is blind to whatever the
+    wrapper calls — and `rehydrate()` restores it only if the module that
+    registered it re-registers it on import, which a closure built inside a
+    function does not.
 
     Warned rather than refused: a closure is legitimate in a test, and rakaia's
     own suite registers lambdas. The point is that it stops being silent. Bind
@@ -89,10 +294,11 @@ def _dotted_path(fn: Any, *, persisted: bool = False) -> str:
     path = f"{target.__module__}.{target.__qualname__}"
     if persisted and not is_importable(fn):
         warnings.warn(
-            f"Handler {path!r} is not importable, so `rehydrate()` cannot "
-            f"restore it from a meta-stream and drift detection covers only the "
-            f"wrapper, not the function it calls. Bind dependencies with "
-            f"functools.partial(fn, **deps) instead of a closure.",
+            f"Handler {path!r} is not importable: drift detection covers only "
+            f"the wrapper, not the function it calls, and `rehydrate()` can "
+            f"restore it only if the module that registered it re-registers on "
+            f"import. Bind dependencies with functools.partial(fn, **deps) "
+            f"instead of a closure.",
             UserWarning,
             stacklevel=3,
         )
@@ -100,7 +306,7 @@ def _dotted_path(fn: Any, *, persisted: bool = False) -> str:
 
 
 @dataclass(frozen=True)
-class HandlerVersion:
+class HandlerVersion(_MetaStreamRecord):
     """One registered version of a handler."""
 
     name: str
@@ -123,7 +329,8 @@ class HandlerVersion:
     """The handler callable. event -> Effect | list[Effect]."""
 
     dotted_path: str
-    """fn.__module__ + '.' + fn.__qualname__ — for persistence in Step 3."""
+    """fn.__module__ + '.' + fn.__qualname__ — *where the logic is*, taken from
+    the unwrapped callable. Used for drift reporting, not for restoring."""
 
     source_hash: str
     """SHA-256 of fn's source body — for drift detection in Step 6."""
@@ -139,66 +346,37 @@ class HandlerVersion:
     resolve facts materialised by earlier stages. Default 0 = single-stage,
     called with just the event (backward compatible)."""
 
+    registered_in: str | None = None
+    """The module that made this registration — *where the decorator ran*, which
+    is what `rehydrate()` imports. Separate from `dotted_path` because binding a
+    dependency with `functools.partial` puts the wiring in one module and the
+    function in another. Set from the calling frame; see `_registration_site`."""
+
     # -- meta-stream record (see `rakaia.registration_log`) -----------------
     #
-    # Identity and serialization live together on the type, so the round trip is
-    # a property of `HandlerVersion` rather than an agreement between two
-    # module-level functions that had to be kept mirrored by hand.
+    # Identity and serialization are derived from this list by
+    # `_MetaStreamRecord`, so adding a field is one line here rather than three
+    # methods that have to agree. Fields added after the format shipped carry a
+    # `default`, because meta-streams written without them still have to load.
+    # Order is the identity tuple's order; append, don't insert.
 
-    @property
-    def identity(self) -> tuple:
-        """Dedup key for the meta-stream. Excludes `fn` (not serializable, and
-        two registrations of the same source are the same registration)."""
-        return (
-            self.name,
-            self.event_match,
-            self.effective_from,
-            self.effective_to,
-            self.dotted_path,
-            self.source_hash,
-            self.match_field,
-            self.stage,
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            # A frozenset serializes as a *sorted* list, so the meta-stream is
-            # stable regardless of set iteration order — otherwise every restart
-            # would see a "new" identity and re-append the same handler.
-            "event_match": (
-                self.event_match
-                if isinstance(self.event_match, str)
-                else sorted(self.event_match)
-            ),
-            "effective_from": self.effective_from,
-            "effective_to": self.effective_to,
-            "dotted_path": self.dotted_path,
-            "source_hash": self.source_hash,
-            "match_field": self.match_field,
-            "stage": self.stage,
-        }
-
-    @staticmethod
-    def identity_from_payload(p: dict[str, Any]) -> tuple:
-        return (
-            p["name"],
-            # Rebuild the frozenset a list-serialized set was persisted from, so
-            # a reload dedups against the live version.
-            p["event_match"]
-            if isinstance(p["event_match"], str)
-            else frozenset(p["event_match"]),
-            int(p["effective_from"]),
-            p["effective_to"] if p["effective_to"] is None else int(p["effective_to"]),
-            p["dotted_path"],
-            p["source_hash"],
-            p.get("match_field"),  # tolerate pre-match_field persisted payloads
-            int(p.get("stage", 0)),  # tolerate pre-stage persisted payloads
-        )
+    _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = (
+        _PayloadField("name"),
+        _PayloadField(
+            "event_match", encode=_event_match_payload, decode=_canonical_event_match
+        ),
+        _PayloadField("effective_from", decode=_as_int),
+        _PayloadField("effective_to", decode=_as_int_or_none),
+        _PayloadField("dotted_path"),
+        _PayloadField("source_hash"),
+        _PayloadField("match_field", default=lambda _p: None),
+        _PayloadField("stage", decode=_as_int, default=lambda _p: 0),
+        _REGISTERED_IN,
+    )
 
 
 @dataclass(frozen=True)
-class ReducerVersion:
+class ReducerVersion(_MetaStreamRecord):
     """A per-stage reduce step: recompute an aggregate once from the projections.
 
     Unlike a handler, a reducer is not matched or called per event. During
@@ -241,23 +419,18 @@ class ReducerVersion:
     dotted_path: str
     source_hash: str
 
+    registered_in: str | None = None
+    """The module that made this registration — see `HandlerVersion`."""
+
     # -- meta-stream record (see `rakaia.registration_log`) -----------------
 
-    @property
-    def identity(self) -> tuple:
-        return (self.name, self.stage, self.dotted_path, self.source_hash)
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "stage": self.stage,
-            "dotted_path": self.dotted_path,
-            "source_hash": self.source_hash,
-        }
-
-    @staticmethod
-    def identity_from_payload(p: dict[str, Any]) -> tuple:
-        return (p["name"], int(p["stage"]), p["dotted_path"], p["source_hash"])
+    _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = (
+        _PayloadField("name"),
+        _PayloadField("stage", decode=_as_int),
+        _PayloadField("dotted_path"),
+        _PayloadField("source_hash"),
+        _REGISTERED_IN,
+    )
 
 
 # =============================================================================
@@ -265,7 +438,42 @@ class ReducerVersion:
 # =============================================================================
 
 
-class HandlerRegistry:
+class _LogBackedRegistry:
+    """The meta-stream half of a registry, once for both of them.
+
+    A registry keeps one `RegistrationLog` per record kind it owns (handlers
+    keep two — handlers and reducers — upcasters keep one). Loading them,
+    clearing them and re-importing the modules they name is the same work in
+    each case, and used to be written out in each.
+    """
+
+    _logs: tuple[RegistrationLog, ...]
+
+    def _load_logs(self) -> None:
+        for log in self._logs:
+            log.load()
+
+    def _reset_logs(self) -> None:
+        for log in self._logs:
+            log.reset()
+
+    def rehydrate(self) -> None:
+        """Import the module that made each recorded registration, so its
+        `@register_*` decorator runs again and re-registers here.
+
+        No-op without a backing store. Modules are imported once (Python caches
+        imports), so calling this after some are already imported is safe — but
+        note that it therefore restores nothing for a module already imported in
+        this process, which is the normal case outside a fresh start.
+        """
+        modules: set[str] = set()
+        for log in self._logs:
+            modules |= log.modules()
+        for module_name in modules:
+            importlib.import_module(module_name)
+
+
+class HandlerRegistry(_LogBackedRegistry):
     """
     Registry of versioned handlers, optionally backed by a meta-stream.
 
@@ -301,8 +509,8 @@ class HandlerRegistry:
         self._reducer_log = RegistrationLog(
             store, self._reducer_stream_path, ReducerVersion
         )
-        self._handler_log.load()
-        self._reducer_log.load()
+        self._logs = (self._handler_log, self._reducer_log)
+        self._load_logs()
 
     def register(
         self,
@@ -354,6 +562,7 @@ class HandlerRegistry:
             fn=fn,
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
+            registered_in=_registration_site(),
             match_field=match_field,
             stage=stage,
         )
@@ -396,6 +605,7 @@ class HandlerRegistry:
             fn=fn,
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
+            registered_in=_registration_site(),
         )
 
         existing = self._reducers.get(name)
@@ -421,8 +631,7 @@ class HandlerRegistry:
         """
         self._versions.clear()
         self._reducers.clear()
-        self._handler_log.reset()
-        self._reducer_log.reset()
+        self._reset_logs()
 
     def reducers_for_stage(self, stage: int) -> list[ReducerVersion]:
         """Reducers registered for `stage`, in deterministic (name) order."""
@@ -505,27 +714,22 @@ class HandlerRegistry:
         event_match: str,
         event: dict[str, Any] | None,
     ) -> str:
-        """The string a series' pattern is tested against.
+        """The string a series' pattern is tested against — `_routing_subject`
+        for the rule, which upcasters share.
 
-        Stream-path routing (the default) returns `event_match`. Content
-        routing (a `match_field` on the series) returns `event[match_field]`.
-        match_field is consistent within a (name, pattern) series, so the first
-        version decides.
+        `match_field` is consistent within a (name, pattern) series, so the
+        first version decides. A registration that failed after `setdefault()`
+        can leave an empty series behind; that falls back to stream-path routing
+        rather than an IndexError on `versions[0]`.
         """
-        if not versions:
-            # A registration that failed after setdefault() can leave an empty
-            # series behind; fall back to stream-path routing rather than
-            # IndexError on versions[0].
-            return event_match
-        match_field = versions[0].match_field
-        if match_field is None:
-            return event_match
-        if event is None:
-            raise ValueError(
-                f"Handler {name!r} routes on match_field={match_field!r} but "
-                f"resolve() was called without an event."
-            )
-        return str(event.get(match_field, ""))
+        match_field = versions[0].match_field if versions else None
+        return _routing_subject(
+            match_field,
+            event,
+            event_match,
+            registrant=f"Handler {name!r}",
+            remedy="resolve() was called without an event.",
+        )
 
     def all_versions(self) -> list[HandlerVersion]:
         """Return every registered version (test/debug helper)."""
@@ -533,26 +737,6 @@ class HandlerRegistry:
         for series in self._versions.values():
             out.extend(series)
         return out
-
-    def rehydrate(self) -> None:
-        """
-        Import every dotted-path's module so its `@register_handler`
-        decorators run and re-register against this registry.
-
-        No-op if no backing store is configured. Modules are imported once
-        (Python caches imports), so calling this after some modules have
-        already been imported is safe.
-        """
-        for module_name in self._handler_log.modules() | self._reducer_log.modules():
-            importlib.import_module(module_name)
-
-    # ------------------------------------------------------------------
-    # Internal — persistence
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Internal — overlap check
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _check_overlap(new: HandlerVersion, series: list[HandlerVersion]) -> None:
@@ -578,7 +762,7 @@ class HandlerRegistry:
 
 
 @dataclass(frozen=True)
-class UpcasterVersion:
+class UpcasterVersion(_MetaStreamRecord):
     """One registered upcaster: transforms event from `from_version` to next."""
 
     event_match: str
@@ -599,39 +783,22 @@ class UpcasterVersion:
     string — mirrors ``register_handler``, so a per-form upcaster can route on a
     per-entity stream (e.g. ``submissions:<uuid>``) whose path carries no type."""
 
+    registered_in: str | None = None
+    """The module that made this registration — see `HandlerVersion`."""
+
     # -- meta-stream record (see `rakaia.registration_log`) -----------------
 
-    @property
-    def identity(self) -> tuple:
-        return (
-            self.event_match,
-            self.from_version,
-            self.dotted_path,
-            self.source_hash,
-            self.match_field,
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "event_match": self.event_match,
-            "from_version": self.from_version,
-            "dotted_path": self.dotted_path,
-            "source_hash": self.source_hash,
-            "match_field": self.match_field,
-        }
-
-    @staticmethod
-    def identity_from_payload(p: dict[str, Any]) -> tuple:
-        return (
-            p["event_match"],
-            int(p["from_version"]),
-            p["dotted_path"],
-            p["source_hash"],
-            p.get("match_field"),  # tolerate pre-match_field persisted payloads
-        )
+    _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = (
+        _PayloadField("event_match"),
+        _PayloadField("from_version", decode=_as_int),
+        _PayloadField("dotted_path"),
+        _PayloadField("source_hash"),
+        _PayloadField("match_field", default=lambda _p: None),
+        _REGISTERED_IN,
+    )
 
 
-class UpcasterRegistry:
+class UpcasterRegistry(_LogBackedRegistry):
     """
     Registry of schema-version upcasters, keyed by (event_match, from_version,
     match_field).
@@ -650,7 +817,8 @@ class UpcasterRegistry:
         self._store = store
         self._stream_path = stream_path
         self._log = RegistrationLog(store, stream_path, UpcasterVersion)
-        self._log.load()
+        self._logs = (self._log,)
+        self._load_logs()
 
     def register(
         self,
@@ -682,6 +850,7 @@ class UpcasterRegistry:
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
             source_hash=hash_function_source(fn),
             match_field=match_field,
+            registered_in=_registration_site(),
         )
 
         key = (event_match, from_version, match_field)
@@ -704,25 +873,23 @@ class UpcasterRegistry:
     def _subject(
         up: UpcasterVersion, event: dict[str, Any] | None, event_match_str: str
     ) -> str:
-        """The string an upcaster's pattern is matched against: a content field
-        when `match_field` is set (mirrors `HandlerRegistry._match_subject`), else
-        the stream/event-match string.
+        """The string an upcaster's pattern is matched against.
 
-        A content-routed upcaster matched with `event=None` raises — like handler
-        dispatch — to catch a caller who forgot to pass the event (which would
-        otherwise leave the event silently un-upcast). An event that is present
-        but lacks the field yields "" and simply does not match (a different
-        form_type on the stream is normal, not an error)."""
-        if up.match_field is not None:
-            if event is None:
-                raise ValueError(
-                    f"Upcaster (event_match={up.event_match!r}) routes on "
-                    f"match_field={up.match_field!r} but was matched without an "
-                    "event; pass the decoded event to current_version()/"
-                    "apply_chain() (or use upcast_to_current)."
-                )
-            return str(event.get(up.match_field, ""))
-        return event_match_str
+        The same content-routing rule handler dispatch uses — one function,
+        `_routing_subject`, rather than a second copy that a comment promised
+        was kept in step. ADR 0002 item 3 made content routing available to
+        upcasters; this is where that lands, not a walk-back of it.
+        """
+        return _routing_subject(
+            up.match_field,
+            event,
+            event_match_str,
+            registrant=f"Upcaster (event_match={up.event_match!r})",
+            remedy=(
+                "was matched without an event; pass the decoded event to "
+                "current_version()/apply_chain() (or use upcast_to_current)."
+            ),
+        )
 
     def current_version(
         self, event_match_str: str, event: dict[str, Any] | None = None
@@ -833,53 +1000,7 @@ class UpcasterRegistry:
         meta-stream (delete that via the store if you need to).
         """
         self._upcasters.clear()
-        self._log.reset()
-
-    def rehydrate(self) -> None:
-        for module_name in self._log.modules():
-            importlib.import_module(module_name)
-
-    # ------------------------------------------------------------------
-    # Internal — persistence (parallels HandlerRegistry)
-    # ------------------------------------------------------------------
-
-
-# =============================================================================
-# event_match helpers
-# =============================================================================
-
-
-def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[str]:
-    """Normalise an `event_match` argument to its stored form.
-
-    A plain string is kept as-is (the common single-glob case). Any other
-    iterable of strings becomes a ``frozenset`` — hashable (so it works as the
-    series key and in the identity tuple) and order-independent (so the same
-    members in a different order dedup). Raises on an empty collection or a
-    non-string member, which are always mistakes.
-    """
-    if isinstance(event_match, str):
-        return event_match
-    members = frozenset(event_match)
-    if not members:
-        raise ValueError(
-            "event_match collection must contain at least one pattern (got empty)"
-        )
-    if not all(isinstance(m, str) for m in members):
-        raise ValueError("event_match collection members must all be strings")
-    return members
-
-
-def _pattern_matches(pattern: str | frozenset[str], subject: str) -> bool:
-    """Whether `subject` matches `pattern` — a single glob, or any glob in a set."""
-    if isinstance(pattern, str):
-        return fnmatch.fnmatchcase(subject, pattern)
-    return any(fnmatch.fnmatchcase(subject, p) for p in pattern)
-
-
-# =============================================================================
-# Identity helpers
-# =============================================================================
+        self._reset_logs()
 
 
 # =============================================================================

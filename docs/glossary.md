@@ -137,12 +137,22 @@ registry.register(
 )
 ```
 
-**Not a closure.** A closure works and is quietly worse: its recorded path
-contains `<locals>`, which `rehydrate()` cannot import, so a registry restored
-from its meta-stream silently loses that handler — and its **drift** hash covers
-the wrapper only, so an edit to the function the wrapper calls is invisible. A
-`partial` is unwrapped, so both describe the wrapped function. A persisting
-registry warns if you use a closure anyway.
+**Not a closure.** A closure works and is quietly worse: its **drift** hash
+covers the wrapper only, so an edit to the function the wrapper calls is
+invisible, and `rehydrate()` restores it only if the module that registered it
+re-registers it on import — which a closure built inside a function does not. A
+`partial` is unwrapped, so the recorded path and the hash both describe the
+wrapped function. A persisting registry warns if you use a closure anyway.
+
+### Registration site
+
+The module that ran a registration decorator, recorded on every registration as
+`registered_in`. `rehydrate()` re-imports these and lets the decorators run
+again, so a registration comes back only if the module holding its *decorator
+call* is imported. That is not the module holding the function: bind a
+dependency with `functools.partial` and the wiring lives in your app's
+`handlers.py` while the function lives in a shared module. The `dotted_path` on
+the same record says where the *logic* is, and is what drift detection reports.
 
 ### Upcaster
 

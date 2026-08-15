@@ -38,7 +38,9 @@ class RegistrationRecord(Protocol):
     Three types satisfy it — `HandlerVersion`, `ReducerVersion`,
     `UpcasterVersion`. Keeping all three parts on the type is the point: an
     identity built in one place and rebuilt in another is exactly the pair that
-    used to drift.
+    used to drift. All three now *derive* the three methods from one declared
+    field list (`rakaia.registry._MetaStreamRecord`), so the round trip is a
+    property of the declaration rather than of three methods agreeing.
 
     `to_payload` must round-trip through **JSON**, not just through a dict: a
     `frozenset` event match has to serialize as a sorted list (sorted, so the
@@ -53,12 +55,18 @@ class RegistrationRecord(Protocol):
         ...
 
     def to_payload(self) -> dict[str, Any]:
-        """The JSON-serializable form written to the meta-stream. Must include
-        ``dotted_path``, which is what `RegistrationLog.modules` re-imports."""
+        """The JSON-serializable form written to the meta-stream.
+
+        Must include ``registered_in`` — the module that made the registration,
+        which is what `RegistrationLog.modules` re-imports — and
+        ``dotted_path``, which says where the logic lives, for drift reporting.
+        They are different modules whenever a function is wired up somewhere
+        other than where it is defined.
+        """
         ...
 
-    @staticmethod
-    def identity_from_payload(payload: dict[str, Any]) -> tuple:
+    @classmethod
+    def identity_from_payload(cls, payload: dict[str, Any]) -> tuple:
         """Rebuild `identity` from a payload this type wrote.
 
         Must tolerate payloads written by older versions that predate a field —
@@ -133,17 +141,34 @@ class RegistrationLog:
         return set(self._known)
 
     def modules(self) -> set[str]:
-        """The importable module of every recorded registration.
+        """The module to re-import for every recorded registration.
 
-        Read from ``payload["dotted_path"]`` **by name**. The predecessor pulled
-        this out of the identity tuple by index, which is why two identity
-        builders carried "append new fields at the end" comments.
+        ``registered_in`` — *where the decorator ran*, which is the only thing
+        importing can re-run. This used to be derived from ``dotted_path`` by
+        chopping the last segment off, which quietly assumed the function was
+        defined in the module that registered it and had exactly one qualname
+        segment. Neither holds for a `functools.partial` wired up in an app's
+        ``handlers.py``, nor for a handler defined as a method, and the failure
+        was a registration that simply did not come back.
+
+        Payloads written before ``registered_in`` existed fall back to the old
+        derivation, which is correct for exactly the cases that used to work.
         """
         return {
-            payload["dotted_path"].rsplit(".", 1)[0]
-            for payload in self._payloads
-            if payload.get("dotted_path")
+            module
+            for module in (self._module_of(payload) for payload in self._payloads)
+            if module
         }
+
+    @staticmethod
+    def _module_of(payload: dict[str, Any]) -> str | None:
+        site = payload.get("registered_in")
+        if site:
+            return str(site)
+        dotted_path = payload.get("dotted_path")
+        if not dotted_path:
+            return None
+        return str(dotted_path).rsplit(".", 1)[0]
 
     def reset(self) -> None:
         """Forget what has been recorded, without touching the stream.
