@@ -83,6 +83,24 @@ is not yet tagged in a release.
   `create()` that truncated. With it pinned, the `has()`/`create()` dance is
   provably redundant — `registry.py`'s three copies are now a single `create()`.
 
+- **One registration log instead of three.** The meta-stream mechanism —
+  create the stream, read back what is recorded, append if new — was written
+  three times in `registry.py` (handlers, reducers, upcasters), alongside six
+  module-level identity functions in hand-mirrored pairs: one building a tuple
+  from the object, one rebuilding the same tuple from stored JSON, with nothing
+  checking that they agreed. The tuples were then read back **positionally**
+  (`ident[4]` for a handler's dotted path, `ident[2]` for a reducer's), and two
+  of the builders carried comments warning editors to append new fields at the
+  end so those indices stayed valid.
+
+  `rakaia.registration_log.RegistrationLog` owns the mechanism once, and each
+  record type owns its own `identity` / `to_payload` / `identity_from_payload` —
+  so the round trip is a property of the type rather than an agreement between
+  two functions, and `modules()` reads `dotted_path` by name. No behaviour
+  change; `registry.py` loses 89 lines and every positional index lookup, and
+  the log is now testable against a bare in-memory store with no decorators,
+  no source hashing and no import machinery.
+
 - **`PreloadedProjectionReader` — bulk-fetch a verification sweep.**
   `diff_effects_against_rows` does one `reader.get` per effect (one round-trip
   each), which is thousands of round-trips on a full reconcile. Pass the same

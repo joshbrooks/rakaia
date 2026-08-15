@@ -152,7 +152,7 @@ class TestPersistence:
         }
         store.append(HANDLERS_META_STREAM, json.dumps(payload).encode("utf-8"))
         reg = HandlerRegistry(store=store)
-        ident = next(iter(reg._persisted_ids))  # type: ignore[attr-defined]
+        ident = next(iter(reg._handler_log.known()))  # type: ignore[attr-defined]
         assert ident[-1] == 0  # stage defaulted to 0
 
 
@@ -275,7 +275,7 @@ class TestRehydrate:
         # We assert that by checking the internal set was loaded.
         assert any(
             ident[0] == "ghost"
-            for ident in reg._persisted_ids  # type: ignore[attr-defined]
+            for ident in reg._handler_log.known()  # type: ignore[attr-defined]
         )
 
 
