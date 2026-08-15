@@ -7,7 +7,12 @@
   plain `uv run` bootstraps only the zero-dependency core package, so tests fail
   with `No module named pytest` until the extras are synced.
 - CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`,
-  `pytest`, and `zensical build`; run those before pushing.
+  `pyright src/`, `pytest`, and `zensical build`; run those before pushing.
+- **pyright is a hard gate** and `src/` is expected at zero errors. Run it as
+  `PYRIGHT_PYTHON_FORCE_VERSION=latest uv run pyright src/` locally — plain
+  `uv run pyright` can object to its own pinned version. Django's synthesised
+  attributes are declared explicitly (see the `if TYPE_CHECKING` blocks in
+  `django_rakaia/models.py`) rather than waved through with ignores.
 - To reproduce the **full** CI gate locally you also need the docs extra
   (`zensical` isn't in `dev`/`django`): `uv sync --extra dev --extra django --extra docs`,
   then `uv run zensical build`. Without `--extra docs` that step fails with

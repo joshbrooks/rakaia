@@ -6,7 +6,9 @@ Uses the normalized Stream/StreamEvent/StreamEntry model structure.
 """
 
 import logging
-from typing import Any
+from collections.abc import Iterable
+from datetime import datetime
+from typing import Any, Protocol, cast
 
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Max, Min
@@ -20,6 +22,23 @@ from .models import Stream, StreamEntry, StreamEvent
 from .offsets import parse_offset
 
 _log = logging.getLogger("django_rakaia.views")
+
+
+class _AnnotatedStream(Protocol):
+    """A ``Stream`` row as it comes back from the statistics ``annotate()``.
+
+    ``QuerySet.annotate()`` attaches its aliases to each row at runtime, so they
+    exist on the instance but not on the model class, and no static checker can
+    infer them. Naming the shape here — rather than reaching for ``Any`` — keeps
+    the aliases and their types written down next to the query that produces
+    them, so a rename in one place is caught in the other.
+    """
+
+    stream_id: str
+    event_count: int
+    min_offset: int | None
+    max_offset: int | None
+    last_event: datetime | None
 
 
 @login_required
@@ -257,7 +276,9 @@ def streams_api(_request: Any) -> Any:
             "max_offset": s.max_offset,
             "last_event": s.last_event.isoformat() if s.last_event else None,
         }
-        for s in streams
+        # `cast` is a no-op at runtime; it only records that `annotate()` put
+        # the alias attributes on each row.
+        for s in cast(Iterable[_AnnotatedStream], streams)
     ]
 
     return JsonResponse(

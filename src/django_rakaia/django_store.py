@@ -410,6 +410,10 @@ class DjangoStreamStore:
                     producer_result=verdict.producer_result,
                 )
 
+            # `decide_append` leaves `producer_result` unset only when no
+            # producer tuple was supplied. This method's producer parameters
+            # are required, so fencing always ran and a verdict always exists.
+            assert verdict.producer_result is not None
             self._commit_producer(stream, verdict.producer_result)
             stream.closed = True
             stream.closed_at = time.time()

@@ -19,7 +19,7 @@ Everything else is forwarded to ``rakaia.replay.replay`` unchanged.
 from __future__ import annotations
 
 from rakaia.effects import Executor
-from rakaia.protocols import ProjectionReader
+from rakaia.protocols import ProjectionReader, ReadableStore
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import OnDriftPolicy, ReplayResult, replay
 
@@ -39,7 +39,7 @@ def replay_stream(
     end_seq: int | None = None,
     event_match: str | None = None,
     on_drift: OnDriftPolicy = "warn",
-    store: object | None = None,
+    store: ReadableStore | None = None,
 ) -> ReplayResult:
     """Replay ``stream_path`` through the Django executor + reader by default.
 

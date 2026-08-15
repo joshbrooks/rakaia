@@ -409,6 +409,31 @@ protocol is covered by both stores.
   offset N fails *after* the first N-1 have been dispatched, which is the
   partial-progress behaviour replay had before staging existed.
 
+- **Type checking is a CI gate, not a report** (#143). `pyright src/` ran with
+  `continue-on-error: true`, so its 34 errors were printed and discarded on
+  every green build. That mattered more after the `Effect` split: the guarantee
+  that an invalid effect is *unconstructible* is enforced by the type system and
+  by nothing else, so a checker CI ignores is a guarantee CI does not hold. The
+  step now fails the build.
+
+  Getting to zero needed no new dependency and no loosened settings. Django's
+  synthesised attributes — reverse accessors, the implicit `id` primary key —
+  are declared on `Stream`, `StreamEvent` and `StreamEntry` under
+  `if TYPE_CHECKING`, using the `RelatedManager` stub `django-types` already
+  ships; `annotate()` aliases, which no stub can know about because the query
+  invents them, are named in a `Protocol` beside the query that produces them.
+  Neither construction runs. The old admin idiom of assigning
+  `.short_description` onto a method is now `@admin.display(description=…)`,
+  which is what Django has documented since 3.2.
+
+  Two of the errors were worth having: `HandlerRegistry.reducers_for_stage` took
+  `stage: int` while replay's non-staged pass passed `None`, working only
+  because the comparison inside it never matched — the parameter is now
+  `int | None` with the rule stated; and `@stream_model`'s check that
+  `to_dataclass` returned a dataclass accepted a dataclass *class*, which then
+  failed obscurely inside `asdict` instead of with the clear message every other
+  wrong return already got.
+
 ### Fixed
 
 - **The fault-injection endpoint is no longer reachable on a deployed server**

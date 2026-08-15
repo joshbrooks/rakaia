@@ -91,9 +91,13 @@ def create_stream_event(
     # Convert to dataclass and then dict
     dc_instance = to_dataclass(instance)
 
-    if not dataclasses.is_dataclass(dc_instance):
+    # `is_dataclass` alone admits a dataclass *class* as well as an instance of
+    # one, and `asdict` accepts only the instance. Rejecting the class here
+    # turns what was an obscure `asdict` failure into the same clear message
+    # every other wrong return from `to_dataclass` already gets.
+    if not dataclasses.is_dataclass(dc_instance) or isinstance(dc_instance, type):
         raise TypeError(
-            f"to_dataclass must return a dataclass, got {type(dc_instance)}"
+            f"to_dataclass must return a dataclass instance, got {type(dc_instance)}"
         )
 
     # Encode here, not just on the way to the column. `StreamEvent.data` uses
