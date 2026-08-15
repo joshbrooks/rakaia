@@ -47,6 +47,7 @@ nav = [
         { "ADR 0001 — Ordering child collections" = "adr/0001-ordering-child-collections-in-projections.md" },
         { "ADR 0002 — Framework vs protocol-server boundary" = "adr/0002-framework-vs-protocol-server-boundary.md" },
         { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
+        { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
     ] },
 ]
 
