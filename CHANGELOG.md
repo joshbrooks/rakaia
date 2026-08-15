@@ -292,6 +292,14 @@ protocol is covered by both stores.
 
 ### Changed
 
+- **One uv version, so the lockfile stops rewriting itself.** CI pinned the
+  `setup-uv` action but not uv itself, so it installed whatever was latest and
+  reserialised `uv.lock` in the newer style — a version-bump PR arrived carrying
+  a few hundred lines of unrelated dependency-marker churn that nobody had asked
+  for. Every workflow now pins the same uv, and `[tool.uv] required-version`
+  refuses a local uv outside that range rather than quietly rewriting the lock
+  under you.
+
 - **One writer for the enveloped event** (#131). "Write an event into the Django
   models" was implemented twice — once in `DjangoStreamStore._write`, once in
   `create_stream_event`, the `@stream_model` decorator's door — and the two
