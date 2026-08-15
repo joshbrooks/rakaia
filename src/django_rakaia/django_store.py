@@ -688,7 +688,8 @@ class DjangoStreamStore:
 
         Semantically identical to calling :meth:`append` once per item — same
         event rows, same envelope mapping (``label``->``event_type``,
-        per-event ``merge_provenance`` for ``metadata``, ``event_ts``) — but it
+        per-event ``merge_provenance`` for ``metadata``, ``event_ts``), and the
+        same frames delivered to live subscribers — but it
         locks the stream's high-water once, allocates a single contiguous offset
         block for the whole batch (so ``unique_together(stream, offset)`` still
         holds and concurrent writers serialize exactly as ``append`` does), and
@@ -781,6 +782,13 @@ class DjangoStreamStore:
                 for i, event in enumerate(stream_events)
             ]
             StreamEntry.objects.bulk_create(entries)
+            # `bulk_create` does not fire `post_save`, so the receiver that
+            # publishes single appends never sees these rows — every bulk append
+            # used to be invisible to subscribers (issue #82). Publish them
+            # explicitly rather than saving one at a time, which would undo the
+            # reason this method exists. Inside the transaction, matching the
+            # receiver's existing timing on the `append` path.
+            self._publish(stream.stream_id, entries)
 
             if last_seq != stream.last_seq:
                 stream.last_seq = last_seq
@@ -815,6 +823,27 @@ class DjangoStreamStore:
                     written, stream_events, entries, strict=True
                 )
             ] + [AppendResult(message=None, stream_closed=True) for _ in refused]
+
+    @staticmethod
+    def _publish(stream_id: str, entries: list[StreamEntry]) -> None:
+        """Publish appended entries to live subscribers.
+
+        The store's own publish step. Delegates to
+        `channels_signals.broadcast_entries`, the single definition of the wire
+        frame, which the `post_save` receiver also uses — so the two write paths
+        cannot describe the same event differently.
+
+        Imported lazily and tolerantly: `channels` is an optional extra
+        (ADR 0002 / #41), and a framework-tier consumer that never installed it
+        must still be able to append.
+        """
+        if not entries:
+            return
+        try:
+            from .channels_signals import broadcast_entries
+        except ImportError:
+            return
+        broadcast_entries(stream_id, entries)
 
     def read(
         self, path: str, offset: str | None = None
