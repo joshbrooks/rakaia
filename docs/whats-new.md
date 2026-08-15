@@ -344,7 +344,68 @@ class ChatRoom(models.Model):
 
 → Deep dive: [Django integration](django-integration.md) · Demos: `just dev`, `just polyglot-dev`
 
-## 11. Protocol conformance
+## 11. Proof that a proof means something
+
+A migration is signed off on a verification sweep: replay the log, collect what
+it *would* write, diff that against the rows you already have. Two ways that
+answer can be worthless, both now guarded — see them in
+`just cookbook-demo`, checks **[3]** and **[4]**.
+
+**A sweep that compared nothing must not report success.** `report.ok` asks "did
+anything disagree?", which is vacuously true on an empty population — and the
+ways a sweep silently examines zero rows are all mundane: a store on the wrong
+backend, a replay over a renamed stream path, a filter that stopped matching, a
+registry that failed to autodiscover. Read `verdict` instead, which separates
+`GREEN` from `VACUOUS`, or `certified`, which is the assertion a proof wants:
+
+```python
+report = diff_effects_against_rows(ex.effects)
+assert report.certified, report      # not `report.ok` — see above
+report.raise_if_diff()               # raises VacuousVerification on an empty run
+```
+
+Failures are checked *before* vacuity, so a real failure is never hidden behind
+"empty".
+
+**A dry run must actually be dry.** `assert_no_live_writes` compares the live
+row counts across a block and raises if anything moved — so "this replay wrote
+nothing" becomes something you assert rather than something you trust:
+
+```python
+with assert_no_live_writes(Project, Task):
+    replay(store, STREAM, CollectingExecutor(), reader=DjangoProjectionReader())
+```
+
+It is the write-side half of the rebuild gate; `deny_database_access` is the
+read-side half, and the two compose in either nesting order.
+
+---
+
+## 12. One envelope, written once
+
+Recording an event with its label, actor and timestamp is four lines — encode
+the payload with Django's encoder, create the stream if it is missing, wrap the
+rest in an `AppendOptions`. Written at every call site, and every copy that
+drifted produced events that replay differently from their neighbours, with
+nothing looking at the difference. `append_event` is those four lines:
+
+```python
+from django_rakaia.envelope import append_event
+
+append_event(store, "submissions", payload, label="create", actor=user_id)
+```
+
+`examples/formkit_submissions` uses it for every append it makes, and its
+`/history` check still recovers the right actor for each — which is the point:
+adopting it is a deletion, not a rewrite.
+
+Its sibling `fold_events` runs a batch of events through your handlers *now*,
+via a throwaway in-memory stream, so write-time projection and rebuild-time
+projection run the same code rather than two implementations that can disagree.
+
+---
+
+## 13. Protocol conformance
 
 Rakaia is checked against the upstream, language-agnostic
 [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams)

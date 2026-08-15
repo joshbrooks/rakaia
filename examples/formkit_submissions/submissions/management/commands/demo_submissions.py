@@ -29,14 +29,13 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
 from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.envelope import append_event
 from django_rakaia.store import get_store
 from rakaia import (
-    AppendOptions,
     CollectingExecutor,
     envelope_actor,
     history_effects,
     label_marker,
-    provenance,
     upcast,
 )
 from rakaia.replay import replay
@@ -52,15 +51,17 @@ IR108_ID = "44444444-4444-4444-4444-444444444444"
 def _append_event(store: Any, event: dict, *, label: str, actor: str) -> None:
     """Append one *enveloped* event: the raw payload plus a change label and the
     acting user — exactly what `ProvenanceMiddleware` stamps on a real request.
-    The label drives the `/history` marker; the ambient `provenance(user=…)` is
-    merged into the message metadata so the audit read-model can recover *who*.
+    The label drives the `/history` marker; the actor lands in the message
+    metadata so the audit read-model can recover *who*.
+
+    This is `django_rakaia.envelope.append_event`, which exists precisely so this
+    function does not have to. The longhand it replaces — create-if-missing,
+    `json.dumps(...).encode()`, wrap the label in an `AppendOptions`, open a
+    `provenance()` block for the actor — is four lines that every consumer wrote
+    at every call site, and every copy that drifted produced events that replay
+    differently from their neighbours with nothing checking the difference.
     """
-    with provenance(user=actor):
-        store.append(
-            STREAM,
-            json.dumps(event).encode("utf-8"),
-            AppendOptions(label=label),
-        )
+    append_event(store, STREAM, event, label=label, actor=actor)
 
 
 def _snapshot() -> dict[str, list[tuple]]:
