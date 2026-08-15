@@ -326,6 +326,31 @@ protocol is covered by both stores.
 
 ### Fixed
 
+- **The fault-injection endpoint is no longer reachable on a deployed server**
+  (#130). `/_test/inject-error` was matched before any stream routing, with no
+  gate of any kind. An unauthenticated `POST` of
+  `{"path": "orders", "status": 500, "count": 999999}` made every subsequent
+  request to that path fail, indefinitely, for every client — a denial of
+  service any anonymous caller could aim at any stream. Harmless while the
+  server only ever ran on a laptop; not once the package is published and
+  someone deploys it.
+
+  The endpoint is now off unless `RAKAIA_ENABLE_FAULT_INJECTION` is set to a
+  truthy value, via a new `ServerOptions.enable_fault_injection` that reads it
+  the same way `long_poll_timeout` reads `LONG_POLL_TIMEOUT`. The environment
+  variable is what matters: `uvicorn rakaia:app` builds the module-level app
+  with default `ServerOptions()`, so a constructor argument alone could never
+  reach it. While off the path is not routed at all and answers `404` like any
+  other unknown path — deliberately not `403`, which would confirm that the
+  endpoint exists. Nothing needs the flag today: the upstream conformance suite
+  never calls the endpoint, so `conformance/run.sh` does not set it and the
+  baseline in `conformance/expected-failures.txt` is unchanged.
+
+  Six of `InjectedFault`'s ten fields were also stored and never read —
+  `delayMs`, `dropConnection`, `truncateBodyBytes`, `corruptBody`, `jitterMs`
+  and `injectSseEvent` — so a caller asking for a 200ms delay got no delay and
+  no error either. They are gone; `count`, `status`, `retryAfter` and `method`
+  are the four that ever did anything.
 - **The dashboard views refuse an offset the durable store never issued** (#122).
   Two Django views parsed a client-supplied offset with bare `int()`, outside
   any store's ownership check: `after_offset` on the JSON events endpoint, and
