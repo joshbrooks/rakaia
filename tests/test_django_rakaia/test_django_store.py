@@ -23,7 +23,14 @@ from rakaia.seed import seed_stream
 from rakaia.types import AppendOptions, SequenceConflict, StreamConfigConflict
 
 
-@pytest.mark.django_db
+# transaction=True so this module's `select_for_update()` calls are held to
+# their real contract on Postgres. A plain `django_db` test runs inside an
+# outer transaction that pytest-django rolls back, which means a lock taken
+# outside the code's own `transaction.atomic()` would still look fine --
+# Django only raises TransactionManagementError when there is genuinely no
+# transaction open. It is also the only mode in which another connection can
+# see this test's committed rows, which is what a concurrency test needs.
+@pytest.mark.django_db(transaction=True)
 class TestDjangoStreamStore:
     # The shared read/append/create/has surface (create-idempotence, append-
     # requires-stream, ordered round-trip, partial read, envelope round-trip,
@@ -378,7 +385,14 @@ class TestDjangoStreamStore:
             stream.get_next_offset_block(0)
 
 
-@pytest.mark.django_db
+# transaction=True so this module's `select_for_update()` calls are held to
+# their real contract on Postgres. A plain `django_db` test runs inside an
+# outer transaction that pytest-django rolls back, which means a lock taken
+# outside the code's own `transaction.atomic()` would still look fine --
+# Django only raises TransactionManagementError when there is genuinely no
+# transaction open. It is also the only mode in which another connection can
+# see this test's committed rows, which is what a concurrency test needs.
+@pytest.mark.django_db(transaction=True)
 class TestDjangoStreamStoreReplay:
     def _register(self) -> HandlerRegistry:
         reg = HandlerRegistry()
@@ -410,7 +424,14 @@ class TestDjangoStreamStoreReplay:
         ]
 
 
-@pytest.mark.django_db
+# transaction=True so this module's `select_for_update()` calls are held to
+# their real contract on Postgres. A plain `django_db` test runs inside an
+# outer transaction that pytest-django rolls back, which means a lock taken
+# outside the code's own `transaction.atomic()` would still look fine --
+# Django only raises TransactionManagementError when there is genuinely no
+# transaction open. It is also the only mode in which another connection can
+# see this test's committed rows, which is what a concurrency test needs.
+@pytest.mark.django_db(transaction=True)
 def test_get_store_returns_durable_when_setting_set(settings):
     from django_rakaia.store import get_store
 
@@ -418,7 +439,14 @@ def test_get_store_returns_durable_when_setting_set(settings):
     assert isinstance(get_store(), DjangoStreamStore)
 
 
-@pytest.mark.django_db
+# transaction=True so this module's `select_for_update()` calls are held to
+# their real contract on Postgres. A plain `django_db` test runs inside an
+# outer transaction that pytest-django rolls back, which means a lock taken
+# outside the code's own `transaction.atomic()` would still look fine --
+# Django only raises TransactionManagementError when there is genuinely no
+# transaction open. It is also the only mode in which another connection can
+# see this test's committed rows, which is what a concurrency test needs.
+@pytest.mark.django_db(transaction=True)
 class TestExpiryReaping:
     def test_a_refused_append_still_reaps_the_expired_row(self):
         """The reap must run outside the write transaction.

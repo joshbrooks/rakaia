@@ -50,6 +50,65 @@ jobs:
       - name: Build docs
         run: uv run zensical build
 
+  test-postgres:
+    # A second run of the same suite against a real Postgres. It exists because
+    # SQLite makes `select_for_update()` a no-op: Django's SQL compiler emits
+    # `FOR UPDATE` only when `connection.features.has_select_for_update` is
+    # true, and the SQLite backend leaves it false. So on the `test` job above,
+    # every row lock in django_rakaia is silently skipped, and the
+    # `TransactionManagementError` that enforces "select_for_update must be
+    # inside a transaction" can never fire either.
+    #
+    # Deliberately a separate job, not extra steps on `test`: it needs a
+    # service container and takes longer, and the SQLite run is the one that has
+    # to stay fast and green.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        # Pinned to a major on purpose. `postgres:latest` would move the suite
+        # onto a new major the day one is released, turning an unrelated PR red
+        # for reasons no one changed. 16 is the major this leg was developed
+        # and verified against, and it is in community support until late 2028,
+        # so the pin will not need touching soon. Bump it deliberately.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # Without a health check the job can start psql-ing before the server
+        # accepts connections; the runner holds the job until this passes.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RAKAIA_TEST_DB: postgres
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          version: "0.9.22"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra django --extra postgres
+
+      - name: Run tests against Postgres
+        run: uv run pytest
+
   demos:
     # The examples are a tested surface, not a directory of prose. Every demo
     # asserts its own claims and exits non-zero when one does not hold, so this

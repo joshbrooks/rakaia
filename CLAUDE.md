@@ -8,6 +8,17 @@
   with `No module named pytest` until the extras are synced.
 - CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`,
   `pyright src/`, `pytest`, and `zensical build`; run those before pushing.
+- **Postgres leg.** The default `pytest` run is SQLite, where every
+  `select_for_update()` in `django_rakaia` is a no-op — Django emits
+  `FOR UPDATE` only when the backend reports `has_select_for_update`, and the
+  SQLite backend does not. A second CI job (`test-postgres`) runs the same
+  suite against Postgres 16. Locally: `just test-pg` (starts a podman
+  container and sets `RAKAIA_TEST_DB=postgres`), or set `RAKAIA_TEST_DB` and
+  the `PG*` variables yourself. Needs `uv sync --extra postgres`.
+  Anything that asserts locking or concurrency must also be marked
+  `django_db(transaction=True)`; a plain `django_db` test runs inside a
+  transaction pytest-django rolls back, so a lock taken outside the code's own
+  `atomic()` still looks fine and a second connection can never see the rows.
 - **pyright is a hard gate** and `src/` is expected at zero errors. Run it as
   `PYRIGHT_PYTHON_FORCE_VERSION=latest uv run pyright src/` locally — plain
   `uv run pyright` can object to its own pinned version. Django's synthesised

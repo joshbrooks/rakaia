@@ -318,7 +318,11 @@ class TestMachineReconciledAlerts:
         assert row.resolved_at == "t4"
 
 
-@pytest.mark.django_db
+# transaction=True: the retire-with-transition path takes a real row lock
+# (`select_for_update()` in DjangoExecutor._retire) to keep the reported flip
+# set in step with the rows the UPDATE flips. Only a committing test can hold
+# that lock to its actual contract.
+@pytest.mark.django_db(transaction=True)
 class TestRetireFlipReport:
     """Issue #32 R3: the executor reports which rows a retire actually flipped
     (NULL->set) so the orchestrator can emit one transition per real resolution.
@@ -372,7 +376,11 @@ class TestRetireFlipReport:
         assert report.retire_flips == []
 
 
-@pytest.mark.django_db
+# transaction=True: the retire-with-transition path takes a real row lock
+# (`select_for_update()` in DjangoExecutor._retire) to keep the reported flip
+# set in step with the rows the UPDATE flips. Only a committing test can hold
+# that lock to its actual contract.
+@pytest.mark.django_db(transaction=True)
 class TestMachineResolutionTransitions:
     """Issue #32 R4 (headline): replaying machine reconciles produces exactly one
     ``alert_transition`` per *real* resolution, returned to the caller in

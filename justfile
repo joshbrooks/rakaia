@@ -21,6 +21,12 @@ REDIS_IMAGE     := env_var_or_default("REDIS_IMAGE", "docker.io/redis:7-alpine")
 REDIS_PORT      := env_var_or_default("REDIS_PORT", "6379")
 REDIS_URL       := env_var_or_default("REDIS_URL", "redis://localhost:" + REDIS_PORT + "/0")
 
+# Throwaway Postgres for `just test-pg`. Pinned to the same major as the
+# `test-postgres` CI job so a local pass means the same thing as a CI pass.
+PG_CONTAINER    := env_var_or_default("PG_CONTAINER", "rakaia-test-pg")
+PG_IMAGE        := env_var_or_default("PG_IMAGE", "docker.io/library/postgres:16-alpine")
+PG_PORT         := env_var_or_default("PG_PORT", "55432")
+
 # Where the chat sample lives. The justfile recipes change into this dir
 # so manage.py / hypercorn / chat_project.* imports all resolve.
 CHAT_DIR        := "examples/chat"
@@ -363,6 +369,33 @@ conformance-baseline port="4437":
 # Run the test suite
 test:
     uv run pytest
+
+# Start a throwaway Postgres for `just test-pg` (idempotent)
+pg-up:
+    @podman start {{PG_CONTAINER}} 2>/dev/null \
+        || podman run -d --name {{PG_CONTAINER}} \
+                      -e POSTGRES_USER=postgres \
+                      -e POSTGRES_PASSWORD=postgres \
+                      -e POSTGRES_DB=postgres \
+                      -p {{PG_PORT}}:5432 \
+                      {{PG_IMAGE}}
+    @podman ps --filter name={{PG_CONTAINER}}
+
+# Stop and remove the test Postgres
+pg-down:
+    -podman stop {{PG_CONTAINER}}
+    -podman rm {{PG_CONTAINER}}
+
+# Run the test suite against Postgres instead of SQLite.
+#
+# This is the run that makes select_for_update() do anything: Django emits
+# FOR UPDATE only when the backend reports has_select_for_update, and SQLite
+# does not, so on the default `just test` every row lock in django_rakaia is
+# silently skipped. Mirrors the `test-postgres` CI job.
+test-pg *ARGS: pg-up
+    RAKAIA_TEST_DB=postgres PGHOST=127.0.0.1 PGPORT={{PG_PORT}} \
+    PGUSER=postgres PGPASSWORD=postgres PGDATABASE=postgres \
+    uv run pytest {{ARGS}}
 
 # Run the test suite with coverage
 test-cov:
