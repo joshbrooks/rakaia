@@ -353,9 +353,8 @@ The semantics follow the [protocol specification](protocol.md).
 
 ## Admin
 
-`django_rakaia.admin` registers `Stream`, `StreamEvent`, `StreamEntry`, and
-`Translatable` with the Django admin so you can browse stored streams and
-inspect event payloads. To register your own concrete `StreamEvent` subclass
+`django_rakaia.admin` registers `Stream`, `StreamEvent`, and `StreamEntry` with
+the Django admin so you can browse stored streams and inspect event payloads. To register your own concrete `StreamEvent` subclass
 in the admin, call:
 
 ```python

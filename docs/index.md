@@ -2,153 +2,79 @@
 icon: lucide/waves
 ---
 
-# Rakaia Documentation
+# Rakaia
 
-**Rakaia** is a Python implementation of the [Durable Streams protocol](protocol.md) — an
-HTTP-based protocol for append-only, ordered, durable byte streams.
+**Build your Django tables from a record of what happened, so you can rebuild
+them when the code was wrong.**
 
-The project ships two installable packages:
+Most projects write to a table and keep a change log beside it. Rakaia turns that
+around: the log is the original, and your tables are produced by reading it back.
+When you find a bug in how a table was filled in, you fix the code and re-run —
+no repair script, no guessing what the row should have been.
 
-- **`rakaia`** — A zero-dependency ASGI application implementing the protocol. Run
-  it standalone with `uvicorn`/`daphne`/`granian`, or mount it inside Django,
-  FastAPI, or Starlette.
-- **`django_rakaia`** — A Django app that stores stream events in your database
-  via normalized `Stream` / `StreamEvent` / `StreamEntry` models, broadcasts
-  changes over Django Channels, and provides a `@stream_model` decorator for
-  emitting events from your own Django models.
+It also lets you *rehearse* that rebuild against real data and see exactly what it
+would write, without writing anything.
 
-!!! tip "New here?"
-    Start with the **[guided tour of what's new](whats-new.md)** — every recent
-    feature with a one-command demo you can run to prove it. New to the
-    vocabulary (*projection*, *handler*, *upcaster*, *replay*)? See the
-    **[glossary](glossary.md)**.
+!!! tip "Start here"
 
-Beyond the raw protocol server, `django_rakaia` derives your database tables from
-an append-only log of events — so you can replay history and rebuild them:
+    - **[Tutorial](tutorial.md)** — ten minutes from nothing to a table you
+      rebuild after fixing a bug in it.
+    - **[Why Rakaia exists](why-rakaia.md)** — what this buys you, what it costs
+      you, and when to use something simpler.
+    - **[Glossary](glossary.md)** — every term used here, in plain language.
+    - **[API reference](api-reference.md)** — all 131 exported names.
+
+## Install
+
+```bash
+pip install "rakaia-streams[django]"
+```
+
+The distribution is `rakaia-streams`; you import `rakaia` and `django_rakaia`.
+
+## What you get
 
 ```mermaid
 flowchart LR
-  W["Your model<br/>.save()"] -->|emit| S[("Stream<br/>append-only log")]
-  S -->|replay| U["Upcasters<br/>normalise old events"]
-  U --> H["Versioned handlers<br/>pure: event → Effect"]
-  H --> X{Executor}
-  X -->|"update_or_create / delete"| P[("Projection<br/>your tables")]
-  X -.->|dry-run| C["CollectingExecutor<br/>records, zero writes"]
+  W["Your model<br/>.save()"] -->|records| S[("The log<br/>append-only")]
+  S -->|replay| H["Your rules<br/>event → change"]
+  H --> X{Apply}
+  X -->|for real| P[("Your tables")]
+  X -.->|rehearsal| C["Reports every change,<br/>writes nothing"]
 ```
 
-## Installation
+Two packages, either usable on its own:
 
-```bash
-# Core protocol server only (zero runtime dependencies)
-pip install rakaia-streams
+- **`django_rakaia`** — the part most people want. Records changes to your Django
+  models, rebuilds tables from those records, and can rehearse a rebuild without
+  touching the database.
+- **`rakaia`** — a standalone server speaking the
+  [Durable Streams protocol](protocol.md), with no dependencies at all. Run it
+  with `uvicorn`, or mount it inside Django, FastAPI, or Starlette.
 
-# With the Django integration
-pip install "rakaia-streams[django]"
+## Try it without installing anything
 
-# With Redis-backed channel layer (for multi-process SSE)
-pip install "rakaia-streams[django,redis]"
-```
+Four sample Django projects, each proving one thing. They assert their own claims
+and fail loudly if the library stops delivering, so they double as tests:
 
-## Quick Start (standalone server)
-
-```bash
-pip install rakaia-streams uvicorn
-uvicorn rakaia:app --port 4437
-```
-
-That gives you a fully functional Durable Streams server backed by an
-in-memory store.
-
-```python
-from rakaia import create_app, StreamStore
-
-# Default in-memory store
-app = create_app()
-
-# Or supply your own store
-app = create_app(store=StreamStore())
-```
-
-## Quick Start (Django integration)
-
-See [`django-integration.md`](django-integration.md) for the full guide.
-
-```python
-# settings.py
-INSTALLED_APPS = [
-    "daphne",
-    "channels",
-    "django_rakaia",
-    # ...
-]
-ASGI_APPLICATION = "myproject.asgi.application"
-CHANNEL_LAYERS = {
-    "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
-}
-```
-
-```python
-# models.py
-from dataclasses import dataclass
-from django.db import models
-from django_rakaia import stream_model
-
-@dataclass
-class RoomData:
-    id: int
-    name: str
-
-@stream_model(
-    stream_paths=lambda obj: f"room:{obj.id}:messages",
-    to_dataclass=lambda obj: RoomData(id=obj.id, name=obj.name),
-)
-class ChatRoom(models.Model):
-    name = models.CharField(max_length=100)
-```
-
-Every save/delete now emits a `StreamEvent` and a `StreamEntry` against the
-relevant stream(s), automatically broadcast to any connected SSE consumers via
-the channel layer.
-
-## Documentation index
-
-- [What's new — a guided tour](whats-new.md) — recent features, each with a demo.
-- [Glossary](glossary.md) — plain-language definitions of the event-sourcing terms.
-- [Framework vs. protocol server](framework-vs-protocol-server.md) — the package
-  boundary and the "what needs Django / what is pure" matrix.
-- [Django integration](django-integration.md) — Models, decorator, admin, SSE,
-  and adopting the durable store.
-- [Versioned handlers](versioned-handlers.md) — Time-correct replay, handler
-  versions, upcasters, drift detection.
-- [Projections & fan-out](projections-and-fan-out.md) — One event into many
-  rows, orphan-free with `reconcile_children`.
-- [The event envelope & provenance](event-envelope.md) — Attach the actor,
-  label, and no-op suppression on append.
-- [History read-model](history-read-model.md) — Latest-state vs a queryable
-  audit trail, both derived from one log.
-- [Subscriber cursors](subscriber-cursors.md) — Incremental per-consumer reads
-  over a stream's offsets, with rewind detection and durable watermarks.
-- [Alerts projection](alerts-projection.md) — Human judgment and machine rules
-  in one projection, without clobber.
-- [Dry-run & executors](dry-run-and-executors.md) — Preview a replay's writes
-  with zero side effects.
-- [Translations](translations.md) — the `polyglot` example: live-editable
-  translations over SSE.
-- [Deployment](deployment.md) — Production setup, ASGI servers, Redis channel
-  layer, scaling.
-- [Protocol specification](protocol.md) — Wire format, headers, semantics.
-- [Backend storage](streams-backend-storage.md) — Browser-side stream persistence.
-
-## Sample applications
-
-Four standalone Django projects each demonstrate one feature area. Run them all
-with `just demo`, or individually:
-
-| Example | Demonstrates | Run |
+| Example | Shows | Run |
 |---|---|---|
-| [`orders`](../examples/orders/) | Versioned handlers, upcasters, replay, dry-run | `just orders-demo` |
-| [`formkit_submissions`](../examples/formkit_submissions/) | Projections/fan-out, `reconcile_children`, migration parity | `just formkit-demo` |
-| [`chat`](../examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` |
-| [`polyglot`](../examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` |
+| [`partisipa_history`](../examples/partisipa_history/) | Reproducing an audit log exactly, and recovering a truncated record | `just partisipa-history-demo` |
+| [`orders`](../examples/orders/) | Rules that changed over time, replayed correctly | `just orders-demo` |
+| [`formkit_submissions`](../examples/formkit_submissions/) | One change updating many rows without orphans | `just formkit-demo` |
+| [`chat`](../examples/chat/) | Recording changes on `save()`, live updates over SSE | `just dev` |
 
-The [guided tour](whats-new.md) narrates what each one proves.
+## Where to go next
+
+- **New here?** [The tutorial](tutorial.md), then
+  [why Rakaia exists](why-rakaia.md).
+- **Evaluating it?** [Why Rakaia exists](why-rakaia.md) is written for you and is
+  honest about the limits. Then [the public API](public-api.md) for what is and
+  isn't promised before 1.0.
+- **Already using it?** [What's new](whats-new.md) tours recent features, each
+  with a command that demonstrates it.
+
+!!! warning "Pre-1.0"
+
+    Pin an upper bound — `rakaia-streams>=0.2,<0.3`. See
+    [the public API](public-api.md) for which names are stable and which are not.

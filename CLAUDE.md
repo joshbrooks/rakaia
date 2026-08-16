@@ -18,6 +18,25 @@
   then `uv run zensical build`. Without `--extra docs` that step fails with
   `Failed to spawn: zensical`.
 
+## Documentation
+
+- **`docs/api-reference.md` is generated. Do not hand-edit it.** It is produced
+  from `rakaia.__all__` / `django_rakaia.__all__` by
+  `scripts/gen_api_reference.py`. Run `just api-reference` and commit the result;
+  `just api-reference-check` fails if it has drifted. To move a name into a
+  different section, edit `GROUPS` in that script, not the Markdown.
+- **The nav in `zensical.toml` is grouped by reader intent** — *Start here*,
+  *How do I…*, *How it works*, *Look it up*, *Experiments* — not by subsystem.
+  The four Diátaxis modes were used to work out what each page is *for*; the
+  section names are the plain-English version. When adding a page, decide which
+  question the reader is asking and put it there.
+- **Main pages stay plain-language; technical detail goes in a trailing
+  `## Appendix` section on the same page.** Keeping the detail next to what it
+  qualifies is deliberate — it is what stops the caveats rotting away from the
+  claims they modify.
+- Research notes live in `docs/research/` and are deliberately **not** in the
+  nav. They are dated and are not decisions; decisions go in `docs/adr/`.
+
 ## Agent skills
 
 ### Issue tracker

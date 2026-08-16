@@ -9,46 +9,69 @@
 site_name = "Rakaia"
 site_description = "Python implementation of the Durable Streams protocol — zero-dependency ASGI server plus a Django integration."
 site_author = "Josh Brooks"
-site_url = "https://github.com/joshbrooks/durable-streams"
+# The canonical home for the built site. Nothing is served here yet — publishing
+# to GitHub Pages is a separate step — but `site_url` feeds canonical links and
+# the sitemap, so it must name the intended destination rather than a repo URL.
+site_url = "https://joshbrooks.github.io/rakaia/"
 
 copyright = """
 Copyright &copy; 2026 Josh Brooks
 """
 
 # Explicit navigation. Order matters; nested tables become sections.
+# Grouped by what the reader is trying to do, not by subsystem. The four
+# Diátaxis modes (tutorial / how-to / explanation / reference) were used to
+# diagnose what each page is *for*; the section names are the plain-English
+# version of the same split, because "How do I…" tells a stranger more than
+# "How-to guides" does.
+#
+# "Experiments" holds pages that were design spikes. They are real, tested work
+# and stay published, but they are not the manual and should not be the third
+# thing a newcomer scrolls past.
 nav = [
-    { "Overview" = "index.md" },
-    { "What's new" = "whats-new.md" },
-    { "Examples & concept coverage" = "examples.md" },
-    { "Glossary" = "glossary.md" },
-    { "The public API" = "public-api.md" },
-    { "Framework vs. protocol server" = "framework-vs-protocol-server.md" },
-    { "Django integration" = "django-integration.md" },
-    { "Versioned handlers" = "versioned-handlers.md" },
-    { "Projections & fan-out" = "projections-and-fan-out.md" },
-    { "Event envelope & provenance" = "event-envelope.md" },
-    { "History read-model" = "history-read-model.md" },
-    { "Alerts projection" = "alerts-projection.md" },
-    { "Subscriber cursors" = "subscriber-cursors.md" },
-    { "Dry-run & executors" = "dry-run-and-executors.md" },
-    { "Projection cookbook" = "projection-cookbook.md" },
-    { "pghistory retirement (spike)" = "pghistory-retirement.md" },
-    { "Staged replay (spike)" = "staged-replay.md" },
-    { "Close preconditions (spike)" = "close-preconditions.md" },
-    { "Multi-stream merge (spike)" = "multi-stream-merge.md" },
-    { "Tree-reconcile (spike)" = "tree-reconcile.md" },
-    { "Translations (example)" = "translations.md" },
-    { "Deployment" = "deployment.md" },
-    { Reference = [
+    { "Start here" = [
+        { "Overview" = "index.md" },
+        { "Why Rakaia exists" = "why-rakaia.md" },
+        { "Tutorial: your first rebuilt table" = "tutorial.md" },
+        { "Glossary" = "glossary.md" },
+        { "What's new" = "whats-new.md" },
+    ] },
+    { "How do I…" = [
+        { "Add streams to a Django model" = "django-integration.md" },
+        { "Preview a replay with no writes" = "dry-run-and-executors.md" },
+        { "Build a projection" = "projection-cookbook.md" },
+        { "Read a stream incrementally" = "subscriber-cursors.md" },
+        { "Combine human and machine decisions" = "alerts-projection.md" },
+        { "Deploy it" = "deployment.md" },
+    ] },
+    { "How it works" = [
+        { "Framework vs. protocol server" = "framework-vs-protocol-server.md" },
+        { "Versioned handlers" = "versioned-handlers.md" },
+        { "Projections & fan-out" = "projections-and-fan-out.md" },
+        { "Event envelope & provenance" = "event-envelope.md" },
+        { "History read-model" = "history-read-model.md" },
+        { "pghistory parity (design notes)" = "pghistory-retirement.md" },
+        { "Decision records" = [
+            { "ADR 0001 — Ordering child collections" = "adr/0001-ordering-child-collections-in-projections.md" },
+            { "ADR 0002 — Framework vs protocol-server boundary" = "adr/0002-framework-vs-protocol-server-boundary.md" },
+            { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
+            { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
+        ] },
+    ] },
+    { "Look it up" = [
+        { "The public API" = "public-api.md" },
+        { "Python API reference" = "api-reference.md" },
         { "Protocol specification" = "protocol.md" },
         { "Producer fencing & validation" = "producer-fencing.md" },
         { "Backend storage" = "streams-backend-storage.md" },
+        { "Example index" = "examples.md" },
     ] },
-    { "Decision records" = [
-        { "ADR 0001 — Ordering child collections" = "adr/0001-ordering-child-collections-in-projections.md" },
-        { "ADR 0002 — Framework vs protocol-server boundary" = "adr/0002-framework-vs-protocol-server-boundary.md" },
-        { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
-        { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
+    { Experiments = [
+        { "Staged replay" = "staged-replay.md" },
+        { "Close preconditions" = "close-preconditions.md" },
+        { "Multi-stream merge" = "multi-stream-merge.md" },
+        { "Tree-reconcile" = "tree-reconcile.md" },
+        { "Translations" = "translations.md" },
     ] },
 ]
 
@@ -85,4 +108,4 @@ toggle.name = "Switch to light mode"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
-link = "https://github.com/joshbrooks/durable-streams"
+link = "https://github.com/joshbrooks/rakaia"

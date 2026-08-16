@@ -110,6 +110,62 @@ dry-run count matches the real `effects_applied`. This is the primitive behind:
 - **"What will this replay do?"** — see the writes a `--from/--to` window would
   make before running it for real.
 
+## Make "no writes" enforced rather than assumed
+
+A `CollectingExecutor` writes nothing *because it has no code that writes*. That
+is a property of the executor, not a guarantee about the run: a handler that
+reaches around it and touches the ORM directly would still write, and the dry run
+would still look clean.
+
+Two guards in `django_rakaia` turn the assumption into a check.
+
+**`deny_database_access(*aliases)`** blocks the connection outright. Any query on
+a named alias — read or write — raises `AmbientDatabaseAccess`:
+
+```python
+from django_rakaia import deny_database_access
+
+with deny_database_access("default"):
+    replay(store, "orders", CollectingExecutor())   # a stray query now raises
+```
+
+**`assert_no_live_writes(*models, using="default")`** is the narrower one: it
+watches specific tables and raises `LiveWriteLeaked` if a row was written while
+the block was open.
+
+```python
+from django_rakaia import assert_no_live_writes
+from orders.models import OrderSummary
+
+with assert_no_live_writes(OrderSummary):
+    replay(store, "orders", CollectingExecutor())
+```
+
+!!! warning "The two guards differ in kind"
+
+    `deny_database_access` **prevents** the query — nothing reaches the database.
+    `assert_no_live_writes` **detects** afterwards, so outside a transaction the
+    offending row has already landed by the time it raises. Use it inside
+    `transaction.atomic()` if you need the write undone as well as reported, and
+    prefer `deny_database_access` when you want prevention.
+
+    Both install themselves on the calling thread's connection. A write issued on
+    another thread — including ORM work handed off by the durable store's
+    `run_sync` — is **not** caught. See
+    [ADR 0003](adr/0003-handler-hermeticity.md).
+
+### A rebuild that changes nothing is not a pass
+
+When you diff a rehearsal against existing rows, the result is one of three
+verdicts, not two: `GREEN` (compared, and matched), `RED` (compared, and
+differed), or `VACUOUS` — *nothing was compared at all*.
+
+`VACUOUS` exists because a run over an empty population passes every assertion
+you can write about it, and that is the most common way a verification quietly
+certifies nothing. `DiffReport.certified` is true only for `GREEN`, and
+`raise_if_diff()` refuses a zero population with `VacuousVerification` unless you
+pass `allow_empty`.
+
 ## From the command line
 
 The bundled `manage.py replay` command wires this up for you: `--dry-run` swaps in
