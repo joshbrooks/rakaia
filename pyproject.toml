@@ -54,6 +54,13 @@ dev = [
     "django-types>=0.23.0",
     "pytest-django>=4.9.0",
 ]
+postgres = [
+    # Only needed to run the test suite with RAKAIA_TEST_DB=postgres, which is
+    # what makes the select_for_update() calls in django_rakaia actually emit
+    # FOR UPDATE. Kept out of `dev` so the default SQLite run stays free of a
+    # compiled driver.
+    "psycopg[binary]>=3.1",
+]
 docs = [
     "zensical>=0.0.51",
     "markdown>=3.10.2",
