@@ -384,6 +384,22 @@ fmt:
 typecheck:
     uv run pyright src/
 
+# Regenerate docs/api-reference.md from what the packages actually export.
+# Commit the result; `api-reference-check` fails if it drifts.
+api-reference:
+    uv run python scripts/gen_api_reference.py
+
+# Fail if the committed API reference is out of date with the code.
+api-reference-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    uv run python scripts/gen_api_reference.py
+    if ! git diff --quiet -- docs/api-reference.md; then
+        echo "docs/api-reference.md is out of date. Run 'just api-reference' and commit." >&2
+        git --no-pager diff -- docs/api-reference.md >&2
+        exit 1
+    fi
+
 # Build the documentation site
 docs:
     uv run zensical build
@@ -392,13 +408,11 @@ docs:
 docs-serve:
     uv run zensical serve
 
-# Run the full quality gate (lint + format + tests + docs build).
-# Note: `typecheck` is a separate recipe — pyright currently surfaces a
-# bunch of pre-existing Django ORM dynamism warnings on this codebase
-# (queryset annotations, related managers, implicit `id` fields). Run
-# `just typecheck` if you want to see them; fixing them is tracked
-# separately and would benefit from migrating to `django-stubs`.
-check: lint fmt-check test docs
+# Run the full quality gate, mirroring CI.
+# `typecheck` was excluded here while pyright still surfaced pre-existing
+# Django ORM dynamism warnings. That stopped being true in #143 — pyright is a
+# hard gate at zero errors in CI — so it belongs in the local gate too.
+check: lint fmt-check typecheck test api-reference-check docs
 
 # ---------------------------------------------------------------------------
 # Release / publishing (dist name: rakaia-streams)

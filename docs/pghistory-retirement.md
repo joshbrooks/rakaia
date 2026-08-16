@@ -1,8 +1,15 @@
-# pghistory retirement (design spike)
+# pghistory parity — the design notes
 
-> Status: **design spike** for [issue #11](https://github.com/joshbrooks/rakaia/issues/11).
-> Prototyped in [`examples/partisipa_history`](../examples/partisipa_history); not yet
-> part of rakaia core. This page is the design; the example is the proof.
+> **Plain-language version:** [Why Rakaia exists](why-rakaia.md). This page is
+> the detailed design behind it and assumes the vocabulary.
+>
+> Status: originally a design spike for
+> [issue #11](https://github.com/joshbrooks/rakaia/issues/11), proved in
+> [`examples/partisipa_history`](../examples/partisipa_history). **The envelope
+> and the history read-model have since landed in core** — see
+> [the event envelope](event-envelope.md) and
+> [the history read-model](history-read-model.md). The "what making it
+> first-class requires" list below is kept as a record and is now complete.
 
 ## The problem: the audit log is load-bearing
 
@@ -93,16 +100,21 @@ and that stream recovery returns the same peak snapshot pghistory recovery does.
   the create/update/delete events remain as history — the row goes away, its audit
   trail does not. That is exactly pghistory's behaviour and what an audit log must do.
 
-## What making it first-class requires
+## What making it first-class required — all since done
 
-The spike carries the envelope as a JSON convention. Promoting it to core means:
+The spike carried the envelope as a JSON convention. Promoting it to core meant
+three things, each of which has since landed:
 
-1. An **append surface** that accepts `actor` / `label` / `ts` / optional `causation`
-   as structured metadata rather than payload keys.
-2. Extending the durable **`StreamEvent`** model (which today has `event_type` /
-   `created_at`) to persist that envelope.
-3. A **history read-model helper** so adopters get `SubmissionHistoryEntry`
-   without hand-rolling it.
+1. ~~An **append surface** that accepts `actor` / `label` / `ts` / optional
+   `causation` as structured metadata rather than payload keys.~~ Shipped as
+   `provenance()`, `label_marker()` and `append_if_changed()` — see
+   [the event envelope](event-envelope.md).
+2. ~~Extending the durable **`StreamEvent`** model (which today has `event_type` /
+   `created_at`) to persist that envelope.~~ Shipped: `StreamEvent.metadata` and
+   `StreamEvent.event_ts` (`src/django_rakaia/models.py:262,265`).
+3. ~~A **history read-model helper** so adopters get `SubmissionHistoryEntry`
+   without hand-rolling it.~~ Shipped as `materialize_history()` /
+   `history_effects()` — see [the history read-model](history-read-model.md).
 
 ## Migration path (issue #11)
 
