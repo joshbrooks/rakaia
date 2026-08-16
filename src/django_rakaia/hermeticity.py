@@ -152,6 +152,30 @@ def deny_database_access(*aliases: str) -> Iterator[None]:
         yield
 
 
+def armed_deny_aliases() -> tuple[str, ...]:
+    """The aliases `deny_database_access` is currently guarding **on this thread**.
+
+    Django keeps connections in a thread-local, so the wrapper
+    `deny_database_access` installs is only visible to the thread that armed it.
+    Anything that hands ORM work to another thread has to carry the guard across
+    itself, and this is how it asks what to carry — see
+    `DjangoStreamStore.run_sync`, the one such hop in this package.
+
+    Reading `execute_wrappers` does not open a connection: `connections[alias]`
+    returns the wrapper object, and the socket is opened lazily on first query.
+    """
+    from django.db import connections
+
+    return tuple(
+        alias
+        for alias in connections
+        if any(
+            getattr(w, "_rakaia_deny_guard", False)
+            for w in connections[alias].execute_wrappers
+        )
+    )
+
+
 @contextmanager
 def _without_deny_guards(alias: str) -> Iterator[None]:
     """Suspend rakaia's own `deny_database_access` wrappers on `alias`.

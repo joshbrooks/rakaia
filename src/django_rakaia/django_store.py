@@ -66,6 +66,7 @@ from rakaia.types import (
 )
 from rakaia.types import Stream as ProtocolStream
 
+from .hermeticity import armed_deny_aliases, deny_database_access
 from .models import (
     Stream,
     StreamEntry,
@@ -963,8 +964,28 @@ class DjangoStreamStore:
         async context, so every sync call the protocol server makes has to
         cross into a thread. `thread_sensitive=True` keeps them all on the same
         one, which is what makes them share a transaction and a connection.
+
+        **The hermeticity guard is carried across the hop.** Django's connections
+        are thread-local, so a `deny_database_access` armed by the caller is
+        invisible on the worker thread — the ORM work would step straight past a
+        guard the caller believes is on, and the rebuild gate would report green
+        without having checked anything (#147). Re-arming it here is what makes
+        the guard mean the same thing on both sides of the boundary.
+
+        A store reading its log from a guarded alias will now raise rather than
+        pass. That is the intended answer, not a regression: a hermetic rebuild
+        must read its log from somewhere other than the database it is proving it
+        can reconstruct, which `deny_database_access` has always documented.
         """
-        return await sync_to_async(fn, thread_sensitive=True)(*args, **kwargs)
+        denied = armed_deny_aliases()
+        if not denied:
+            return await sync_to_async(fn, thread_sensitive=True)(*args, **kwargs)
+
+        def _guarded(*inner_args: Any, **inner_kwargs: Any) -> Any:
+            with deny_database_access(*denied):
+                return fn(*inner_args, **inner_kwargs)
+
+        return await sync_to_async(_guarded, thread_sensitive=True)(*args, **kwargs)
 
     def get(self, path: str) -> ProtocolStream | None:
         """Return a snapshot of the stream's metadata, or None if absent.

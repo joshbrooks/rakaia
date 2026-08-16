@@ -132,37 +132,28 @@ class TestDenyDatabaseAccess:
 #
 # `DjangoStreamStore.run_sync` deliberately moves ORM work onto another thread
 # (`sync_to_async(..., thread_sensitive=True)`), because Django refuses ORM
-# access from an async context. Those two facts are in tension, and the tests
-# below record which one wins rather than assuming.
+# access from an async context. Those two facts were in tension, and the guard
+# lost: work crossing the hop was invisible to it, so the gate reported green
+# without having checked anything.
+#
+# Fixed in #147 by having `run_sync` re-arm the caller's guard on the worker
+# thread (`hermeticity.armed_deny_aliases`). These tests hold that fix in place
+# from both sides of the boundary.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN GAP: deny_database_access is thread-local, so a write issued "
-        "through DjangoStreamStore.run_sync steps straight past it and the "
-        "gate stays green. Left failing on purpose -- fixing it means changing "
-        "the guard, not the test. See the note above."
-    ),
-)
 @pytest.mark.django_db(transaction=True)
-async def test_deny_database_access_should_block_a_write_through_run_sync():
-    """What the guard would have to do to be safe around async store work.
+async def test_deny_database_access_blocks_a_write_through_run_sync():
+    """The guard survives the thread hop `run_sync` makes.
 
-    It does not do it today. `deny_database_access` installs an
-    `execute_wrapper` on `connections["default"]`, and that connection object
-    is thread-local; `run_sync` hands the ORM call to another thread, which
-    resolves `connections["default"]` to a *different* connection with an
-    empty wrapper list. The append is executed, committed, and never seen.
+    `deny_database_access` installs an `execute_wrapper` on
+    `connections["default"]`, and that connection object is thread-local, so
+    the worker thread `run_sync` dispatches to resolves `connections["default"]`
+    to a *different* connection. Before #147 that connection had an empty
+    wrapper list and the append was executed, committed, and never seen.
 
-    Scope: the guard is documented for a *synchronous* replay -- `with
-    deny_database_access("default"): replay(...)` -- which is how every
-    example and every other test uses it, and where it does hold (see the
-    control test below). Nothing in the codebase arms it around `await`-ed
-    store work today, so this is a sharp edge in the guard's contract rather
-    than a live hole in the rebuild gate. It becomes a real hole the moment
-    someone wraps an async rebuild in it, and it fails silently when they do,
-    which is the dangerous shape.
+    `run_sync` now asks `armed_deny_aliases()` what the caller is guarding and
+    re-arms it inside the worker, so the guard means the same thing on both
+    sides. This test fails if that propagation is removed.
     """
     from django_rakaia.django_store import DjangoStreamStore
     from django_rakaia.models import StreamEntry
@@ -173,9 +164,33 @@ async def test_deny_database_access_should_block_a_write_through_run_sync():
     with deny_database_access("default"), pytest.raises(AmbientDatabaseAccess):
         await store.run_sync(store.append, "guarded", b'{"x": 1}')
 
-    # Reached only if the guard did not raise: the write really landed, so the
-    # leak is a completed write and not merely a query that dodged the wrapper.
+    # The guard must *prevent*, not merely report: nothing may have landed.
     assert await StreamEntry.objects.filter(stream__stream_id="guarded").acount() == 0
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+async def test_run_sync_guard_does_not_block_an_unguarded_alias():
+    """Propagation must carry the guard, not freeze the process.
+
+    The counterpart to the test above, and the one that would catch the fix
+    over-reaching. `DjangoStreamStore` has no `using=` — it always works on the
+    default alias — so the case to prove is the mirror: guarding the *overlay*
+    alias must leave the store's default-alias work running normally across the
+    same thread hop. If propagation froze the worker outright rather than
+    carrying the specific guard, this would fail and the guard would be
+    unusable rather than merely leaky.
+    """
+    from django_rakaia.django_store import DjangoStreamStore
+    from django_rakaia.models import StreamEntry
+
+    store = DjangoStreamStore()
+    await store.run_sync(store.create, "unguarded")
+
+    with deny_database_access("overlay"):
+        await store.run_sync(store.append, "unguarded", b'{"x": 1}')
+
+    landed = await StreamEntry.objects.filter(stream__stream_id="unguarded").acount()
+    assert landed == 1
 
 
 @pytest.mark.django_db(transaction=True)
