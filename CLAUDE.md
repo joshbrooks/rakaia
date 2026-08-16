@@ -19,6 +19,17 @@
   `django_db(transaction=True)`; a plain `django_db` test runs inside a
   transaction pytest-django rolls back, so a lock taken outside the code's own
   `atomic()` still looks fine and a second connection can never see the rows.
+- **Row locking is covered deliberately, not incidentally.** There are three
+  `select_for_update()` sites (`models.py` offset watermark, `django_store.py`
+  stream row, `effect_executor.py` retire capture). Around 290 tests touch one,
+  but nearly all reach it in passing — an append allocates an offset, and
+  allocating locks. The cover is `test_concurrent_appends.py` and
+  `test_locking.py`; converting the incidental ~227 to `transaction=True` was
+  considered and rejected (#148), because it buys nothing those files do not
+  and makes every run pay truncation teardown. **A new test that exercises a
+  lock belongs in one of those two files, marked `transaction=True`, and must
+  be shown to fail with the lock removed** — two earlier attempts passed with
+  and without it, which is the failure mode these tests exist to avoid.
 - **pyright is a hard gate** and `src/` is expected at zero errors. Run it as
   `PYRIGHT_PYTHON_FORCE_VERSION=latest uv run pyright src/` locally — plain
   `uv run pyright` can object to its own pinned version. Django's synthesised
