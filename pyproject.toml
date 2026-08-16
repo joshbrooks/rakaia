@@ -77,7 +77,7 @@ build-backend = "hatchling.build"
 # once carried a few hundred lines of unrelated dependency-marker churn purely
 # because CI ran a newer uv than the author (#118). CI pins the same version in
 # every workflow; this is the local half, and it refuses rather than rewrites.
-required-version = ">=0.9.22,<0.10"
+required-version = ">=0.11.32,<0.12"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rakaia", "src/django_rakaia"]
