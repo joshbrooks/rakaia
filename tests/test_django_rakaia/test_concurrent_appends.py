@@ -87,8 +87,20 @@ def test_a_second_writer_blocks_on_the_offset_watermark() -> None:
     it is not, B reads the pre-A value and hands out the offset A already
     took -- two events at the same offset in the same stream, which the
     unique constraint would reject at insert time in production.
+
+    **The first append is load-bearing.** Without it this test passes even with
+    the `select_for_update()` removed, and so proves nothing: on a stream that
+    has never allocated, the watermark row does not exist yet, so B's
+    `get_or_create` races A's *insert* instead of reading a stale value. It
+    blocks on the unique key, retries, and reads the committed high-water mark
+    -- serialised by the constraint rather than by the lock. Only once the row
+    exists is the lock the thing standing between the two writers. Verified by
+    mutation: removing the lock leaves this failing and left the original
+    passing.
     """
-    DjangoStreamStore().create(PATH)
+    store = DjangoStreamStore()
+    store.create(PATH)
+    store.append(PATH, b'{"seed": true}')
 
     got: dict[str, int] = {}
     a_allocated = threading.Event()
@@ -114,7 +126,8 @@ def test_a_second_writer_blocks_on_the_offset_watermark() -> None:
 
     _run(writer_a, writer_b)
 
-    assert sorted(got.values()) == [1, 2], (
+    # Offset 1 belongs to the seed append, so the two racers must get 2 and 3.
+    assert sorted(got.values()) == [2, 3], (
         f"two connections were handed overlapping offsets: {got}. "
         "The watermark row lock did not hold."
     )
