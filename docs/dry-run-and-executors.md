@@ -149,10 +149,12 @@ with assert_no_live_writes(OrderSummary):
     `transaction.atomic()` if you need the write undone as well as reported, and
     prefer `deny_database_access` when you want prevention.
 
-    Both install themselves on the calling thread's connection. A write issued on
-    another thread — including ORM work handed off by the durable store's
-    `run_sync` — is **not** caught. See
-    [ADR 0003](adr/0003-handler-hermeticity.md).
+    Both install themselves on the calling thread's connection, and Django keeps
+    one connection per thread. `assert_no_live_writes` is unaffected — it
+    compares row counts, so it sees a write from any thread. `deny_database_access`
+    would miss one, so the durable store carries the guard across the one thread
+    hop it makes (`run_sync`); a write issued on a thread rakaia does not control
+    is still not caught. See [ADR 0003](adr/0003-handler-hermeticity.md).
 
 ### A rebuild that changes nothing is not a pass
 
