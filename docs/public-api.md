@@ -112,6 +112,43 @@ this is written.
 Note the distribution is `rakaia-streams`; the import names are `rakaia` and
 `django_rakaia` (plain `rakaia` was already taken on PyPI).
 
+#### If you depend on Tier 2, pin harder
+
+`>=0.2,<0.3` is the right bound for code living inside Tier 1. It is *not* enough
+if you also query the ORM models or import a submodule path directly, because the
+table shape and the module layout are both allowed to move within a minor:
+
+```toml
+dependencies = ["rakaia-streams==0.2.*"]
+```
+
+Assume this applies to you rather than assuming it does not. The first production
+consumer reached 127 import statements and roughly twenty direct ORM queries
+against `StreamEntry`/`Stream` before anyone asked which tier it was on — and the
+answer was Tier 2, plus one private symbol. Two questions settle it:
+
+- Does anything you import begin with `_`, or come from a `django_rakaia`
+  submodule that is not listed in `_EXPORTS`?
+- Do you query `django_rakaia.models` directly, or rely on `StreamEntry.offset`
+  being an orderable integer column?
+
+A "yes" to either puts you outside the Tier 1 promise, and `==0.2.*` is the
+honest bound until what you need is promoted. Tell us what you are reaching for
+when that happens: a Tier 2 dependency is a gap in Tier 1, and the store protocol
+offering only `read(path, offset)` is the usual reason.
+
+**Whichever bound you pick, do not verify an upgrade by reading
+`rakaia.__version__` alone.** It reports the installed distribution version,
+which is correct — but a consumer pinned to a git revision gets whatever version
+the *source* declares, and two revisions a whole release apart can report the
+same number. Check the artifact instead:
+
+```python
+importlib.metadata.distribution("rakaia-streams").read_text("direct_url.json")
+```
+
+which names the revision you actually installed.
+
 ## Contracts inside Tier 1
 
 Being in `__all__` is not the whole promise. Four behavioural contracts are

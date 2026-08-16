@@ -134,12 +134,18 @@ class InMemoryProjections:
         # and a sibling's Ref values are substituted before that sibling applies.
         resolver = RefResolver()
         retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
+        created = written = 0
         # Writes first, then deletes, then retires — so a reconcile batch
         # converges regardless of the order its handlers emitted, and a produces=
         # row is recorded before any later effect Refs it.
         for eff in effects_list:
             if isinstance(eff, Upsert):
-                self._upsert(resolver, resolver.resolve_effect(eff))
+                # No skip_unchanged here, so every upsert writes: `skipped` stays
+                # 0 and `written` counts them all, which is what the Django
+                # executor also reports when the option is off.
+                if self._upsert(resolver, resolver.resolve_effect(eff)) == "created":
+                    created += 1
+                written += 1
             elif isinstance(eff, Update):
                 self._update(resolver.resolve_effect(eff))
         for eff in effects_list:
@@ -151,15 +157,26 @@ class InMemoryProjections:
                 flipped = self._retire(reff)
                 if reff.transition is not None:
                     retire_flips.append((reff, flipped))
-        return ApplyReport(retire_flips=retire_flips)
+        return ApplyReport(
+            retire_flips=retire_flips,
+            upserts_created=created,
+            upserts_written=written,
+            upserts_skipped=0,
+        )
 
-    def _upsert(self, resolver: RefResolver, eff: Upsert) -> None:
+    def _upsert(self, resolver: RefResolver, eff: Upsert) -> str:
+        """Apply one upsert; return `"created"` or `"written"`.
+
+        Never `"skipped"` — that outcome belongs to `skip_unchanged`, which this
+        executor does not implement (it holds no columns to compare against).
+        """
         label = eff.model_label
         lookup = eff.lookup
         existing = self._find(label, lookup)
         if existing:
             row = existing[0]
             row.update(eff.defaults or {})
+            outcome = "written"
         else:
             # Mirror update_or_create's create path: the lookup's concrete field
             # assignments plus defaults, dropping any operator lookup.
@@ -168,6 +185,7 @@ class InMemoryProjections:
             row.update(eff.defaults or {})
             self._table(label)[self._next_pk] = row
             self._next_pk += 1
+            outcome = "created"
         if eff.produces is not None:
             # Let a sibling Ref bind to this row's pk (or any other column).
             resolver.record(
@@ -176,6 +194,7 @@ class InMemoryProjections:
                     row["pk"] if field in ("pk", "id") else row.get(field)
                 ),
             )
+        return outcome
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: never mints a row (the multi-owner primitive)."""

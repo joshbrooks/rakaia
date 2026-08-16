@@ -461,6 +461,60 @@ class ExecutorContract:
         row = seam.reader.get(seam.model, field_key="a")
         assert (row.severity, row.message) == ("error", "from the other owner")
 
+    # -- upsert accounting ---------------------------------------------------
+
+    def test_upsert_counts_separate_inserts_from_updates(self, seam):
+        """`upserts_created` counts inserts, `upserts_written` counts every upsert
+        that issued a write, and both agree with what actually happened: a first
+        apply creates the rows, a second one updates them.
+
+        `upserts_skipped` is 0 for an executor that writes unconditionally, which
+        is every binding here except `DjangoExecutor(skip_unchanged=True)` — that
+        one has its own case. The invariant holding everywhere is
+        `written + skipped == <number of upsert effects>`.
+        """
+        first = seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
+        if first is not None:
+            assert (first.upserts_created, first.upserts_written) == (2, 2)
+            assert first.upserts_written + first.upserts_skipped == 2
+
+        # Same natural keys, one changed column: updates, so nothing is created.
+        second = seam.executor.apply(
+            [
+                self._upsert(seam, "a", message="changed"),
+                self._upsert(seam, "b", message="changed"),
+            ]
+        )
+        if second is not None:
+            assert second.upserts_created == 0
+            assert second.upserts_written + second.upserts_skipped == 2
+
+    def test_upsert_counts_ignore_the_other_ops(self, seam):
+        """The counts are scoped to `update_or_create`. A batch of in-place
+        updates and deletes leaves all three at 0 — otherwise "how much write
+        churn did this replay cause" would fold in ops whose cost is a different
+        question, and `skip_unchanged` is wired to the upsert path alone."""
+        seam.executor.apply([self._upsert(seam, "a")])
+        report = seam.executor.apply(
+            [
+                Update(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "field_key": "a"},
+                    defaults={"message": "patched"},
+                ),
+                Delete(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "field_key": "zzz"},
+                ),
+            ]
+        )
+        if report is not None:
+            assert (
+                report.upserts_created,
+                report.upserts_written,
+                report.upserts_skipped,
+            ) == (0, 0, 0)
+
     # -- retire flips -------------------------------------------------------
 
     def test_retire_flips_reported_only_when_notifications_were_asked_for(self, seam):

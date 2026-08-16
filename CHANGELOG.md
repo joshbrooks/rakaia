@@ -31,6 +31,22 @@ protocol is covered by both stores.
 
 ### Added
 
+- **`ApplyReport` says how much a batch actually wrote.** `skip_unchanged`
+  computes exactly which columns differ and then threw the answer away, so a
+  replay that rewrote every row and one that wrote nothing reported the same
+  thing — converged state, and silence. The question the option exists to answer,
+  *how much write churn did this cause*, could only be reached by counting
+  queries around the call. `ApplyReport` now carries `upserts_created`,
+  `upserts_written` and `upserts_skipped`, with
+  `written + skipped == <number of upsert effects>` and `written - created` the
+  number of updates. Scoped to `update_or_create` on purpose: that is where
+  `skip_unchanged` is wired, because `update` already issues one UPDATE that does
+  not advance `auto_now`, and deletes and retires are counted by their own
+  effects. `InMemoryProjections` reports them too — it writes unconditionally, so
+  its `skipped` is always 0, which is also what `DjangoExecutor` reports with the
+  option off — and `tests/executor_contract.py` pins them for every executor.
+  Additive fields with defaults; nothing breaks.
+
 - **`rakaia.InMemoryProjections`, and shared contracts for the executor and reader
   seams.** Rakaia had four ways to apply effects and four ways to read
   projections back, and — unlike the store seam, which has two adapters and two
