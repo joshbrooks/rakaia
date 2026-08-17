@@ -256,16 +256,6 @@ def test_a_rolled_back_append_is_never_published(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 7 (#159): decorators.py drops kwargs['using'] from the "
-        "post_save receiver and opens transaction.atomic() with no alias, so a "
-        "save routed to another database writes its model row there and its "
-        "stream event to the default one -- one save, split across two "
-        "databases."
-    ),
-)
 @pytest.mark.django_db(databases=["default", "overlay"])
 def test_a_save_to_another_database_records_its_event_there() -> None:
     """A save and the event it emits are one write, so they share a database.
@@ -288,6 +278,21 @@ def test_a_save_to_another_database_records_its_event_there() -> None:
         "a save routed to 'overlay' wrote its stream event to 'default'"
     )
     assert overlay_events == 1
+
+    # The whole write has to land together, not just the event row. The entry
+    # and the offset high-water are part of the same save.
+    from django_rakaia.models import StreamEntry as _Entry
+    from django_rakaia.models import StreamOffsetWatermark as _Watermark
+
+    path = f"area:{area.id}:projects"
+    assert _Entry.objects.using("overlay").filter(stream__stream_id=path).count() == 1
+    assert _Watermark.objects.using("overlay").filter(stream_path=path).exists(), (
+        "the offset high-water was not allocated on 'overlay'"
+    )
+    assert not _Watermark.objects.using("default").filter(stream_path=path).exists(), (
+        "offsets for an 'overlay' stream were allocated from the 'default' "
+        "high-water -- a rebuild would read its offsets from the live database"
+    )
 
 
 # ---------------------------------------------------------------------------
