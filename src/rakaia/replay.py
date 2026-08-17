@@ -34,6 +34,7 @@ import json
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Literal
 
 from .effects import (
@@ -135,6 +136,27 @@ class _ReplayCtx:
     # registry or rebuilding the drift callback.
     upcasters: Any = None
     drift_callback: Any = None
+    # Source hashes computed during this replay, keyed by the callable.
+    #
+    # Drift is a property of a *registration*, not of an event: a handler's
+    # source cannot change while its own replay is running. Checking it per
+    # event meant `inspect.getsource` + SHA-256 for every (event x version) —
+    # measured at ~86% of total replay time on a 2000-event stream (#156).
+    #
+    # Scoped to the replay rather than cached globally on purpose. A long-lived
+    # process that reloads code between replays must still be able to detect the
+    # drift that reload introduced.
+    source_hashes: dict[Any, str] = field(default_factory=dict)
+    # Registrations already reported as drifted, so the warning is emitted once
+    # rather than once per event. `result.drift_detected` already dedupes by
+    # name; `result.warnings` and the log did not.
+    #
+    # Keyed by `(kind, name, stored_hash)` — a *registration*, not a name. A
+    # handler name is deliberately stable across its versions, so keying by name
+    # alone would report the first drifted version of a name and silently drop
+    # every later one. The stored hash is what distinguishes two registrations
+    # that share a name.
+    drift_reported: set[tuple[str, str, str]] = field(default_factory=set)
 
 
 #: One event ready for dispatch: its sequence, the routing subject to match
@@ -176,6 +198,13 @@ def build_pipeline(
     )
 
     def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
+        # Reported once per registration, like handlers and reducers. An
+        # upcaster step runs on every event that needs it, so without this a
+        # drifted upcaster grew `result.warnings` by one entry per event.
+        key = ("upcaster", uv.dotted_path, uv.source_hash)
+        if key in ctx.drift_reported:
+            return
+        ctx.drift_reported.add(key)
         _record_drift(
             kind="upcaster",
             name=uv.dotted_path,
@@ -340,7 +369,7 @@ def _dispatch_event(
     versions = ctx.handlers.resolve(match_str, seq, event=upcasted, stage=stage)
     all_effects: list[AnyEffect] = []
     for version in versions:
-        _check_handler_drift(version, ctx.on_drift, ctx.result)
+        _check_handler_drift(version, ctx)
         all_effects.extend(_call_handler(version, upcasted, ctx.reader))
     if ctx.track_touched:
         _record_touched(
@@ -357,7 +386,7 @@ def _run_stage_reducers(ctx: _ReplayCtx, stage: int | None) -> None:
     # far (cumulative across stages already run this pass); reducer *outputs* are
     # not themselves recorded as touched.
     for reducer in ctx.handlers.reducers_for_stage(stage):
-        _check_reducer_drift(reducer, ctx.on_drift, ctx.result)
+        _check_reducer_drift(reducer, ctx)
         if _reducer_wants_touched(reducer.fn):
             out = reducer.fn(ctx.reader, tuple(ctx.touched))
         else:
@@ -433,6 +462,7 @@ def replay(
             _decode_event(data, stream_path, seq),
             match_str,
             drift_callback=ctx.drift_callback,
+            hasher=partial(live_source_hash, ctx),
         )
 
     def _in_range(seq: int) -> bool:
@@ -545,6 +575,7 @@ def merge_replay(
                 _decode_event(msg.data, path, offset),
                 match_str,
                 drift_callback=ctx.drift_callback,
+                hasher=partial(live_source_hash, ctx),
             )
             if order_key is ENVELOPE_TS:
                 if msg.event_ts is None:
@@ -580,39 +611,54 @@ def merge_replay(
     return run_passes(ctx, merged, what="merge_replay")
 
 
-def _check_handler_drift(
-    version: HandlerVersion,
-    on_drift: OnDriftPolicy,
-    result: ReplayResult,
-) -> None:
-    live_hash = hash_function_source(version.fn)
+def live_source_hash(ctx: _ReplayCtx, fn: Any) -> str:
+    """The source hash of `fn`, computed at most once per replay.
+
+    The expensive part of a drift check — `inspect.getsource` and a SHA-256 —
+    depends only on the callable, so it is memoised here. The *comparison* stays
+    per registration, because two registrations may legitimately share a
+    function while storing different hashes.
+    """
+    cached = ctx.source_hashes.get(fn)
+    if cached is None:
+        cached = hash_function_source(fn)
+        ctx.source_hashes[fn] = cached
+    return cached
+
+
+def _check_handler_drift(version: HandlerVersion, ctx: _ReplayCtx) -> None:
+    live_hash = live_source_hash(ctx, version.fn)
     if live_hash == version.source_hash:
         return
+    key = ("handler", version.name, version.source_hash)
+    if key in ctx.drift_reported:
+        return
+    ctx.drift_reported.add(key)
     _record_drift(
         kind="handler",
         name=version.name,
         stored_hash=version.source_hash,
         live_hash=live_hash,
-        on_drift=on_drift,
-        result=result,
+        on_drift=ctx.on_drift,
+        result=ctx.result,
     )
 
 
-def _check_reducer_drift(
-    reducer: ReducerVersion,
-    on_drift: OnDriftPolicy,
-    result: ReplayResult,
-) -> None:
-    live_hash = hash_function_source(reducer.fn)
+def _check_reducer_drift(reducer: ReducerVersion, ctx: _ReplayCtx) -> None:
+    live_hash = live_source_hash(ctx, reducer.fn)
     if live_hash == reducer.source_hash:
         return
+    key = ("reducer", reducer.name, reducer.source_hash)
+    if key in ctx.drift_reported:
+        return
+    ctx.drift_reported.add(key)
     _record_drift(
         kind="reducer",
         name=reducer.name,
         stored_hash=reducer.source_hash,
         live_hash=live_hash,
-        on_drift=on_drift,
-        result=result,
+        on_drift=ctx.on_drift,
+        result=ctx.result,
     )
 
 
