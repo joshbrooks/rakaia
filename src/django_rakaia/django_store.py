@@ -81,10 +81,10 @@ from .models import (
     StreamProducer,
 )
 
-# Re-exported: `format_offset` and the payload helpers used to live here, and
-# both this package and its tests import them from this module. Moving them to
-# `event_message` (#153) keeps the names reachable at their old home rather than
-# rippling the change through every call site.
+# Re-exported: the payload helpers used to live here, and `format_offset` has
+# always been reachable through here; both this package and its tests import
+# them from this module. Moving the helpers to `event_message` (#153) keeps the
+# names at their old home rather than rippling through every call site.
 from .offsets import format_offset, parse_offset
 
 __all__ = [
@@ -817,7 +817,7 @@ class DjangoStreamStore:
                     message=message_of(entry),
                     stream_closed=bool(getattr(options, "close", False)),
                 )
-                for (_data, options), event, entry in zip(
+                for (_data, options), _event, entry in zip(
                     written, stream_events, entries, strict=True
                 )
             ] + [AppendResult(message=None, stream_closed=True) for _ in refused]

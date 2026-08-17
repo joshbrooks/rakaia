@@ -18,7 +18,7 @@ from django.views.decorators.http import require_GET
 
 from rakaia.types import InvalidOffset
 
-from .event_message import event_label
+from .event_message import event_label, payload_fields
 from .models import Stream, StreamEntry, StreamEvent
 from .offsets import parse_offset
 
@@ -62,12 +62,15 @@ def streams_index(_request: Any) -> HttpResponse:
         .order_by("-last_event")
     )
 
-    # Get event type breakdown
-    event_types = (
-        StreamEvent.objects.values("event_type")
+    # Get event type breakdown. Inverted like every other event_type this page
+    # renders, so the breakdown and the recent-events table below name the same
+    # events the same way rather than one saying "append" and the other "" (#153).
+    event_types = [
+        {"event_type": event_label(row["event_type"]), "count": row["count"]}
+        for row in StreamEvent.objects.values("event_type")
         .annotate(count=Count("id"))
         .order_by("-count")
-    )
+    ]
 
     # Get recent events
     recent_entries = (
@@ -78,6 +81,7 @@ def streams_index(_request: Any) -> HttpResponse:
             "offset",
             "event__event_type",
             "event__data",
+            "event__payload_encoding",
             "created_at",
         )
     )
@@ -105,7 +109,7 @@ def streams_index(_request: Any) -> HttpResponse:
                 # what `read()` reports, not the storage marker (#153).
                 "event_type": event_label(e["event__event_type"]),
                 "created_at": e["created_at"].isoformat() if e["created_at"] else None,
-                "data": e["event__data"],
+                **payload_fields(e["event__data"], e["event__payload_encoding"]),
             }
             for e in recent_entries
         ],
@@ -228,6 +232,7 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
             "event__id",
             "event__event_type",
             "event__data",
+            "event__payload_encoding",
             "created_at",
         )
     )
@@ -239,7 +244,10 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
             "offset": e["offset"],
             "event_type": event_label(e["event__event_type"]),
             "created_at": e["created_at"].isoformat() if e["created_at"] else None,
-            "data": e["event__data"],
+            # The stored pair, as the SSE frame sends it — this API used to
+            # publish an encoded payload with nothing to say it was encoded, so
+            # a base64 body was indistinguishable from text (#153).
+            **payload_fields(e["event__data"], e["event__payload_encoding"]),
         }
         for e in entries
     ]

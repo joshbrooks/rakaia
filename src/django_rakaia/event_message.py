@@ -99,6 +99,31 @@ def event_label(event_type: str) -> str:
     return "" if event_type == APPEND_EVENT_TYPE else event_type
 
 
+def payload_fields(data: Any, payload_encoding: str | None) -> dict[str, Any]:
+    """The stored payload as the `data`/`payload_encoding` pair a JSON wire carries.
+
+    For surfaces that emit JSON rather than bytes — the channel-layer frame, the
+    SSE view, the dashboard APIs. They cannot carry a `StreamMessage`, whose
+    `data` is bytes, so they carry the stored pair and let the consumer run
+    `decode_payload` for itself.
+
+    Passing the pair through is what makes that inverse exact. Decoding first and
+    re-deriving an encoding from the resulting bytes is lossy: a `text/plain`
+    body that happens to parse as JSON (`{"a": 1}\\n`, `1.50`, `  7  `) would be
+    republished as a JSON value with no encoding, and reconstructing it yields
+    different bytes than `read()` returns — the same divergence #153 exists to
+    remove.
+
+    `payload_encoding` is omitted when `None`, so an ordinary JSON payload — the
+    common case — keeps exactly the shape these surfaces always had and no
+    existing consumer sees a new key.
+    """
+    fields: dict[str, Any] = {"data": data}
+    if payload_encoding is not None:
+        fields["payload_encoding"] = payload_encoding
+    return fields
+
+
 def message_of(entry: StreamEntry) -> StreamMessage:
     """The event a stored entry represents.
 

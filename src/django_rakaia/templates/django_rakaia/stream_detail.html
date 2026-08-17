@@ -355,7 +355,8 @@
 
         row.innerHTML = `
             <td><code>${eventData.offset}</code></td>
-            <td><span class="badge badge-${eventData.event_type}">${eventData.event_type}</span></td>
+            {# An append carries no envelope label, so `event_type` is "" — name it rather than render an empty badge (#153). #}
+            <td><span class="badge badge-${eventData.event_type}">${eventData.event_type || "raw append"}</span></td>
             <td>${timestamp}</td>
             <td>
                 <div class="data-preview" style="cursor: pointer;" onclick="toggleJson(this)">

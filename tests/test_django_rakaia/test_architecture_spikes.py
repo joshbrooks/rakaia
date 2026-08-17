@@ -18,6 +18,7 @@ import pytest
 from django.db import transaction
 
 from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.event_message import decode_payload
 from django_rakaia.models import StreamEntry, StreamEvent
 from rakaia.types import AppendOptions
 
@@ -99,6 +100,53 @@ def test_a_subscriber_can_recover_the_payload_a_reader_sees(
 
     assert encoding == "base64", "the subscriber is told how to read the value"
     assert base64.b64decode(published) == message.data
+
+
+@pytest.mark.parametrize(
+    ("content_type", "payload"),
+    [
+        # The case the first cut of the fix got wrong: a text body that happens
+        # to parse as JSON. Decoding the stored value and re-deriving an
+        # encoding from the bytes republished these as JSON values, so the
+        # subscriber reconstructed `{"a": 1}`, `1.5` and `7` -- losing the
+        # newline, the trailing zero and the surrounding spaces `read()` keeps.
+        ("text/plain", b'{"a": 1}\n'),
+        ("text/plain", b'{"a":  1}'),
+        ("text/plain", b"1.50"),
+        ("text/plain", b"  7  "),
+        # The cases that already worked, kept here so the law is stated once
+        # rather than per storage shape.
+        ("text/plain", b"an ordinary line"),
+        ("application/octet-stream", b"\xff\xfe binary, not utf-8"),
+        (None, b'{"x": 1}'),
+    ],
+)
+def test_a_subscriber_reconstructs_a_readers_bytes_for_any_payload(
+    recording_layer: _RecordingChannelLayer,
+    content_type: str | None,
+    payload: bytes,
+) -> None:
+    """`decode_payload` over the frame yields exactly what `read()` returns.
+
+    The one law the frame owes a subscriber, stated for every storage shape at
+    once rather than per shape. The frame cannot carry bytes, so it carries the
+    stored `data`/`payload_encoding` pair and the subscriber runs the same
+    inverse a reader does -- which only holds if the frame passes the stored
+    pair through rather than decoding and guessing an encoding back (#153).
+    """
+    store = DjangoStreamStore()
+    store.create("roundtrip", content_type=content_type)
+    store.append("roundtrip", payload)
+
+    read_bytes = store.read("roundtrip")[0][0].data
+    assert read_bytes == payload, "precondition: read() is byte-exact"
+
+    _group, frame = recording_layer.sent[-1]
+    recovered = decode_payload(
+        frame["event"]["data"], frame["event"].get("payload_encoding")
+    )
+
+    assert recovered == read_bytes
 
 
 def test_a_json_subscriber_still_receives_the_plain_json_value(
