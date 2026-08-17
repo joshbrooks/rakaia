@@ -921,6 +921,7 @@ class UpcasterRegistry(_LogBackedRegistry):
         target_version: int,
         *,
         drift_callback: Callable[[UpcasterVersion, str], None] | None = None,
+        hasher: Callable[[Any], str] | None = None,
     ) -> dict[str, Any]:
         """
         Upcast `event` from its current schema_version up to `target_version`.
@@ -940,6 +941,12 @@ class UpcasterRegistry(_LogBackedRegistry):
         If `drift_callback` is provided, it is called once per step with
         `(version, current_hash)` if the upcaster's source hash has changed
         since registration. The callback decides whether to raise or warn.
+
+        `hasher` overrides how a step's live source hash is computed. A replay
+        passes one memoised for its own duration: an upcaster's source cannot
+        change mid-replay, and re-reading it per event per step was a measurable
+        share of replay time (#156). Defaults to hashing afresh, so a caller
+        that keeps no such ledger is unaffected.
         """
         current = int(event.get("schema_version", 1))
         if current > target_version:
@@ -969,7 +976,7 @@ class UpcasterRegistry(_LogBackedRegistry):
                 )
             step = matching[0]
             if drift_callback is not None:
-                live_hash = hash_function_source(step.fn)
+                live_hash = (hasher or hash_function_source)(step.fn)
                 if live_hash != step.source_hash:
                     drift_callback(step, live_hash)
             event = step.fn(event)
@@ -983,6 +990,7 @@ class UpcasterRegistry(_LogBackedRegistry):
         event_match_str: str,
         *,
         drift_callback: Callable[[UpcasterVersion, str], None] | None = None,
+        hasher: Callable[[Any], str] | None = None,
     ) -> dict[str, Any]:
         """Upcast `event` all the way to the current schema for its match.
 
@@ -992,7 +1000,11 @@ class UpcasterRegistry(_LogBackedRegistry):
         """
         target = self.current_version(event_match_str, event)
         return self.apply_chain(
-            event, event_match_str, target, drift_callback=drift_callback
+            event,
+            event_match_str,
+            target,
+            drift_callback=drift_callback,
+            hasher=hasher,
         )
 
     def all_upcasters(self) -> list[UpcasterVersion]:

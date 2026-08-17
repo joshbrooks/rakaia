@@ -102,15 +102,6 @@ def test_a_json_array_append_stores_one_message_per_element() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 4 (#156): _check_handler_drift calls hash_function_source from "
-        "_dispatch_event, so a handler's source is re-read and re-hashed once "
-        "per event. Drift is a property of a registration; hashing belongs at "
-        "the start of the replay, not in the dispatch hot path."
-    ),
-)
 def test_a_handler_source_is_hashed_once_per_replay(monkeypatch) -> None:
     """Drift is a property of a registration, so the cost must not scale with events.
 

@@ -409,6 +409,35 @@ class TestDrift:
         assert result.drift_detected.count("h") == 1
         assert any("RAKAIA_DRIFT" in w for w in result.warnings)
 
+    def test_handler_drift_is_reported_once_not_once_per_event(
+        self, store: StreamStore
+    ):
+        """Drift is a property of a registration, so it is reported per registration.
+
+        `drift_detected` always deduplicated by name, but `warnings` and the log
+        did not — a drifted handler over a long stream produced one warning per
+        event. Since #156 the source is hashed once per replay and the report is
+        made once, so both agree.
+        """
+        reg = HandlerRegistry()
+
+        def h(event):  # noqa: ARG001
+            return None
+
+        version = reg.register("h", "s", h, 0, None)
+        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+
+        seed_stream("s", [{"id": i} for i in range(10)], store=store)
+
+        result = replay(store, "s", CaptureExecutor(), handler_registry=reg)
+
+        assert result.events_processed == 10
+        drift_warnings = [w for w in result.warnings if "RAKAIA_DRIFT" in w]
+        assert len(drift_warnings) == 1, (
+            f"10 events produced {len(drift_warnings)} drift warnings for one "
+            "drifted registration"
+        )
+
     def test_handler_drift_raises_when_strict(self, store: StreamStore):
         reg = HandlerRegistry()
 
