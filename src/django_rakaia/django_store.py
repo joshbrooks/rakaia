@@ -137,7 +137,14 @@ def write_enveloped_event(
     `django_rakaia.envelope`'s module docstring warns about, in the module it
     warns about it in (#131).
     """
-    event = StreamEvent.objects.create(
+    streams = list(streams)
+    # The event is written to whatever database its streams came from, rather
+    # than always to the default one. A save routed elsewhere used to put its
+    # row on one database and its event on another — one save, split across two
+    # (#159). Deriving the alias from the streams means it follows the data and
+    # no caller has to remember to pass it.
+    using = streams[0]._state.db if streams else None
+    event = StreamEvent.objects.using(using).create(
         data=data,
         event_type=label or _APPEND_EVENT_TYPE,
         metadata=merge_provenance(metadata) or {},
@@ -145,7 +152,7 @@ def write_enveloped_event(
         payload_encoding=payload_encoding,
     )
     entries = [
-        StreamEntry.objects.create(
+        StreamEntry.objects.using(using).create(
             stream=stream,
             event=event,
             offset=stream.get_next_offset(),
