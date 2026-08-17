@@ -122,6 +122,14 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
     #
     # Outside a transaction Django runs the callback immediately, so an append in
     # autocommit still publishes synchronously.
+    #
+    # The alias is taken from the entries, the way `write_enveloped_event` takes
+    # it from the streams. An entry written to another database commits on *that*
+    # connection, so queuing against the default one would be queuing on a
+    # connection that is not in a transaction at all — Django then runs the
+    # callback immediately and publishes a write that has not happened yet, which
+    # is the very defect this defers to avoid (#157 on the path #159 opened up).
+    using = entries[0]._state.db
     frames = [_frame(stream_id, entry) for entry in entries]
 
     def _send() -> None:
@@ -129,7 +137,7 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
         for frame in frames:
             send(group_name, frame)
 
-    transaction.on_commit(_send)
+    transaction.on_commit(_send, using=using)
 
 
 @receiver(post_save, sender=StreamEntry)
