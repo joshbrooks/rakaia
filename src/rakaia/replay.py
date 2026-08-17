@@ -150,7 +150,13 @@ class _ReplayCtx:
     # Registrations already reported as drifted, so the warning is emitted once
     # rather than once per event. `result.drift_detected` already dedupes by
     # name; `result.warnings` and the log did not.
-    drift_reported: set = field(default_factory=set)
+    #
+    # Keyed by `(kind, name, stored_hash)` — a *registration*, not a name. A
+    # handler name is deliberately stable across its versions, so keying by name
+    # alone would report the first drifted version of a name and silently drop
+    # every later one. The stored hash is what distinguishes two registrations
+    # that share a name.
+    drift_reported: set[tuple[str, str, str]] = field(default_factory=set)
 
 
 #: One event ready for dispatch: its sequence, the routing subject to match
@@ -192,6 +198,13 @@ def build_pipeline(
     )
 
     def _upcaster_drift(uv: UpcasterVersion, live_hash: str) -> None:
+        # Reported once per registration, like handlers and reducers. An
+        # upcaster step runs on every event that needs it, so without this a
+        # drifted upcaster grew `result.warnings` by one entry per event.
+        key = ("upcaster", uv.dotted_path, uv.source_hash)
+        if key in ctx.drift_reported:
+            return
+        ctx.drift_reported.add(key)
         _record_drift(
             kind="upcaster",
             name=uv.dotted_path,
@@ -617,9 +630,10 @@ def _check_handler_drift(version: HandlerVersion, ctx: _ReplayCtx) -> None:
     live_hash = live_source_hash(ctx, version.fn)
     if live_hash == version.source_hash:
         return
-    if ("handler", version.name) in ctx.drift_reported:
+    key = ("handler", version.name, version.source_hash)
+    if key in ctx.drift_reported:
         return
-    ctx.drift_reported.add(("handler", version.name))
+    ctx.drift_reported.add(key)
     _record_drift(
         kind="handler",
         name=version.name,
@@ -634,9 +648,10 @@ def _check_reducer_drift(reducer: ReducerVersion, ctx: _ReplayCtx) -> None:
     live_hash = live_source_hash(ctx, reducer.fn)
     if live_hash == reducer.source_hash:
         return
-    if ("reducer", reducer.name) in ctx.drift_reported:
+    key = ("reducer", reducer.name, reducer.source_hash)
+    if key in ctx.drift_reported:
         return
-    ctx.drift_reported.add(("reducer", reducer.name))
+    ctx.drift_reported.add(key)
     _record_drift(
         kind="reducer",
         name=reducer.name,

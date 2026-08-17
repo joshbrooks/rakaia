@@ -438,6 +438,81 @@ class TestDrift:
             "drifted registration"
         )
 
+    def test_every_drifted_registration_of_one_name_is_reported(
+        self, store: StreamStore
+    ):
+        """Once per registration is not the same as once per name.
+
+        A handler name is stable across its versions on purpose, so two
+        registrations legitimately share one. Reporting per name would announce
+        the first drifted version and silently swallow every later one — the one
+        failure mode drift detection exists to prevent.
+        """
+        reg = HandlerRegistry()
+
+        def h_v1(event):  # noqa: ARG001
+            return None
+
+        def h_v2(event):  # noqa: ARG001
+            return None
+
+        v1 = reg.register("h", "s", h_v1, 0, 5)
+        v2 = reg.register("h", "s", h_v2, 5, None)
+        object.__setattr__(v1, "source_hash", "deadbeef" * 8)
+        object.__setattr__(v2, "source_hash", "cafebabe" * 8)
+
+        seed_stream("s", [{"id": i} for i in range(10)], store=store)
+
+        result = replay(store, "s", CaptureExecutor(), handler_registry=reg)
+
+        drift_warnings = [w for w in result.warnings if "RAKAIA_DRIFT" in w]
+        assert len(drift_warnings) == 2, (
+            f"two drifted registrations of 'h', {len(drift_warnings)} "
+            f"warning(s): {drift_warnings}"
+        )
+        assert any("deadbeef" in w for w in drift_warnings)
+        assert any("cafebabe" in w for w in drift_warnings)
+
+    def test_upcaster_drift_is_reported_once_not_once_per_event(
+        self, store: StreamStore
+    ):
+        """An upcaster gets the same report-once treatment as a handler.
+
+        Its step runs on every event that needs it, so reporting per call grew
+        `warnings` by one entry per event over the whole stream.
+        """
+        handlers = HandlerRegistry()
+        upcasters = UpcasterRegistry()
+
+        def h(event):  # noqa: ARG001
+            return None
+
+        def upcast(event):
+            return {**event, "added": True}
+
+        handlers.register("h", "s", h, 0, None)
+        up_version = upcasters.register("s", 1, upcast)
+        object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
+
+        seed_stream(
+            "s", [{"id": i, "schema_version": 1} for i in range(10)], store=store
+        )
+
+        result = replay(
+            store,
+            "s",
+            CaptureExecutor(),
+            handler_registry=handlers,
+            upcaster_registry=upcasters,
+        )
+
+        assert result.events_processed == 10
+        drift_warnings = [w for w in result.warnings if "upcaster" in w]
+        assert len(drift_warnings) == 1, (
+            f"10 events produced {len(drift_warnings)} warnings for one "
+            "drifted upcaster"
+        )
+
     def test_handler_drift_raises_when_strict(self, store: StreamStore):
         reg = HandlerRegistry()
 
