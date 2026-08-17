@@ -41,15 +41,6 @@ def _registry() -> HandlerRegistry:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 3 (#155): json_mode.process_json_append appends a trailing "
-        "comma and the store keeps that framed blob as StreamMessage.data, so "
-        "the replay path cannot decode what the append path wrote. Fixing it "
-        "means storing payloads unframed and framing in format_response."
-    ),
-)
 def test_a_json_mode_stream_can_be_replayed() -> None:
     """A stream is a stream. Its content type is a transport fact, not an event fact.
 
@@ -72,14 +63,6 @@ def test_a_json_mode_stream_can_be_replayed() -> None:
     assert result.events_processed == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 3 (#155): a JSON array append is documented as flattening "
-        "into separate messages, but produces one message holding the "
-        "concatenated, comma-framed blob."
-    ),
-)
 def test_a_json_array_append_stores_one_message_per_element() -> None:
     """`server_store_contract.py` names this behaviour in a test title.
 
@@ -94,7 +77,11 @@ def test_a_json_array_append_stores_one_message_per_element() -> None:
     messages = store.read("s")[0]
 
     assert len(messages) == 2
-    assert messages[0].data == b'{"id": 1}'
+    # Stored in the canonical compact form the response concatenates, which is
+    # what the append path has always produced -- the change is that the payload
+    # is now a complete JSON value rather than one with a comma stuck to it.
+    assert messages[0].data == b'{"id":1}'
+    assert messages[1].data == b'{"id":2}'
 
 
 # ---------------------------------------------------------------------------
