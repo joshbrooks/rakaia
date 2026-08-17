@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from rakaia.json_mode import (
@@ -50,22 +52,21 @@ class TestIsJsonContentType:
 
 
 class TestProcessJsonAppend:
-    def test_single_object_appends_trailing_comma(self):
-        result = process_json_append(b'{"foo": "bar"}')
-        assert result.endswith(b",")
-        assert b'"foo"' in result
-        assert b'"bar"' in result
+    def test_single_object_is_one_unframed_message(self):
+        # The payload is stored exactly as it will be read back. It carried a
+        # trailing comma until #155, which made it undecodable to anything
+        # reading the message directly.
+        assert process_json_append(b'{"foo": "bar"}') == [b'{"foo":"bar"}']
 
-    def test_array_flattens_elements(self):
-        result = process_json_append(b'[{"a": 1}, {"b": 2}]')
-        # Each element gets its own trailing comma
-        assert result.count(b",") >= 2
-        assert b'"a"' in result
-        assert b'"b"' in result
+    def test_array_flattens_into_one_message_per_element(self):
+        # The spec: a two-element body "stores two messages" (7.1).
+        assert process_json_append(b'[{"a": 1}, {"b": 2}]') == [
+            b'{"a":1}',
+            b'{"b":2}',
+        ]
 
-    def test_empty_array_on_create_returns_empty(self):
-        result = process_json_append(b"[]", is_initial_create=True)
-        assert result == b""
+    def test_empty_array_on_create_stores_nothing(self):
+        assert process_json_append(b"[]", is_initial_create=True) == []
 
     def test_empty_array_on_append_raises(self):
         with pytest.raises(ValueError, match="Empty arrays"):
@@ -82,23 +83,25 @@ class TestProcessJsonAppend:
             process_json_append(b"\xff\xfe")
 
     def test_scalar_value_works(self):
-        result = process_json_append(b"42")
-        assert result == b"42,"
+        assert process_json_append(b"42") == [b"42"]
 
     def test_string_value_works(self):
-        result = process_json_append(b'"hello"')
-        assert result == b'"hello",'
+        assert process_json_append(b'"hello"') == [b'"hello"']
 
 
 class TestFormatJsonResponse:
     def test_empty_returns_empty_array(self):
-        assert format_json_response(b"") == b"[]"
+        assert format_json_response([]) == b"[]"
 
-    def test_single_element_strips_trailing_comma(self):
-        assert format_json_response(b'{"a":1},') == b'[{"a":1}]'
+    def test_single_element_wrapped(self):
+        assert format_json_response([b'{"a":1}']) == b'[{"a":1}]'
 
-    def test_multiple_elements_wrapped(self):
-        assert format_json_response(b'{"a":1},{"b":2},') == b'[{"a":1},{"b":2}]'
+    def test_multiple_elements_joined_and_wrapped(self):
+        # The separators are added here and exist nowhere else.
+        assert format_json_response([b'{"a":1}', b'{"b":2}']) == b'[{"a":1},{"b":2}]'
 
-    def test_no_trailing_comma_still_wraps(self):
-        assert format_json_response(b'{"a":1}') == b'[{"a":1}]'
+    def test_a_stored_payload_round_trips_through_the_response(self):
+        """What is stored is a complete JSON value, and framing is reversible."""
+        payloads = process_json_append(b'[{"a": 1}, {"b": 2}]')
+        assert [json.loads(p) for p in payloads] == [{"a": 1}, {"b": 2}]
+        assert json.loads(format_json_response(payloads)) == [{"a": 1}, {"b": 2}]

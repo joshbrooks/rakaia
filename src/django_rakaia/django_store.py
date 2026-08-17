@@ -42,7 +42,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 from django.db import transaction
 
-from rakaia.append_decision import StreamFacts, decide_append
+from rakaia.append_decision import AppendVerdict, StreamFacts, decide_append
 from rakaia.context import merge_provenance
 from rakaia.json_mode import (
     format_json_response,
@@ -54,11 +54,9 @@ from rakaia.types import (
     AppendOptions,
     AppendResult,
     CloseResult,
-    ContentTypeMismatch,
     ProducerAccepted,
     ProducerState,
     ProducerValidationResult,
-    SequenceConflict,
     StreamConfigConflict,
     StreamMessage,
     StreamNotFound,
@@ -137,7 +135,14 @@ def write_enveloped_event(
     `django_rakaia.envelope`'s module docstring warns about, in the module it
     warns about it in (#131).
     """
-    event = StreamEvent.objects.create(
+    streams = list(streams)
+    # The event is written to whatever database its streams came from, rather
+    # than always to the default one. A save routed elsewhere used to put its
+    # row on one database and its event on another — one save, split across two
+    # (#159). Deriving the alias from the streams means it follows the data and
+    # no caller has to remember to pass it.
+    using = streams[0]._state.db if streams else None
+    event = StreamEvent.objects.using(using).create(
         data=data,
         event_type=label or _APPEND_EVENT_TYPE,
         metadata=merge_provenance(metadata) or {},
@@ -145,7 +150,7 @@ def write_enveloped_event(
         payload_encoding=payload_encoding,
     )
     entries = [
-        StreamEntry.objects.create(
+        StreamEntry.objects.using(using).create(
             stream=stream,
             event=event,
             offset=stream.get_next_offset(),
@@ -523,13 +528,14 @@ class DjangoStreamStore:
         if not is_json_content_type(stream.content_type):
             return [encode_payload(data, stream.content_type)]
 
-        processed = process_json_append(data, is_initial_create=is_initial_create)
-        if not processed:
+        # `process_json_append` validates and flattens, and now returns one
+        # payload per message rather than a framed blob — so its result is the
+        # split, and this no longer re-parses the body to redo the same work.
+        payloads = process_json_append(data, is_initial_create=is_initial_create)
+        if not payloads:
             # An empty array on create: a stream with no messages yet.
             return []
-        parsed = json.loads(data)
-        elements = parsed if isinstance(parsed, list) else [parsed]
-        return [(element, None) for element in elements]
+        return [(json.loads(payload), None) for payload in payloads]
 
     def _write(
         self,
@@ -719,12 +725,20 @@ class DjangoStreamStore:
         the stream does not exist, like :meth:`append`, and returns one
         ``AppendResult`` per item in input order.
 
-        The rest of :meth:`append`'s semantics hold per item too: a closed
-        stream refuses every item with ``stream_closed=True``; per-item
-        ``content_type`` and ``seq`` are validated (the whole batch, before any
-        row is written — a conflict raises and writes nothing); and an item
-        with ``close=True`` closes the stream, refusing the items after it,
-        exactly as a loop of ``append`` would.
+        The rest of :meth:`append`'s semantics hold per item too, because the
+        same ``decide_append`` rule decides every item: a closed stream refuses
+        every item with ``stream_closed=True``; per-item ``content_type`` and
+        ``seq`` are validated (the whole batch, before any row is written — a
+        conflict raises and writes nothing); **producer fencing applies per
+        item**, with an item's outcome returned in its own slot rather than
+        aborting its siblings; and an item with ``close=True`` closes the
+        stream, refusing the items after it, exactly as a loop of ``append``
+        would.
+
+        Fencing used to be the exception: this method hand-rolled a shorter
+        admission check that read content type and ``Stream-Seq`` and nothing
+        else, so a batch was never fenced and never recorded the producer state
+        it established (#154). Both now go through the shared rule.
         """
         items = list(events)
         if not items:
@@ -737,35 +751,82 @@ class DjangoStreamStore:
             if stream.closed:
                 return [AppendResult(message=None, stream_closed=True) for _ in items]
 
-            # Validate before writing, exactly as a loop of `append` would:
-            # per-item content type, and a sequentially advancing Stream-Seq.
-            # The batch is cut at the first item that closes the stream; items
-            # after it observe the closed stream and are refused, not written.
+            # Admission, decided by the same rule the other three write doors
+            # use. This loop used to hand-roll a shorter version — content type
+            # and Stream-Seq only — which meant a batch was never fenced: a
+            # producer displaced by a newer epoch was refused item-by-item
+            # through `append` and silently accepted in bulk (#154).
+            #
+            # The facts advance across the batch exactly as they would across a
+            # loop of `append`: `last_seq` moves with each accepted item, and a
+            # producer's state moves with each accepted fenced write. Conflicts
+            # still raise (they are caller errors and the whole batch is
+            # abandoned); fencing outcomes are returned per item, so an item the
+            # fence refuses becomes a refusal in its own slot rather than
+            # aborting its siblings.
+            now = time.time()
             last_seq = stream.last_seq
+            producer_states = {
+                pid: self._producer_state(stream, pid)
+                for pid in {getattr(o, "producer_id", None) for _d, o in items} - {None}
+            }
+            verdicts: list[AppendVerdict] = []
             cut = len(items)
             for i, (_data, options) in enumerate(items):
-                provided_ct = getattr(options, "content_type", None)
-                if (
-                    provided_ct
-                    and stream.content_type
-                    and normalize_content_type(provided_ct)
-                    != normalize_content_type(stream.content_type)
-                ):
-                    raise ContentTypeMismatch(
-                        f"Content-type mismatch: expected "
-                        f"{stream.content_type}, got {provided_ct}"
-                    )
+                producer_id = getattr(options, "producer_id", None)
+                verdict = decide_append(
+                    StreamFacts(
+                        closed=False,
+                        closed_by=stream.closed_by,
+                        content_type=stream.content_type,
+                        last_seq=last_seq,
+                    ),
+                    options,
+                    producer_state=producer_states.get(producer_id),
+                    now=now,
+                )
+                verdicts.append(verdict)
+                if not verdict.write:
+                    continue
                 seq = getattr(options, "seq", None)
                 if seq is not None:
-                    if last_seq is not None and seq <= last_seq:
-                        raise SequenceConflict(
-                            f"Sequence conflict: {seq} <= {last_seq}"
-                        )
                     last_seq = seq
+                if verdict.producer_result is not None and producer_id is not None:
+                    # Advance the in-batch view of this producer, so a second
+                    # item from the same producer is fenced against the first
+                    # rather than against the pre-batch row.
+                    producer_states[producer_id] = ProducerState(
+                        epoch=getattr(options, "producer_epoch", 0) or 0,
+                        last_seq=getattr(options, "producer_seq", 0) or 0,
+                        last_updated=now,
+                    )
                 if getattr(options, "close", False):
                     cut = i + 1
                     break
-            written, refused = items[:cut], items[cut:]
+
+            # An item the fence refused is not written, but it keeps its slot in
+            # the results so callers still get one answer per input item.
+            admitted = [
+                (item, v)
+                for item, v in zip(items[:cut], verdicts[:cut], strict=False)
+                if v.write
+            ]
+            written = [item for item, _v in admitted]
+            refused = items[cut:]
+
+            if not written:
+                # Every item was refused — by the fence, or by a close earlier in
+                # the batch. There is nothing to allocate an offset block for,
+                # and asking for a block of zero is an error. Each item still
+                # gets its own answer.
+                return [
+                    AppendResult(
+                        message=None,
+                        stream_closed=v.stream_closed,
+                        producer_result=v.producer_result,
+                    )
+                    for v in verdicts
+                ] + [AppendResult(message=None, stream_closed=True) for _ in refused]
 
             # Mirror `append`'s per-event envelope mapping and payload encoding.
             # `merge_provenance` is evaluated per item so ambient provenance is
@@ -803,6 +864,14 @@ class DjangoStreamStore:
             # receiver's existing timing on the `append` path.
             self._publish(stream.stream_id, entries)
 
+            # Persist the fencing state each accepted item established, so a
+            # later batch or append is fenced against this one. `append` does
+            # this via `_commit_producer`; the bulk path did not do it at all,
+            # because it never asked the fence in the first place (#154).
+            for _item, verdict in admitted:
+                if verdict.producer_result is not None:
+                    self._commit_producer(stream, verdict.producer_result)
+
             if last_seq != stream.last_seq:
                 stream.last_seq = last_seq
                 stream.save(update_fields=["last_seq"])
@@ -812,15 +881,35 @@ class DjangoStreamStore:
             if closing:
                 self._close_from_append(stream, written[-1][1])
             self._touch(stream)
-            return [
-                AppendResult(
-                    message=message_of(entry),
-                    stream_closed=bool(getattr(options, "close", False)),
+
+            # One result per input item, in input order. An item the fence
+            # refused keeps its slot with the outcome to report, rather than
+            # vanishing from the results and shifting every later item's answer
+            # onto the wrong input.
+            persisted = iter(entries)
+            results: list[AppendResult] = []
+            for i, (_data, options) in enumerate(items):
+                if i >= cut:
+                    results.append(AppendResult(message=None, stream_closed=True))
+                    continue
+                verdict = verdicts[i]
+                if not verdict.write:
+                    results.append(
+                        AppendResult(
+                            message=None,
+                            stream_closed=verdict.stream_closed,
+                            producer_result=verdict.producer_result,
+                        )
+                    )
+                    continue
+                results.append(
+                    AppendResult(
+                        message=message_of(next(persisted)),
+                        stream_closed=bool(getattr(options, "close", False)),
+                        producer_result=verdict.producer_result,
+                    )
                 )
-                for (_data, options), _event, entry in zip(
-                    written, stream_events, entries, strict=True
-                )
-            ] + [AppendResult(message=None, stream_closed=True) for _ in refused]
+            return results
 
     @staticmethod
     def _publish(stream_id: str, entries: list[StreamEntry]) -> None:
@@ -957,13 +1046,13 @@ class DjangoStreamStore:
         drop the JSON-array framing on the expiry race instead of failing.
         """
         stream = self._require(path)
-        concatenated = b"".join(m.data for m in messages)
         if is_json_content_type(stream.content_type):
-            # Stored payloads are standalone JSON documents; the shared
-            # formatter expects the store's comma-separated concatenation.
-            joined = b",".join(m.data for m in messages)
-            return format_json_response(joined + b"," if joined else b"")
-        return concatenated
+            # Stored payloads are standalone JSON documents, which is now what
+            # the shared formatter takes. It used to want the in-memory store's
+            # comma-separated concatenation, so this path had to re-frame the
+            # payloads just to have them unframed again (#155).
+            return format_json_response([m.data for m in messages])
+        return b"".join(m.data for m in messages)
 
     async def wait_for_messages(
         self, path: str, offset: str, timeout_seconds: float

@@ -178,15 +178,6 @@ def test_a_json_subscriber_still_receives_the_plain_json_value(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 2 (#154): append_many never calls decide_append -- it checks "
-        "content type and Stream-Seq only. A batch from a fenced (stale-epoch) "
-        "producer is admitted, where the same items through append() are "
-        "refused. One append pipeline would make the four doors agree."
-    ),
-)
 def test_a_batch_from_a_fenced_producer_is_refused() -> None:
     """Producer fencing is a property of the stream, not of which door you used.
 
@@ -197,12 +188,16 @@ def test_a_batch_from_a_fenced_producer_is_refused() -> None:
     store = DjangoStreamStore()
     store.create("fenced")
 
-    # Epoch 2 takes the stream.
-    store.append(
+    # Epoch 2 takes the stream. A producer's first sequence is 0, so this
+    # append is genuinely accepted and the epoch is genuinely established --
+    # an earlier version of this test started at 1, which was itself refused
+    # for a sequence gap and so proved less than it claimed.
+    taken = store.append(
         "fenced",
         b'{"n": 1}',
-        AppendOptions(producer_id="p", producer_epoch=2, producer_seq=1),
+        AppendOptions(producer_id="p", producer_epoch=2, producer_seq=0),
     )
+    assert taken.message is not None, "precondition: epoch 2 holds the stream"
 
     # The displaced epoch-1 producer now tries a batch.
     results = store.append_many(
@@ -210,7 +205,7 @@ def test_a_batch_from_a_fenced_producer_is_refused() -> None:
         [
             (
                 b'{"n": 99}',
-                AppendOptions(producer_id="p", producer_epoch=1, producer_seq=2),
+                AppendOptions(producer_id="p", producer_epoch=1, producer_seq=1),
             )
         ],
     )
@@ -256,16 +251,6 @@ def test_a_rolled_back_append_is_never_published(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 7 (#159): decorators.py drops kwargs['using'] from the "
-        "post_save receiver and opens transaction.atomic() with no alias, so a "
-        "save routed to another database writes its model row there and its "
-        "stream event to the default one -- one save, split across two "
-        "databases."
-    ),
-)
 @pytest.mark.django_db(databases=["default", "overlay"])
 def test_a_save_to_another_database_records_its_event_there() -> None:
     """A save and the event it emits are one write, so they share a database.
@@ -288,6 +273,21 @@ def test_a_save_to_another_database_records_its_event_there() -> None:
         "a save routed to 'overlay' wrote its stream event to 'default'"
     )
     assert overlay_events == 1
+
+    # The whole write has to land together, not just the event row. The entry
+    # and the offset high-water are part of the same save.
+    from django_rakaia.models import StreamEntry as _Entry
+    from django_rakaia.models import StreamOffsetWatermark as _Watermark
+
+    path = f"area:{area.id}:projects"
+    assert _Entry.objects.using("overlay").filter(stream__stream_id=path).count() == 1
+    assert _Watermark.objects.using("overlay").filter(stream_path=path).exists(), (
+        "the offset high-water was not allocated on 'overlay'"
+    )
+    assert not _Watermark.objects.using("default").filter(stream_path=path).exists(), (
+        "offsets for an 'overlay' stream were allocated from the 'default' "
+        "high-water -- a rebuild would read its offsets from the live database"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -320,4 +320,104 @@ def test_the_skip_rule_can_be_given_the_normalizers_a_diff_uses() -> None:
     assert "normalizers" in parameters, (
         "DjangoExecutor cannot be given the normalizer set a diff uses, so the "
         "two equality rules cannot be made to agree"
+    )
+
+
+def test_a_partly_fenced_batch_keeps_one_result_per_item() -> None:
+    """Refusing an item must not shift every later item's answer onto the wrong input.
+
+    `append_many` promises one result per input item, in input order. Now that
+    the fence can refuse an individual item mid-batch, the refusal has to keep
+    its slot -- dropping it would silently re-pair each subsequent result with
+    the wrong item (#154).
+    """
+    store = DjangoStreamStore()
+    store.create("mixed")
+    store.append(
+        "mixed",
+        b'{"n": 0}',
+        AppendOptions(producer_id="p", producer_epoch=2, producer_seq=0),
+    )
+
+    results = store.append_many(
+        "mixed",
+        [
+            # accepted: unfenced
+            (b'{"n": 1}', None),
+            # refused: epoch 1 is stale, epoch 2 holds the stream
+            (
+                b'{"n": 2}',
+                AppendOptions(producer_id="p", producer_epoch=1, producer_seq=9),
+            ),
+            # accepted: the current epoch, advancing its sequence
+            (
+                b'{"n": 3}',
+                AppendOptions(producer_id="p", producer_epoch=2, producer_seq=1),
+            ),
+        ],
+    )
+
+    assert len(results) == 3
+    assert results[0].message is not None
+    assert results[1].message is None, "the stale-epoch item must be refused"
+    assert results[2].message is not None
+    assert results[0].message.data == b'{"n": 1}'
+    assert results[2].message.data == b'{"n": 3}', (
+        "the accepted item after a refusal was paired with the wrong input"
+    )
+
+
+def test_a_batch_advances_producer_state_for_the_next_writer() -> None:
+    """Fencing state established by a batch must fence what comes after it.
+
+    Asking the fence but never recording the answer leaves the next write judged
+    against the pre-batch state. The visible consequence is not just a
+    mis-refused replay -- it is that a producer which legitimately continues
+    after its own batch is rejected for a sequence gap it did not create.
+    """
+    from django_rakaia.models import StreamProducer
+
+    store = DjangoStreamStore()
+    store.create("advance")
+
+    store.append_many(
+        "advance",
+        [
+            (
+                b'{"n": 1}',
+                AppendOptions(producer_id="p", producer_epoch=1, producer_seq=0),
+            ),
+            (
+                b'{"n": 2}',
+                AppendOptions(producer_id="p", producer_epoch=1, producer_seq=1),
+            ),
+        ],
+    )
+
+    row = StreamProducer.objects.get(producer_id="p")
+    assert (row.epoch, row.last_seq) == (1, 1), (
+        "the batch did not record the fencing state it established"
+    )
+
+    # Re-sending the batch's last item is a duplicate, not a gap.
+    replayed = store.append(
+        "advance",
+        b'{"n": 2 again}',
+        AppendOptions(producer_id="p", producer_epoch=1, producer_seq=1),
+    )
+    assert replayed.message is None
+    assert replayed.producer_result is not None
+    assert replayed.producer_result.status == "duplicate", (
+        f"expected a duplicate, got {replayed.producer_result.status} -- the "
+        "next writer is being judged against the pre-batch state"
+    )
+
+    # And the producer can carry on from where its batch left off.
+    carried_on = store.append(
+        "advance",
+        b'{"n": 3}',
+        AppendOptions(producer_id="p", producer_epoch=1, producer_seq=2),
+    )
+    assert carried_on.message is not None, (
+        "a producer continuing after its own batch was refused"
     )

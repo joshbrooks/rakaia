@@ -527,13 +527,11 @@ class StreamStore:
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
 
-        # Concatenate all message data
-        concatenated = b"".join(m.data for m in messages)
-
         if is_json_content_type(stream.content_type):
-            return format_json_response(concatenated)
+            # Framing lives here, not in what was stored.
+            return format_json_response([m.data for m in messages])
 
-        return concatenated
+        return b"".join(m.data for m in messages)
 
     async def wait_for_messages(
         self,
@@ -640,44 +638,59 @@ class StreamStore:
         event_ts: float | None = None,
     ) -> StreamMessage | None:
         """Append data to a stream, handling JSON mode processing."""
-        processed_data = data
-        if is_json_content_type(stream.content_type):
-            processed_data = process_json_append(data, is_initial_create)
-            if len(processed_data) == 0:
+        # One payload per stored message. Outside JSON mode the body is the
+        # single message; in JSON mode the protocol flattens a posted array one
+        # level and each element becomes its own message (spec 7.1).
+        json_mode = is_json_content_type(stream.content_type)
+        if json_mode:
+            payloads = process_json_append(data, is_initial_create)
+            if not payloads:
                 return None
+        else:
+            payloads = [data]
 
         # Parse current offset and calculate new one
         parts = stream.current_offset.split("_")
         read_seq = int(parts[0])
         byte_offset = int(parts[1])
 
-        new_byte_offset = byte_offset + len(processed_data)
-        # Offsets are `{read_seq}_{byte_offset}`, each zero-padded to 16 digits
-        # so they sort byte-wise lexicographically (the protocol's requirement,
-        # and what keeps offsets monotonic across recreate). `:016d` is a minimum
-        # width, not a cap: the ordering guarantee holds only while both fields
-        # stay < 10**16. That bound is unreachable here — the byte offset is
-        # capped by the process's memory (this store holds every message in RAM,
-        # so 10**16 bytes = ~10 PB is impossible) and 10**16 recreations of one
-        # path equally so. A durable backend that could exceed it must widen the
-        # fields (and INITIAL_OFFSET) in lockstep.
-        new_offset = f"{read_seq:016d}_{new_byte_offset:016d}"
-
         # Envelope timestamp defaults to append time when the producer didn't set
         # a logical one, so `event_ts` is always populated after a store append.
         append_time = time.time()
-        message = StreamMessage(
-            data=processed_data,
-            offset=new_offset,
-            timestamp=append_time,
-            event_ts=event_ts if event_ts is not None else append_time,
-            label=label,
-            metadata=metadata,
-        )
+        message: StreamMessage | None = None
 
-        self._messages.setdefault(stream.path, []).append(message)
-        stream.current_offset = new_offset
+        for payload in payloads:
+            # A JSON-mode offset is a position in the *response* body, where the
+            # payloads are joined by commas — so each message advances the byte
+            # offset by its own length plus the separator that will sit after it.
+            # Storing the payload unframed (#155) therefore leaves every offset
+            # exactly where it was; only `StreamMessage.data` changes.
+            byte_offset += len(payload) + (1 if json_mode else 0)
+            # Offsets are `{read_seq}_{byte_offset}`, each zero-padded to 16
+            # digits so they sort byte-wise lexicographically (the protocol's
+            # requirement, and what keeps offsets monotonic across recreate).
+            # `:016d` is a minimum width, not a cap: the ordering guarantee holds
+            # only while both fields stay < 10**16. That bound is unreachable
+            # here — the byte offset is capped by the process's memory (this
+            # store holds every message in RAM, so 10**16 bytes = ~10 PB is
+            # impossible) and 10**16 recreations of one path equally so. A
+            # durable backend that could exceed it must widen the fields (and
+            # INITIAL_OFFSET) in lockstep.
+            new_offset = f"{read_seq:016d}_{byte_offset:016d}"
 
+            message = StreamMessage(
+                data=payload,
+                offset=new_offset,
+                timestamp=append_time,
+                event_ts=event_ts if event_ts is not None else append_time,
+                label=label,
+                metadata=metadata,
+            )
+            self._messages.setdefault(stream.path, []).append(message)
+            stream.current_offset = new_offset
+
+        # The last message, whose offset is the stream's new head — what a
+        # caller resumes from. A flattened array writes several.
         return message
 
     @staticmethod

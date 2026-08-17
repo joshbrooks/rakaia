@@ -157,10 +157,14 @@ class Stream(models.Model):
         # transaction. get_or_create tolerates the first-writer race (it retries
         # on the unique-key IntegrityError); the subsequent locked read then
         # serializes the read-modify-write.
-        StreamOffsetWatermark.objects.get_or_create(stream_path=self.stream_id)
-        watermark = StreamOffsetWatermark.objects.select_for_update().get(
-            stream_path=self.stream_id
-        )
+        # Allocate on whatever database this stream row came from. `self.entries`
+        # already follows the instance's alias, and the watermark has to agree
+        # with it or a rebuild against a scratch database would read its
+        # high-water from the live one (#159).
+        using = self._state.db
+        watermarks = StreamOffsetWatermark.objects.using(using)
+        watermarks.get_or_create(stream_path=self.stream_id)
+        watermark = watermarks.select_for_update().get(stream_path=self.stream_id)
         # `max(entries, watermark)` is belt-and-suspenders: the watermark alone
         # is authoritative for live streams, but taking the max also seeds it
         # correctly from any pre-existing entries (e.g. rows written before this

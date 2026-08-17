@@ -29,9 +29,9 @@ DataclassTransformer = Callable[[models.Model], Any]
 DeleteEventType = Literal["delete", "update"] | None
 
 
-def _get_or_create_stream(stream_id: str) -> Stream:
-    """Get or create a Stream record."""
-    stream, _ = Stream.objects.get_or_create(stream_id=stream_id)
+def _get_or_create_stream(stream_id: str, using: str | None = None) -> Stream:
+    """Get or create a Stream record on `using` (the default database if None)."""
+    stream, _ = Stream.objects.using(using).get_or_create(stream_id=stream_id)
     return stream
 
 
@@ -40,6 +40,7 @@ def create_stream_event(
     to_dataclass: DataclassTransformer,
     instance: models.Model,
     action: str,
+    using: str | None = None,
 ) -> StreamEvent:
     """
     Create a stream event for the given model instance.
@@ -53,6 +54,10 @@ def create_stream_event(
         to_dataclass: Callable converting model instance to dataclass.
         instance: The model instance that changed.
         action: Event type ("create", "update", or "delete").
+        using: Database alias to write to. Defaults to the instance's own
+            (`instance._state.db`), so an event lands on the same database as
+            the save that produced it — the two are one write and must not be
+            split (#159). Pass explicitly to override.
 
     Returns:
         The created StreamEvent instance.
@@ -130,11 +135,21 @@ def create_stream_event(
     # Atomic because `get_next_offset` locks the per-path high-water for the
     # duration of the transaction. A savepoint when the caller already has one
     # open, so the event stays inside the save that produced it.
-    with transaction.atomic():
+    # The save being audited decides the database, unless a caller says
+    # otherwise. `write_enveloped_event` then takes the alias from the streams
+    # themselves, and offset allocation from the stream row it locks.
+    # `getattr` rather than `instance._state.db`: this door accepts anything
+    # with the attributes `to_dataclass` reads, and the envelope-writer tests
+    # pass a plain stand-in with no ORM state. No state means no routing, which
+    # is the default database.
+    state = getattr(instance, "_state", None)
+    alias = using if using is not None else getattr(state, "db", None)
+
+    with transaction.atomic(using=alias):
         # One envelope shared by every entry: a fan-out is one event appearing
         # in several streams, not several events that look alike.
         event, _entries = write_enveloped_event(
-            [_get_or_create_stream(stream_id) for stream_id in stream_ids],
+            [_get_or_create_stream(stream_id, using=alias) for stream_id in stream_ids],
             payload,
             label=action,
             event_ts=event_ts,
@@ -247,7 +262,16 @@ def stream_model(
             if kwargs.get("raw"):
                 return
             action = "create" if created else "update"
-            create_stream_event(stream_paths, to_dataclass, instance, action)
+            # Django tells the receiver which database the save went to. That
+            # was dropped here, so a save routed elsewhere recorded its event on
+            # the default database instead (#159).
+            create_stream_event(
+                stream_paths,
+                to_dataclass,
+                instance,
+                action,
+                using=kwargs.get("using"),
+            )
 
         if on_delete is not None:
             delete_transformer = delete_to_dataclass or to_dataclass
@@ -261,10 +285,16 @@ def stream_model(
                 sender: type[models.Model],  # noqa: ARG001
                 instance: models.Model,
                 signal: Any,  # noqa: ARG001
-                **kwargs: Any,  # noqa: ARG001
+                **kwargs: Any,
             ) -> None:
+                # Same alias forwarding as the save path: a delete routed to
+                # another database records its event there too (#159).
                 create_stream_event(
-                    stream_paths, delete_transformer, instance, delete_event_type
+                    stream_paths,
+                    delete_transformer,
+                    instance,
+                    delete_event_type,
+                    using=kwargs.get("using"),
                 )
 
         return model_cls
