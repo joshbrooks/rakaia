@@ -10,6 +10,7 @@ from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
@@ -107,9 +108,28 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
         return
 
     group_name = _sanitize_group_name(f"stream.{stream_id}")
-    send = async_to_sync(channel_layer.group_send)
-    for entry in entries:
-        send(group_name, _frame(stream_id, entry))
+    # Frame now, publish after the write is permanent.
+    #
+    # Both publish paths run inside `transaction.atomic()`, so this used to
+    # announce events that a later rollback erased — a subscriber was told about
+    # an append that never happened, and had no way to find out (#157). The log
+    # is the source of truth; if the row is not in it, nothing downstream should
+    # believe it ever was.
+    #
+    # Framing happens here rather than in the callback because `_frame` reads the
+    # entry's related rows, and deferring that would issue those queries after
+    # the transaction closed — or fail outright once the objects are stale.
+    #
+    # Outside a transaction Django runs the callback immediately, so an append in
+    # autocommit still publishes synchronously.
+    frames = [_frame(stream_id, entry) for entry in entries]
+
+    def _send() -> None:
+        send = async_to_sync(channel_layer.group_send)
+        for frame in frames:
+            send(group_name, frame)
+
+    transaction.on_commit(_send)
 
 
 @receiver(post_save, sender=StreamEntry)

@@ -22,7 +22,11 @@ from django_rakaia.event_message import decode_payload
 from django_rakaia.models import StreamEntry, StreamEvent
 from rakaia.types import AppendOptions
 
-pytestmark = pytest.mark.django_db
+# `transaction=True` throughout: publication is deferred to commit (#157), and
+# under a plain `django_db` marker pytest-django wraps the test in a transaction
+# it never commits, so an `on_commit` callback would never run and every
+# subscriber assertion here would see nothing.
+pytestmark = pytest.mark.django_db(transaction=True)
 
 
 class _RecordingChannelLayer:
@@ -221,15 +225,6 @@ def test_a_batch_from_a_fenced_producer_is_refused() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 5 (#157): both publish paths run inside transaction.atomic() "
-        "and there is no on_commit anywhere in src/, so a rolled-back append "
-        "has already told every subscriber about an event that does not exist."
-    ),
-)
-@pytest.mark.django_db(transaction=True)
 def test_a_rolled_back_append_is_never_published(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
