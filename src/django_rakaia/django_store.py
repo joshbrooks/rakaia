@@ -33,7 +33,6 @@ single pure module (`rakaia.producer`) that both call, so the two cannot drift.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from collections.abc import Iterable
@@ -66,6 +65,14 @@ from rakaia.types import (
 )
 from rakaia.types import Stream as ProtocolStream
 
+from .event_message import (
+    APPEND_EVENT_TYPE as _APPEND_EVENT_TYPE,
+)
+from .event_message import (
+    decode_payload,
+    encode_payload,
+    message_of,
+)
 from .hermeticity import armed_deny_aliases, deny_database_access
 from .models import (
     Stream,
@@ -73,61 +80,21 @@ from .models import (
     StreamEvent,
     StreamProducer,
 )
+
+# Re-exported: `format_offset` and the payload helpers used to live here, and
+# both this package and its tests import them from this module. Moving them to
+# `event_message` (#153) keeps the names reachable at their old home rather than
+# rippling the change through every call site.
 from .offsets import format_offset, parse_offset
 
-# StreamEvent.event_type is required metadata for the dashboard; raw stream
-# appends carry no type, so they are recorded under a single stable label.
-_APPEND_EVENT_TYPE = "append"
-
-# `StreamEvent.payload_encoding` values. `None` means the event's `data` is the
-# payload as a JSON value — the event-sourcing shape, and what every row written
-# before this column holds.
-_ENCODING_TEXT = "utf-8"
-_ENCODING_BASE64 = "base64"
-
-
-def encode_payload(payload: bytes, content_type: str | None) -> tuple[Any, str | None]:
-    """Render one payload for storage as `(data, payload_encoding)`.
-
-    A protocol stream may declare any content type, but `StreamEvent.data` is a
-    JSON column, so a body that is not JSON has to be held as a JSON string and
-    marked as such. Three cases, in the order they are decided:
-
-    - **A declared non-JSON content type** (`text/plain`, `text/csv`, …) is
-      stored verbatim as text, or base64 if it is not valid UTF-8. Never parsed,
-      so the bytes come back exactly as they went in — a text stream that
-      happens to contain JSON is still text, and is not silently reformatted.
-    - **No declared content type** keeps the event-sourcing behaviour: the body
-      is parsed and stored as a JSON value. This is the shape `replay()`, the
-      admin and the channel-layer signals all read, so it cannot change. A body
-      that will not parse falls back to the raw form rather than failing — that
-      path used to raise `json.JSONDecodeError` straight through the server as
-      a 500.
-    - **JSON mode** is handled by the caller, which validates and flattens
-      first; each element arrives here already parsed.
-    """
-    if content_type is not None and not is_json_content_type(content_type):
-        return _encode_raw(payload)
-    try:
-        return json.loads(payload), None
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return _encode_raw(payload)
-
-
-def _encode_raw(payload: bytes) -> tuple[str, str]:
-    try:
-        return payload.decode("utf-8"), _ENCODING_TEXT
-    except UnicodeDecodeError:
-        return base64.b64encode(payload).decode("ascii"), _ENCODING_BASE64
-
-
-def decode_payload(data: Any, payload_encoding: str | None) -> bytes:
-    """The payload bytes for a stored event — the inverse of `encode_payload`."""
-    if payload_encoding == _ENCODING_TEXT:
-        return str(data).encode("utf-8")
-    if payload_encoding == _ENCODING_BASE64:
-        return base64.b64decode(str(data))
-    return json.dumps(data).encode("utf-8")
+__all__ = [
+    "DjangoStreamStore",
+    "decode_payload",
+    "encode_payload",
+    "format_offset",
+    "message_of",
+    "write_enveloped_event",
+]
 
 
 def write_enveloped_event(
@@ -599,20 +566,7 @@ class DjangoStreamStore:
                 event_ts=event_ts,
                 payload_encoding=encoding,
             )
-            messages.append(
-                StreamMessage(
-                    data=decode_payload(event.data, encoding),
-                    offset=format_offset(entry.offset),
-                    timestamp=entry.created_at.timestamp(),
-                    event_ts=(
-                        event_ts
-                        if event_ts is not None
-                        else entry.created_at.timestamp()
-                    ),
-                    label=label,
-                    metadata=event.metadata or None,
-                )
-            )
+            messages.append(message_of(entry))
         return messages
 
     # =========================================================================
@@ -860,22 +814,7 @@ class DjangoStreamStore:
             self._touch(stream)
             return [
                 AppendResult(
-                    message=StreamMessage(
-                        data=decode_payload(event.data, event.payload_encoding),
-                        offset=format_offset(entry.offset),
-                        timestamp=entry.created_at.timestamp(),
-                        event_ts=(
-                            event.event_ts
-                            if event.event_ts is not None
-                            else entry.created_at.timestamp()
-                        ),
-                        label=(
-                            ""
-                            if event.event_type == _APPEND_EVENT_TYPE
-                            else event.event_type
-                        ),
-                        metadata=event.metadata or None,
-                    ),
+                    message=message_of(entry),
                     stream_closed=bool(getattr(options, "close", False)),
                 )
                 for (_data, options), event, entry in zip(
@@ -930,27 +869,7 @@ class DjangoStreamStore:
         if offset not in (None, "", "-1"):
             entries = entries.filter(offset__gt=self._parse_offset(offset))
 
-        return [
-            StreamMessage(
-                data=decode_payload(entry.event.data, entry.event.payload_encoding),
-                offset=format_offset(entry.offset),
-                timestamp=entry.created_at.timestamp(),
-                # Logical envelope ts if the producer set one, else the append
-                # time — mirroring the in-memory store's default.
-                event_ts=(
-                    entry.event.event_ts
-                    if entry.event.event_ts is not None
-                    else entry.created_at.timestamp()
-                ),
-                # `"append"` is the raw-append sentinel → no envelope label;
-                # an empty metadata dict → None, matching the in-memory store.
-                label=""
-                if entry.event.event_type == _APPEND_EVENT_TYPE
-                else entry.event.event_type,
-                metadata=entry.event.metadata or None,
-            )
-            for entry in entries
-        ]
+        return [message_of(entry) for entry in entries]
 
     @staticmethod
     def _parse_offset(offset: str) -> int:

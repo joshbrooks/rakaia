@@ -18,6 +18,7 @@ from django.views.decorators.http import require_GET
 
 from rakaia.types import InvalidOffset
 
+from .event_message import event_label
 from .models import Stream, StreamEntry, StreamEvent
 from .offsets import parse_offset
 
@@ -99,7 +100,10 @@ def streams_index(_request: Any) -> HttpResponse:
             {
                 "stream_id": e["stream__stream_id"],
                 "offset": e["offset"],
-                "event_type": e["event__event_type"],
+                # Inverted, not the raw column: the sentinel means "an append
+                # with no envelope label", and a consumer of this API should see
+                # what `read()` reports, not the storage marker (#153).
+                "event_type": event_label(e["event__event_type"]),
                 "created_at": e["created_at"].isoformat() if e["created_at"] else None,
                 "data": e["event__data"],
             }
@@ -233,7 +237,7 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
         {
             "id": e["event__id"],
             "offset": e["offset"],
-            "event_type": e["event__event_type"],
+            "event_type": event_label(e["event__event_type"]),
             "created_at": e["created_at"].isoformat() if e["created_at"] else None,
             "data": e["event__data"],
         }
