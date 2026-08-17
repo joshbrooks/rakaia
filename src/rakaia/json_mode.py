@@ -8,6 +8,7 @@ for streams with Content-Type: application/json.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from .types import EmptyJsonArray, InvalidJson
@@ -29,23 +30,27 @@ def is_json_content_type(content_type: str | None) -> bool:
     return normalize_content_type(content_type) == "application/json"
 
 
-def process_json_append(data: bytes, is_initial_create: bool = False) -> bytes:
-    """
-    Process JSON data for append in JSON mode.
+def process_json_append(data: bytes, is_initial_create: bool = False) -> list[bytes]:
+    """The messages a JSON-mode append stores, one payload per message.
 
-    - Validates JSON
-    - Extracts array elements if data is an array (one-level flatten)
-    - Appends trailing comma for easy concatenation
+    The protocol is explicit that message boundaries are preserved and that a
+    posted array is flattened one level, "storing two messages" for a two-element
+    body (spec 7.1). So this returns a *list* — the boundaries are the list, and
+    the caller stores one message per element.
 
-    Args:
-        data: Raw bytes of the JSON body
-        is_initial_create: If True, empty arrays are allowed (creates empty stream)
+    It used to return the elements concatenated with trailing commas, as a
+    single blob, which the response formatter knew how to unwrap. That destroyed
+    the boundaries the spec requires and, because the comma rode along in
+    `StreamMessage.data`, made a JSON-mode stream undecodable to anything that
+    read the payload directly — `replay()` failed on the first event (#155).
+    Framing now happens where it belongs, at the response.
 
-    Returns:
-        Processed bytes ready for storage (with trailing comma)
+    Returns an empty list when there is nothing to store: an empty array on
+    create, which the spec allows as "an empty stream".
 
     Raises:
-        ValueError: If JSON is invalid or array is empty (on non-create append)
+        InvalidJson: the body is not valid JSON.
+        EmptyJsonArray: an empty array on append (a no-op the spec rejects).
     """
     text = data.decode("utf-8")
 
@@ -57,40 +62,24 @@ def process_json_append(data: bytes, is_initial_create: bool = False) -> bytes:
     if isinstance(parsed, list):
         if len(parsed) == 0:
             if is_initial_create:
-                # Empty array on create = empty stream, no data to store
-                return b""
+                return []
             raise EmptyJsonArray("Empty arrays are not allowed in append operations")
-
-        # Flatten one level: each element becomes a separate message
-        # Store as individual JSON values with trailing commas
-        parts: list[bytes] = []
-        for item in parsed:
-            parts.append(json.dumps(item, separators=(",", ":")).encode("utf-8") + b",")
-        return b"".join(parts)
-    else:
-        # Single value - store with trailing comma
-        return json.dumps(parsed, separators=(",", ":")).encode("utf-8") + b","
+        return [_canonical(item) for item in parsed]
+    return [_canonical(parsed)]
 
 
-def format_json_response(data: bytes) -> bytes:
+def _canonical(value: Any) -> bytes:
+    """One stored payload, in the compact form the response concatenates."""
+    return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+def format_json_response(payloads: Sequence[bytes]) -> bytes:
+    """The GET body for a JSON-mode range: a JSON array of the stored messages.
+
+    Takes the payloads rather than a pre-concatenated blob. Each is already a
+    complete JSON value, so framing is a join and a pair of brackets — the
+    separators live here and never in what was stored.
     """
-    Format JSON mode response by wrapping stored data in array brackets.
-
-    Strips trailing comma before wrapping. Stored data has trailing commas
-    between elements for easy concatenation.
-
-    Args:
-        data: Concatenated stored message data
-
-    Returns:
-        JSON array bytes: [element1,element2,...]
-    """
-    if len(data) == 0:
+    if not payloads:
         return b"[]"
-
-    # Strip trailing comma before wrapping in array brackets
-    trimmed = data
-    if trimmed.endswith(b","):
-        trimmed = trimmed[:-1]
-
-    return b"[" + trimmed + b"]"
+    return b"[" + b",".join(payloads) + b"]"

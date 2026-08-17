@@ -521,13 +521,14 @@ class DjangoStreamStore:
         if not is_json_content_type(stream.content_type):
             return [encode_payload(data, stream.content_type)]
 
-        processed = process_json_append(data, is_initial_create=is_initial_create)
-        if not processed:
+        # `process_json_append` validates and flattens, and now returns one
+        # payload per message rather than a framed blob — so its result is the
+        # split, and this no longer re-parses the body to redo the same work.
+        payloads = process_json_append(data, is_initial_create=is_initial_create)
+        if not payloads:
             # An empty array on create: a stream with no messages yet.
             return []
-        parsed = json.loads(data)
-        elements = parsed if isinstance(parsed, list) else [parsed]
-        return [(element, None) for element in elements]
+        return [(json.loads(payload), None) for payload in payloads]
 
     def _write(
         self,
@@ -1038,13 +1039,13 @@ class DjangoStreamStore:
         drop the JSON-array framing on the expiry race instead of failing.
         """
         stream = self._require(path)
-        concatenated = b"".join(m.data for m in messages)
         if is_json_content_type(stream.content_type):
-            # Stored payloads are standalone JSON documents; the shared
-            # formatter expects the store's comma-separated concatenation.
-            joined = b",".join(m.data for m in messages)
-            return format_json_response(joined + b"," if joined else b"")
-        return concatenated
+            # Stored payloads are standalone JSON documents, which is now what
+            # the shared formatter takes. It used to want the in-memory store's
+            # comma-separated concatenation, so this path had to re-frame the
+            # payloads just to have them unframed again (#155).
+            return format_json_response([m.data for m in messages])
+        return b"".join(m.data for m in messages)
 
     async def wait_for_messages(
         self, path: str, offset: str, timeout_seconds: float
