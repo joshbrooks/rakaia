@@ -11,6 +11,7 @@ Epic: #152.
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
@@ -52,15 +53,6 @@ def recording_layer(monkeypatch: pytest.MonkeyPatch) -> _RecordingChannelLayer:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 1 (#153): channels_signals._frame publishes "
-        "entry.event.event_type raw, so a subscriber sees the internal "
-        "'append' sentinel where store.read() reports '' for the same event. "
-        "One row-to-event translation would make both agree."
-    ),
-)
 def test_a_subscriber_and_a_reader_see_the_same_event_label(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -82,24 +74,16 @@ def test_a_subscriber_and_a_reader_see_the_same_event_label(
     assert frame["event"]["event_type"] == message.label
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 1 (#153): _frame passes entry.event.data straight through, "
-        "with no decode_payload, so a base64-stored payload reaches subscribers "
-        "as its base64 text rather than as the bytes that were appended. "
-        "(A text/plain payload happens to round-trip, which is why this needs "
-        "bytes that are not valid UTF-8.)"
-    ),
-)
-def test_a_subscriber_and_a_reader_see_the_same_payload(
+def test_a_subscriber_can_recover_the_payload_a_reader_sees(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
-    """What was appended is what is published. `read()` decodes; the frame does not.
+    """A subscriber must be able to reconstruct exactly what `read()` returns.
 
-    `encode_payload` stores a non-UTF-8 body base64-encoded and marks it, and
-    `read()` inverts that. The SSE frame reads the column directly, so a
-    subscriber receives the base64 text and has no way to know it should decode.
+    The frame is JSON on the wire, so a payload that is not valid UTF-8 cannot
+    ride in it as bytes -- which is the root of #153. The old frame published
+    the stored column and told the subscriber nothing, so base64 was
+    indistinguishable from text that happened to look like base64. The frame now
+    carries the encoding alongside the value, so the bytes are recoverable.
     """
     payload = b"\xff\xfe binary, not utf-8"
     store = DjangoStreamStore()
@@ -111,8 +95,30 @@ def test_a_subscriber_and_a_reader_see_the_same_payload(
 
     _group, frame = recording_layer.sent[-1]
     published = frame["event"]["data"]
-    published_bytes = published.encode() if isinstance(published, str) else published
-    assert published_bytes == payload
+    encoding = frame["event"].get("payload_encoding")
+
+    assert encoding == "base64", "the subscriber is told how to read the value"
+    assert base64.b64decode(published) == message.data
+
+
+def test_a_json_subscriber_still_receives_the_plain_json_value(
+    recording_layer: _RecordingChannelLayer,
+) -> None:
+    """The common case is unchanged, and stays unencoded.
+
+    Carrying the encoding must not push ordinary JSON payloads through base64 --
+    that would be a wire-format break for every existing subscriber.
+    """
+    store = DjangoStreamStore()
+    store.create("plain")
+    store.append("plain", b'{"x": 1}')
+
+    _group, frame = recording_layer.sent[-1]
+
+    assert frame["event"]["data"] == {"x": 1}
+    assert "payload_encoding" not in frame["event"], (
+        "an ordinary JSON payload must keep exactly the frame it always had"
+    )
 
 
 # ---------------------------------------------------------------------------

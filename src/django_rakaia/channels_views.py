@@ -15,7 +15,7 @@ from django.views.decorators.http import require_GET
 
 from rakaia.types import InvalidOffset
 
-from .channels_signals import _sanitize_group_name
+from .channels_signals import _sanitize_group_name, frame_event
 from .models import StreamEntry
 from .offsets import parse_offset
 
@@ -62,17 +62,11 @@ async def stream_events_sse(_request: Any, stream_id: str) -> Any:
                 .order_by("offset")
             )
             async for entry in entries_qs:
-                data: dict[str, Any] = {
-                    "event": {
-                        "id": entry.event.id,
-                        "offset": entry.offset,
-                        "event_type": entry.event.event_type,
-                        "created_at": entry.event.created_at.isoformat()
-                        if entry.event.created_at
-                        else None,
-                        "data": entry.event.data,
-                    }
-                }
+                # Shared with the channel-layer frame. This view used to build
+                # its own copy and inherited both of its defects — the raw
+                # `"append"` sentinel as the label, and an encoded payload sent
+                # without saying so (#153).
+                data: dict[str, Any] = {"event": frame_event(entry)}
                 yield f"id: {entry.offset}\ndata: {json.dumps(data)}\n\n".encode()
 
             # Wait for new events from channel layer
