@@ -40,7 +40,8 @@
             <tbody>
                 {% for et in event_types %}
                 <tr>
-                    <td><span class="badge badge-{{ et.event_type }}">{{ et.event_type }}</span></td>
+                    {# An append carries no envelope label, so `event_type` is "" — name it rather than render an empty badge (#153). #}
+                    <td><span class="badge badge-{{ et.event_type }}">{{ et.event_type|default:"raw append" }}</span></td>
                     <td>{{ et.count }}</td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 10px;">
@@ -118,7 +119,7 @@
                             {{ event.stream_id|truncatechars:30 }}
                         </a>
                     </td>
-                    <td><span class="badge badge-{{ event.event_type }}">{{ event.event_type }}</span></td>
+                    <td><span class="badge badge-{{ event.event_type }}">{{ event.event_type|default:"raw append" }}</span></td>
                     <td>{{ event.offset }}</td>
                     <td>{{ event.created_at|date:"M d, Y H:i:s" }}</td>
                     <td>

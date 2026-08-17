@@ -11,12 +11,14 @@ Epic: #152.
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
 from django.db import transaction
 
 from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.event_message import decode_payload
 from django_rakaia.models import StreamEntry, StreamEvent
 from rakaia.types import AppendOptions
 
@@ -52,15 +54,6 @@ def recording_layer(monkeypatch: pytest.MonkeyPatch) -> _RecordingChannelLayer:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 1 (#153): channels_signals._frame publishes "
-        "entry.event.event_type raw, so a subscriber sees the internal "
-        "'append' sentinel where store.read() reports '' for the same event. "
-        "One row-to-event translation would make both agree."
-    ),
-)
 def test_a_subscriber_and_a_reader_see_the_same_event_label(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -82,24 +75,16 @@ def test_a_subscriber_and_a_reader_see_the_same_event_label(
     assert frame["event"]["event_type"] == message.label
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 1 (#153): _frame passes entry.event.data straight through, "
-        "with no decode_payload, so a base64-stored payload reaches subscribers "
-        "as its base64 text rather than as the bytes that were appended. "
-        "(A text/plain payload happens to round-trip, which is why this needs "
-        "bytes that are not valid UTF-8.)"
-    ),
-)
-def test_a_subscriber_and_a_reader_see_the_same_payload(
+def test_a_subscriber_can_recover_the_payload_a_reader_sees(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
-    """What was appended is what is published. `read()` decodes; the frame does not.
+    """A subscriber must be able to reconstruct exactly what `read()` returns.
 
-    `encode_payload` stores a non-UTF-8 body base64-encoded and marks it, and
-    `read()` inverts that. The SSE frame reads the column directly, so a
-    subscriber receives the base64 text and has no way to know it should decode.
+    The frame is JSON on the wire, so a payload that is not valid UTF-8 cannot
+    ride in it as bytes -- which is the root of #153. The old frame published
+    the stored column and told the subscriber nothing, so base64 was
+    indistinguishable from text that happened to look like base64. The frame now
+    carries the encoding alongside the value, so the bytes are recoverable.
     """
     payload = b"\xff\xfe binary, not utf-8"
     store = DjangoStreamStore()
@@ -111,8 +96,77 @@ def test_a_subscriber_and_a_reader_see_the_same_payload(
 
     _group, frame = recording_layer.sent[-1]
     published = frame["event"]["data"]
-    published_bytes = published.encode() if isinstance(published, str) else published
-    assert published_bytes == payload
+    encoding = frame["event"].get("payload_encoding")
+
+    assert encoding == "base64", "the subscriber is told how to read the value"
+    assert base64.b64decode(published) == message.data
+
+
+@pytest.mark.parametrize(
+    ("content_type", "payload"),
+    [
+        # The case the first cut of the fix got wrong: a text body that happens
+        # to parse as JSON. Decoding the stored value and re-deriving an
+        # encoding from the bytes republished these as JSON values, so the
+        # subscriber reconstructed `{"a": 1}`, `1.5` and `7` -- losing the
+        # newline, the trailing zero and the surrounding spaces `read()` keeps.
+        ("text/plain", b'{"a": 1}\n'),
+        ("text/plain", b'{"a":  1}'),
+        ("text/plain", b"1.50"),
+        ("text/plain", b"  7  "),
+        # The cases that already worked, kept here so the law is stated once
+        # rather than per storage shape.
+        ("text/plain", b"an ordinary line"),
+        ("application/octet-stream", b"\xff\xfe binary, not utf-8"),
+        (None, b'{"x": 1}'),
+    ],
+)
+def test_a_subscriber_reconstructs_a_readers_bytes_for_any_payload(
+    recording_layer: _RecordingChannelLayer,
+    content_type: str | None,
+    payload: bytes,
+) -> None:
+    """`decode_payload` over the frame yields exactly what `read()` returns.
+
+    The one law the frame owes a subscriber, stated for every storage shape at
+    once rather than per shape. The frame cannot carry bytes, so it carries the
+    stored `data`/`payload_encoding` pair and the subscriber runs the same
+    inverse a reader does -- which only holds if the frame passes the stored
+    pair through rather than decoding and guessing an encoding back (#153).
+    """
+    store = DjangoStreamStore()
+    store.create("roundtrip", content_type=content_type)
+    store.append("roundtrip", payload)
+
+    read_bytes = store.read("roundtrip")[0][0].data
+    assert read_bytes == payload, "precondition: read() is byte-exact"
+
+    _group, frame = recording_layer.sent[-1]
+    recovered = decode_payload(
+        frame["event"]["data"], frame["event"].get("payload_encoding")
+    )
+
+    assert recovered == read_bytes
+
+
+def test_a_json_subscriber_still_receives_the_plain_json_value(
+    recording_layer: _RecordingChannelLayer,
+) -> None:
+    """The common case is unchanged, and stays unencoded.
+
+    Carrying the encoding must not push ordinary JSON payloads through base64 --
+    that would be a wire-format break for every existing subscriber.
+    """
+    store = DjangoStreamStore()
+    store.create("plain")
+    store.append("plain", b'{"x": 1}')
+
+    _group, frame = recording_layer.sent[-1]
+
+    assert frame["event"]["data"] == {"x": 1}
+    assert "payload_encoding" not in frame["event"], (
+        "an ordinary JSON payload must keep exactly the frame it always had"
+    )
 
 
 # ---------------------------------------------------------------------------

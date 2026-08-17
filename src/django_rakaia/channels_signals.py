@@ -6,12 +6,14 @@ Django Channels' channel layer for cross-process event distribution.
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from .event_message import event_label, payload_fields
 from .models import StreamEntry
 
 
@@ -48,15 +50,33 @@ def _frame(stream_id: str, entry: StreamEntry) -> dict:
         # truncate). The payload carries the exact id so a consumer can filter
         # out a group-mate's events instead of cross-delivering them.
         "stream_id": stream_id,
-        "event": {
-            "id": entry.event.id,
-            "offset": entry.offset,
-            "event_type": entry.event.event_type,
-            "created_at": entry.event.created_at.isoformat()
-            if entry.event.created_at
-            else None,
-            "data": entry.event.data,
-        },
+        "event": frame_event(entry),
+    }
+
+
+def frame_event(entry: StreamEntry) -> dict[str, Any]:
+    """The `event` object inside a frame — shared with the HTTP SSE view.
+
+    `channels_views` streams the same events over a plain HTTP response rather
+    than the channel layer. It built its own copy of this dict and inherited the
+    same two defects (#153), so both now derive from one definition.
+
+    The frame is JSON on the wire, so the payload rides as the stored
+    `data`/`payload_encoding` pair rather than the decoded bytes `message_of`
+    produces — see `payload_fields` for why passing the pair through is what
+    makes the subscriber's inverse exact.
+    """
+    return {
+        "id": entry.event.id,
+        "offset": entry.offset,
+        # Inverted, not the raw column: publishing `event_type` directly sent
+        # subscribers the internal `"append"` sentinel where `read()` reports
+        # `""` for the same event (#153).
+        "event_type": event_label(entry.event.event_type),
+        "created_at": entry.event.created_at.isoformat()
+        if entry.event.created_at
+        else None,
+        **payload_fields(entry.event.data, entry.event.payload_encoding),
     }
 
 
