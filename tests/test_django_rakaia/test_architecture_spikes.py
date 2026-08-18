@@ -24,6 +24,17 @@ from rakaia.types import AppendOptions
 
 pytestmark = pytest.mark.django_db
 
+# Publication is deferred to commit (#157), so a test that asserts what a
+# subscriber *received* needs a real one: under a plain `django_db` marker
+# pytest-django opens a transaction it never commits, the `on_commit` callback
+# never runs, and the assertion sees nothing.
+#
+# Applied per test rather than to the module. CLAUDE.md records that converting
+# tests wholesale to `transaction=True` was considered and rejected in #148,
+# because it makes every run pay truncation teardown for nothing — and most of
+# this file never looks at a subscriber.
+observes_a_subscriber = pytest.mark.django_db(transaction=True)
+
 
 class _RecordingChannelLayer:
     """A channel layer that records what was published, and when.
@@ -54,6 +65,7 @@ def recording_layer(monkeypatch: pytest.MonkeyPatch) -> _RecordingChannelLayer:
 # ---------------------------------------------------------------------------
 
 
+@observes_a_subscriber
 def test_a_subscriber_and_a_reader_see_the_same_event_label(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -75,6 +87,7 @@ def test_a_subscriber_and_a_reader_see_the_same_event_label(
     assert frame["event"]["event_type"] == message.label
 
 
+@observes_a_subscriber
 def test_a_subscriber_can_recover_the_payload_a_reader_sees(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -102,6 +115,7 @@ def test_a_subscriber_can_recover_the_payload_a_reader_sees(
     assert base64.b64decode(published) == message.data
 
 
+@observes_a_subscriber
 @pytest.mark.parametrize(
     ("content_type", "payload"),
     [
@@ -149,6 +163,7 @@ def test_a_subscriber_reconstructs_a_readers_bytes_for_any_payload(
     assert recovered == read_bytes
 
 
+@observes_a_subscriber
 def test_a_json_subscriber_still_receives_the_plain_json_value(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -216,15 +231,7 @@ def test_a_batch_from_a_fenced_producer_is_refused() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 5 (#157): both publish paths run inside transaction.atomic() "
-        "and there is no on_commit anywhere in src/, so a rolled-back append "
-        "has already told every subscriber about an event that does not exist."
-    ),
-)
-@pytest.mark.django_db(transaction=True)
+@observes_a_subscriber
 def test_a_rolled_back_append_is_never_published(
     recording_layer: _RecordingChannelLayer,
 ) -> None:
@@ -249,6 +256,54 @@ def test_a_rolled_back_append_is_never_published(
         f"{len(recording_layer.sent)} frame(s) published for an append that "
         "was rolled back"
     )
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+def test_a_rolled_back_save_to_another_database_is_never_published(
+    recording_layer: _RecordingChannelLayer,
+) -> None:
+    """The same law, on a database that is not `default`.
+
+    Once a save can be routed elsewhere (#159), deferring on the default
+    connection defers on the wrong one: it is not in a transaction, so Django
+    runs the callback at once and the rollback below never reaches the
+    subscriber that was already told.
+    """
+    from .models import Area
+
+    recording_layer.sent.clear()
+
+    class Rollback(Exception):
+        pass
+
+    with pytest.raises(Rollback), transaction.atomic(using="overlay"):
+        Area(name="overlay-area").save(using="overlay")
+        raise Rollback
+
+    assert StreamEvent.objects.using("overlay").count() == 0
+    assert recording_layer.sent == [], (
+        f"{len(recording_layer.sent)} frame(s) published for a save to "
+        "'overlay' that was rolled back"
+    )
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+def test_a_save_to_another_database_publishes_only_after_its_own_commit(
+    recording_layer: _RecordingChannelLayer,
+) -> None:
+    """Nothing is published while the overlay transaction is still open."""
+    from .models import Area
+
+    recording_layer.sent.clear()
+
+    with transaction.atomic(using="overlay"):
+        Area(name="overlay-area").save(using="overlay")
+        published_early = len(recording_layer.sent)
+
+    assert published_early == 0, (
+        f"{published_early} frame(s) published before the overlay commit"
+    )
+    assert len(recording_layer.sent) == 1, "and exactly one after it"
 
 
 # ---------------------------------------------------------------------------

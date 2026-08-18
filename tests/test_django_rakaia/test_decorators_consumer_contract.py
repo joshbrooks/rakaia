@@ -235,12 +235,19 @@ class TestJsonEncoding:
         assert event.data["ref"] == str(measure.ref)
         json.dumps(event.data)
 
-    def test_sse_broadcast_of_a_django_typed_payload_does_not_raise(self, monkeypatch):
+    def test_sse_broadcast_of_a_django_typed_payload_does_not_raise(
+        self, monkeypatch, django_capture_on_commit_callbacks
+    ):
         """The real crash path: ``handle_stream_entry_created`` broadcasts the
         in-memory payload from inside the consumer's own ``post_save``.
 
         A raw ``UUID`` there takes down the save being audited — msgpack under
         ``channels_redis``, ``json.dumps`` under the SSE view.
+
+        Publication is deferred to commit (#157), and this test runs under a
+        plain ``django_db`` marker whose transaction never commits — so the
+        callbacks are captured and run explicitly rather than paying for a
+        truncating ``transaction=True`` run just to observe a frame.
         """
         sent: list[dict] = []
 
@@ -253,16 +260,17 @@ class TestJsonEncoding:
         )
         measure = Measure.objects.create(ref=uuid.uuid4(), amount=Decimal("3.25"))
 
-        create_stream_event(
-            stream_paths="measure:sse",
-            to_dataclass=lambda obj: MeasureData(
-                ref=obj.ref,
-                amount=obj.amount,
-                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
-            ),
-            instance=measure,
-            action="create",
-        )
+        with django_capture_on_commit_callbacks(execute=True):
+            create_stream_event(
+                stream_paths="measure:sse",
+                to_dataclass=lambda obj: MeasureData(
+                    ref=obj.ref,
+                    amount=obj.amount,
+                    recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+                ),
+                instance=measure,
+                action="create",
+            )
 
         assert sent, "the SSE receiver did not fire"
         for message in sent:
