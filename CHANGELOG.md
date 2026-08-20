@@ -16,7 +16,7 @@ runnable demo for each.
   entries, and read the offset high-water row twice — once to create it, once to
   lock it. Allocation is now two queries: one locked read, one write. Reading the
   stream head drops the same scan — `Stream.current_offset` is one query, and
-  `DjangoStreamStore.get_current_offset` two, the second being its own
+  `DjangoStreamStore.get_current_offset` two, the extra one being its own
   expiry check.
 
   The high-water row is authoritative once it has been advanced, so the scan
