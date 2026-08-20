@@ -339,7 +339,7 @@ class DjangoStreamStore:
         comment. Do not unwrap it.
         """
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             existing = self._get_if_not_expired(path)
             if existing is not None:
                 same = (
@@ -410,7 +410,7 @@ class DjangoStreamStore:
         self, path: str, producer_id: str, epoch: int, seq: int
     ) -> CloseResult | None:
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._get_if_not_expired(path, for_update=True)
             if stream is None:
                 return None
@@ -488,7 +488,7 @@ class DjangoStreamStore:
         """
         opts = options if options is not None else AppendOptions()
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._require(path, for_update=True)
 
             # Admission is decided in `rakaia.append_decision`, shared with the
@@ -689,7 +689,7 @@ class DjangoStreamStore:
             return self.append(path, data, opts)
 
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             # The row lock is what makes fencing fence: validation reads the
             # producer's last state, and two concurrent retries of the same
             # (producer_id, epoch, seq) that both read before either commits
@@ -795,7 +795,7 @@ class DjangoStreamStore:
             return []
 
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._require(path, for_update=True)
 
             if stream.closed:
