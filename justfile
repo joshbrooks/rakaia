@@ -433,12 +433,19 @@ api-reference-check:
         exit 1
     fi
 
-# Build the documentation site
-docs:
+# Build the documentation site.
+#
+# Depends on `install` because `uv sync --extra X` *replaces* the extras in the
+# venv rather than adding to them: the `uv sync --extra dev --extra django` that
+# CLAUDE.md tells you to run before pytest silently removes zensical, and this
+# recipe then dies with `error: Failed to spawn: zensical`. `install` syncs the
+# full set, so it is idempotent and leaves the venv able to run the tests too.
+docs: install
     uv run zensical build
 
-# Serve the documentation locally
-docs-serve:
+# Serve the documentation locally on http://localhost:8000 (redirects to the
+# /rakaia/ prefix, which is the GitHub Pages path in `site_url`).
+docs-serve: install
     uv run zensical serve
 
 # Run the full quality gate, mirroring CI.
