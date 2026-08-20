@@ -7,9 +7,10 @@ import json
 import pytest
 from django.db import transaction
 
+from django_rakaia.decorators import create_stream_event
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
-from django_rakaia.streams import ModelStreamReader
+from django_rakaia.streams import DjangoStreamReader, ModelStreamReader
 from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
@@ -153,15 +154,8 @@ class TestReplayAgainstModelStream:
 
 
 # ---------------------------------------------------------------------------
-# Stored events: read them with the store, not with a second reader
+# DjangoStreamReader — reads from real Stream/StreamEvent/StreamEntry rows
 # ---------------------------------------------------------------------------
-
-
-def _octet_stream():
-    """`AppendOptions` declaring a non-JSON content type, so the body is stored raw."""
-    from rakaia import AppendOptions
-
-    return AppendOptions(content_type="application/octet-stream")
 
 
 def _append_event(stream_id: str, data: dict) -> None:
@@ -174,65 +168,175 @@ def _append_event(stream_id: str, data: dict) -> None:
 
 
 @pytest.mark.django_db
-class TestTheStoreIsTheReaderForStoredEvents:
-    """Why `DjangoStreamReader` was deleted, stated as a test.
+class TestDjangoStreamReader:
+    def test_missing_stream_returns_empty(self):
+        reader = DjangoStreamReader()
+        messages, up_to_date = reader.read("nope")
+        assert messages == []
+        assert up_to_date is True
 
-    It read the same three tables the store reads and returned the payload
-    alone — no label, no metadata, no event timestamp, no offset, and no inverse
-    for `payload_encoding`. So a replay driven through it silently lost
-    everything `rakaia.history.envelope_actor`, `merge_replay(order_key=...)` and
-    `history_effects(version_of=lambda m: m.offset)` read, and mangled any body
-    that was not JSON.
+    def test_has_missing_stream(self):
+        reader = DjangoStreamReader()
+        assert reader.has("nope") is False
 
-    `DjangoStreamStore.read()` was already the correct reading of those tables,
-    already held to `tests/server_store_contract.py`, and — since #180 — already
-    able to take a database alias, which the deleted reader never could. It had
-    no production callers; only its own tests, which pinned the lossy shape.
+    def test_reads_events_in_offset_order(self):
+        _append_event("s", {"id": 1, "name": "first"})
+        _append_event("s", {"id": 2, "name": "second"})
+        _append_event("s", {"id": 3, "name": "third"})
 
-    These cases are the properties the deletion depends on. If the store ever
-    stopped carrying them, deleting the alternative would have cost something.
+        reader = DjangoStreamReader()
+        messages, up_to_date = reader.read("s")
+        assert up_to_date is True
+        payloads = [json.loads(m.data) for m in messages]
+        assert [p["name"] for p in payloads] == ["first", "second", "third"]
+
+    def test_has_existing_stream(self):
+        _append_event("s", {"x": 1})
+        reader = DjangoStreamReader()
+        assert reader.has("s") is True
+
+    def test_replay_through_django_stream_reader(self):
+        _append_event("s", {"name": "alpha"})
+        _append_event("s", {"name": "beta"})
+
+        reg = HandlerRegistry()
+
+        def h(event):
+            return Upsert(
+                model_label="test_django_rakaia.Area",
+                lookup={"name": f"from-stream:{event['name']}"},
+                defaults={},
+            )
+
+        reg.register("h", "s", h, 0, None)
+        reader = DjangoStreamReader()
+
+        result = replay(reader, "s", DjangoExecutor(), handler_registry=reg)  # type: ignore[arg-type]
+
+        assert result.events_processed == 2
+        assert result.effects_applied == 2
+        assert Area.objects.filter(name="from-stream:alpha").exists()
+        assert Area.objects.filter(name="from-stream:beta").exists()
+
+    def test_reads_multi_stream_events_isolated(self):
+        _append_event("s1", {"v": "a"})
+        _append_event("s2", {"v": "b"})
+        _append_event("s1", {"v": "c"})
+
+        reader = DjangoStreamReader()
+        msgs1, _ = reader.read("s1")
+        msgs2, _ = reader.read("s2")
+
+        assert [json.loads(m.data)["v"] for m in msgs1] == ["a", "c"]
+        assert [json.loads(m.data)["v"] for m in msgs2] == ["b"]
+
+    def test_works_with_create_stream_event_helper(self):
+        # End-to-end with the actual helper @stream_model uses internally.
+        from dataclasses import dataclass
+
+        @dataclass
+        class Payload:
+            kind: str
+            value: int
+
+        # Pretend we're a model save: use create_stream_event directly.
+        # Need a model instance; use Area as a stand-in.
+        area = Area.objects.create(name="probe")
+        create_stream_event(
+            stream_paths="from-helper",
+            to_dataclass=lambda _inst: Payload(kind="ping", value=42),
+            instance=area,
+            action="create",
+        )
+
+        reader = DjangoStreamReader()
+        messages, _ = reader.read("from-helper")
+        assert len(messages) == 1
+        payload = json.loads(messages[0].data)
+        assert payload == {"kind": "ping", "value": 42}
+
+
+@pytest.mark.django_db
+class TestTheTwoReadersOfTheSameTablesDiffer:
+    """What `DjangoStreamReader` drops and `DjangoStreamStore` keeps.
+
+    Both read `Stream`/`StreamEvent`/`StreamEntry`, and both satisfy the subset
+    of the store interface `replay()` calls — which is exactly why the difference
+    is silent at the call site. Nothing in the type or the signature says one
+    carries the envelope and the other does not.
+
+    Pinned rather than left as prose because the reader is kept (#186): a caller
+    choosing between them needs the difference to be a fact they can look up, and
+    a future change that quietly made the store lossy too would take this class
+    with it.
     """
+
+    def _seed_via_the_real_helper(self, path: str = "decorated"):
+        """Write through `create_stream_event` — the path both readers claim to serve.
+
+        Deliberately not a raw ORM insert. An earlier version of this test built
+        the rows by hand and so never exercised the helper it was named for,
+        while reading as though it had.
+        """
+        from .models import AreaData
+
+        area = Area.objects.create(name="a")
+        create_stream_event(
+            stream_paths=path,
+            to_dataclass=lambda obj: AreaData(id=obj.id, name=obj.name),
+            instance=area,
+            action="create",
+        )
+        return area
 
     def test_the_store_carries_the_whole_envelope(self):
         from django_rakaia.django_store import DjangoStreamStore
+
+        self._seed_via_the_real_helper()
+
+        message = DjangoStreamStore().read("decorated")[0][0]
+        assert json.loads(message.data)["name"] == "a"
+        assert message.label == "create"
+        assert message.event_ts is not None
+        assert message.offset
+
+    def test_the_reader_carries_the_payload_and_nothing_else(self):
+        from django_rakaia.streams import DjangoStreamReader
+
+        self._seed_via_the_real_helper()
+
+        message = DjangoStreamReader().read("decorated")[0][0]
+        assert json.loads(message.data)["name"] == "a"
+        # Not "is None" — the fields do not exist, so reading one raises. That is
+        # the shape of the loss: an envelope consumer fails rather than degrades.
+        for field in ("label", "metadata", "event_ts", "offset"):
+            assert not hasattr(message, field), f"{field} unexpectedly present"
+
+    def test_only_the_store_inverts_a_non_json_body(self):
+        from django_rakaia.django_store import DjangoStreamStore
+        from django_rakaia.models import StreamEvent
+        from django_rakaia.streams import DjangoStreamReader
         from rakaia import AppendOptions
 
         store = DjangoStreamStore()
-        store.create("s")
-        store.append(
-            "s",
-            b'{"n": 1}',
-            AppendOptions(label="update", metadata={"user": 7}, event_ts=1234.0),
-        )
-
-        message = store.read("s")[0][0]
-        assert message.data == b'{"n": 1}'
-        assert message.label == "update"
-        assert message.metadata == {"user": 7}
-        assert message.event_ts == 1234.0
-        assert message.offset  # the deleted reader had no offset at all
-
-    def test_the_store_inverts_a_non_json_body(self):
-        from django_rakaia.django_store import DjangoStreamStore
-        from django_rakaia.models import StreamEvent
-
-        store = DjangoStreamStore()
         store.create("bin")
-        store.append("bin", b"\xff\xfe\x00binary", _octet_stream())
-
+        store.append(
+            "bin",
+            b"\xff\xfe\x00binary",
+            AppendOptions(content_type="application/octet-stream"),
+        )
         assert StreamEvent.objects.get().payload_encoding == "base64"
+
         assert store.read("bin")[0][0].data == b"\xff\xfe\x00binary"
+        # The reader hands back the stored base64 as if it were the payload.
+        assert DjangoStreamReader().read("bin")[0][0].data == b'"//4AYmluYXJ5"'
 
-    def test_the_store_reads_a_stream_written_by_the_decorator_path(self):
-        # The deleted reader's stated purpose was reading the tables
-        # `@stream_model` / `create_stream_event` populate. The store reads those
-        # same rows, which is what makes it a replacement rather than a
-        # substitute.
+    def test_they_disagree_about_a_missing_stream(self):
+        # The other difference a caller switching between them would hit.
         from django_rakaia.django_store import DjangoStreamStore
+        from django_rakaia.streams import DjangoStreamReader
+        from rakaia.types import StreamNotFound
 
-        _append_event("decorated", {"n": 1})
-        _append_event("decorated", {"n": 2})
-
-        messages, _ = DjangoStreamStore().read("decorated")
-        assert [m.data for m in messages] == [b'{"n": 1}', b'{"n": 2}']
-        assert [m.label for m in messages] == ["test", "test"]
+        assert DjangoStreamReader().read("nope") == ([], True)
+        with pytest.raises(StreamNotFound):
+            DjangoStreamStore().read("nope")
