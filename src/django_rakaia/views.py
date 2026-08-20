@@ -18,7 +18,7 @@ from django.views.decorators.http import require_GET
 
 from rakaia.types import InvalidOffset
 
-from .event_message import event_label, payload_fields
+from .event_message import event_label, event_view
 from .models import Stream, StreamEntry, StreamEvent
 from .offsets import parse_offset
 
@@ -101,16 +101,14 @@ def streams_index(_request: Any) -> HttpResponse:
         ],
         "event_types": list(event_types),
         "recent_events": [
-            {
-                "stream_id": e["stream__stream_id"],
-                "offset": e["offset"],
-                # Inverted, not the raw column: the sentinel means "an append
-                # with no envelope label", and a consumer of this API should see
-                # what `read()` reports, not the storage marker (#153).
-                "event_type": event_label(e["event__event_type"]),
-                "created_at": e["created_at"].isoformat() if e["created_at"] else None,
-                **payload_fields(e["event__data"], e["event__payload_encoding"]),
-            }
+            event_view(
+                event_type=e["event__event_type"],
+                data=e["event__data"],
+                payload_encoding=e["event__payload_encoding"],
+                created_at=e["created_at"],
+                stream_id=e["stream__stream_id"],
+                offset=e["offset"],
+            )
             for e in recent_entries
         ],
         "total_streams": stream_stats.count(),
@@ -239,16 +237,14 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
 
     # Serialize
     serialized_events = [
-        {
-            "id": e["event__id"],
-            "offset": e["offset"],
-            "event_type": event_label(e["event__event_type"]),
-            "created_at": e["created_at"].isoformat() if e["created_at"] else None,
-            # The stored pair, as the SSE frame sends it — this API used to
-            # publish an encoded payload with nothing to say it was encoded, so
-            # a base64 body was indistinguishable from text (#153).
-            **payload_fields(e["event__data"], e["event__payload_encoding"]),
-        }
+        event_view(
+            event_type=e["event__event_type"],
+            data=e["event__data"],
+            payload_encoding=e["event__payload_encoding"],
+            created_at=e["created_at"],
+            event_id=e["event__id"],
+            offset=e["offset"],
+        )
         for e in entries
     ]
 
