@@ -485,8 +485,9 @@ class TestExpiryReaping:
         `create` reaps inside its transaction and normally gets away with it: it
         goes on to insert the replacement row and commit, so the delete commits
         with it. Not if the `initial_data` it was handed then fails validation —
-        `_payloads_for` raises before any row is written, and the rollback that
-        reports the bad body takes the reap with it. That is the one case
+        `_payloads_for` raises before any *event* row is written, having already
+        inserted the replacement stream row, and the rollback that reports the
+        bad body takes the reap back out with it. That is the one case
         `create`'s pre-transaction `_reap_if_expired` is still there for, and
         deleting the call left the whole suite green until this test existed.
         """
