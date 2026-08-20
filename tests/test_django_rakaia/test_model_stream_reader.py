@@ -187,7 +187,9 @@ class TestTheStoreIsTheReaderForStoredEvents:
     `DjangoStreamStore.read()` was already the correct reading of those tables,
     already held to `tests/server_store_contract.py`, and — since #180 — already
     able to take a database alias, which the deleted reader never could. It had
-    no production callers; only its own tests, which pinned the lossy shape.
+    no callers in this repository or in the one consumer (verified: no import, no
+    dynamic reference, and an exact-minor pin between them), only its own tests,
+    which pinned the lossy shape.
 
     These cases are the properties the deletion depends on. If the store ever
     stopped carrying them, deleting the alternative would have cost something.
@@ -228,11 +230,85 @@ class TestTheStoreIsTheReaderForStoredEvents:
         # `@stream_model` / `create_stream_event` populate. The store reads those
         # same rows, which is what makes it a replacement rather than a
         # substitute.
+        #
+        # Through the real `create_stream_event`, not a raw ORM insert. The first
+        # version of this test built the rows by hand while being named for the
+        # helper, so the one case carrying the "replacement, not substitute"
+        # claim never exercised the path it claimed — and the deleted class's own
+        # test was the only cover that path had.
+        from django_rakaia.decorators import create_stream_event
         from django_rakaia.django_store import DjangoStreamStore
 
-        _append_event("decorated", {"n": 1})
-        _append_event("decorated", {"n": 2})
+        from .models import AreaData
+
+        for name in ("one", "two"):
+            area = Area.objects.create(name=name)
+            create_stream_event(
+                stream_paths="decorated",
+                to_dataclass=lambda obj: AreaData(id=obj.id, name=obj.name),
+                instance=area,
+                action="create",
+            )
 
         messages, _ = DjangoStreamStore().read("decorated")
-        assert [m.data for m in messages] == [b'{"n": 1}', b'{"n": 2}']
-        assert [m.label for m in messages] == ["test", "test"]
+        assert [json.loads(m.data)["name"] for m in messages] == ["one", "two"]
+        # The envelope the helper stamps, which the deleted reader dropped.
+        assert [m.label for m in messages] == ["create", "create"]
+        assert all(m.event_ts is not None for m in messages)
+
+    def test_a_missing_stream_raises_where_the_deleted_reader_returned_empty(self):
+        # Worth knowing now the module docstring sends people to the store: the
+        # deleted reader answered `([], True)` for a stream that does not exist,
+        # which a replay would read as "no events" rather than as an error.
+        from django_rakaia.django_store import DjangoStreamStore
+        from rakaia.types import StreamNotFound
+
+        with pytest.raises(StreamNotFound):
+            DjangoStreamStore().read("never-existed")
+
+    def test_a_read_writes_only_when_the_stream_has_a_ttl(self):
+        # `read()` calls `_touch`, so it *can* write — but `_touch` is a no-op
+        # unless the stream has a TTL, so reading an ordinary stream is pure.
+        # Both halves are asserted because "a read is a write" holds only for the
+        # TTL case, and an earlier version of this test asserted it
+        # unconditionally and was simply wrong.
+        import time
+
+        from django_rakaia.django_store import DjangoStreamStore
+
+        store = DjangoStreamStore()
+
+        store.create("plain")
+        store.append("plain", b"{}")
+        Stream.objects.filter(stream_id="plain").update(last_activity_at=0.0)
+        store.read("plain")
+        assert Stream.objects.get(stream_id="plain").last_activity_at == 0.0
+
+        store.create("ttl", ttl_seconds=3600)
+        store.append("ttl", b"{}")
+        # Backdated *within* the window — far enough to see the change, not far
+        # enough to expire, which is a different code path (below).
+        stale = time.time() - 60
+        Stream.objects.filter(stream_id="ttl").update(last_activity_at=stale)
+        store.read("ttl")
+        assert Stream.objects.get(stream_id="ttl").last_activity_at > stale
+
+    def test_a_read_reaps_a_stream_that_has_aged_out(self):
+        # The third thing the deleted reader did not do: it was expiry-blind, so
+        # it would happily replay a stream past its TTL. The store deletes it
+        # mid-read and reports it absent.
+        import time
+
+        from django_rakaia.django_store import DjangoStreamStore
+        from rakaia.types import StreamNotFound
+
+        store = DjangoStreamStore()
+        store.create("aged", ttl_seconds=60)
+        store.append("aged", b"{}")
+        Stream.objects.filter(stream_id="aged").update(
+            last_activity_at=time.time() - 3600
+        )
+
+        with pytest.raises(StreamNotFound):
+            store.read("aged")
+        assert not Stream.objects.filter(stream_id="aged").exists()
