@@ -7,8 +7,10 @@ The canonical migration proof is: run ``replay()`` with a
 the projection we already have?" — without writing anything. Every port re-derives
 the same diff plus the same normalization (a UUID column read back as a
 ``uuid.UUID`` vs a string in the effect; a JSON float vs the column's rounded
-``Decimal``). That normalization is universal, so it belongs here rather than in
-each consumer's ``replay_*`` proof.
+``Decimal``). Both halves belong in the library rather than in each consumer's
+``replay_*`` proof — the diff here, and the normalization in
+:mod:`django_rakaia.canonicalisation`, which the write path needs too and which
+this module re-exports for the import path it used to own.
 
     from rakaia.executors import CollectingExecutor
     from rakaia.replay import replay
