@@ -2,6 +2,25 @@
 Replay orchestrator: re-derive materialized state from a stream by running
 versioned handlers and an effect executor.
 
+.. warning::
+
+   **`rakaia.replay` the attribute is the function, not this module.** The
+   package root does ``from .replay import … replay``, which rebinds
+   ``rakaia.replay`` to the function — so ``import rakaia.replay as rp`` then
+   ``rp.build_pipeline`` raises ``AttributeError: 'function' object has no
+   attribute 'build_pipeline'``.
+
+   ``from rakaia.replay import X`` and ``sys.modules["rakaia.replay"]`` both work
+   normally; only attribute access through the package root is shadowed. The
+   trap is that a ``monkeypatch.setattr("rakaia.replay.<name>", …)`` lands on the
+   function object and silently patches nothing, so a test measuring call counts
+   reports zero and reads as a pass. That cost a wrong measurement while
+   verifying #156, and is recorded as item 1 of #161.
+
+   Renaming either one would be a breaking change to `rakaia.__all__`, so this
+   is a documented sharp edge rather than a bug to fix. Import the names you
+   need directly.
+
 Per event the pipeline is:
     1. Load the raw event bytes from the stream
     2. Decode as JSON, upcast to current schema via UpcasterRegistry
