@@ -263,3 +263,43 @@ class TestTierTwoIsDeliberatelyNotExported:
         from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
         assert Stream and StreamEntry and StreamEvent
+
+
+class TestTheReplayModuleIsShadowed:
+    """`rakaia.replay` the attribute is the function, not the module (#161 item 1).
+
+    The package root does `from .replay import … replay`, rebinding the package
+    attribute. Harmless for imports, but a `monkeypatch.setattr` aimed at
+    `"rakaia.replay.<name>"` lands on the function object and patches nothing —
+    a call-count assertion then reads zero and passes. That cost a wrong
+    measurement while verifying #156.
+
+    Renaming either would break `rakaia.__all__`, so the sharp edge is documented
+    in `replay.py` rather than removed. This pins the shape so the docstring
+    cannot quietly become wrong.
+    """
+
+    def test_the_package_attribute_is_the_function(self):
+        import rakaia
+
+        assert callable(rakaia.replay)
+        assert not hasattr(rakaia.replay, "build_pipeline")
+
+    def test_the_module_is_still_reachable_by_import(self):
+        import sys
+
+        from rakaia import replay as replay_module_attr  # the function
+        from rakaia.replay import replay as replay_fn
+
+        assert replay_module_attr is replay_fn
+        assert sys.modules["rakaia.replay"].__name__ == "rakaia.replay"
+        assert hasattr(sys.modules["rakaia.replay"], "build_pipeline")
+
+    def test_the_shadowing_is_documented_where_it_bites(self):
+        import sys
+
+        doc = sys.modules["rakaia.replay"].__doc__ or ""
+        assert "monkeypatch" in doc, (
+            "replay.py's docstring must keep warning that a monkeypatch through "
+            "the package root silently patches nothing"
+        )
