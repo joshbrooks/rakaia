@@ -564,12 +564,43 @@ class TestTheTransactionIsOpenedOnTheStoresAlias:
         assert [r.message is not None for r in results] == [True, True]
 
     @requires_row_locks
-    def test_closing_on_the_alias_opens_its_own_transaction(self) -> None:
+    def test_creating_with_a_body_opens_its_own_transaction(self) -> None:
+        # `create(initial_data=...)` routes through offset allocation, so it has
+        # its own atomic. Its docstring calls a missing transaction here "a
+        # guaranteed 500 in production" and points at the contract's
+        # create-with-body case as the cover — but that case never runs on an
+        # alias, so this site was unproven off `default`.
         store = DjangoStreamStore(using="overlay")
-        store.create("alias-close")
 
-        store.append("alias-close", b'{"x": 1}', AppendOptions(close=True))
+        store.create("alias-create-body", initial_data=b'{"x": 1}')
 
-        stream = store.get("alias-close")
+        assert [m.data for m in store.read("alias-create-body")[0]] == [b'{"x": 1}']
+
+    @requires_row_locks
+    def test_a_fenced_append_on_the_alias_opens_its_own_transaction(self) -> None:
+        # The sync inner method, not the async wrapper: the atomic lives here and
+        # `append_with_producer` only marshals into it, so this tests the site
+        # rather than the thread hop.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-fenced")
+
+        result = store._append_with_producer_sync(
+            "alias-fenced",
+            b'{"x": 1}',
+            AppendOptions(producer_id="p", producer_epoch=1, producer_seq=0),
+        )
+
+        assert result.message is not None
+
+    @requires_row_locks
+    def test_a_fenced_close_on_the_alias_opens_its_own_transaction(self) -> None:
+        # A separate atomic from `append`'s — closing under fencing takes its own.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-fenced-close")
+
+        result = store._close_with_producer_sync("alias-fenced-close", "p", 1, 0)
+
+        assert result is not None
+        stream = store.get("alias-fenced-close")
         assert stream is not None
         assert stream.closed
