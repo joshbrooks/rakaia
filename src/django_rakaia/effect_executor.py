@@ -169,30 +169,34 @@ class DjangoExecutor:
         """Apply a run of consecutive `Update`s, collapsing what can be collapsed.
 
         Consecutive updates that share a model, share identical ``defaults``, and
-        each match on **one equality against the same field** become a single
-        ``filter(field__in=[…]).update(**defaults)``. Everything else applies one
-        statement at a time, so a mixed batch degrades rather than raising.
+        each match on **one equality against the same non-null field** become a
+        single ``filter(field__in=[…]).update(**defaults)``. Everything else
+        applies one statement at a time, so a mixed batch degrades rather than
+        raising.
 
-        Why the collapse is sound rather than merely convenient:
+        Why the collapse preserves the answer:
 
         * `Update` is ``filter(...).update(...)`` — no signals, no ``auto_now``
-          advance, no per-row return value a caller reads — so N statements that
-          set the same columns to the same values are indistinguishable from one
-          over the union of their rows.
-        * **Two members of a group can never target the same row.** The group
-          requires one equality on the same field, so different values match
-          disjoint rows; and two members with the *same* value would be the same
-          lookup, which `check_disjoint_defaults` has already rejected before
-          anything applies. So order within a group cannot matter.
+          advance, no per-row result a caller reads — so N statements setting the
+          same columns to the same values are indistinguishable from one over the
+          union of their rows.
+        * **Two members of a group never target the same row.** They match one
+          field; different values select disjoint rows, and the same value would
+          be the same lookup, which `check_disjoint_defaults` rejects before
+          anything applies. Disjointness has to *stay* true, which is why a group
+          is refused when ``defaults`` writes the very field being matched on —
+          otherwise the first statement moves rows into a later member's value and
+          the later one matches them too, which one gathered ``IN`` cannot
+          reproduce.
         * Order *between* groups is preserved, and a run ends at the first
           non-update, so nothing moves across an `Upsert`. Two updates with
           different defaults can match one row through different lookups —
-          `check_disjoint_defaults` cannot see that, it keys on the exact lookup
-          — and last-write-wins is the answer today, so their sequence is kept.
+          `check_disjoint_defaults` keys on the exact lookup and cannot see that —
+          and last-write-wins is today's answer, so their sequence is kept.
 
         Refs are resolved before grouping: a lookup value may be a `Ref` standing
-        in for a row a sibling produced, and two effects are only alike once
-        those are substituted.
+        in for a row a sibling produced, and two effects are only alike once those
+        are substituted.
         """
         if not pending:
             return
@@ -206,46 +210,62 @@ class DjangoExecutor:
             if run and key is not None and key == run_key:
                 run.append(eff)
                 continue
-            self._apply_update_run(run)
+            self._flush_run(run, run_key)
             run, run_key = [eff], key
-        self._apply_update_run(run)
+        self._flush_run(run, run_key)
 
     @staticmethod
     def _batch_key(eff: Update) -> tuple[Any, ...] | None:
-        """A key two updates share iff they can be collapsed, else ``None``.
+        """A key two updates share iff they may be collapsed, else ``None``.
 
-        ``None`` for anything that has no safe ``__in`` form: a lookup that is not
-        exactly one equality (a composite key, or a ``__`` traversal, has no
-        single column to gather), empty ``defaults`` (a no-op), or ``defaults``
-        whose values are unhashable — a JSON column holds a dict, which cannot be
-        part of a grouping key, and refusing to group is better than refusing to
-        run.
+        ``None`` for anything without a safe ``__in`` form:
+
+        * a lookup that is not exactly one equality — a composite key or a ``__``
+          traversal has no single column to gather;
+        * a **null** lookup value. ``filter(f=None)`` is ``f IS NULL``, and Django
+          strips ``None`` from an ``__in`` right-hand side, so gathering a
+          null-matching effect emits a clause that does not match its rows and the
+          effect silently writes nothing. ``resolved_at IS NULL`` is this
+          codebase's own open predicate, so this is a shape a reconcile really
+          produces;
+        * ``defaults`` that write the matched field, which would move rows between
+          group members mid-run (see `_flush_updates`);
+        * empty ``defaults``, which is a no-op anyway;
+        * ``defaults`` whose values are unhashable — a JSON column holds a dict,
+          which cannot be part of a grouping key, and declining to group beats
+          declining to run.
         """
         defaults = eff.defaults or {}
         if not defaults or len(eff.lookup) != 1:
             return None
-        (field,) = eff.lookup
-        if "__" in field:
+        ((field, value),) = eff.lookup.items()
+        if "__" in field or value is None or field in defaults:
             return None
         try:
             return (eff.model_label, field, frozenset(defaults.items()))
         except TypeError:
             return None  # an unhashable default value
 
-    def _apply_update_run(self, run: list[Update]) -> None:
-        """One statement for a collapsible run, else one per effect."""
+    def _flush_run(self, run: list[Update], key: tuple[Any, ...] | None) -> None:
+        """One statement for a collapsible run, else one per effect.
+
+        `key` is the run's shared `_batch_key`; ``None`` means the run was never
+        collapsible. A run of one also goes per-effect: for a non-null value
+        ``field__in=[v]`` and ``field=v`` are the same query, but keeping the
+        single case on plain equality means the ``IN`` form is only ever built
+        where it has been shown to be safe.
+        """
         if not run:
             return
-        if len(run) == 1 or self._batch_key(run[0]) is None:
+        if key is None or len(run) == 1:
             for eff in run:
                 self._update(eff)
             return
         (field,) = run[0].lookup
-        values = [eff.lookup[field] for eff in run]
         model = apps.get_model(run[0].model_label)
-        self._manager(model).filter(**{f"{field}__in": values}).update(
-            **(run[0].defaults or {})
-        )
+        self._manager(model).filter(
+            **{f"{field}__in": [eff.lookup[field] for eff in run]}
+        ).update(**(run[0].defaults or {}))
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never

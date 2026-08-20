@@ -68,7 +68,7 @@ class TestTheFanOutCollapses:
         _rows("a", "b")
         with CaptureQueriesContext(connection) as ctx:
             DjangoExecutor().apply(_updates(["a", "b"], delta=1))
-        assert "IN" in _update_statements(ctx)[0].upper()
+        assert " IN (" in _update_statements(ctx)[0].upper()
 
     def test_a_single_update_is_unchanged(self):
         _rows("a")
@@ -295,31 +295,37 @@ class TestTheRunEndsAtAnUpsert:
 
 class TestTheGroupingKeyIsWhatItClaims:
     def test_two_models_keyed_on_the_same_field_do_not_merge(self):
-        # Contrived on purpose: both models happen to have a `suku` column, so
-        # without the model in the grouping key these two would collapse into one
-        # statement against one table and the other table would go unwritten.
-        from .models import Balance
+        # Two models that genuinely share both the lookup column and the written
+        # column, so the pair is collapsible except for the model. Without the
+        # model in the key they merge into one statement against one table and
+        # the other goes unwritten.
+        #
+        # An earlier version used `suku` for both the lookup and the default,
+        # which the self-rewrite guard added later excludes — so the test stopped
+        # exercising the model at all and a mutation dropping it from the key
+        # passed. Columns the guard does not reject, this time.
+        from .models import ArchivedDoc, SoftDeleteDoc
 
-        FinanceLine.objects.create(submission_id="f", suku="before", delta=0)
-        Balance.objects.create(suku="before", total=0)
+        SoftDeleteDoc.objects.create(name="before", is_active=True)
+        ArchivedDoc.objects.create(name="before", is_active=True)
 
         DjangoExecutor().apply(
             [
                 Update(
-                    model_label=MODEL,
-                    lookup={"suku": "before"},
-                    defaults={"suku": "after"},
+                    model_label="test_django_rakaia.SoftDeleteDoc",
+                    lookup={"is_active": True},
+                    defaults={"name": "after"},
                 ),
                 Update(
-                    model_label="test_django_rakaia.Balance",
-                    lookup={"suku": "before"},
-                    defaults={"suku": "after"},
+                    model_label="test_django_rakaia.ArchivedDoc",
+                    lookup={"is_active": True},
+                    defaults={"name": "after"},
                 ),
             ]
         )
 
-        assert FinanceLine.objects.get(submission_id="f").suku == "after"
-        assert Balance.objects.get().suku == "after"
+        assert SoftDeleteDoc.objects.get().name == "after"
+        assert ArchivedDoc.objects.get().name == "after"
 
 
 class TestGroupingIsAdjacentOnly:
@@ -363,3 +369,118 @@ class TestGroupingIsAdjacentOnly:
         # In order: a→1, then both→2, then b→1.
         assert FinanceLine.objects.get(submission_id="a").delta == 2
         assert FinanceLine.objects.get(submission_id="b").delta == 1
+
+
+class TestNullIsNotAValueYouCanGather:
+    """`filter(f=None)` is `f IS NULL`; `filter(f__in=[None, x])` is not.
+
+    Django strips `None` from an `__in` right-hand side, so gathering a
+    null-matching effect with a value-matching one emits ``WHERE f IN ('x')`` —
+    the null effect vanishes with no error and no rows written. Nothing upstream
+    catches it: the two lookups differ, so `check_disjoint_defaults` has nothing
+    to say.
+
+    Not an exotic shape. ``resolved_at IS NULL`` is this codebase's own
+    open-versus-closed predicate — `reconcile_by_key` builds its soft-delete
+    guard out of exactly that — so a reconcile touching the open rows and one
+    closed row is the fan-out this batching exists for.
+    """
+
+    def test_a_null_lookup_is_not_gathered_with_a_value(self):
+        from .models import Alert
+
+        alert_model = "test_django_rakaia.Alert"
+        Alert.objects.create(stream_key="open", alert_type="t", resolved_at=None)
+        Alert.objects.create(stream_key="closed", alert_type="t", resolved_at="2020")
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=alert_model,
+                    lookup={"resolved_at": None},
+                    defaults={"severity": "hit"},
+                ),
+                Update(
+                    model_label=alert_model,
+                    lookup={"resolved_at": "2020"},
+                    defaults={"severity": "hit"},
+                ),
+            ]
+        )
+
+        assert Alert.objects.get(stream_key="open").severity == "hit"
+        assert Alert.objects.get(stream_key="closed").severity == "hit"
+
+    def test_two_null_lookups_cannot_arise(self):
+        # The other null shape is unreachable: two effects with the *same* lookup
+        # writing the same field are rejected by `check_disjoint_defaults` before
+        # the executor sees them, so there is no two-null group to guard against.
+        from rakaia.effects import EffectCollisionError, check_disjoint_defaults
+
+        both_null = [
+            Update(
+                model_label="test_django_rakaia.Alert",
+                lookup={"resolved_at": None},
+                defaults={"severity": "one"},
+            )
+        ] * 2
+        with pytest.raises(EffectCollisionError):
+            check_disjoint_defaults(both_null)
+
+
+class TestAnEffectThatRewritesWhatItMatchesOn:
+    """Disjointness assumes the update does not move rows between the values.
+
+    Two grouped effects match one field with different values, so their row sets
+    are disjoint *at the start*. If the `defaults` also write that field, the
+    first statement moves rows into a later member's value and the later one
+    matches them too — which one gathered statement cannot reproduce, because its
+    ``IN`` is evaluated once.
+
+    Contrived: it needs a non-idempotent default alongside a self-overwriting
+    lookup field. Guarded anyway, because the alternative is a docstring claiming
+    disjointness that holds only most of the time.
+    """
+
+    def test_a_default_that_rewrites_the_lookup_field_is_not_gathered(self):
+        from django.db.models import F
+
+        FinanceLine.objects.create(submission_id="x", suku="a", delta=0)
+        FinanceLine.objects.create(submission_id="y", suku="b", delta=0)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"suku": "a"},
+                    defaults={"suku": "b", "delta": F("delta") + 1},
+                ),
+                Update(
+                    model_label=MODEL,
+                    lookup={"suku": "b"},
+                    defaults={"suku": "b", "delta": F("delta") + 1},
+                ),
+            ]
+        )
+
+        # x is moved into suku=b by the first statement, then matched again by the
+        # second. Gathered into one `IN ('a', 'b')` it is incremented only once.
+        assert FinanceLine.objects.get(submission_id="x").delta == 2
+        assert FinanceLine.objects.get(submission_id="y").delta == 1
+
+
+class TestASingleUpdateUsesPlainEquality:
+    def test_one_effect_does_not_become_an_in_clause(self):
+        # Equivalent for a non-null value, but the `IN` form is what breaks on
+        # `None`, so the one-effect path stays on plain equality rather than
+        # relying on the null guard alone.
+        #
+        # Matched as ` IN (`, not `"IN"`: the table is named `financeline`, which
+        # contains the substring, and the first version of this assertion caught
+        # the table name rather than the clause.
+        _rows("solo")
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(_updates(["solo"], delta=1))
+
+        statement = _update_statements(ctx)[0]
+        assert " IN (" not in statement.upper(), statement
