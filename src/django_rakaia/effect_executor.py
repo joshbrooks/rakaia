@@ -26,7 +26,7 @@ doesn't fire for an unchanged row.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from django.apps import apps
@@ -46,7 +46,7 @@ from rakaia.effects import (
     check_disjoint_defaults,
 )
 
-from .verification import canonical_value
+from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
 
 
 def _row_accessor(obj: Any) -> Any:
@@ -67,13 +67,29 @@ class DjangoExecutor:
     database (an in-memory sqlite, or a throwaway Postgres) and verified without
     touching production, at full ORM fidelity. `using=None` targets the default
     alias, exactly as before. Pair with `DjangoProjectionReader(using=...)`.
+
+    Pass `normalizers` to define value-equality for `skip_unchanged` the same way
+    `diff_effects_against_rows(normalizers=...)` defines it for the verify side.
+    Both default to `DEFAULT_NORMALIZERS`, so out of the box the two paths already
+    agree; the parameter exists for the case where they otherwise could not. A
+    consumer with a domain-specific normalizer (a currency rounding rule, say)
+    previously had a diff that honoured it and a skip path that did not, which
+    means a replay churned rows the diff called unchanged, and there was no
+    argument that would have fixed it (#160). Hand the same sequence to both.
     """
 
     def __init__(
-        self, *, skip_unchanged: bool = False, using: str | None = None
+        self,
+        *,
+        skip_unchanged: bool = False,
+        using: str | None = None,
+        normalizers: Sequence[Normalizer] | None = None,
     ) -> None:
         self._skip_unchanged = skip_unchanged
         self._using = using
+        self._normalizers = (
+            DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
+        )
 
     def _manager(self, model: type) -> Any:
         # `.using(None)` keeps default routing, so this is uniform whether or
@@ -167,17 +183,20 @@ class DjangoExecutor:
         # Compare through the field's canonical form, not raw ``!=`` (P4): the log
         # can carry a representation the column would round or re-type — a JSON
         # float for a DecimalField, a UUID string for a UUIDField — which is not a
-        # real change. Uses ``canonical_value`` with the default normalizers — the
-        # same set ``diff_effects_against_rows`` uses by default — so with those,
-        # "unchanged" is defined identically in the migration diff and here and
-        # skip_unchanged doesn't churn a row on every replay over a coercion-only
-        # difference. (A diff run with a *custom* ``normalizers=`` set can diverge:
-        # there is no executor hook to pass one through.)
+        # real change. This is the same `canonical_value` and the same default set
+        # `diff_effects_against_rows` uses, so "unchanged" is defined identically
+        # in the migration diff and here, and `skip_unchanged` does not churn a row
+        # on every replay over a coercion-only difference.
+        #
+        # `normalizers=` is what makes that hold for a *custom* set too. Before it
+        # existed the skip path was pinned to the defaults while a diff could be
+        # given anything, so a consumer with its own normalizers had a verify path
+        # and a write path that disagreed and no way to reconcile them (#160).
         changed = {
             k: v
             for k, v in defaults.items()
-            if canonical_value(model, k, getattr(row, k))
-            != canonical_value(model, k, v)
+            if canonical_value(model, k, getattr(row, k), self._normalizers)
+            != canonical_value(model, k, v, self._normalizers)
         }
         if not changed:
             return row, "skipped"  # nothing to write — skip the UPDATE entirely
