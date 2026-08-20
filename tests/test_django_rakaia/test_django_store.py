@@ -359,10 +359,19 @@ class TestDjangoStreamStore:
         high_before = StreamOffsetWatermark.objects.get(stream_path="s").high
         events_before = StreamEvent.objects.count()
 
+        # Patched on `QuerySet` and narrowed to the entry model, rather than on
+        # `StreamEntry.objects`: the store reaches its models through one
+        # alias-scoped accessor, and `.using()` returns a fresh queryset, so a
+        # patch on the manager object is no longer on the path the store takes.
+        original_bulk_create = QuerySet.bulk_create
+
+        def fail_for_entries(qs, *args, **kwargs):
+            if qs.model is StreamEntry:
+                raise RuntimeError("boom")
+            return original_bulk_create(qs, *args, **kwargs)
+
         with (
-            patch.object(
-                StreamEntry.objects, "bulk_create", side_effect=RuntimeError("boom")
-            ),
+            patch.object(QuerySet, "bulk_create", fail_for_entries),
             pytest.raises(RuntimeError, match="boom"),
         ):
             store.append_many("s", [(b'{"id": 1}', None), (b'{"id": 2}', None)])

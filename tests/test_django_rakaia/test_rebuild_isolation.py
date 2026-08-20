@@ -31,6 +31,7 @@ from django_rakaia.hermeticity import (
     assert_no_live_writes,
     deny_database_access,
 )
+from rakaia.effects import Upsert
 
 from .models import FinanceLine
 
@@ -205,3 +206,89 @@ class TestTheTwoGuardsComposeInEitherOrder:
         assert any("COUNT" in sql.upper() for sql in seen), (
             "the guard's own counts should still reach an unrelated wrapper"
         )
+
+
+class TestTheLogCanComeFromTheDisposableAliasToo:
+    """The drain is no longer the price of a hermetic rebuild.
+
+    `deny_database_access("default")` catches *every* statement on that alias,
+    including the store's own reads — which is correct, and used to be the whole
+    obstacle: the log lived on `default`, so reading it tripped the guard. The
+    documented answer was to copy the log into memory first, six lines, at every
+    call site.
+
+    With `DjangoStreamStore(using=...)` the log is on the alias being rebuilt
+    into, so the replay reads and writes one database and the guard has nothing to
+    catch. These two cases are the before and after of that claim, and the second
+    is what makes the first mean something: a pass proves nothing unless the same
+    guard is seen to fail.
+    """
+
+    def _seed(self, alias: str, path: str = "rebuild-me") -> None:
+        from django_rakaia.django_store import DjangoStreamStore
+
+        store = DjangoStreamStore(using=alias)
+        store.create(path)
+        store.append(path, b'{"n": 1}')
+        store.append(path, b'{"n": 2}')
+
+    def test_reading_the_log_from_the_alias_does_not_trip_the_guard(self):
+        from django_rakaia.django_store import DjangoStreamStore
+
+        self._seed("overlay")
+
+        with deny_database_access("default"):
+            messages, _ = DjangoStreamStore(using="overlay").read("rebuild-me")
+
+        assert [m.data for m in messages] == [b'{"n": 1}', b'{"n": 2}']
+
+    def test_reading_it_from_the_guarded_alias_still_trips(self):
+        # The armed-guard check the hermeticity docstring asks for, as a test
+        # rather than as discipline. Without this the case above would pass
+        # equally well if the guard had never been installed.
+        from django_rakaia.django_store import DjangoStreamStore
+        from django_rakaia.hermeticity import AmbientDatabaseAccess
+
+        self._seed("default")
+
+        with (
+            deny_database_access("default"),
+            pytest.raises(AmbientDatabaseAccess),
+        ):
+            DjangoStreamStore(using=None).read("rebuild-me")
+
+    def test_a_whole_replay_runs_inside_the_guard_with_no_drain(self):
+        # End to end: log on the alias, handlers replayed, projections written to
+        # the same alias, `default` never touched. This is the composition
+        # `hermeticity.py` describes in prose and nothing executed.
+        from django_rakaia.django_store import DjangoStreamStore
+        from django_rakaia.effect_executor import DjangoExecutor
+        from rakaia.registry import HandlerRegistry
+        from rakaia.replay import replay
+
+        self._seed("overlay", "fin")
+
+        registry = HandlerRegistry()
+        registry.register(
+            name="fin",
+            event_match="fin",
+            fn=lambda event: [
+                Upsert(
+                    model_label="test_django_rakaia.FinanceLine",
+                    lookup={"submission_id": str(event["n"])},
+                    defaults={"suku": "s", "delta": event["n"]},
+                )
+            ],
+            effective_from=0,
+        )
+
+        with assert_no_live_writes(FinanceLine), deny_database_access("default"):
+            replay(
+                DjangoStreamStore(using="overlay"),
+                "fin",
+                DjangoExecutor(using="overlay"),
+                handler_registry=registry,
+            )
+
+        assert FinanceLine.objects.using("overlay").count() == 2
+        assert FinanceLine.objects.using("default").count() == 0
