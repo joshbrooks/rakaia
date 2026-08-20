@@ -199,8 +199,9 @@ stage-1 handler that resolves a reference another form created would find nothin
 (the reference was recorded, never applied), so the link can't be verified.
 
 The honest answer is not a bespoke in-memory shadow that imitates the ORM, but the
-**real** executor and reader pointed at a **disposable database**. Both
-`DjangoExecutor` and `DjangoProjectionReader` take a `using=` database alias:
+**real** store, executor and reader pointed at a **disposable database**. All
+three — `DjangoStreamStore`, `DjangoExecutor` and `DjangoProjectionReader` — take
+a `using=` database alias:
 
 ```python
 # settings: a throwaway alias — in-memory sqlite for fast/CI proofs,
@@ -208,13 +209,21 @@ The honest answer is not a bespoke in-memory shadow that imitates the ORM, but t
 DATABASES["rebuild"] = {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
 
 replay(
-    store, "submissions",
+    DjangoStreamStore(using="rebuild"), "submissions",  # the log comes from there too
     DjangoExecutor(using="rebuild"),                 # writes land in the scratch DB
     reader=DjangoProjectionReader(using="rebuild"),  # stage-1 reads them back
     handler_registry=reg,
 )
 # ...then diff the rebuilt rows against production and throw the scratch DB away.
 ```
+
+The store joined that list late (#180), and its absence was the whole obstacle in
+practice: `deny_database_access("default")` catches *every* statement on the alias
+it guards, including the store's own reads, so a rebuild whose log lived on
+`default` tripped its own guard. The documented workaround was to copy the log
+into an in-memory store first — six lines, at every call site, and untested,
+because the store could not be pointed anywhere else in order to test it. If you
+are following an older recipe that drains the log by hand, you no longer need to.
 
 Because it is the real ORM, you get full fidelity — constraints, defaults, joins,
 `__gte` — for free, with no query engine to write and nothing written to
