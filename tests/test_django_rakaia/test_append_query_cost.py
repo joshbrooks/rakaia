@@ -14,10 +14,13 @@ stream row, one of the high-water, one insert each for the event and the entry,
 one update of the high-water. Naming the tables is what makes a failure say
 which statement came back rather than only that the total moved.
 
-**Transaction control is filtered out**, because it is not portable: Postgres
-reports `BEGIN`/`COMMIT` through the cursor and SQLite does not, so a raw total
-would be two different numbers on the two CI legs. `_data_queries` keeps the
-statements that touch a table.
+**Transaction control is filtered out** — `_data_queries` keeps the statements
+that touch a table. Not for portability: both legs report `BEGIN` and `COMMIT`
+through the cursor, so today the raw totals agree. It is the savepoints that are
+conditional, and on nothing these tests are about. An append wrapped in a
+caller's own `atomic()` nests, and a first append to a path opens one around the
+high-water get-or-create — so a `SAVEPOINT`/`RELEASE` pair says something about
+who called the append, not about what the append cost.
 
 `transaction=True`, like every other test that reaches a `select_for_update()`
 here: the counts are measured against a real transaction the store opened
