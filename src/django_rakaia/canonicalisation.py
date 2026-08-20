@@ -208,10 +208,12 @@ def normalize_temporal(model: type, field_name: str, value: Any) -> Any:
 #: whereas not truncating means a phantom difference on essentially every row
 #: with a timestamp, forever (#83).
 #:
-#: This set is shared by `diff_effects_against_rows` and the executor's
-#: ``skip_unchanged`` compare, so "unchanged" means the same thing on the read
-#: and write paths. A diff given a custom ``normalizers=`` set is **not**
-#: mirrored on the skip path.
+#: This set is the default for both `diff_effects_against_rows` and the executor's
+#: ``skip_unchanged`` compare, so out of the box "unchanged" means the same thing
+#: on the read and write paths. Both also take ``normalizers=``, so a custom set
+#: can be given to each and they still agree — which was the point of #160. Hand
+#: the same sequence to both; there is no longer a path that silently keeps these
+#: defaults while the other honours something else.
 DEFAULT_NORMALIZERS: tuple[Normalizer, ...] = (
     normalize_uuid,
     normalize_decimal,
@@ -228,12 +230,15 @@ def canonical_value(
     """Coerce ``value`` into the comparable form the column stores.
 
     Applies ``normalizers`` in order (UUID→str, Decimal→column scale by default).
-    Shared by :func:`diff_effects_against_rows` and the executor's
-    ``skip_unchanged`` compare, so under the **default** normalizers "unchanged"
-    means the same thing in the migration diff and on the write path — a value the
-    DB would round or re-type is not counted as a change (ADR 0003 / P4). The skip
-    path always uses :data:`DEFAULT_NORMALIZERS`; a diff given a custom
-    ``normalizers=`` set is not mirrored there. See :data:`DEFAULT_NORMALIZERS`.
+    The single definition of value-equality behind both
+    :func:`~django_rakaia.verification.diff_effects_against_rows` and the
+    executor's ``skip_unchanged`` compare, so "unchanged" means the same thing in
+    the migration diff and on the write path — a value the DB would round or
+    re-type is not counted as a change (ADR 0003 / P4).
+
+    Both callers default to :data:`DEFAULT_NORMALIZERS` and both accept a
+    ``normalizers=`` set, so that agreement holds for a custom set too as long as
+    the same sequence is given to each (#160).
     """
     for norm in normalizers:
         value = norm(model, field_name, value)

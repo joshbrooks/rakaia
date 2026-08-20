@@ -367,6 +367,24 @@ class TestVerificationStillExportsWhatItDefines:
 
         assert getattr(verification, name) is getattr(canonicalisation, name)
 
+    def test_the_reexport_list_is_the_whole_of_the_reexports(self):
+        # A hand-written list goes stale. This ties it to reality from the other
+        # end: whatever `__all__` names that is *not* defined in this module is by
+        # definition a re-export, and must be in the list above — so adding a
+        # seventh without a test fails here rather than passing silently on ruff's
+        # F401 pressure alone.
+        from django_rakaia import verification
+
+        defined_here = {
+            name
+            for name, obj in vars(verification).items()
+            if getattr(obj, "__module__", None) == "django_rakaia.verification"
+        }
+        reexported = (
+            set(verification.__all__) - defined_here - {"GREEN", "RED", "VACUOUS"}
+        )
+        assert reexported == set(self.BACK_COMPAT_REEXPORTS)
+
     def test_nothing_public_is_defined_here_and_left_out(self):
         from django_rakaia import verification
 
