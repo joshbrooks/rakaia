@@ -238,3 +238,66 @@ class TestTheThreeSurfacesNowAgree:
         # difference between the three, and deliberate.
         assert listed["stream_id"] == "s"
         assert "id" not in listed
+
+
+class TestTheWireFormatItself:
+    """The bytes, not just the values.
+
+    Every case above either compares one surface against another — so a format
+    change moves both together and cancels out — or parses with
+    `datetime.fromisoformat`, which accepts a space separator as readily as a
+    `T`. So swapping `isoformat()` for `str()` changed the published format on all
+    three surfaces and left the whole suite green. These assert the shape a
+    consumer actually parses.
+    """
+
+    def test_the_timestamp_is_iso_8601_with_a_t_separator(self):
+        from django_rakaia.event_message import event_view_of_entry
+
+        view = event_view_of_entry(_one_entry())
+        assert "T" in view["created_at"], view["created_at"]
+        assert " " not in view["created_at"], view["created_at"]
+
+    def test_the_key_order_is_identity_then_event_then_payload(self):
+        # This PR's claim is that both HTTP payloads stay byte-identical, and key
+        # order is part of the bytes. Unpinned, that claim decays on the next
+        # edit — a reordering of `event_view` survived a mutation pass.
+        from django_rakaia.event_message import event_view_of_entry
+
+        view = event_view_of_entry(
+            _one_entry(), event_id=True, offset=True, stream_id=True
+        )
+        assert list(view) == [
+            "id",
+            "stream_id",
+            "offset",
+            "event_type",
+            "created_at",
+            "data",
+        ]
+
+    def test_a_zero_identity_value_is_still_published(self):
+        # The omit rule is `is not None`, not truthiness. The ORM mints neither a
+        # zero offset nor a zero primary key, so this is a property of the
+        # function rather than a reachable row — which is exactly why it needs
+        # asserting here rather than through a surface.
+        from django_rakaia.event_message import event_view
+
+        view = event_view(
+            event_type="create",
+            data={"n": 1},
+            payload_encoding=None,
+            created_at=None,
+            event_id=0,
+            offset=0,
+        )
+        assert view["id"] == 0
+        assert view["offset"] == 0
+
+    def test_a_missing_timestamp_is_null_not_absent(self):
+        from django_rakaia.event_message import event_view
+
+        view = event_view(
+            event_type="create", data={}, payload_encoding=None, created_at=None
+        )
+        assert view["created_at"] is None

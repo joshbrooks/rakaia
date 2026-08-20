@@ -31,6 +31,8 @@ from rakaia.types import StreamMessage
 from .offsets import format_offset
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from datetime import datetime
+
     from .models import StreamEntry
 
 # StreamEvent.event_type is required metadata for the dashboard; raw stream
@@ -154,10 +156,10 @@ def event_view(
     event_type: str,
     data: Any,
     payload_encoding: str | None,
-    created_at: Any,
-    event_id: Any = None,
-    offset: Any = None,
-    stream_id: Any = None,
+    created_at: datetime | None,
+    event_id: int | None = None,
+    offset: int | None = None,
+    stream_id: str | None = None,
 ) -> dict[str, Any]:
     """One event, as a JSON object. The wire counterpart to `message_of`.
 
@@ -182,8 +184,11 @@ def event_view(
     a side effect of tidying their serialisation. `event_view_of_entry` is the
     adapter for callers that do hold an entry.
 
-    The identity keys are omitted when ``None`` — the surfaces genuinely differ in
-    what they need. A channel frame identifies the event, a per-stream API already
+    The identity keys are omitted when ``None`` — tested with ``is not None``, not
+    truthiness, so an ``offset=0`` or ``event_id=0`` would still be published. The
+    ORM never mints either (offsets and primary keys both start at 1), so this is
+    a property of the function rather than a reachable case, and it is pinned as
+    one. The surfaces genuinely differ in what they need. A channel frame identifies the event, a per-stream API already
     knows its stream, and a cross-stream listing has to say which stream each
     event came from.
     """
