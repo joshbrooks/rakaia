@@ -101,8 +101,17 @@ class Stream(models.Model):
         to keep in step. Named to match the in-memory `Stream.current_offset`,
         which is what lets one protocol server read either.
         """
+        # Read the high-water from the same database this stream row came from,
+        # as `get_next_offset_block` allocates from (#159). Before the watermark
+        # became authoritative here this read took `max(entries, watermark)`, and
+        # the entries half already followed the alias — so a scratch-database
+        # rebuild happened to report its own entries when they were higher.
+        # Reporting the watermark alone without the alias would have turned that
+        # into reading the *live* high-water every time.
+        using = self._state.db
         watermark_high = (
-            StreamOffsetWatermark.objects.filter(stream_path=self.stream_id)
+            StreamOffsetWatermark.objects.using(using)
+            .filter(stream_path=self.stream_id)
             .values_list("high", flat=True)
             .first()
         )

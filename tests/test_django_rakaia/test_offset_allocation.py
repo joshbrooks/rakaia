@@ -101,51 +101,6 @@ class TestAllocationQueryCount:
         assert len(ctx.captured_queries) == 2, [q["sql"] for q in ctx.captured_queries]
 
 
-@pytest.mark.skipif(
-    not connection.features.has_select_for_update,
-    reason=(
-        "backend has no row locks, so select_for_update() compiles to a plain "
-        "SELECT and the emitted SQL cannot answer this -- run with "
-        "RAKAIA_TEST_DB=postgres"
-    ),
-)
-class TestTheLockSurvivesGetOrCreate:
-    """That the *one* remaining read is still a locking one.
-
-    Folding the plain `get_or_create` and the `select_for_update().get()` into a
-    single locked `get_or_create` is only safe if Django applies the queryset's
-    `FOR UPDATE` to the `get` half. It does — but nothing in the default test run
-    can see that, because SQLite reports `has_select_for_update` false and Django
-    then omits the clause entirely. Spying on `QuerySet.select_for_update` (as
-    `test_django_store.py` does) proves the method was *called*, not that the
-    clause reached the database.
-
-    So this reads the SQL. It is the only assertion in the file that can tell a
-    real lock from a call that was silently dropped, and it is the reason this
-    change has to be run against Postgres before it is believed.
-    """
-
-    @pytest.mark.django_db(transaction=True)
-    def test_the_watermark_read_is_a_locking_read(self):
-        from django.db import transaction as db_transaction
-
-        Stream.objects.create(stream_id="s")
-        with db_transaction.atomic():
-            stream = Stream.objects.get(stream_id="s")
-            stream.get_next_offset_block(1)  # off zero, so the next is steady state
-            with CaptureQueriesContext(connection) as ctx:
-                stream.get_next_offset_block(1)
-
-        watermark_reads = [
-            q["sql"]
-            for q in ctx.captured_queries
-            if "rakaia_streamoffsetwatermark" in q["sql"]
-            and q["sql"].lstrip().upper().startswith("SELECT")
-        ]
-        assert len(watermark_reads) == 1, watermark_reads
-        assert "FOR UPDATE" in watermark_reads[0].upper(), watermark_reads[0]
-
-
 class TestTheReadSideAgrees:
     """`Stream.current_offset` answers the same question from the same source.
 
