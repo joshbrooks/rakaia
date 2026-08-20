@@ -32,6 +32,7 @@ from typing import Any
 from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
+from django.db.models.expressions import Combinable
 
 from rakaia.effects import (
     ApplyReport,
@@ -180,14 +181,24 @@ class DjangoExecutor:
           advance, no per-row result a caller reads — so N statements setting the
           same columns to the same values are indistinguishable from one over the
           union of their rows.
-        * **Two members of a group never target the same row.** They match one
-          field; different values select disjoint rows, and the same value would
-          be the same lookup, which `check_disjoint_defaults` rejects before
-          anything applies. Disjointness has to *stay* true, which is why a group
-          is refused when ``defaults`` writes the very field being matched on —
-          otherwise the first statement moves rows into a later member's value and
-          the later one matches them too, which one gathered ``IN`` cannot
-          reproduce.
+        * **Re-applying the defaults to a row cannot change it.** That is the
+          property the collapse actually needs, and it is why only *literal*
+          defaults are collapsed. Two members match one field with different
+          values, so their rows look disjoint — but a member can move a row into a
+          later member's value, and then the later statement matches it too. With
+          literal defaults that second write sets the same columns to the same
+          values and the answer is unchanged. With an expression it is not:
+          ``F("n") + 1`` applied twice is not applied once.
+
+          The row sets can overlap by more routes than a lookup key can see —
+          a foreign key reachable as both ``area`` and ``area_id``, a `Ref` and a
+          literal that resolve to one value (`check_disjoint_defaults` runs before
+          resolution and sees two lookups where the grouper sees one), and values
+          that are distinct in Python but equal in the database (``1`` and
+          ``"1"`` against an integer column). Guarding the lookup key closed one
+          of those and left the rest; requiring idempotent defaults closes all of
+          them at once, because every one of them needs a non-idempotent write to
+          become visible.
         * Order *between* groups is preserved, and a run ends at the first
           non-update, so nothing moves across an `Upsert`. Two updates with
           different defaults can match one row through different lookups —
@@ -210,9 +221,9 @@ class DjangoExecutor:
             if run and key is not None and key == run_key:
                 run.append(eff)
                 continue
-            self._flush_run(run, run_key)
+            self._flush_run(run)
             run, run_key = [eff], key
-        self._flush_run(run, run_key)
+        self._flush_run(run)
 
     @staticmethod
     def _batch_key(eff: Update) -> tuple[Any, ...] | None:
@@ -228,8 +239,11 @@ class DjangoExecutor:
           effect silently writes nothing. ``resolved_at IS NULL`` is this
           codebase's own open predicate, so this is a shape a reconcile really
           produces;
-        * ``defaults`` that write the matched field, which would move rows between
-          group members mid-run (see `_flush_updates`);
+        * ``defaults`` holding a query expression — ``F()``, ``Concat``, anything
+          `Combinable`. Those are the writes that are not idempotent, and
+          idempotence is what makes the collapse invisible (see
+          `_flush_updates`). A fan-out setting a literal still collapses, which
+          is the case #199 asked for;
         * empty ``defaults``, which is a no-op anyway;
         * ``defaults`` whose values are unhashable — a JSON column holds a dict,
           which cannot be part of a grouping key, and declining to group beats
@@ -239,25 +253,28 @@ class DjangoExecutor:
         if not defaults or len(eff.lookup) != 1:
             return None
         ((field, value),) = eff.lookup.items()
-        if "__" in field or value is None or field in defaults:
+        if "__" in field or value is None:
+            return None
+        if any(isinstance(v, Combinable) for v in defaults.values()):
             return None
         try:
             return (eff.model_label, field, frozenset(defaults.items()))
         except TypeError:
             return None  # an unhashable default value
 
-    def _flush_run(self, run: list[Update], key: tuple[Any, ...] | None) -> None:
+    def _flush_run(self, run: list[Update]) -> None:
         """One statement for a collapsible run, else one per effect.
 
-        `key` is the run's shared `_batch_key`; ``None`` means the run was never
-        collapsible. A run of one also goes per-effect: for a non-null value
+        `key` is the run's shared `_batch_key`. A run only grows while the key is
+        not ``None``, so a non-collapsible effect is always a run of one and the
+        length test is the only condition needed here. For a non-null value
         ``field__in=[v]`` and ``field=v`` are the same query, but keeping the
         single case on plain equality means the ``IN`` form is only ever built
         where it has been shown to be safe.
         """
         if not run:
             return
-        if key is None or len(run) == 1:
+        if len(run) == 1:
             for eff in run:
                 self._update(eff)
             return

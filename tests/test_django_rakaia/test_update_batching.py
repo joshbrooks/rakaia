@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 from django.db import connection
+from django.db.models import F
 from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.effect_executor import DjangoExecutor
@@ -428,21 +429,26 @@ class TestNullIsNotAValueYouCanGather:
             check_disjoint_defaults(both_null)
 
 
-class TestAnEffectThatRewritesWhatItMatchesOn:
-    """Disjointness assumes the update does not move rows between the values.
+class TestOnlyIdempotentDefaultsAreGathered:
+    """The property the collapse needs is that re-applying a write is a no-op.
 
-    Two grouped effects match one field with different values, so their row sets
-    are disjoint *at the start*. If the `defaults` also write that field, the
-    first statement moves rows into a later member's value and the later one
-    matches them too — which one gathered statement cannot reproduce, because its
-    ``IN`` is evaluated once.
+    Two grouped effects match one field with different values, so their rows look
+    disjoint — but a member can move a row into a later member's value, and the
+    later statement then matches it too. With literal defaults that second write
+    sets the same columns to the same values and nothing changes. With an
+    expression it does: `F("n") + 1` twice is not `F("n") + 1` once.
 
-    Contrived: it needs a non-idempotent default alongside a self-overwriting
-    lookup field. Guarded anyway, because the alternative is a docstring claiming
-    disjointness that holds only most of the time.
+    Guarding the *lookup key* against appearing in `defaults` closed one route
+    into this and left three open — a foreign key reachable as both `area` and
+    `area_id`; a `Ref` and a literal resolving to one value, where
+    `check_disjoint_defaults` runs pre-resolution and sees two lookups while the
+    grouper sees one; and values distinct in Python but equal in the database
+    (`1` versus `"1"` on an integer column). Every one of them needs a
+    non-idempotent write to become visible, so requiring idempotent defaults
+    closes all of them together.
     """
 
-    def test_a_default_that_rewrites_the_lookup_field_is_not_gathered(self):
+    def test_an_expression_default_is_not_gathered(self):
         from django.db.models import F
 
         FinanceLine.objects.create(submission_id="x", suku="a", delta=0)
@@ -468,6 +474,92 @@ class TestAnEffectThatRewritesWhatItMatchesOn:
         assert FinanceLine.objects.get(submission_id="x").delta == 2
         assert FinanceLine.objects.get(submission_id="y").delta == 1
 
+    def test_a_literal_default_that_rewrites_the_lookup_field_is_safe(self):
+        # The narrower guard's other half: a literal *is* collapsed even when it
+        # rewrites the matched field, because re-applying it changes nothing.
+        # Both rows end identical either way, which is what makes the collapse
+        # invisible rather than merely rare.
+        FinanceLine.objects.create(submission_id="x", suku="a", delta=0)
+        FinanceLine.objects.create(submission_id="y", suku="b", delta=0)
+
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(
+                [
+                    Update(
+                        model_label=MODEL, lookup={"suku": "a"}, defaults={"suku": "c"}
+                    ),
+                    Update(
+                        model_label=MODEL, lookup={"suku": "b"}, defaults={"suku": "c"}
+                    ),
+                ]
+            )
+
+        assert len(_update_statements(ctx)) == 1
+        assert set(FinanceLine.objects.values_list("suku", flat=True)) == {"c"}
+
+    def test_a_foreign_key_under_its_other_name_is_not_gathered(self):
+        # `area` and `area_id` are one column, so a lookup key check could not see
+        # this route. An expression default makes the divergence observable.
+        from django.contrib.auth import get_user_model
+        from django.db.models import Value
+        from django.db.models.functions import Concat
+
+        from .models import Area, Project
+
+        user = get_user_model().objects.create_user(username="pj")
+        a1 = Area.objects.create(name="a1")
+        a2 = Area.objects.create(name="a2")
+        Project.objects.create(name="p1", area=a1, created_by=user)
+        Project.objects.create(name="p2", area=a2, created_by=user)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label="test_django_rakaia.Project",
+                    lookup={"area_id": a1.pk},
+                    defaults={"area": a2, "name": Concat(F("name"), Value("!"))},
+                ),
+                Update(
+                    model_label="test_django_rakaia.Project",
+                    lookup={"area_id": a2.pk},
+                    defaults={"area": a2, "name": Concat(F("name"), Value("!"))},
+                ),
+            ]
+        )
+
+        # p1 is moved onto a2 by the first statement and matched again by the
+        # second. Gathered, it would be suffixed once.
+        assert sorted(Project.objects.values_list("name", flat=True)) == ["p1!!", "p2!"]
+
+    def test_values_equal_in_the_database_but_not_in_python_are_not_gathered(self):
+        # `1` and `"1"` are two lookups to `check_disjoint_defaults` and one row
+        # to the database, so nothing upstream relates them.
+        from django.db.models import Value
+        from django.db.models.functions import Concat
+
+        from .models import Alert
+
+        alert_model = "test_django_rakaia.Alert"
+        Alert.objects.create(
+            stream_key="m", alert_type="t", dismissed_version=1, message="m"
+        )
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=alert_model,
+                    lookup={"dismissed_version": 1},
+                    defaults={"message": Concat(F("message"), Value("!"))},
+                ),
+                Update(
+                    model_label=alert_model,
+                    lookup={"dismissed_version": "1"},
+                    defaults={"message": Concat(F("message"), Value("!"))},
+                ),
+            ]
+        )
+        assert Alert.objects.get(stream_key="m").message == "m!!"
+
 
 class TestASingleUpdateUsesPlainEquality:
     def test_one_effect_does_not_become_an_in_clause(self):
@@ -484,3 +576,22 @@ class TestASingleUpdateUsesPlainEquality:
 
         statement = _update_statements(ctx)[0]
         assert " IN (" not in statement.upper(), statement
+
+
+class TestTheLookupFieldIsPartOfTheKey:
+    def test_two_lookup_fields_on_one_model_do_not_group(self):
+        # Dropping `field` from the grouping key makes these group, and then
+        # gathering reads `eff.lookup[field]` off an effect that has no such key.
+        # A `KeyError` is loud rather than silent, but nothing pinned it.
+        _rows("a")
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "a"},
+                    defaults={"delta": 6},
+                ),
+                Update(model_label=MODEL, lookup={"suku": "s"}, defaults={"delta": 6}),
+            ]
+        )
+        assert FinanceLine.objects.get(submission_id="a").delta == 6
