@@ -30,7 +30,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from django.apps import apps
-from django.db import transaction
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.db.models import Q
 
 from rakaia.effects import (
@@ -109,6 +109,22 @@ class DjangoExecutor:
     touching production, at full ORM fidelity. `using=None` targets the default
     alias, exactly as before. Pair with `DjangoProjectionReader(using=...)`.
 
+    Pass `batch_updates=True` to collapse a fanned-out `Update` into one
+    statement. A handler that emits one update per row — deliberately, so a
+    verification pass can diff them row by row — otherwise costs one statement
+    per row, and a form with eight repeating rows runs nine identical UPDATEs
+    (#199). With the flag on, consecutive updates sharing a model and identical
+    literal `defaults` become a single ``filter(field__in=[…]).update(…)``.
+
+    **Off by default, and that is a considered choice rather than caution.** The
+    collapse is semantics-preserving under conditions this executor checks — see
+    `_batch_key` — but the guard took four attempts to get right, and every
+    version in between looked closed at the time. Each failure wrote *wrong data*
+    rather than raising, and the collapse would otherwise apply to every
+    `apply()` in every consumer with no way to opt out or to bisect a suspected
+    write anomaly back to it. A flag puts that risk with the caller who wants the
+    speed and leaves the path that has always worked as the default.
+
     Pass `normalizers` to define value-equality for `skip_unchanged` the same way
     `diff_effects_against_rows(normalizers=...)` defines it for the verify side.
     Both default to `DEFAULT_NORMALIZERS`, so out of the box the two paths already
@@ -125,8 +141,10 @@ class DjangoExecutor:
         skip_unchanged: bool = False,
         using: str | None = None,
         normalizers: Sequence[Normalizer] | None = None,
+        batch_updates: bool = False,
     ) -> None:
         self._skip_unchanged = skip_unchanged
+        self._batch_updates = batch_updates
         self._using = using
         self._normalizers = (
             DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
@@ -327,15 +345,76 @@ class DjangoExecutor:
         """
         if not run:
             return
-        if len(run) == 1:
+        if not self._batch_updates or len(run) == 1:
             for eff in run:
                 self._update(eff)
             return
         (field,) = run[0].lookup
         model = apps.get_model(run[0].model_label)
-        self._manager(model).filter(
-            **{f"{field}__in": [eff.lookup[field] for eff in run]}
-        ).update(**(run[0].defaults or {}))
+        values = [eff.lookup[field] for eff in run]
+        defaults = run[0].defaults or {}
+
+        if not self._values_are_bindable(model, field, values):
+            for eff in run:
+                self._update(eff)
+            return
+
+        manager = self._manager(model)
+        # One statement per chunk, not per row. An `IN` list is one bind parameter
+        # per value and SQLite caps those at `max_query_params` (32766), so a
+        # fan-out large enough to be worth collapsing was large enough to raise
+        # where the per-effect loop had worked. Chunking keeps the statement count
+        # proportional to the batch rather than to the rows, which is the point,
+        # and every chunk is inside the caller's `atomic()` so a failure mid-way
+        # rolls the whole thing back exactly as before.
+        limit = self._bind_limit(len(defaults))
+        for start in range(0, len(values), limit):
+            manager.filter(**{f"{field}__in": values[start : start + limit]}).update(
+                **defaults
+            )
+
+    def _bind_limit(self, reserved: int) -> int:
+        """How many lookup values one statement may carry.
+
+        `reserved` is the number of parameters the ``SET`` clause already needs.
+        Backends that do not declare a cap (Postgres binds client-side) get a
+        large-but-finite chunk rather than an unbounded one, so a pathological
+        batch degrades into more statements instead of one enormous query.
+        """
+        declared = getattr(
+            connections[self._using or DEFAULT_DB_ALIAS].features,
+            "max_query_params",
+            None,
+        )
+        return max(1, (declared or 65_536) - reserved - 1)
+
+    def _values_are_bindable(self, model: type, field: str, values: list[Any]) -> bool:
+        """Whether every value can be bound as an ``IN`` member.
+
+        The equality form and the ``IN`` form are not the same query, and this is
+        the last place that shows: Django compiles an out-of-range integer
+        ``exact`` lookup away to "matches nothing", but hands the same value
+        straight to the driver inside an ``IN``, where SQLite raises and takes the
+        rest of the batch with it. So a run containing one is applied per effect,
+        where each out-of-range member is the no-op it was before.
+
+        Only integer columns have a range to check, and asking for one anywhere
+        else is not portable — `integer_field_range` answers ``(None, None)`` for
+        an unknown internal type on SQLite and raises ``KeyError`` on Postgres.
+        The Postgres leg is what caught that; the SQLite run was green.
+        """
+        internal_type = model._meta.get_field(field).get_internal_type()
+        alias = self._using or DEFAULT_DB_ALIAS
+        try:
+            low, high = connections[alias].ops.integer_field_range(internal_type)
+        except KeyError:
+            return True  # not an integer column; no range to exceed
+        if low is None or high is None:
+            return True
+        # No `bool` special case: `True` and `False` are 1 and 0, inside every
+        # integer range, so excluding them would be a branch that never decides
+        # anything.
+        return all(not isinstance(v, int) or low <= v <= high for v in values)
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never

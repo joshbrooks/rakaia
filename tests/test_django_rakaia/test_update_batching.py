@@ -32,6 +32,16 @@ pytestmark = pytest.mark.django_db
 MODEL = "test_django_rakaia.FinanceLine"
 
 
+def _batching() -> DjangoExecutor:
+    """An executor with the collapse enabled.
+
+    Off by default (#199, and four review rounds' worth of reasons), so every case
+    here has to ask for it. Which is itself the point: a consumer that has not
+    asked keeps the one-statement-per-effect path unchanged.
+    """
+    return DjangoExecutor(batch_updates=True)
+
+
 def _rows(*ids: str) -> None:
     for i in ids:
         FinanceLine.objects.create(submission_id=i, suku="s", delta=0)
@@ -60,7 +70,7 @@ class TestTheFanOutCollapses:
         _rows(*ids)
 
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(ids, delta=7))
+            _batching().apply(_updates(ids, delta=7))
 
         assert len(_update_statements(ctx)) == 1
         assert set(FinanceLine.objects.values_list("delta", flat=True)) == {7}
@@ -68,20 +78,20 @@ class TestTheFanOutCollapses:
     def test_the_collapsed_statement_uses_an_in_clause(self):
         _rows("a", "b")
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(["a", "b"], delta=1))
+            _batching().apply(_updates(["a", "b"], delta=1))
         assert " IN (" in _update_statements(ctx)[0].upper()
 
     def test_a_single_update_is_unchanged(self):
         _rows("a")
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(["a"], delta=1))
+            _batching().apply(_updates(["a"], delta=1))
         assert len(_update_statements(ctx)) == 1
         assert FinanceLine.objects.get(submission_id="a").delta == 1
 
     def test_rows_that_do_not_exist_are_still_not_inserted(self):
         # `Update` never inserts. Collapsing must not turn a miss into a write.
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(["ghost1", "ghost2"], delta=1))
+            _batching().apply(_updates(["ghost1", "ghost2"], delta=1))
         assert len(_update_statements(ctx)) == 1
         assert FinanceLine.objects.count() == 0
 
@@ -98,7 +108,7 @@ class TestWhereItMustNotBatch:
             ),
         ]
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(effects)
+            _batching().apply(effects)
 
         assert len(_update_statements(ctx)) == 2
         assert FinanceLine.objects.get(submission_id="a").delta == 1
@@ -116,7 +126,7 @@ class TestWhereItMustNotBatch:
             for i in ("a", "b")
         ]
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(effects)
+            _batching().apply(effects)
 
         assert len(_update_statements(ctx)) == 2
         assert set(FinanceLine.objects.values_list("delta", flat=True)) == {3}
@@ -132,7 +142,7 @@ class TestWhereItMustNotBatch:
             for i in ("a", "b")
         ]
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(effects)
+            _batching().apply(effects)
 
         assert len(_update_statements(ctx)) == 2
         assert set(FinanceLine.objects.values_list("delta", flat=True)) == {4}
@@ -152,7 +162,7 @@ class TestWhereItMustNotBatch:
             )
             for i in (1, 2)
         ]
-        DjangoExecutor().apply(effects)
+        _batching().apply(effects)
         assert History.objects.get(submission_id="h1").snapshot == {"n": 1}
         assert History.objects.get(submission_id="h2").snapshot == {"n": 1}
 
@@ -172,7 +182,7 @@ class TestWhereItMustNotBatch:
             ),
         ]
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(effects)
+            _batching().apply(effects)
         assert len(_update_statements(ctx)) == 2
 
 
@@ -205,7 +215,7 @@ class TestOrderIsPreserved:
                 defaults={"delta": 3},
             ),
         ]
-        DjangoExecutor().apply(effects)
+        _batching().apply(effects)
         assert FinanceLine.objects.get(submission_id="a").delta == 3
 
     def test_two_collapsible_effects_can_never_target_the_same_row(self):
@@ -238,7 +248,7 @@ class TestOrderIsPreserved:
                 defaults={"name": "renamed"},
             ),
         ]
-        DjangoExecutor().apply(effects)  # must not raise UnresolvedRefError
+        _batching().apply(effects)  # must not raise UnresolvedRefError
 
     def test_a_delete_between_updates_does_not_merge_them(self):
         # Deletes run in their own pass, but the two `Update` runs either side of
@@ -250,7 +260,7 @@ class TestOrderIsPreserved:
             Delete(model_label=MODEL, lookup={"submission_id": "gone"}),
             *_updates(["b"], delta=8),
         ]
-        DjangoExecutor().apply(effects)
+        _batching().apply(effects)
         assert set(FinanceLine.objects.values_list("delta", flat=True)) == {8}
 
 
@@ -285,7 +295,7 @@ class TestTheRunEndsAtAnUpsert:
                 defaults={"suku": "s"},
             ),
         ]
-        DjangoExecutor().apply(effects)
+        _batching().apply(effects)
 
         row = FinanceLine.objects.get(submission_id="late")
         assert row.suku == "s"
@@ -310,7 +320,7 @@ class TestTheGroupingKeyIsWhatItClaims:
         SoftDeleteDoc.objects.create(name="before", is_active=True)
         ArchivedDoc.objects.create(name="before", is_active=True)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label="test_django_rakaia.SoftDeleteDoc",
@@ -365,7 +375,7 @@ class TestGroupingIsAdjacentOnly:
                 model_label=MODEL, lookup={"submission_id": "b"}, defaults={"delta": 1}
             ),
         ]
-        DjangoExecutor().apply(effects)
+        _batching().apply(effects)
 
         # In order: a→1, then both→2, then b→1.
         assert FinanceLine.objects.get(submission_id="a").delta == 2
@@ -394,7 +404,7 @@ class TestNullIsNotAValueYouCanGather:
         Alert.objects.create(stream_key="open", alert_type="t", resolved_at=None)
         Alert.objects.create(stream_key="closed", alert_type="t", resolved_at="2020")
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=alert_model,
@@ -454,7 +464,7 @@ class TestOnlyIdempotentDefaultsAreGathered:
         FinanceLine.objects.create(submission_id="x", suku="a", delta=0)
         FinanceLine.objects.create(submission_id="y", suku="b", delta=0)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -483,7 +493,7 @@ class TestOnlyIdempotentDefaultsAreGathered:
         FinanceLine.objects.create(submission_id="y", suku="b", delta=0)
 
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(
+            _batching().apply(
                 [
                     Update(
                         model_label=MODEL, lookup={"suku": "a"}, defaults={"suku": "c"}
@@ -512,7 +522,7 @@ class TestOnlyIdempotentDefaultsAreGathered:
         Project.objects.create(name="p1", area=a1, created_by=user)
         Project.objects.create(name="p2", area=a2, created_by=user)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label="test_django_rakaia.Project",
@@ -544,7 +554,7 @@ class TestOnlyIdempotentDefaultsAreGathered:
             stream_key="m", alert_type="t", dismissed_version=1, message="m"
         )
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=alert_model,
@@ -572,7 +582,7 @@ class TestASingleUpdateUsesPlainEquality:
         # the table name rather than the clause.
         _rows("solo")
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(["solo"], delta=1))
+            _batching().apply(_updates(["solo"], delta=1))
 
         statement = _update_statements(ctx)[0]
         assert " IN (" not in statement.upper(), statement
@@ -584,7 +594,7 @@ class TestTheLookupFieldIsPartOfTheKey:
         # gathering reads `eff.lookup[field]` off an effect that has no such key.
         # A `KeyError` is loud rather than silent, but nothing pinned it.
         _rows("a")
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -615,7 +625,7 @@ class TestEqualInPythonIsNotEqualInTheDatabase:
         FinanceLine.objects.create(submission_id="a", suku="", delta=0)
         FinanceLine.objects.create(submission_id="b", suku="", delta=0)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -639,7 +649,7 @@ class TestEqualInPythonIsNotEqualInTheDatabase:
         FinanceLine.objects.create(submission_id="a", suku="", delta=0)
         FinanceLine.objects.create(submission_id="b", suku="", delta=0)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -661,7 +671,7 @@ class TestEqualInPythonIsNotEqualInTheDatabase:
         # The guard must not cost the case #199 asked for.
         _rows("a", "b", "c")
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(_updates(["a", "b", "c"], delta=7))
+            _batching().apply(_updates(["a", "b", "c"], delta=7))
 
         assert len(_update_statements(ctx)) == 1
         assert set(FinanceLine.objects.values_list("delta", flat=True)) == {7}
@@ -684,7 +694,7 @@ class TestQIsNotCombinableButIsStillUnsafe:
         SoftDeleteDoc.objects.create(name="a", is_active=False)
         SoftDeleteDoc.objects.create(name="b", is_active=False)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label="test_django_rakaia.SoftDeleteDoc",
@@ -718,7 +728,7 @@ class TestRefsAreResolvedBeforeGrouping:
         Project.objects.create(name="p", area=area, created_by=user)
 
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(
+            _batching().apply(
                 [
                     Upsert(
                         model_label="test_django_rakaia.Area",
@@ -769,7 +779,7 @@ class TestASubclassIsNotItsBaseType:
         FinanceLine.objects.create(submission_id="a", suku="", delta=0)
         FinanceLine.objects.create(submission_id="b", suku="", delta=0)
 
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -808,7 +818,7 @@ class TestEqualityThatIgnoresRepresentation:
     def _pair(self, va, vb) -> dict[str, str]:
         FinanceLine.objects.create(submission_id="a", suku="", delta=0)
         FinanceLine.objects.create(submission_id="b", suku="", delta=0)
-        DjangoExecutor().apply(
+        _batching().apply(
             [
                 Update(
                     model_label=MODEL,
@@ -877,7 +887,7 @@ class TestEqualityThatIgnoresRepresentation:
             Alert.objects.create(stream_key=key, alert_type="t")
 
         with CaptureQueriesContext(connection) as ctx:
-            DjangoExecutor().apply(
+            _batching().apply(
                 [
                     Update(
                         model_label=alert_model,
@@ -889,3 +899,96 @@ class TestEqualityThatIgnoresRepresentation:
             )
 
         assert len(_update_statements(ctx)) == 1, (column, value)
+
+
+class TestTheCollapseIsOptIn:
+    """Default off. The flag is the deliverable as much as the batching is.
+
+    The collapse is semantics-preserving under the conditions `_batch_key`
+    checks, and those conditions took four attempts — each earlier version
+    looking closed at the time and each failure writing wrong data rather than
+    raising. Applying it to every `apply()` in every consumer, with no opt-out and
+    no way to bisect a write anomaly back to it, is not a trade worth one
+    consumer's nine statements becoming one. So they ask.
+    """
+
+    def test_the_default_executor_still_issues_one_statement_per_effect(self):
+        ids = [f"r{i}" for i in range(9)]
+        _rows(*ids)
+
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(_updates(ids, delta=7))
+
+        assert len(_update_statements(ctx)) == 9
+        assert set(FinanceLine.objects.values_list("delta", flat=True)) == {7}
+
+    def test_the_two_paths_agree(self):
+        # The property that matters more than either count: opting in must not
+        # change the answer.
+        ids = [f"r{i}" for i in range(5)]
+
+        _rows(*ids)
+        DjangoExecutor().apply(_updates(ids, delta=4))
+        per_effect = sorted(FinanceLine.objects.values_list("submission_id", "delta"))
+
+        FinanceLine.objects.all().delete()
+        _rows(*ids)
+        _batching().apply(_updates(ids, delta=4))
+        collapsed = sorted(FinanceLine.objects.values_list("submission_id", "delta"))
+
+        assert per_effect == collapsed
+
+
+class TestALargeFanOutIsChunked:
+    """An `IN` list is one bind parameter per value, and SQLite caps those.
+
+    So the fan-out big enough to be worth collapsing was big enough to raise
+    `too many SQL variables` where the per-effect loop had worked — the collapse
+    failing exactly where it was meant to help. Chunked, the statement count stays
+    proportional to the batch rather than to the rows.
+    """
+
+    def test_a_fan_out_past_the_bind_limit_still_applies(self):
+        # Above SQLite's 32766 cap. Slow-ish but this is the boundary that broke.
+        ids = [f"r{i}" for i in range(33_000)]
+        FinanceLine.objects.bulk_create(
+            FinanceLine(submission_id=i, suku="s", delta=0) for i in ids
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            _batching().apply(_updates(ids, delta=5))
+
+        statements = _update_statements(ctx)
+        # Correct on every backend, and never one statement per row.
+        assert FinanceLine.objects.filter(delta=5).count() == 33_000
+        assert len(statements) < 10, len(statements)
+        # Chunked only where the backend declares a cap. Postgres binds
+        # client-side and declares none, so 33,000 values are one statement there
+        # and that is right — asserting a chunk unconditionally made this fail on
+        # the Postgres leg for being correct.
+        declared = getattr(connection.features, "max_query_params", None)
+        if declared is not None and declared < 33_000:
+            assert len(statements) > 1, declared
+
+
+class TestAnOutOfRangeIntegerIsNotBound:
+    """`field__in=[v]` is not `field=v`, one last time.
+
+    Django compiles an out-of-range integer `exact` lookup away — the effect is a
+    correct no-op. Inside an `IN` the same value goes to the driver, where SQLite
+    raises and takes the rest of the batch with it, including siblings that would
+    have written. Such a run is applied per effect instead.
+    """
+
+    def test_an_out_of_range_value_does_not_abort_its_siblings(self):
+        _rows("real")
+        effects = [
+            Update(model_label=MODEL, lookup={"delta": 2**70}, defaults={"suku": "z"}),
+            Update(model_label=MODEL, lookup={"delta": 0}, defaults={"suku": "z"}),
+        ]
+
+        _batching().apply(effects)
+
+        # The out-of-range lookup matches nothing, as it did before; the sibling
+        # writes.
+        assert FinanceLine.objects.get(submission_id="real").suku == "z"
