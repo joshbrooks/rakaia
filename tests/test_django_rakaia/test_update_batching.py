@@ -595,3 +595,196 @@ class TestTheLookupFieldIsPartOfTheKey:
             ]
         )
         assert FinanceLine.objects.get(submission_id="a").delta == 6
+
+
+class TestEqualInPythonIsNotEqualInTheDatabase:
+    """Grouping compares `defaults` by value; the database writes them by type.
+
+    Python calls `1`, `1.0`, `True` and `Decimal("1")` equal and hashes them
+    alike. Written to a text or JSON column they are different rows. So keying on
+    value alone let two effects group and then applied one member's `defaults` to
+    the other's rows — wrong data, with *literal* defaults and no row overlap at
+    all, so none of the idempotence reasoning applies.
+
+    The mirror image of the route the guard's docstring already described:
+    distinct in Python, equal in the database. Both directions matter, and only
+    one of them had been considered.
+    """
+
+    def test_an_int_and_a_float_are_not_the_same_write(self):
+        FinanceLine.objects.create(submission_id="a", suku="", delta=0)
+        FinanceLine.objects.create(submission_id="b", suku="", delta=0)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "a"},
+                    defaults={"suku": 1},
+                ),
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "b"},
+                    defaults={"suku": 1.0},
+                ),
+            ]
+        )
+
+        assert sorted(FinanceLine.objects.values_list("submission_id", "suku")) == [
+            ("a", "1"),
+            ("b", "1.0"),
+        ]
+
+    def test_a_bool_and_an_int_are_not_the_same_write(self):
+        FinanceLine.objects.create(submission_id="a", suku="", delta=0)
+        FinanceLine.objects.create(submission_id="b", suku="", delta=0)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "a"},
+                    defaults={"suku": True},
+                ),
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "b"},
+                    defaults={"suku": 1},
+                ),
+            ]
+        )
+
+        stored = dict(FinanceLine.objects.values_list("submission_id", "suku"))
+        assert stored["a"] != stored["b"], stored
+
+    def test_identical_literals_still_collapse(self):
+        # The guard must not cost the case #199 asked for.
+        _rows("a", "b", "c")
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(_updates(["a", "b", "c"], delta=7))
+
+        assert len(_update_statements(ctx)) == 1
+        assert set(FinanceLine.objects.values_list("delta", flat=True)) == {7}
+
+
+class TestQIsNotCombinableButIsStillUnsafe:
+    """`Q` is hashable, accepted by `.update()`, non-idempotent — and not
+    `Combinable`, so a predicate written against that base class let it through.
+
+    Which is the argument for the allowlist. Enumerating unsafe values needs the
+    enumeration to be complete; enumerating safe ones needs it only to be
+    correct, and a mistake costs a missed collapse rather than a wrong write.
+    """
+
+    def test_a_q_default_is_not_gathered(self):
+        from django.db.models import Q
+
+        from .models import SoftDeleteDoc
+
+        SoftDeleteDoc.objects.create(name="a", is_active=False)
+        SoftDeleteDoc.objects.create(name="b", is_active=False)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label="test_django_rakaia.SoftDeleteDoc",
+                    lookup={"name": name},
+                    defaults={"name": "b", "is_active": Q(name="a")},
+                )
+                for name in ("a", "b")
+            ]
+        )
+
+        # Applied one at a time, the first moves row "a" to name="b" and the
+        # second then matches both. Collapsed, the `Q` is evaluated once against
+        # the pre-move state and the two rows disagree.
+        assert set(SoftDeleteDoc.objects.values_list("is_active", flat=True)) == {False}
+
+
+class TestRefsAreResolvedBeforeGrouping:
+    def test_a_ref_and_a_literal_for_one_row_still_collapse(self):
+        # The docstring claims refs are resolved before grouping; computing the
+        # key first passed every other test, because nothing exercised a `Ref` in
+        # a grouped lookup. Getting it wrong costs a missed collapse rather than a
+        # wrong write, which is why it is worth a test rather than a guard.
+        from django.contrib.auth import get_user_model
+
+        from rakaia.effects import Ref
+
+        from .models import Area, Project
+
+        user = get_user_model().objects.create_user(username="rf")
+        area = Area.objects.create(name="north")
+        Project.objects.create(name="p", area=area, created_by=user)
+
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(
+                [
+                    Upsert(
+                        model_label="test_django_rakaia.Area",
+                        lookup={"name": "north"},
+                        defaults={},
+                        produces="area",
+                    ),
+                    Update(
+                        model_label="test_django_rakaia.Project",
+                        lookup={"area_id": Ref("area")},
+                        defaults={"name": "renamed"},
+                    ),
+                    Update(
+                        model_label="test_django_rakaia.Project",
+                        lookup={"area_id": area.pk},
+                        defaults={"name": "renamed"},
+                    ),
+                ]
+            )
+
+        # One statement: the Ref resolved to the same pk as the literal, so the
+        # two updates are alike by the time grouping sees them.
+        assert len(_update_statements(ctx)) == 1
+        assert Project.objects.get().name == "renamed"
+
+
+class TestASubclassIsNotItsBaseType:
+    """Membership is tested with `type(v) in`, not `isinstance`.
+
+    `bool` being a subclass of `int` is handled by putting `type(v)` in the
+    grouping key, so that is not what the stricter check is for. It is for a
+    subclass of an allowlisted type that overrides equality: `isinstance` would
+    admit it, and grouping would then trust an `__eq__` written by someone else
+    to decide that two different writes are the same write.
+
+    Remote, and cheap to exclude. The allowlist exists so that being wrong costs
+    a missed collapse, and admitting arbitrary subclasses gives that away.
+    """
+
+    def test_a_str_subclass_that_lies_about_equality_is_not_gathered(self):
+        class Sneaky(str):
+            def __eq__(self, other):  # noqa: D105
+                return True  # "I am every string"
+
+            def __hash__(self):  # noqa: D105
+                return 0
+
+        FinanceLine.objects.create(submission_id="a", suku="", delta=0)
+        FinanceLine.objects.create(submission_id="b", suku="", delta=0)
+
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "a"},
+                    defaults={"suku": Sneaky("first")},
+                ),
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "b"},
+                    defaults={"suku": Sneaky("second")},
+                ),
+            ]
+        )
+
+        assert sorted(FinanceLine.objects.values_list("submission_id", "suku")) == [
+            ("a", "first"),
+            ("b", "second"),
+        ]

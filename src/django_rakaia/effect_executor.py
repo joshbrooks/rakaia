@@ -26,13 +26,15 @@ doesn't fire for an unchanged row.
 
 from __future__ import annotations
 
+import datetime as _dt
+import uuid as _uuid
 from collections.abc import Iterable, Sequence
+from decimal import Decimal
 from typing import Any
 
 from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
-from django.db.models.expressions import Combinable
 
 from rakaia.effects import (
     ApplyReport,
@@ -48,6 +50,33 @@ from rakaia.effects import (
 )
 
 from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
+
+#: Value types a collapsed `Update` may write.
+#:
+#: An **allowlist**, deliberately, and the third shape this guard has taken. The
+#: first two enumerated what was unsafe — a lookup field appearing in `defaults`,
+#: then anything `Combinable` — and each time a review found a route the
+#: enumeration did not cover: a foreign key under its other spelling, a `Ref` and
+#: a literal resolving to one value, values distinct in Python but equal in the
+#: database, and `Q`, which is non-idempotent and hashable but not `Combinable`.
+#:
+#: "Is this value dangerous?" is an open question. "Is it one of a few kinds I
+#: know are safe to compare by value and re-write verbatim?" is a closed one, and
+#: being wrong about it costs a missed collapse rather than a wrong write. Which
+#: is the direction this guard should fail in.
+_COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
+    type(None),
+    bool,
+    int,
+    float,
+    Decimal,
+    str,
+    bytes,
+    _dt.datetime,
+    _dt.date,
+    _dt.time,
+    _uuid.UUID,
+)
 
 
 def _row_accessor(obj: Any) -> Any:
@@ -239,11 +268,12 @@ class DjangoExecutor:
           effect silently writes nothing. ``resolved_at IS NULL`` is this
           codebase's own open predicate, so this is a shape a reconcile really
           produces;
-        * ``defaults`` holding a query expression — ``F()``, ``Concat``, anything
-          `Combinable`. Those are the writes that are not idempotent, and
-          idempotence is what makes the collapse invisible (see
-          `_flush_updates`). A fan-out setting a literal still collapses, which
-          is the case #199 asked for;
+        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. That excludes
+          every query expression — ``F()``, ``Concat``, ``Case``, ``Subquery``,
+          and ``Q``, which is non-idempotent and hashable but not `Combinable` —
+          because a write that is not idempotent makes row-set overlap
+          observable. A fan-out setting a literal still collapses, which is the
+          case #199 asked for;
         * empty ``defaults``, which is a no-op anyway;
         * ``defaults`` whose values are unhashable — a JSON column holds a dict,
           which cannot be part of a grouping key, and declining to group beats
@@ -255,19 +285,29 @@ class DjangoExecutor:
         ((field, value),) = eff.lookup.items()
         if "__" in field or value is None:
             return None
-        if any(isinstance(v, Combinable) for v in defaults.values()):
+        if not all(type(v) in _COLLAPSIBLE_DEFAULTS for v in defaults.values()):
             return None
         try:
-            return (eff.model_label, field, frozenset(defaults.items()))
+            # `type(v)` is part of the key, not just `v`. Python calls `1`, `1.0`,
+            # `True` and `Decimal("1")` equal and hashes them alike, but writing
+            # them to a text or JSON column produces different rows — so grouping
+            # on value alone would apply one member's `defaults` to another's rows
+            # and change what was stored. `type(v) in ...` rather than
+            # `isinstance` for the same reason: `bool` is a subclass of `int`.
+            return (
+                eff.model_label,
+                field,
+                frozenset((k, type(v), v) for k, v in defaults.items()),
+            )
         except TypeError:
             return None  # an unhashable default value
 
     def _flush_run(self, run: list[Update]) -> None:
         """One statement for a collapsible run, else one per effect.
 
-        `key` is the run's shared `_batch_key`. A run only grows while the key is
-        not ``None``, so a non-collapsible effect is always a run of one and the
-        length test is the only condition needed here. For a non-null value
+        A run only grows while its `_batch_key` is not ``None``, so a
+        non-collapsible effect is always a run of one and the length test is the
+        only condition needed here. For a non-null value
         ``field__in=[v]`` and ``field=v`` are the same query, but keeping the
         single case on plain equality means the ``IN`` form is only ever built
         where it has been shown to be safe.
