@@ -479,6 +479,30 @@ class TestExpiryReaping:
             store.append("s", b'{"id": 1}')
         assert not Stream.objects.filter(stream_id="s").exists()
 
+    def test_a_create_whose_body_is_rejected_still_reaps(self):
+        """`create`'s own reap has to survive its own rollback too.
+
+        `create` reaps inside its transaction and normally gets away with it: it
+        goes on to insert the replacement row and commit, so the delete commits
+        with it. Not if the `initial_data` it was handed then fails validation —
+        `_payloads_for` raises before any row is written, and the rollback that
+        reports the bad body takes the reap with it. That is the one case
+        `create`'s pre-transaction `_reap_if_expired` is still there for, and
+        deleting the call left the whole suite green until this test existed.
+        """
+        import time
+
+        from rakaia.types import InvalidJson
+
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json", ttl_seconds=0)
+        time.sleep(0.01)
+        with pytest.raises(InvalidJson):
+            store.create(
+                "s", content_type="application/json", initial_data=b"not json at all"
+            )
+        assert not Stream.objects.filter(stream_id="s").exists()
+
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
