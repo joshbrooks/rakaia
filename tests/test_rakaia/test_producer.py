@@ -6,21 +6,35 @@ outcomes follows. Both stores call it — the in-memory one keeps producer state
 a dict, the durable one in a table — so that they cannot decide differently.
 
 Until now nothing named `validate_producer` or `is_producer_state_expired`. The
-module was covered only *through* callers: `test_append_decision.py` reaches it
-via `decide_append`, and `tests/server_store_contract.py` via a live append. That
-is real coverage but it is the wrong shape for this module. The rule is a pure
-function over five arguments with a small closed set of outcomes — the cheapest
-thing in the package to pin exhaustively — and the defect in #154 was a write
-door that skipped this table entirely. A table nothing tests directly is a table
-whose branches can be reordered, merged or dropped while every caller-level test
-stays green, because each caller exercises one row of it.
+callers do cover it, and more thoroughly than "untested" would suggest — stubbing
+out the stale-epoch branch alone fails seven tests across five files
+(`test_append_decision.py`, both `test_server_store_contract.py`, `test_store.py`,
+`test_protocol_server.py`). What they cover is the *outcomes*, each reached
+through a live append or a `decide_append` call.
+
+What that shape does not reach is the **edges and the payloads**. A caller
+appending for real picks inputs comfortably inside a branch and looks at which
+outcome came back, not at what it carried. Measured: of nine mutations to
+`producer.py`, seven leave the entire suite outside this file green —
+
+- expiry `>` → `>=`, and `abs()` around the age (clock skew reads as expired);
+- an unknown producer's gap reporting `expected_seq=seq` instead of `0`;
+- a new epoch carrying the old `last_seq` forward instead of restarting at 0;
+- the proposal stamping the old `last_updated` rather than the `now` it was given;
+- `validate_producer` mutating the state it was handed;
+- `is_new` set on a same-epoch continuation.
+
+Only two of the nine — the duplicate boundary and the gap's `expected_seq` — are
+caught elsewhere. #154's defect was a write door that skipped this table
+altogether, so the branches being individually load-bearing is not hypothetical.
 
 So this file is the table itself: one class per outcome, every branch reached,
-and the boundaries (epoch equal, seq exactly one ahead, expiry exactly at the
-TTL) asserted rather than assumed.
+and the boundaries asserted rather than assumed.
 """
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 
@@ -33,7 +47,6 @@ from rakaia.types import (
     ProducerSequenceGap,
     ProducerStaleEpoch,
     ProducerState,
-    ProducerStreamClosed,
 )
 
 NOW = 1_000_000.0
@@ -55,6 +68,17 @@ def _stale_state(epoch: int = 1, last_seq: int = 5) -> ProducerState:
 
 
 class TestExpiry:
+    def test_the_ttl_is_seven_days(self):
+        # Every other expiry test is expressed *relative* to the constant, so
+        # they all stay green if its value changes — which means the value itself
+        # was asserted nowhere in the repo and a TTL change would land silently.
+        # Restating a constant normally tests nothing, but this one is how long
+        # producer fencing survives an idle writer (see TestExpiryOutranksFencing),
+        # so it is a decision rather than an implementation detail. Same reasoning
+        # as `test_public_api.py` writing out `__all__` by hand: when this fails,
+        # that is the test working — change the number here deliberately.
+        assert PRODUCER_STATE_TTL_SECONDS == 7 * 24 * 60 * 60
+
     def test_fresh_state_is_not_expired(self):
         assert not is_producer_state_expired(_state(1, 0), NOW)
 
@@ -350,25 +374,30 @@ class TestTheClosedOutcomeIsNotThisModulesToGive:
 
     Whether a stream is closed is not a fencing question — it is decided by
     `rakaia.append_decision.decide_append`, which checks closure *before*
-    consulting this table. Stated as a test because the union invites the
-    assumption that this function covers every member of it, and a future
-    branch added here would silently duplicate a decision that lives elsewhere.
+    consulting this table. Stated because the union invites the assumption that
+    this function covers every member of it, and a branch added here would
+    silently duplicate a decision that lives elsewhere.
+
+    **This is a boundary statement, not coverage.** No mutation of
+    `validate_producer` can fail it uniquely — nothing in the function constructs
+    the type, and every outcome it does return is already asserted positively
+    above. It is here so the boundary is written down where someone editing the
+    table will read it. The assertion below is on the source, which at least
+    fails if a branch for it appears.
     """
 
-    @pytest.mark.parametrize(
-        ("state", "epoch", "seq"),
-        [
-            (None, 0, 0),
-            (None, 0, 5),
-            (_stale_state(), 1, 0),
-            (_state(5, 3), 4, 4),
-            (_state(1, 4), 2, 9),
-            (_state(1, 4), 2, 0),
-            (_state(2, 5), 2, 5),
-            (_state(2, 5), 2, 6),
-            (_state(2, 5), 2, 8),
-        ],
-    )
-    def test_no_input_yields_the_closed_outcome(self, state, epoch, seq):
-        result = validate_producer(state, PID, epoch=epoch, seq=seq, now=NOW)
-        assert not isinstance(result, ProducerStreamClosed)
+    def test_the_module_never_constructs_the_closed_outcome(self):
+        from rakaia import producer
+
+        assert "ProducerStreamClosed" not in inspect.getsource(producer), (
+            "closure is decided in append_decision.decide_append, before this "
+            "table is consulted; a branch for it here would be a second, "
+            "weaker copy of that decision"
+        )
+
+    def test_closure_is_decided_in_append_decision_instead(self):
+        # Naming the other side, so the boundary is checkable from here rather
+        # than asserted about an absence.
+        from rakaia import append_decision
+
+        assert "ProducerStreamClosed" in inspect.getsource(append_decision)
