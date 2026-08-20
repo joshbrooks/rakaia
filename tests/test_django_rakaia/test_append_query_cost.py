@@ -66,6 +66,26 @@ def _shapes(ctx: CaptureQueriesContext) -> list[str]:
     return shapes
 
 
+# What one steady-state append is, statement by statement. Named once because
+# three tests assert it, and a change to the append path should have to edit it
+# in one place — deliberately — rather than in whichever test failed first.
+_STEADY_STATE_APPEND = [
+    # The admission checks and the write are one step, so the row is read under
+    # a lock -- once. It used to be read twice: an unlocked read before the
+    # transaction to reap an expired stream, then the locked one inside it
+    # (#202).
+    "SELECT rakaia_stream",
+    "INSERT rakaia_streamevent",
+    # The high-water, under its own lock, and advanced. No `MAX(offset)` scan
+    # beside it: the watermark is authoritative once advanced, and re-deriving
+    # the head would be the one statement here whose cost grows with the length
+    # of the stream.
+    "SELECT rakaia_streamoffsetwatermark",
+    "UPDATE rakaia_streamoffsetwatermark",
+    "INSERT rakaia_streamentry",
+]
+
+
 @pytest.mark.django_db(transaction=True)
 class TestAppendQueryCost:
     def _warm(self, path: str = "s") -> DjangoStreamStore:
@@ -88,38 +108,32 @@ class TestAppendQueryCost:
         with CaptureQueriesContext(connection) as ctx:
             store.append("s", b'{"n": 1}', AppendOptions(label="x"))
 
-        assert _shapes(ctx) == [
-            # The admission checks and the write are one step, so the row is
-            # read under a lock -- once. It used to be read twice: an unlocked
-            # read before the transaction to reap an expired stream, then the
-            # locked one inside it (#202).
-            "SELECT rakaia_stream",
-            "INSERT rakaia_streamevent",
-            # The high-water, under its own lock, and advanced. No `MAX(offset)`
-            # scan beside it: the watermark is authoritative once advanced, and
-            # re-deriving the head would be the one statement here whose cost
-            # grows with the length of the stream.
-            "SELECT rakaia_streamoffsetwatermark",
-            "UPDATE rakaia_streamoffsetwatermark",
-            "INSERT rakaia_streamentry",
-        ], _data_queries(ctx)
+        assert _shapes(ctx) == _STEADY_STATE_APPEND, _data_queries(ctx)
 
-    def test_the_cost_does_not_grow_with_the_stream(self) -> None:
-        """Append 50 more and the 50th costs what the 1st did.
+    def test_the_fiftieth_append_costs_what_the_second_did(self) -> None:
+        """The steady state stays the steady state fifty offsets in.
 
-        The guard against a re-derived offset: a `MAX(offset)` scan or an
-        entry-table count would keep every assertion above true while making
-        each append dearer than the last on a long stream.
+        The guard against an offset re-derived from the entry table: a
+        `MAX(offset)` scan or a count would leave the append landing at the
+        right offset with the right envelope, and the only statement whose cost
+        grows with the stream is the one nothing else here would notice.
+
+        It asserts the *named* statements, not merely that the 50th matches the
+        2nd. Matching the 2nd is blind to exactly the mutation this test is
+        for — a scan issued on every append is a constant, present in both —
+        and would have gone green on it while five other tests in this file went
+        red. What is left that this catches and `test_one_append_is_five_
+        statements` does not is a statement that appears only once a stream is
+        long: a scan behind a size threshold, a paging read, an index the
+        planner abandons.
         """
         store = self._warm()
-        with CaptureQueriesContext(connection) as first:
-            store.append("s", b'{"n": 1}')
-        for n in range(2, 50):
+        for n in range(1, 50):
             store.append("s", b'{"n": %d}' % n)
         with CaptureQueriesContext(connection) as fiftieth:
             store.append("s", b'{"n": 50}')
 
-        assert _shapes(fiftieth) == _shapes(first)
+        assert _shapes(fiftieth) == _STEADY_STATE_APPEND, _data_queries(fiftieth)
 
     def test_an_append_that_closes_costs_one_more_update(self) -> None:
         """`Stream-Closed: true` adds the close, and nothing else.
@@ -130,14 +144,9 @@ class TestAppendQueryCost:
         with CaptureQueriesContext(connection) as ctx:
             store.append("s", b'{"last": 1}', AppendOptions(close=True))
 
-        assert _shapes(ctx) == [
-            "SELECT rakaia_stream",
-            "INSERT rakaia_streamevent",
-            "SELECT rakaia_streamoffsetwatermark",
-            "UPDATE rakaia_streamoffsetwatermark",
-            "INSERT rakaia_streamentry",
-            "UPDATE rakaia_stream",
-        ], _data_queries(ctx)
+        assert _shapes(ctx) == [*_STEADY_STATE_APPEND, "UPDATE rakaia_stream"], (
+            _data_queries(ctx)
+        )
 
     def test_a_refused_append_writes_nothing_and_reads_once(self) -> None:
         """A closed stream is refused for the price of the read that refuses it.
@@ -169,10 +178,4 @@ class TestAppendQueryCost:
         with CaptureQueriesContext(connection) as ctx:
             store.append_many("s", [(b'{"n": 1}', AppendOptions())] * batch)
 
-        assert _shapes(ctx) == [
-            "SELECT rakaia_stream",
-            "INSERT rakaia_streamevent",
-            "SELECT rakaia_streamoffsetwatermark",
-            "UPDATE rakaia_streamoffsetwatermark",
-            "INSERT rakaia_streamentry",
-        ], _data_queries(ctx)
+        assert _shapes(ctx) == _STEADY_STATE_APPEND, _data_queries(ctx)
