@@ -103,3 +103,77 @@ class TestRegisterStreamEventAdmin:
         register_stream_event_admin(StreamEvent)
         # Registering the base model must not touch the registry.
         assert set(django_admin.site._registry) == before
+
+
+class TestTheAdminAgreesWithEveryOtherReader:
+    """What the admin shows must be what `read()` reports.
+
+    The admin is a read surface like the SSE view and the channel frame, and
+    #153 made the primitives those surfaces need single: `event_label` inverts
+    the stored `"append"` sentinel back to the empty string, and `decode_payload`
+    inverts `payload_encoding`. The admin called neither, so it rendered the
+    sentinel as a label and printed a base64 body as base64.
+
+    Anyone comparing the admin against the audit trail saw two different answers
+    for one event, which is the whole failure #153 exists to prevent — in a
+    surface `event_message.py`'s own docstring names as fixed.
+    """
+
+    def _admin(self):
+        return StreamEventAdmin(StreamEvent, django_admin.site)
+
+    def test_a_labelless_append_shows_no_label_not_the_sentinel(self):
+        from django_rakaia.django_store import DjangoStreamStore
+
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"n": 1}')
+        event = StreamEvent.objects.get()
+
+        badge = self._admin().event_type_badge(event)
+        assert store.read("s")[0][0].label == ""
+        assert "APPEND" not in badge
+        # And says *something* — a blank cell reads as a rendering bug, so the
+        # absence of a label is shown deliberately. Asserted because "not APPEND"
+        # alone is satisfied by an empty badge.
+        assert "\u2014" in badge
+
+    def test_a_real_label_is_still_shown(self):
+        # The sentinel is the only value that inverts; a genuine label must
+        # survive, or the badge becomes useless.
+        from django_rakaia.django_store import DjangoStreamStore
+        from rakaia import AppendOptions
+
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b"{}", AppendOptions(label="update"))
+        event = StreamEvent.objects.get()
+
+        assert "UPDATE" in self._admin().event_type_badge(event)
+
+    def test_a_base64_body_is_not_previewed_as_base64(self):
+        from django_rakaia.event_message import decode_payload
+
+        event = StreamEvent.objects.create(
+            data="//4AYmluYXJ5", event_type="append", payload_encoding="base64"
+        )
+        assert (
+            decode_payload(event.data, event.payload_encoding) == b"\xff\xfe\x00binary"
+        )
+
+        preview = self._admin().data_preview(event)
+        assert "//4AYmluYXJ5" not in preview, (
+            "the preview shows the stored base64 rather than saying what it is"
+        )
+
+    def test_a_text_body_is_previewed_as_its_text(self):
+        event = StreamEvent.objects.create(
+            data="hello, world", event_type="append", payload_encoding="utf-8"
+        )
+        assert "hello, world" in self._admin().data_preview(event)
+
+    def test_an_ordinary_json_payload_previews_exactly_as_before(self):
+        # The common case must not change shape.
+        event = StreamEvent.objects.create(data={"n": 1}, event_type="create")
+        preview = self._admin().data_preview(event)
+        assert '"n"' in preview and "1" in preview
