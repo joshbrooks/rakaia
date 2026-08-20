@@ -101,13 +101,29 @@ class Stream(models.Model):
         to keep in step. Named to match the in-memory `Stream.current_offset`,
         which is what lets one protocol server read either.
         """
-        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+        # Read the high-water from the same database this stream row came from,
+        # as `get_next_offset_block` allocates from (#159). Before the watermark
+        # became authoritative here this read took `max(entries, watermark)`, and
+        # the entries half already followed the alias — so a scratch-database
+        # rebuild happened to report its own entries when they were higher.
+        # Reporting the watermark alone without the alias would have turned that
+        # into reading the *live* high-water every time.
+        using = self._state.db
         watermark_high = (
-            StreamOffsetWatermark.objects.filter(stream_path=self.stream_id)
+            StreamOffsetWatermark.objects.using(using)
+            .filter(stream_path=self.stream_id)
             .values_list("high", flat=True)
             .first()
         )
-        return format_offset(max(entries_max or 0, watermark_high or 0))
+        if watermark_high:
+            return format_offset(watermark_high)
+        # Zero, or no row at all: either this path has never been appended to, or
+        # the install was upgraded across migration 0005, which creates the
+        # high-water table without backfilling it. The same one case
+        # `get_next_offset_block` has to look at the entry table for, and for the
+        # same reason — see the gate there. Every other read is one row lookup.
+        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+        return format_offset(entries_max or 0)
 
     @property
     def closed_by(self) -> ClosedBy | None:
@@ -154,23 +170,44 @@ class Stream(models.Model):
         if count < 1:
             raise ValueError(f"count must be >= 1, got {count}")
         # Lock the per-path high-water for the duration of the enclosing
-        # transaction. get_or_create tolerates the first-writer race (it retries
-        # on the unique-key IntegrityError); the subsequent locked read then
-        # serializes the read-modify-write.
+        # transaction, so concurrent writers serialize here rather than colliding
+        # on unique_together(stream, offset).
+        #
         # Allocate on whatever database this stream row came from. `self.entries`
         # already follows the instance's alias, and the watermark has to agree
         # with it or a rebuild against a scratch database would read its
         # high-water from the live one (#159).
+        #
+        # One locked `get_or_create` rather than a plain one followed by a
+        # `select_for_update().get()`: the pair read the same row twice and threw
+        # the first result away, because the first call existed only to make the
+        # row exist. `get_or_create` on a locked queryset issues its `get` with
+        # `FOR UPDATE`, so the row is both created-if-absent and locked in one
+        # round trip, and it still tolerates the first-writer race the same way
+        # (it retries on the unique-key IntegrityError).
         using = self._state.db
         watermarks = StreamOffsetWatermark.objects.using(using)
-        watermarks.get_or_create(stream_path=self.stream_id)
-        watermark = watermarks.select_for_update().get(stream_path=self.stream_id)
-        # `max(entries, watermark)` is belt-and-suspenders: the watermark alone
-        # is authoritative for live streams, but taking the max also seeds it
-        # correctly from any pre-existing entries (e.g. rows written before this
-        # high-water table existed) on the first allocation after migration.
-        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
-        start = max(entries_max or 0, watermark.high) + 1
+        watermark, _ = watermarks.select_for_update().get_or_create(
+            stream_path=self.stream_id
+        )
+        # A watermark that has been advanced even once is authoritative: every
+        # `StreamEntry` in the codebase gets its offset from this method, so
+        # nothing can write an entry above the high mark. Re-deriving that mark
+        # from the entry table on every append would scan a growing table for an
+        # answer already held in one row.
+        #
+        # `high == 0` is the one case it cannot answer, because it means either
+        # "brand new path" or "install upgraded across migration 0005", which
+        # creates this table without backfilling it. On an upgraded install the
+        # entries are already there and the watermark is not, so allocating from
+        # the watermark alone would reissue offset 1 over the top of them. So the
+        # aggregate runs then — once per path, ever — and seeds the high mark for
+        # every allocation after it.
+        if watermark.high == 0:
+            entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+            start = (entries_max or 0) + 1
+        else:
+            start = watermark.high + 1
         watermark.high = start + count - 1
         watermark.save(update_fields=["high"])
         return start

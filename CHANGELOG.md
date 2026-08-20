@@ -9,7 +9,35 @@ runnable demo for each.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **A durable append no longer scans the entry table to find its place.** Every
+  append recomputed the stream's high offset with an aggregate over all of its
+  entries, and read the offset high-water row twice — once to create it, once to
+  lock it. Allocation is now two queries: one locked read, one write. Reading the
+  stream head drops the same scan — `Stream.current_offset` is one query, and
+  `DjangoStreamStore.get_current_offset` two, the extra one being its own
+  expiry check.
+
+  The high-water row is authoritative once it has been advanced, so the scan
+  survives for the single case that needs it: a watermark still at zero, which
+  means either a brand-new stream or an install upgraded across migration `0005`
+  (it creates the table without backfilling it). That runs once per stream and
+  seeds the row for every allocation after it. No migration is required and no
+  offset changes.
+
+  **Worth knowing if you write `StreamEntry` rows directly.** An entry inserted
+  without going through `Stream.get_next_offset_block` no longer advances the
+  head, where the old aggregate would have absorbed it. The row is still stored
+  and still returned by a read — but it sits *out of order*: with a watermark at
+  1 and a hand-written entry at offset 99, the head stays at 1, the next
+  allocations are 2, 3, 4 …, and a subscriber resuming past 99 never sees them.
+  Allocation eventually reaches 99 and collides with the unique constraint.
+
+  Nothing in rakaia writes entries that way, and `StreamEntry` is a Tier 2 read
+  surface (see `docs/public-api.md`), so this is a narrowing of what the log
+  tolerates rather than a break. A consumer inserting its own rows should
+  allocate through the stream.
 
 ## [0.2.0] - 2026-08-15
 

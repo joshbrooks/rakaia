@@ -46,9 +46,11 @@ from typing import Any
 import pytest
 from django.db import connection, connections, transaction
 from django.db.models import QuerySet
+from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.effect_executor import DjangoExecutor
+from django_rakaia.models import Stream
 from rakaia.effects import Retire, Transition
 from rakaia.types import AppendOptions
 
@@ -425,4 +427,47 @@ class TestRetireLock:
         assert len(seen) == 6, (
             f"expected all 6 alerts announced exactly once between the two "
             f"retires, got {len(seen)}"
+        )
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
+class TestTheWatermarkReadIsALockingRead:
+    """The offset watermark is read once, and that one read still takes the lock.
+
+    `get_next_offset_block` folds what used to be a plain `get_or_create` plus a
+    `select_for_update().get()` into a single locked `get_or_create`, halving the
+    reads on the hottest path in the package. That is only safe if Django applies
+    the queryset's `FOR UPDATE` to the `get` half — it does, but nothing in the
+    default run can see it, because SQLite reports `has_select_for_update` false
+    and Django then omits the clause entirely.
+
+    `test_concurrent_appends.py` races this lock and proves it *serialises*. This
+    asserts the clause is actually emitted, which is the failure mode a fold like
+    this introduces: a lock silently dropped still serialises fine under one
+    connection, so contention tests keep passing while the guarantee is gone.
+    Spying on `QuerySet.select_for_update` would only prove the method was called.
+    """
+
+    def test_the_single_watermark_read_carries_for_update(self):
+        Stream.objects.create(stream_id="lockread")
+        with transaction.atomic():
+            stream = Stream.objects.get(stream_id="lockread")
+            # Advance off zero first, so the measured call is the steady-state
+            # path rather than the once-per-path seeding branch.
+            stream.get_next_offset_block(1)
+            with CaptureQueriesContext(connection) as ctx:
+                stream.get_next_offset_block(1)
+
+        reads = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "rakaia_streamoffsetwatermark" in q["sql"]
+            and q["sql"].lstrip().upper().startswith("SELECT")
+        ]
+        assert len(reads) == 1, (
+            f"expected one watermark read, got {len(reads)}: {reads}"
+        )
+        assert "FOR UPDATE" in reads[0].upper(), (
+            f"the watermark read is not a locking read: {reads[0]}"
         )
