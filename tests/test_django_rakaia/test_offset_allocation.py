@@ -185,6 +185,34 @@ class TestTheReadSideAgrees:
 
         assert stream.current_offset == format_offset(7)
 
+    def test_a_watermark_row_sitting_at_zero_still_falls_back(self):
+        # The read side has two ways to be unseeded and they are not the same
+        # value: no row at all reads as `None`, a row that exists but has never
+        # been advanced reads as `0`. The gate is a truthiness test so it covers
+        # both — writing it as `is not None` returns a head of 0 beside entries
+        # running to 7, and every other test in the file stays green.
+        #
+        # The zero-row state is reachable: allocation outside a transaction used
+        # to autocommit the `get_or_create` and only then raise on the locked
+        # read, leaving the row behind at zero.
+        stream = Stream.objects.create(stream_id="s")
+        StreamOffsetWatermark.objects.create(stream_path="s", high=0)
+        for offset in (1, 2, 7):
+            _entry_at(stream, offset)
+
+        assert stream.current_offset == format_offset(7)
+
+    def test_allocation_also_seeds_past_a_zero_watermark_row(self):
+        # The write side's version. It has no None/0 distinction — `get_or_create`
+        # hands back `high == 0` either way — but the state is the same one, and
+        # the two sides agreeing on it is the property this PR is about.
+        stream = Stream.objects.create(stream_id="s")
+        StreamOffsetWatermark.objects.create(stream_path="s", high=0)
+        for offset in (1, 2, 7):
+            _entry_at(stream, offset)
+
+        assert stream.get_next_offset_block(1) == 8
+
     def test_a_fresh_stream_reads_zero(self):
         stream = Stream.objects.create(stream_id="s")
         assert stream.current_offset == format_offset(0)

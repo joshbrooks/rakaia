@@ -1103,8 +1103,10 @@ class DjangoStreamStore:
         the live entries: a stream recreated at the same path reports a head at
         or above its retired high mark even before the first re-append, so a
         stale subscriber cursor reads as ``caught_up`` rather than a spurious
-        ``rewound`` (#34, Defect #2). Mirrors ``Stream.get_next_offset``'s
-        ``max(entries, watermark)`` so allocation and tail-reporting agree.
+        ``rewound`` (#34, Defect #2). Reads the high-water the same way
+        ``Stream.get_next_offset_block`` allocates from it — the watermark row,
+        falling back to the entries only when it has never been advanced — so
+        allocation and tail-reporting cannot name different heads.
 
         An expired stream reports ``None`` exactly as an absent one does — the
         in-memory store behaves the same, and every other read on this store
