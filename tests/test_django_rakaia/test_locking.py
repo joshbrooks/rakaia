@@ -17,8 +17,8 @@ allocating locks. Locking is not what those tests are about, and converting them
 all to `transaction=True` would buy nothing that the handful here does not,
 while making every future run pay truncation teardown. See #148.
 
-**Two different failures hide in the fast test mode, and they need different
-tests.** Django's docs are explicit about both:
+**Three different failures hide in the fast test mode, and they need different
+tests.** Django's docs are explicit about the first two:
 
 * *"Evaluating a queryset with select_for_update() in autocommit mode on
   backends which support SELECT ... FOR UPDATE is a TransactionManagementError
@@ -30,11 +30,23 @@ tests.** Django's docs are explicit about both:
   that crutch.
 * A lock that is never contended proves nothing about serialisation.
   `TestStreamRowLock` and `TestRetireLock` contend it.
+* The transaction has to be opened on the **right database**. A bare
+  `transaction.atomic()` binds to `default`, so code pointed at another alias
+  writes in autocommit — and `django_db(databases=[...])` has pytest-django open
+  a transaction on *every declared alias*, which supplies the missing one just as
+  readily. `TestTheTransactionIsOpenedOnTheStoresAlias` removes that crutch too;
+  it is how #180 shipped an unusable alias past a full green suite.
 
-Both need `transaction=True`, and both need a backend that has row locks at all
-— on SQLite `select_for_update()` compiles to nothing and *"an error isn't
-raised"* either, so neither failure can be observed. Run with
+All three need `transaction=True`. The first two also need a backend that has row
+locks at all — on SQLite `select_for_update()` compiles to nothing and *"an error
+isn't raised"* either, so neither failure can be observed there. Run with
 `RAKAIA_TEST_DB=postgres` (the `test-postgres` CI job).
+
+**`requires_row_locks` goes on the test, not the class.** This whole file skips on
+SQLite if you mark a class with it, which would also skip the failures that *are*
+visible there: an aliased write that does not roll back fails on SQLite, while a
+`select_for_update` raise cannot happen at all. Marking per test keeps the
+SQLite-visible cases running on the default leg.
 """
 
 from __future__ import annotations

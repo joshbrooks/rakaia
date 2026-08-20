@@ -19,6 +19,24 @@
   `django_db(transaction=True)`; a plain `django_db` test runs inside a
   transaction pytest-django rolls back, so a lock taken outside the code's own
   `atomic()` still looks fine and a second connection can never see the rows.
+- **A plain `django_db` marker also hides a missing `using=` on
+  `transaction.atomic()`, and that failure is worse.** `transaction.atomic()`
+  with no argument binds to `default`, so code pointed at another alias writes in
+  autocommit while opening an empty transaction somewhere else — on Postgres
+  `select_for_update` checks the *target* connection and raises, and on SQLite a
+  failed write stays committed. Under `django_db(databases=[...])` pytest-django
+  has already opened a transaction on **every declared alias**, which silently
+  supplies both the missing `atomic()` and the absent `BEGIN`, so the whole
+  feature tests green while being unusable in production. That is how #180
+  shipped a broken alias past a full suite.
+  **Anything alias-aware wants `django_db(transaction=True, databases=[...])`**,
+  and is worth checking per site: strip `using=` from one `atomic()` at a time and
+  confirm the test named for it goes red. Aggregate mutation only proves that
+  *something* was covered.
+- **Apply `requires_row_locks` per test, not per class.** `test_locking.py` skips
+  wholesale on SQLite, so a class-level marker also skips failures that *are*
+  visible there — a non-rollback is, a `select_for_update` raise is not. Mark the
+  cases whose failure mode is the lock; leave the rest to run on both legs.
 - **Row locking is covered deliberately, not incidentally.** There are three
   `select_for_update()` sites (`models.py` offset watermark, `django_store.py`
   stream row, `effect_executor.py` retire capture). Around 290 tests touch one,
