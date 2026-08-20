@@ -30,11 +30,20 @@ altogether, so the branches being individually load-bearing is not hypothetical.
 
 So this file is the table itself: one class per outcome, every branch reached,
 and the boundaries asserted rather than assumed.
+
+**One member of the result union is deliberately absent.**
+`ProducerStreamClosed` is never returned here: whether a stream is closed is not
+a fencing question, and `rakaia.append_decision.decide_append` checks closure
+*before* consulting this table (asserted behaviourally in
+`test_append_decision.py`). Said here rather than as a test, because no mutation
+of `validate_producer` can fail such a test uniquely — nothing in the function
+constructs the type, so the only version that reds is one asserting on the
+module's source text, which a passing mention in a comment would satisfy. A
+branch for it appearing here would be a second, weaker copy of a decision that
+lives upstream; this paragraph is where someone editing the table will read that.
 """
 
 from __future__ import annotations
-
-import inspect
 
 import pytest
 
@@ -82,9 +91,9 @@ class TestExpiry:
     def test_fresh_state_is_not_expired(self):
         assert not is_producer_state_expired(_state(1, 0), NOW)
 
-    def test_state_older_than_the_ttl_is_expired(self):
-        old = _state(1, 0, last_updated=NOW - PRODUCER_STATE_TTL_SECONDS - 1)
-        assert is_producer_state_expired(old, NOW)
+    def test_state_much_older_than_the_ttl_is_expired(self):
+        ancient = _state(1, 0, last_updated=NOW - PRODUCER_STATE_TTL_SECONDS * 10)
+        assert is_producer_state_expired(ancient, NOW)
 
     def test_exactly_at_the_ttl_is_not_yet_expired(self):
         # The boundary is `>`, not `>=`: a state whose age equals the TTL to the
@@ -97,10 +106,13 @@ class TestExpiry:
         past = _state(1, 0, last_updated=NOW - PRODUCER_STATE_TTL_SECONDS - 1)
         assert is_producer_state_expired(past, NOW)
 
-    def test_state_stamped_in_the_future_is_not_expired(self):
-        # Clock skew between writers gives a negative age. It must not read as
-        # expired, which is what an `abs()` or a flipped subtraction would do.
-        future = _state(1, 0, last_updated=NOW + 3600)
+    def test_a_clock_skewed_far_into_the_future_is_not_expired(self):
+        # Clock skew between writers gives a *negative* age, and the rule must
+        # read that as fresh. The skew has to exceed the TTL to test anything: a
+        # stamp an hour ahead is still well inside 7 days, so `abs()` around the
+        # age would return not-expired anyway and the case would pass vacuously.
+        # At TTL + 1 ahead, `abs()` reads it as expired and this goes red.
+        future = _state(1, 0, last_updated=NOW + PRODUCER_STATE_TTL_SECONDS + 1)
         assert not is_producer_state_expired(future, NOW)
 
 
@@ -321,15 +333,35 @@ class TestTheFunctionIsPure:
         validate_producer(state, PID, epoch=2, seq=6, now=NOW + 500.0)
         assert state == before
 
-    @pytest.mark.parametrize("seq", [0, 5, 6, 8])
-    def test_no_outcome_mutates_the_state(self, seq):
-        # Every row of the table, not just the accept: a rejection that advanced
-        # `last_updated` would keep a dead producer's state alive forever.
+    @pytest.mark.parametrize(
+        ("epoch", "seq"),
+        [
+            # same epoch: duplicate, accept, gap
+            (2, 0),
+            (2, 5),
+            (2, 6),
+            (2, 8),
+            # lower epoch: stale. Reached only by varying `epoch` — an earlier
+            # version of this test held it at 2 and so never entered this branch
+            # or the next, leaving a `state.last_updated = now` inserted before
+            # either `return` alive against the whole suite.
+            (1, 0),
+            (1, 6),
+            # higher epoch: accepted restart, and invalid non-zero start
+            (3, 0),
+            (3, 6),
+        ],
+    )
+    def test_no_outcome_mutates_the_state(self, epoch, seq):
+        # Every branch, not just the accept: `ProducerState` is a plain dataclass,
+        # so a rejection that advanced `last_updated` would keep a dead producer's
+        # state alive forever, and one that advanced `last_seq` would move a
+        # sequence on a write that never happened.
         state = _state(2, 5, last_updated=NOW)
         before = ProducerState(
             epoch=state.epoch, last_seq=state.last_seq, last_updated=state.last_updated
         )
-        validate_producer(state, PID, epoch=2, seq=seq, now=NOW + 500.0)
+        validate_producer(state, PID, epoch=epoch, seq=seq, now=NOW + 500.0)
         assert state == before
 
     def test_the_proposed_state_is_a_different_object(self):
@@ -367,37 +399,3 @@ class TestTheFunctionIsPure:
         ):
             assert not isinstance(result, ProducerAccepted)
             assert not hasattr(result, "proposed_state")
-
-
-class TestTheClosedOutcomeIsNotThisModulesToGive:
-    """`ProducerStreamClosed` is in the result union but never returned here.
-
-    Whether a stream is closed is not a fencing question — it is decided by
-    `rakaia.append_decision.decide_append`, which checks closure *before*
-    consulting this table. Stated because the union invites the assumption that
-    this function covers every member of it, and a branch added here would
-    silently duplicate a decision that lives elsewhere.
-
-    **This is a boundary statement, not coverage.** No mutation of
-    `validate_producer` can fail it uniquely — nothing in the function constructs
-    the type, and every outcome it does return is already asserted positively
-    above. It is here so the boundary is written down where someone editing the
-    table will read it. The assertion below is on the source, which at least
-    fails if a branch for it appears.
-    """
-
-    def test_the_module_never_constructs_the_closed_outcome(self):
-        from rakaia import producer
-
-        assert "ProducerStreamClosed" not in inspect.getsource(producer), (
-            "closure is decided in append_decision.decide_append, before this "
-            "table is consulted; a branch for it here would be a second, "
-            "weaker copy of that decision"
-        )
-
-    def test_closure_is_decided_in_append_decision_instead(self):
-        # Naming the other side, so the boundary is checkable from here rather
-        # than asserted about an absence.
-        from rakaia import append_decision
-
-        assert "ProducerStreamClosed" in inspect.getsource(append_decision)
