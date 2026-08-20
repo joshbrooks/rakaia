@@ -184,13 +184,17 @@ def event_view(
     a side effect of tidying their serialisation. `event_view_of_entry` is the
     adapter for callers that do hold an entry.
 
-    The identity keys are omitted when ``None`` — tested with ``is not None``, not
-    truthiness, so an ``offset=0`` or ``event_id=0`` would still be published. The
-    ORM never mints either (offsets and primary keys both start at 1), so this is
-    a property of the function rather than a reachable case, and it is pinned as
-    one. The surfaces genuinely differ in what they need. A channel frame identifies the event, a per-stream API already
+    The identity keys are opt-in because the surfaces genuinely differ in what
+    they need: a channel frame identifies the event, a per-stream API already
     knows its stream, and a cross-stream listing has to say which stream each
     event came from.
+
+    They are omitted on ``None`` specifically — ``is not None``, not truthiness —
+    so an ``offset=0`` or ``event_id=0`` is still published. The ORM mints
+    neither (offsets and primary keys both start at 1), so that is a property of
+    this function rather than a reachable row, and it is asserted as one.
+    ``created_at`` uses truthiness because a ``datetime`` is never falsy, so the
+    distinction cannot arise there.
     """
     view: dict[str, Any] = {}
     if event_id is not None:
