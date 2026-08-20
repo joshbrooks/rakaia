@@ -458,11 +458,15 @@ def test_get_store_returns_durable_when_setting_set(settings):
 @pytest.mark.django_db(transaction=True)
 class TestExpiryReaping:
     def test_a_refused_append_still_reaps_the_expired_row(self):
-        """The reap must run outside the write transaction.
+        """The reap must survive the write transaction's rollback.
 
-        `_require`'s expiry delete inside `transaction.atomic()` is rolled
-        back by the very `StreamNotFound` unwind that reports it — the write
-        path raised 404s forever without ever actually deleting the row.
+        An expiry delete issued inside `transaction.atomic()` is undone by the
+        very `StreamNotFound` unwind that reports it — the write path raised
+        404s forever without ever actually deleting the row. It was fixed once
+        with a second, unlocked read of the stream row before the transaction
+        opened, and again — without that read — by carrying the expiry out of
+        the transaction as a signal and reaping past the rollback
+        (`_locked_write`, #202). This test is what both had to satisfy.
         """
         import time
 

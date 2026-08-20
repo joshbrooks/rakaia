@@ -27,6 +27,32 @@ runnable demo for each.
 
 ### Changed
 
+- **A single append reads the stream row once, not twice.** Every
+  `DjangoStreamStore.append` did two `SELECT`s of the same row: an unlocked one
+  before the transaction opened, purely so that an expired stream would still be
+  reaped when the write went on to report `StreamNotFound` — the reap is a
+  delete, and the rollback that reports the 404 would otherwise undo it — and
+  then the locked one the write actually decides against. The expiry now leaves
+  the transaction as a signal and is reaped on the far side of the rollback, so
+  the locked read does both jobs.
+
+  A steady-state append is **7 statements, down from 8** — `BEGIN`, the locked
+  stream read, the event `INSERT`, the locked high-water read, its `UPDATE`, the
+  entry `INSERT`, `COMMIT` — and each one of them now does something. The
+  reporter of #202 measured 13 against 0.2.0 and named three statements that
+  looked redundant; the other two, a high-water read repeated either side of a
+  get-or-create and a `MAX(offset)` scan beside the watermark it duplicates, both
+  went in #175 and are already absent from a steady-state append. The
+  set of statements is now pinned per append shape by
+  `tests/test_django_rakaia/test_append_query_cost.py`, because none of this
+  changes an observable outcome and so nothing else in the suite notices when a
+  statement comes back.
+
+  The first append to a path still costs four more: the high-water row has to be
+  created, and seeded from a `MAX(offset)` scan, because `high = 0` means either
+  "new path" or "install upgraded across migration 0005" and only the entry table
+  can tell those apart. That is once per path, ever.
+
 - **The value-equality rule moved to `django_rakaia.canonicalisation`.**
   `canonical_value`, `Normalizer`, `DEFAULT_NORMALIZERS` and the three
   `normalize_*` functions were defined in `verification.py`, which meant the write
