@@ -110,8 +110,16 @@ class DjangoExecutor:
             # regardless of handler order. Writes apply before deletes/retires,
             # so a produces= row is always recorded before any later effect that
             # refs it.
+            # A run of consecutive `Update`s is applied together so a fanned-out
+            # change costs one statement instead of one per row (#199). The run
+            # is flushed the moment anything else appears, which is what keeps a
+            # `Ref` in an update's lookup resolvable: it binds to a row an
+            # earlier `Upsert` materialised, so an update must never be hoisted
+            # above its producer.
+            pending: list[Update] = []
             for eff in effects_list:
                 if isinstance(eff, Upsert):
+                    self._flush_updates(pending, resolver)
                     obj, outcome = self._upsert(resolver.resolve_effect(eff))
                     if outcome == "created":
                         created += 1
@@ -123,7 +131,8 @@ class DjangoExecutor:
                     if eff.produces is not None:
                         resolver.record(eff.produces, _row_accessor(obj))
                 elif isinstance(eff, Update):
-                    self._update(resolver.resolve_effect(eff))
+                    pending.append(eff)
+            self._flush_updates(pending, resolver)
             for eff in effects_list:
                 if isinstance(eff, Delete):
                     self._delete(resolver.resolve_effect(eff))
@@ -155,6 +164,88 @@ class DjangoExecutor:
             )
             return obj, ("created" if was_created else "written")
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
+
+    def _flush_updates(self, pending: list[Update], resolver: RefResolver) -> None:
+        """Apply a run of consecutive `Update`s, collapsing what can be collapsed.
+
+        Consecutive updates that share a model, share identical ``defaults``, and
+        each match on **one equality against the same field** become a single
+        ``filter(field__in=[…]).update(**defaults)``. Everything else applies one
+        statement at a time, so a mixed batch degrades rather than raising.
+
+        Why the collapse is sound rather than merely convenient:
+
+        * `Update` is ``filter(...).update(...)`` — no signals, no ``auto_now``
+          advance, no per-row return value a caller reads — so N statements that
+          set the same columns to the same values are indistinguishable from one
+          over the union of their rows.
+        * **Two members of a group can never target the same row.** The group
+          requires one equality on the same field, so different values match
+          disjoint rows; and two members with the *same* value would be the same
+          lookup, which `check_disjoint_defaults` has already rejected before
+          anything applies. So order within a group cannot matter.
+        * Order *between* groups is preserved, and a run ends at the first
+          non-update, so nothing moves across an `Upsert`. Two updates with
+          different defaults can match one row through different lookups —
+          `check_disjoint_defaults` cannot see that, it keys on the exact lookup
+          — and last-write-wins is the answer today, so their sequence is kept.
+
+        Refs are resolved before grouping: a lookup value may be a `Ref` standing
+        in for a row a sibling produced, and two effects are only alike once
+        those are substituted.
+        """
+        if not pending:
+            return
+        resolved = [resolver.resolve_effect(eff) for eff in pending]
+        pending.clear()
+
+        run: list[Update] = []
+        run_key: tuple[Any, ...] | None = None
+        for eff in resolved:
+            key = self._batch_key(eff)
+            if run and key is not None and key == run_key:
+                run.append(eff)
+                continue
+            self._apply_update_run(run)
+            run, run_key = [eff], key
+        self._apply_update_run(run)
+
+    @staticmethod
+    def _batch_key(eff: Update) -> tuple[Any, ...] | None:
+        """A key two updates share iff they can be collapsed, else ``None``.
+
+        ``None`` for anything that has no safe ``__in`` form: a lookup that is not
+        exactly one equality (a composite key, or a ``__`` traversal, has no
+        single column to gather), empty ``defaults`` (a no-op), or ``defaults``
+        whose values are unhashable — a JSON column holds a dict, which cannot be
+        part of a grouping key, and refusing to group is better than refusing to
+        run.
+        """
+        defaults = eff.defaults or {}
+        if not defaults or len(eff.lookup) != 1:
+            return None
+        (field,) = eff.lookup
+        if "__" in field:
+            return None
+        try:
+            return (eff.model_label, field, frozenset(defaults.items()))
+        except TypeError:
+            return None  # an unhashable default value
+
+    def _apply_update_run(self, run: list[Update]) -> None:
+        """One statement for a collapsible run, else one per effect."""
+        if not run:
+            return
+        if len(run) == 1 or self._batch_key(run[0]) is None:
+            for eff in run:
+                self._update(eff)
+            return
+        (field,) = run[0].lookup
+        values = [eff.lookup[field] for eff in run]
+        model = apps.get_model(run[0].model_label)
+        self._manager(model).filter(**{f"{field}__in": values}).update(
+            **(run[0].defaults or {})
+        )
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never
