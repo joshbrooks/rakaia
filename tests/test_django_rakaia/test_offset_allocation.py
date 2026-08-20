@@ -23,6 +23,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent, StreamOffsetWatermark
+from django_rakaia.offsets import format_offset
 
 pytestmark = pytest.mark.django_db
 
@@ -67,6 +68,134 @@ class TestAllocationQueryCount:
             stream.get_next_offset_block(1)
 
         assert len(_aggregate_queries(ctx)) == 1
+
+    def test_a_steady_state_allocation_reads_the_watermark_once(self):
+        # `get_or_create` then `select_for_update().get()` read the same row
+        # twice: the first read exists only to make the row exist, and its
+        # result was thrown away. One locked `get_or_create` does both jobs.
+        stream = Stream.objects.create(stream_id="s")
+        stream.get_next_offset_block(1)
+
+        with CaptureQueriesContext(connection) as ctx:
+            stream.get_next_offset_block(1)
+
+        reads = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if q["sql"].lstrip().upper().startswith("SELECT")
+            and "rakaia_streamoffsetwatermark" in q["sql"]
+        ]
+        assert len(reads) == 1, reads
+
+    def test_a_steady_state_allocation_costs_two_queries(self):
+        # The headline number, asserted exactly rather than as a ceiling: one
+        # locked read of the watermark, one write of it. Anything else on this
+        # path is paid by every append on every write surface, so a third query
+        # should have to be argued for rather than slipped in.
+        stream = Stream.objects.create(stream_id="s")
+        stream.get_next_offset_block(1)
+
+        with CaptureQueriesContext(connection) as ctx:
+            stream.get_next_offset_block(1)
+
+        assert len(ctx.captured_queries) == 2, [q["sql"] for q in ctx.captured_queries]
+
+
+@pytest.mark.skipif(
+    not connection.features.has_select_for_update,
+    reason=(
+        "backend has no row locks, so select_for_update() compiles to a plain "
+        "SELECT and the emitted SQL cannot answer this -- run with "
+        "RAKAIA_TEST_DB=postgres"
+    ),
+)
+class TestTheLockSurvivesGetOrCreate:
+    """That the *one* remaining read is still a locking one.
+
+    Folding the plain `get_or_create` and the `select_for_update().get()` into a
+    single locked `get_or_create` is only safe if Django applies the queryset's
+    `FOR UPDATE` to the `get` half. It does — but nothing in the default test run
+    can see that, because SQLite reports `has_select_for_update` false and Django
+    then omits the clause entirely. Spying on `QuerySet.select_for_update` (as
+    `test_django_store.py` does) proves the method was *called*, not that the
+    clause reached the database.
+
+    So this reads the SQL. It is the only assertion in the file that can tell a
+    real lock from a call that was silently dropped, and it is the reason this
+    change has to be run against Postgres before it is believed.
+    """
+
+    @pytest.mark.django_db(transaction=True)
+    def test_the_watermark_read_is_a_locking_read(self):
+        from django.db import transaction as db_transaction
+
+        Stream.objects.create(stream_id="s")
+        with db_transaction.atomic():
+            stream = Stream.objects.get(stream_id="s")
+            stream.get_next_offset_block(1)  # off zero, so the next is steady state
+            with CaptureQueriesContext(connection) as ctx:
+                stream.get_next_offset_block(1)
+
+        watermark_reads = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "rakaia_streamoffsetwatermark" in q["sql"]
+            and q["sql"].lstrip().upper().startswith("SELECT")
+        ]
+        assert len(watermark_reads) == 1, watermark_reads
+        assert "FOR UPDATE" in watermark_reads[0].upper(), watermark_reads[0]
+
+
+class TestTheReadSideAgrees:
+    """`Stream.current_offset` answers the same question from the same source.
+
+    It carried its own copy of `max(entries, watermark)`, so the read side had
+    the identical scan on the identical growing table — and would have kept it
+    after the write side stopped. Reported here rather than left as a follow-up
+    because #34/#59 already went that way once: the write side of a store
+    invariant was fixed and the read side was missed, and the two then disagreed
+    about where the stream head was.
+    """
+
+    def test_reading_the_head_does_not_aggregate_over_entries(self):
+        stream = Stream.objects.create(stream_id="s")
+        stream.get_next_offset_block(1)
+
+        with CaptureQueriesContext(connection) as ctx:
+            head = stream.current_offset
+
+        assert head == format_offset(1)
+        assert _aggregate_queries(ctx) == []
+
+    def test_the_head_matches_what_allocation_handed_out(self):
+        # The symmetry that matters: the two sides must name the same position.
+        # `current_offset` is "the offset of the last event", i.e. one below the
+        # next allocation.
+        stream = Stream.objects.create(stream_id="s")
+        stream.get_next_offset_block(4)
+        assert stream.current_offset == format_offset(4)
+        assert stream.get_next_offset_block(1) == 5
+
+    def test_an_upgraded_install_reads_its_existing_entries(self):
+        # The read side's version of the seeding case: entries exist, no
+        # watermark row does, and the head must still be 7 rather than 0.
+        stream = Stream.objects.create(stream_id="s")
+        for offset in (1, 2, 7):
+            _entry_at(stream, offset)
+
+        assert stream.current_offset == format_offset(7)
+
+    def test_a_fresh_stream_reads_zero(self):
+        stream = Stream.objects.create(stream_id="s")
+        assert stream.current_offset == format_offset(0)
+
+    def test_the_head_survives_delete_and_recreate(self):
+        stream = Stream.objects.create(stream_id="s")
+        stream.get_next_offset_block(3)
+        Stream.objects.filter(stream_id="s").delete()
+
+        recreated = Stream.objects.create(stream_id="s")
+        assert recreated.current_offset == format_offset(3)
 
 
 def _entry_at(stream: Stream, offset: int) -> None:
