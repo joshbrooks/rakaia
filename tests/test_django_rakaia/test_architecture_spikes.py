@@ -355,22 +355,19 @@ def test_a_save_to_another_database_records_its_event_there() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 8 (#160): canonical_value lives in verification.py and takes "
-        "its normalizers as an argument, but DjangoExecutor(skip_unchanged=True) "
-        "can only use DEFAULT_NORMALIZERS -- there is no way to construct an "
-        "executor that agrees with a diff run under custom normalizers. Both "
-        "docstrings flag the divergence; neither can close it from where it sits."
-    ),
-)
 def test_the_skip_rule_can_be_given_the_normalizers_a_diff_uses() -> None:
     """ "Unchanged" must mean one thing on the write path and the verify path.
 
-    `diff_effects_against_rows` accepts `normalizers=`; the executor's
-    `skip_unchanged` comparison does not. So a projection verified as identical
-    under one equality rule is rewritten under another.
+    Fixed in #160: the equality rule moved to `django_rakaia.canonicalisation`,
+    which both paths import, and `DjangoExecutor` takes `normalizers=` so the same
+    set can be handed to it and to `diff_effects_against_rows`. The `xfail` is
+    gone, which is what this file's method asks for — the marker flipping to a
+    failure is the signal that the finding is closed.
+
+    Kept as a regression test, and kept *here* rather than folded into
+    `test_canonicalisation_layering.py`, because this file is the record of what
+    the review found: a signature check is a weak assertion on its own, but its
+    value is that it is the one this finding was raised with.
     """
     import inspect
 

@@ -78,8 +78,20 @@ _EXPORTS: dict[str, str] = {
     "FieldDiff": "django_rakaia.verification",
     "VerificationError": "django_rakaia.verification",
     "VacuousVerification": "django_rakaia.verification",
-    "canonical_value": "django_rakaia.verification",
-    "DEFAULT_NORMALIZERS": "django_rakaia.verification",
+    # The value-equality rule resolves to its own module, not the verify path:
+    # both the verify and the write path depend on it and neither owns it (#160).
+    # The exported *names* are unchanged (Tier 1); which module defines them is
+    # not, and `django_rakaia.verification` still re-exports both.
+    "canonical_value": "django_rakaia.canonicalisation",
+    "DEFAULT_NORMALIZERS": "django_rakaia.canonicalisation",
+    # `Normalizer` is exported because `DjangoExecutor(normalizers=...)` and
+    # `diff_effects_against_rows(normalizers=...)` are both public and both take
+    # a sequence of them, so a consumer writing its own could name the parameter
+    # type only by importing from a submodule. Additive: a new Tier 1 name, not
+    # a changed one. The three concrete `normalize_*` functions stay unexported —
+    # `DEFAULT_NORMALIZERS` already lets a consumer extend the set
+    # (`(*DEFAULT_NORMALIZERS, mine)`) without naming them individually.
+    "Normalizer": "django_rakaia.canonicalisation",
     "GREEN": "django_rakaia.verification",
     "RED": "django_rakaia.verification",
     "VACUOUS": "django_rakaia.verification",

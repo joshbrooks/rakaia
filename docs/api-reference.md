@@ -40,7 +40,7 @@ page is the contract.
 | `append_event` | `django_rakaia` | `(store: 'WritableStore', stream_path: 'str', payload: 'dict[str, Any]', *, label: 'str', actor: 'Any' = None, event_ts: 'float \| None' = None) -> 'None'` | Append one enveloped event to ``stream_path``, creating the stream if absent. |
 | `append_if_changed` | `rakaia` | `(store: 'Any', path: 'str', data: 'bytes', *, current: 'Any', options: 'Any' = None, snapshot_of: 'Callable[[dict[str, Any]], Any] \| None' = None) -> 'bool'` | Append `data` to `path` only if its snapshot differs from `current`. |
 | `seed_stream` | `rakaia` | `(path: 'str', events: 'Iterable[SeedEvent]' = (), *, store: '_S \| None' = None, encoder: 'type[json.JSONEncoder] \| None' = None) -> '_S \| StreamStore'` | Create ``path`` and append ``events`` to it, in list order. |
-| `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str) -> django_rakaia.models.StreamEvent` | Create a stream event for the given model instance. |
+| `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str, using: str \| None = None) -> django_rakaia.models.StreamEvent` | Create a stream event for the given model instance. |
 | `AppendOptions` | `rakaia` | `(seq: 'str \| None' = None, content_type: 'str \| None' = None, producer_id: 'str \| None' = None, producer_epoch: 'int \| None' = None, producer_seq: 'int \| None' = None, close: 'bool' = False, label: 'str' = '', metadata: 'dict \| None' = None, event_ts: 'float \| None' = None) -> None` | Options for append operations. |
 | `AppendResult` | `rakaia` | `(message: 'StreamMessage \| None' = None, producer_result: 'ProducerValidationResult \| None' = None, stream_closed: 'bool' = False) -> None` | Result of an append operation. |
 | `CloseResult` | `rakaia` | `(final_offset: 'str' = '', already_closed: 'bool' = False, producer_result: 'ProducerValidationResult \| None' = None) -> None` | Result of a close operation. |
@@ -106,7 +106,7 @@ page is the contract.
 |---|---|---|---|
 | `Executor` | `rakaia` | `(*args, **kwargs)` | Applies a batch of effects to durable storage. |
 | `CollectingExecutor` | `rakaia` | `() -> 'None'` | An Executor that records effects instead of applying them. |
-| `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None) -> 'None'` | Apply Effects via Django's ORM. |
+| `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None) -> 'None'` | Apply Effects via Django's ORM. |
 | `InMemoryProjections` | `rakaia` | `() -> 'None'` | An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables. |
 | `ProjectionReader` | `rakaia` | `(*args, **kwargs)` | Read-only view over materialised projections. |
 | `DjangoProjectionReader` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Read-only projection accessor over `apps.get_model(...).objects`. |
@@ -186,6 +186,7 @@ page is the contract.
 | `register_stream_event_admin` | `django_rakaia` | `(event_model_class)` | Register a concrete StreamEvent subclass with the admin. |
 | `canonical_value` | `django_rakaia` | `(model: 'type', field_name: 'str', value: 'Any', normalizers: 'tuple[Normalizer, ...]' = (<function normalize_uuid>, <function normalize_decimal>, <function normalize_temporal>)) -> 'Any'` | Coerce ``value`` into the comparable form the column stores. |
 | `DEFAULT_NORMALIZERS` | `django_rakaia` | — | — |
+| `Normalizer` | `django_rakaia` | — | — |
 
 ## Constants
 
@@ -222,6 +223,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-131 exported names across 14 sections. 116 carry a docstring; 15 do not and show `—` above.
+132 exported names across 14 sections. 116 carry a docstring; 16 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

@@ -142,6 +142,10 @@ DJANGO_RAKAIA_PUBLIC = {
     "GREEN",
     "LiveWriteLeaked",
     "ModelStreamReader",
+    # Added when `DjangoExecutor` gained `normalizers=` (#160): both public entry
+    # points taking a normalizer sequence needed the element type to be nameable
+    # without importing a submodule.
+    "Normalizer",
     "PreloadedProjectionReader",
     "ProvenanceMiddleware",
     "RED",

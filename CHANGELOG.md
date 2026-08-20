@@ -9,7 +9,36 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **`DjangoExecutor(normalizers=...)`, and `Normalizer` as an exported name.**
+  Deciding whether a stored value differs from the one the log carries is one
+  question, and two paths asked it: `diff_effects_against_rows` to check that
+  replaying reproduces the rows already there, and
+  `DjangoExecutor(skip_unchanged=True)` to decide whether a write is a no-op it
+  can skip. Only the first could be given a custom normalizer set, so a consumer
+  with a domain-specific rule — a currency rounding convention, say — had a diff
+  that honoured it and a skip path that did not, and no argument that would fix
+  it: the diff would certify a row as unchanged while the executor rewrote it on
+  every replay. Both now take `normalizers=`, both default to
+  `DEFAULT_NORMALIZERS`, and handing the same sequence to each makes "unchanged"
+  mean one thing. `Normalizer` is exported because it is the element type of a
+  public parameter and could otherwise only be named by importing a submodule.
+
 ### Changed
+
+- **The value-equality rule moved to `django_rakaia.canonicalisation`.**
+  `canonical_value`, `Normalizer`, `DEFAULT_NORMALIZERS` and the three
+  `normalize_*` functions were defined in `verification.py`, which meant the write
+  path imported the verify path to reach them. They now live in a module both
+  import and neither owns.
+
+  **No import needs to change.** `django_rakaia.canonical_value` and
+  `from django_rakaia.verification import canonical_value` both still work — the
+  exported *names* are Tier 1, the module defining them is not. One thing does
+  improve: reaching `canonical_value` no longer pulls in the projection reader or
+  the effect types, so the laziness `django_rakaia.__init__` exists for now holds
+  one level further down.
 
 - **A durable append no longer scans the entry table to find its place.** Every
   append recomputed the stream's high offset with an aggregate over all of its
