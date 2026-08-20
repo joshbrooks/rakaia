@@ -106,7 +106,7 @@ page is the contract.
 |---|---|---|---|
 | `Executor` | `rakaia` | `(*args, **kwargs)` | Applies a batch of effects to durable storage. |
 | `CollectingExecutor` | `rakaia` | `() -> 'None'` | An Executor that records effects instead of applying them. |
-| `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None) -> 'None'` | Apply Effects via Django's ORM. |
+| `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None) -> 'None'` | Apply Effects via Django's ORM. |
 | `InMemoryProjections` | `rakaia` | `() -> 'None'` | An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables. |
 | `ProjectionReader` | `rakaia` | `(*args, **kwargs)` | Read-only view over materialised projections. |
 | `DjangoProjectionReader` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Read-only projection accessor over `apps.get_model(...).objects`. |

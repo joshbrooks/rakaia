@@ -45,20 +45,37 @@ from .canonicalisation import (
 )
 from .projection_reader import DjangoProjectionReader
 
-# Re-exported so `from django_rakaia.verification import canonical_value` — the
-# path this module's own docstring taught, and the one `django_rakaia.__init__`
-# resolved — keeps working now the rule lives in `canonicalisation`. The names are
-# Tier 1 (`django_rakaia.__all__`); which module they are defined in is not.
+# This module's public surface, stated explicitly for two reasons.
+#
+# The canonicalisation names are **re-exports**, so that
+# `from django_rakaia.verification import canonical_value` — the path this
+# module's own docstring taught, and the one `django_rakaia.__init__` used to
+# resolve — keeps working now the rule lives in `canonicalisation`. The names are
+# Tier 1 (`django_rakaia.__all__`); which module defines them is not.
+#
+# Everything else is defined here and is listed because an `__all__` written only
+# from the re-exports would *narrow* the star-export surface: the first version of
+# this list was written to silence three F401s and silently dropped
+# `VacuousVerification`, `GREEN`, `RED` and `VACUOUS`, all of which this module
+# star-exported before and all of which `__init__._EXPORTS` maps here. A test
+# below pins the two sets against each other so the next edit cannot repeat that.
 __all__ = [
-    "DEFAULT_NORMALIZERS",
+    # verdict constants
+    "GREEN",
+    "RED",
+    "VACUOUS",
+    # defined here
     "DiffReport",
     "FieldDiff",
-    "Normalizer",
     "PreloadedProjectionReader",
     "RowDiff",
+    "VacuousVerification",
     "VerificationError",
-    "canonical_value",
     "diff_effects_against_rows",
+    # re-exported from `canonicalisation`
+    "DEFAULT_NORMALIZERS",
+    "Normalizer",
+    "canonical_value",
     "normalize_decimal",
     "normalize_temporal",
     "normalize_uuid",

@@ -48,24 +48,22 @@ Normalizer = Callable[[type, str, Any], Any]
 
 
 def _resolve_field(model: type, name: str) -> Any | None:
-    """The model field named ``name``, resolving an FK's ``attname`` (``x_id``).
+    """The model field named ``name``, or ``None``.
 
-    ``get_field`` knows the relation name (``project``); effects address the
-    column (``project_id``), so a scan by ``attname`` follows before giving up.
+    Effects address the *column* (``project_id``), not the relation
+    (``project``), and ``get_field`` resolves both: `Options._forward_fields_map`
+    indexes each field under `name` **and** `attname`, with a comment in Django's
+    own source saying ``get_field()`` should be able to fetch by attname. That
+    holds identically in Django 4.2 (the declared floor) and 6.0.
 
-    **The fallback has no trigger on Django 6.0**, where ``get_field("x_id")``
-    already returns the ForeignKey rather than raising — deleting the loop leaves
-    the whole suite green (verified). It is retained because the declared floor is
-    Django 4.2 and CI runs one version, so "unreachable here" is not
-    "unreachable"; it is not, however, covered, and
-    `test_canonicalisation_layering.py` says so rather than implying otherwise.
+    This used to fall back to scanning `get_fields()` by ``attname`` when
+    ``get_field`` raised. The loop was unreachable across the whole supported
+    range — anything it could have found, ``get_field`` had already returned —
+    so it is gone rather than kept as untestable insurance.
     """
     try:
         return model._meta.get_field(name)
     except FieldDoesNotExist:
-        for candidate in model._meta.get_fields():
-            if getattr(candidate, "attname", None) == name:
-                return candidate
         return None
 
 

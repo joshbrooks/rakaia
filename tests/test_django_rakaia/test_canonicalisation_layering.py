@@ -140,10 +140,6 @@ class TestBothSidesCanBeGivenTheSameNormalizers:
     disagreement could not be demonstrated, only read about in two docstrings.
     """
 
-    def test_the_executor_accepts_a_normalizer_set(self):
-        executor = DjangoExecutor(skip_unchanged=True, normalizers=(_loud,))
-        assert executor is not None
-
     def test_a_custom_set_changes_what_the_executor_calls_unchanged(self):
         # Under `_loud` every number is equal to every other number, so a real
         # change from 1.00 to 2.50 reads as no change and the write is skipped.
@@ -295,3 +291,49 @@ class TestTheDefaultsAreUnchanged:
         assert canonical_value(Measure, "observed_on", "2026-01-02") == _dt.date(
             2026, 1, 2
         )
+
+
+class TestVerificationStillExportsWhatItDefines:
+    """`verification.__all__` must not narrow while names move out of it.
+
+    The first version of that list was written to silence three F401s on the
+    re-imported normalizers, so it was derived from the re-exports and silently
+    dropped four names the module defines and previously star-exported —
+    `VacuousVerification`, `GREEN`, `RED`, `VACUOUS`. Attribute access and
+    `django_rakaia.<name>` kept working, so nothing failed; only `import *` and
+    anything introspecting `__all__` saw the difference.
+    """
+
+    def test_every_name_the_package_root_maps_here_is_exported(self):
+        from django_rakaia import _EXPORTS, verification
+
+        mapped = {
+            name
+            for name, module in _EXPORTS.items()
+            if module == "django_rakaia.verification"
+        }
+        missing = mapped - set(verification.__all__)
+        assert not missing, (
+            f"{sorted(missing)} are routed to django_rakaia.verification by the "
+            f"package root but absent from its __all__"
+        )
+
+    def test_star_import_yields_every_exported_name(self):
+        namespace: dict[str, object] = {}
+        exec("from django_rakaia.verification import *", namespace)  # noqa: S102
+
+        from django_rakaia import verification
+
+        missing = [n for n in verification.__all__ if n not in namespace]
+        assert not missing, missing
+
+    def test_nothing_public_is_defined_here_and_left_out(self):
+        from django_rakaia import verification
+
+        defined_here = {
+            name
+            for name, obj in vars(verification).items()
+            if not name.startswith("_")
+            and getattr(obj, "__module__", None) == "django_rakaia.verification"
+        }
+        assert not defined_here - set(verification.__all__)
