@@ -173,7 +173,58 @@ class DjangoStreamStore:
 
     Satisfies `rakaia.StreamServerStore`: the event-sourcing read/emit surface
     plus the full protocol lifecycle.
+
+    Pass ``using`` to read and write the log on a named database alias instead of
+    the default — the same seam `DjangoExecutor` and `DjangoProjectionReader`
+    already sit on. That is what lets a from-scratch rebuild replay into a
+    *disposable* database and be verified against the real ORM without touching
+    production (ADR 0003): the projections went to the alias already, and now the
+    log they are derived from can come from it too.
+
+    Before this, the log was the one part of a rebuild that could not leave the
+    default database, so `hermeticity.py` documented a drain-to-memory as the
+    workaround — six lines every consumer wrote, tested nowhere, because the store
+    was untestable off ``default``.
+
+    ``using=None`` targets the default alias, exactly as before. Pair with
+    ``DjangoExecutor(using=...)`` and ``DjangoProjectionReader(using=...)``.
     """
+
+    def __init__(self, *, using: str | None = None) -> None:
+        self._using = using
+
+    # =========================================================================
+    # Alias
+    # =========================================================================
+
+    def _streams(self) -> Any:
+        """`Stream` rows on this store's alias.
+
+        Every read and write of a model goes through one of these accessors, so
+        the alias is applied in one place rather than being remembered at each of
+        the ten call sites it used to be absent from. `.using(None)` keeps
+        Django's default routing, so this is uniform whether or not an alias was
+        given — the same shape as `DjangoExecutor._manager`.
+
+        It also fixes the alias for rows *derived* from a stream: the write path
+        takes its alias from the stream row it was handed
+        (`write_enveloped_event`, #159), and `Stream.get_next_offset_block` from
+        ``self._state.db``. Loading the stream on the right alias is therefore
+        what puts its event, its entry and its offset high-water there too.
+        """
+        return Stream.objects.using(self._using)
+
+    def _events(self) -> Any:
+        """`StreamEvent` rows on this store's alias."""
+        return StreamEvent.objects.using(self._using)
+
+    def _entries(self) -> Any:
+        """`StreamEntry` rows on this store's alias."""
+        return StreamEntry.objects.using(self._using)
+
+    def _producers(self) -> Any:
+        """`StreamProducer` rows on this store's alias."""
+        return StreamProducer.objects.using(self._using)
 
     # =========================================================================
     # Expiry
@@ -220,7 +271,8 @@ class DjangoStreamStore:
         atomic step against concurrent writers. Only valid inside
         `transaction.atomic()`; a no-op on backends without row locks (SQLite).
         """
-        qs = Stream.objects.select_for_update() if for_update else Stream.objects
+        base = self._streams()
+        qs = base.select_for_update() if for_update else base
         stream = qs.filter(stream_id=path).first()
         if stream is None:
             return None
@@ -287,7 +339,7 @@ class DjangoStreamStore:
         comment. Do not unwrap it.
         """
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             existing = self._get_if_not_expired(path)
             if existing is not None:
                 same = (
@@ -304,7 +356,7 @@ class DjangoStreamStore:
                 )
 
             now = time.time()
-            stream = Stream.objects.create(
+            stream = self._streams().create(
                 stream_id=path,
                 content_type=content_type,
                 ttl_seconds=ttl_seconds,
@@ -358,7 +410,7 @@ class DjangoStreamStore:
         self, path: str, producer_id: str, epoch: int, seq: int
     ) -> CloseResult | None:
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._get_if_not_expired(path, for_update=True)
             if stream is None:
                 return None
@@ -436,7 +488,7 @@ class DjangoStreamStore:
         """
         opts = options if options is not None else AppendOptions()
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._require(path, for_update=True)
 
             # Admission is decided in `rakaia.append_decision`, shared with the
@@ -579,9 +631,8 @@ class DjangoStreamStore:
     # Producer fencing
     # =========================================================================
 
-    @staticmethod
     def _producer_state(
-        stream: Stream, producer_id: str | None
+        self, stream: Stream, producer_id: str | None
     ) -> ProducerState | None:
         """The last known state for `producer_id`, or None.
 
@@ -590,23 +641,22 @@ class DjangoStreamStore:
         """
         if producer_id is None:
             return None
-        row = StreamProducer.objects.filter(
-            stream=stream, producer_id=producer_id
-        ).first()
+        row = self._producers().filter(stream=stream, producer_id=producer_id).first()
         if row is None:
             return None
         return ProducerState(
             epoch=row.epoch, last_seq=row.last_seq, last_updated=row.last_updated
         )
 
-    @staticmethod
-    def _commit_producer(stream: Stream, result: ProducerValidationResult) -> None:
+    def _commit_producer(
+        self, stream: Stream, result: ProducerValidationResult
+    ) -> None:
         """Advance producer state — only ever after a successful write."""
         if not isinstance(result, ProducerAccepted):
             return
         if result.proposed_state is None:
             return
-        StreamProducer.objects.update_or_create(
+        self._producers().update_or_create(
             stream=stream,
             producer_id=result.producer_id,
             defaults={
@@ -639,7 +689,7 @@ class DjangoStreamStore:
             return self.append(path, data, opts)
 
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             # The row lock is what makes fencing fence: validation reads the
             # producer's last state, and two concurrent retries of the same
             # (producer_id, epoch, seq) that both read before either commits
@@ -745,7 +795,7 @@ class DjangoStreamStore:
             return []
 
         self._reap_if_expired(path)
-        with transaction.atomic():
+        with transaction.atomic(using=self._using):
             stream = self._require(path, for_update=True)
 
             if stream.closed:
@@ -848,14 +898,14 @@ class DjangoStreamStore:
                     written, encoded, strict=True
                 )
             ]
-            StreamEvent.objects.bulk_create(stream_events)
+            self._events().bulk_create(stream_events)
 
             start = stream.get_next_offset_block(len(stream_events))
             entries = [
                 StreamEntry(stream=stream, event=event, offset=start + i)
                 for i, event in enumerate(stream_events)
             ]
-            StreamEntry.objects.bulk_create(entries)
+            self._entries().bulk_create(entries)
             # `bulk_create` does not fire `post_save`, so the receiver that
             # publishes single appends never sees these rows — every bulk append
             # used to be invisible to subscribers (issue #82). Publish them
@@ -1034,7 +1084,7 @@ class DjangoStreamStore:
         so a stream recreated at this path resumes numbering above the retired
         mark rather than reissuing offsets a subscriber has already seen.
         """
-        deleted, _ = Stream.objects.filter(stream_id=path).delete()
+        deleted, _ = self._streams().filter(stream_id=path).delete()
         return deleted > 0
 
     def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
@@ -1120,4 +1170,4 @@ class DjangoStreamStore:
         return stream.current_offset
 
     def list_paths(self) -> list[str]:
-        return list(Stream.objects.values_list("stream_id", flat=True))
+        return list(self._streams().values_list("stream_id", flat=True))

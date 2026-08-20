@@ -33,7 +33,7 @@ page is the contract.
 |---|---|---|---|
 | `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `() -> 'None'` | In-memory store for durable streams. |
-| `DjangoStreamStore` | `django_rakaia` | `()` | A durable store backed by the django_rakaia ORM models. |
+| `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
 | `ReadableStore` | `rakaia` | `(*args, **kwargs)` | A store `replay()` can read events from. |
 | `WritableStore` | `rakaia` | `(*args, **kwargs)` | A store the event-sourcing framework both writes to and reads from. |
 | `StreamServerStore` | `rakaia` | `(*args, **kwargs)` | A store that can back a Durable Streams **protocol server**. |

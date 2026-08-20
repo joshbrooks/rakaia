@@ -148,6 +148,15 @@ class TestOpensItsOwnTransaction:
 
     Three tests, one per lock site — replacing the notional cover that ~160
     incidental non-transactional tests were providing.
+
+    A fourth question turned out to hide in the same blind spot: the transaction
+    must be opened **on the store's own alias**. A bare `transaction.atomic()`
+    binds to `default`, so a store on another alias ran its writes in autocommit
+    while opening an empty transaction on `default` — and `select_for_update`
+    checks the *target* connection, so on Postgres the alias was unusable for
+    writes at all. Under a plain `django_db` marker every one of these passes
+    either way, because pytest-django has already opened a transaction on each
+    declared alias. See `TestTheTransactionIsOpenedOnTheStoresAlias`.
     """
 
     def test_append_opens_its_own_transaction(self) -> None:
@@ -471,3 +480,127 @@ class TestTheWatermarkReadIsALockingRead:
         assert "FOR UPDATE" in reads[0].upper(), (
             f"the watermark read is not a locking read: {reads[0]}"
         )
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+class TestTheTransactionIsOpenedOnTheStoresAlias:
+    """A store on a named alias must open its transaction *there*.
+
+    `transaction.atomic()` with no argument binds to `default`. A store pointed
+    at another alias therefore wrote in autocommit while opening an empty
+    transaction on `default` — three distinct failures from one missing keyword:
+    `select_for_update` raised on Postgres because it checks the target
+    connection; a failed append left its event and entry behind on SQLite, which
+    is the split-write class #159 exists to prevent; and the stray `BEGIN` on
+    `default` tripped `deny_database_access`, which is the whole point of the
+    alias.
+
+    `transaction=True` is what makes these visible. Under a plain `django_db`
+    marker pytest-django has already opened a transaction on every declared
+    alias, which silently supplies both the missing atomic and the absent
+    `BEGIN` — so the entire feature can be tested green while being unusable in
+    production.
+
+    `requires_row_locks` is applied **per test, not to the class**: only the cases
+    whose failure mode *is* the lock need a backend that has one. The rollback and
+    the guard fail on SQLite too, and skipping them there would drop the only
+    coverage of a defect that shows up on the default test run.
+    """
+
+    @requires_row_locks
+    def test_a_write_to_the_alias_succeeds_in_real_autocommit(self) -> None:
+        # On Postgres this raised `TransactionManagementError: select_for_update
+        # cannot be used outside of a transaction` before the fix.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-txn")
+
+        store.append("alias-txn", b'{"x": 1}')
+
+        assert store.get("alias-txn") is not None
+
+    def test_a_failed_write_to_the_alias_rolls_back(self) -> None:
+        # The split-write case: without the alias on the atomic, the event and
+        # entry were already committed by the time the failure happened.
+        from unittest.mock import patch
+
+        from django_rakaia.models import StreamEntry, StreamEvent
+
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-rollback")
+
+        with (
+            patch.object(DjangoStreamStore, "_touch", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            store.append("alias-rollback", b'{"x": 1}')
+
+        assert StreamEvent.objects.using("overlay").count() == 0
+        assert StreamEntry.objects.using("overlay").count() == 0
+
+    def test_writing_to_the_alias_does_not_touch_the_guarded_default(self) -> None:
+        # The claim `hermeticity.py` now makes: give the store the alias and a
+        # rebuild that *writes* inside the guard has nothing to work around. The
+        # stray `BEGIN` on `default` used to fail this.
+        from django_rakaia.hermeticity import deny_database_access
+
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-guarded")
+
+        with deny_database_access("default"):
+            store.append("alias-guarded", b'{"x": 1}')
+
+        assert [m.data for m in store.read("alias-guarded")[0]] == [b'{"x": 1}']
+
+    @requires_row_locks
+    def test_a_batch_write_to_the_alias_opens_its_own_transaction(self) -> None:
+        # `append_many` is a separate write door with its own atomic.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-batch")
+
+        results = store.append_many(
+            "alias-batch", [(b'{"n": 1}', None), (b'{"n": 2}', None)]
+        )
+
+        assert [r.message is not None for r in results] == [True, True]
+
+    @requires_row_locks
+    def test_creating_with_a_body_opens_its_own_transaction(self) -> None:
+        # `create(initial_data=...)` routes through offset allocation, so it has
+        # its own atomic. Its docstring calls a missing transaction here "a
+        # guaranteed 500 in production" and points at the contract's
+        # create-with-body case as the cover — but that case never runs on an
+        # alias, so this site was unproven off `default`.
+        store = DjangoStreamStore(using="overlay")
+
+        store.create("alias-create-body", initial_data=b'{"x": 1}')
+
+        assert [m.data for m in store.read("alias-create-body")[0]] == [b'{"x": 1}']
+
+    @requires_row_locks
+    def test_a_fenced_append_on_the_alias_opens_its_own_transaction(self) -> None:
+        # The sync inner method, not the async wrapper: the atomic lives here and
+        # `append_with_producer` only marshals into it, so this tests the site
+        # rather than the thread hop.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-fenced")
+
+        result = store._append_with_producer_sync(
+            "alias-fenced",
+            b'{"x": 1}',
+            AppendOptions(producer_id="p", producer_epoch=1, producer_seq=0),
+        )
+
+        assert result.message is not None
+
+    @requires_row_locks
+    def test_a_fenced_close_on_the_alias_opens_its_own_transaction(self) -> None:
+        # A separate atomic from `append`'s — closing under fencing takes its own.
+        store = DjangoStreamStore(using="overlay")
+        store.create("alias-fenced-close")
+
+        result = store._close_with_producer_sync("alias-fenced-close", "p", 1, 0)
+
+        assert result is not None
+        stream = store.get("alias-fenced-close")
+        assert stream is not None
+        assert stream.closed

@@ -40,33 +40,30 @@ handler-dispatch region inside it::
             replay(store, path, DjangoExecutor(using="rebuild"),
                    reader=DjangoProjectionReader(using="rebuild"), ...)
 
-**The event source must not read the denied alias either.** Read the log from a
-store that does not touch it — an in-memory ``StreamStore``, or a store on
-another alias. A ``DjangoStreamStore`` on ``default`` would itself trip the
-guard, which is correct: a truly hermetic rebuild reads its log from somewhere
-other than the database it is proving it can reconstruct.
+**The event source must not read the denied alias either.** A
+``DjangoStreamStore`` on ``default`` would itself trip the guard, which is
+correct: a truly hermetic rebuild reads its log from somewhere other than the
+database it is proving it can reconstruct.
 
-That is the whole obstacle in practice, and it is six lines to clear. Drain the
-durable log into memory *first*, with the guard down, then arm it around the
-replay alone::
-
-    durable = get_store()                       # DjangoStreamStore on "default"
-    mem = StreamStore()
-    mem.create(path)
-    messages, _has_more = durable.read(path)
-    for m in messages:
-        # m.data is already the encoded bytes — re-encoding double-wraps it.
-        mem.append(path, m.data,
-                   AppendOptions(label=m.label, metadata=m.metadata,
-                                 event_ts=m.event_ts))
+Give the store the same alias as the executor and the reader, and there is
+nothing to work around::
 
     with deny_database_access("default"):
-        replay(mem, path, DjangoExecutor(using="rebuild"),
+        replay(DjangoStreamStore(using="rebuild"), path,
+               DjangoExecutor(using="rebuild"),
                reader=DjangoProjectionReader(using="rebuild"), ...)
+
+This used to be the whole obstacle in practice, because the store had no
+``using`` at all and so could only read ``default``. The answer documented here
+was a six-line drain of the durable log into an in-memory ``StreamStore`` first,
+with the guard down — code every consumer wrote and no test covered, since the
+store was untestable off ``default``. ``DjangoStreamStore(using=...)`` (#180)
+replaced it with a keyword argument. An in-memory store is still a perfectly good
+event source; it is no longer the price of admission.
 
 Worth stating because the first production consumer left this guard unwired for
 months, having recorded "a blanket deny on ``default`` trips on the store's own
-reads" as the blocker. It is not a blocker; it is the drain above.
+reads" as the blocker. That was a real blocker, and it is now gone.
 
 **A pass only means something if you have watched the guard fail.** Nothing here
 distinguishes "no handler read the database" from "the guard was never armed",
