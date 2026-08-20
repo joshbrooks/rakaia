@@ -165,12 +165,24 @@ class Stream(models.Model):
         watermarks = StreamOffsetWatermark.objects.using(using)
         watermarks.get_or_create(stream_path=self.stream_id)
         watermark = watermarks.select_for_update().get(stream_path=self.stream_id)
-        # `max(entries, watermark)` is belt-and-suspenders: the watermark alone
-        # is authoritative for live streams, but taking the max also seeds it
-        # correctly from any pre-existing entries (e.g. rows written before this
-        # high-water table existed) on the first allocation after migration.
-        entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
-        start = max(entries_max or 0, watermark.high) + 1
+        # A watermark that has been advanced even once is authoritative: every
+        # `StreamEntry` in the codebase gets its offset from this method, so
+        # nothing can write an entry above the high mark. Re-deriving that mark
+        # from the entry table on every append would scan a growing table for an
+        # answer already held in one row.
+        #
+        # `high == 0` is the one case it cannot answer, because it means either
+        # "brand new path" or "install upgraded across migration 0005", which
+        # creates this table without backfilling it. On an upgraded install the
+        # entries are already there and the watermark is not, so allocating from
+        # the watermark alone would reissue offset 1 over the top of them. So the
+        # aggregate runs then — once per path, ever — and seeds the high mark for
+        # every allocation after it.
+        if watermark.high == 0:
+            entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+            start = (entries_max or 0) + 1
+        else:
+            start = watermark.high + 1
         watermark.high = start + count - 1
         watermark.save(update_fields=["high"])
         return start
