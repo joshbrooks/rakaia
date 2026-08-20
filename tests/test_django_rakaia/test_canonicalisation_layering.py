@@ -112,6 +112,7 @@ class TestTheRuleIsReachableWithoutTheVerifyPath:
         # `projection_reader` and the effect types for a caller that wanted one
         # pure function. `__init__` is lazy (PEP 562) precisely so importing the
         # package does not pull in the ORM; this keeps that true one level down.
+        import pathlib
         import subprocess
         import sys
 
@@ -126,10 +127,20 @@ class TestTheRuleIsReachableWithoutTheVerifyPath:
             "print('verification' if 'django_rakaia.verification' in sys.modules"
             " else 'clean')\n"
         )
+        # `cwd` pinned to the repo root: the child finds
+        # `tests.test_django_rakaia.settings` via the implicit '' on its path, so
+        # running pytest from anywhere else made this fail as though the layering
+        # had regressed. `check=False` plus stderr in the message so a settings
+        # problem reads as a settings problem.
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
         out = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, check=True
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
         )
-        assert out.stdout.strip() == "clean", out.stdout
+        assert out.returncode == 0, f"child failed:\n{out.stderr}"
+        assert out.stdout.strip() == "clean", f"{out.stdout}\n{out.stderr}"
 
 
 class TestBothSidesCanBeGivenTheSameNormalizers:
@@ -158,7 +169,6 @@ class TestBothSidesCanBeGivenTheSameNormalizers:
             ]
         )
 
-        assert report is not None
         assert report.upserts_skipped == 1
         assert report.upserts_written == 0
         assert Measure.objects.get(ref=REF).amount == Decimal("1.00")
@@ -178,7 +188,6 @@ class TestBothSidesCanBeGivenTheSameNormalizers:
             ]
         )
 
-        assert report is not None
         assert report.upserts_written == 1
         assert report.upserts_skipped == 0
         assert Measure.objects.get(ref=REF).amount == Decimal("2.50")
@@ -205,7 +214,6 @@ class TestBothSidesCanBeGivenTheSameNormalizers:
         # and a diff that compared nothing would otherwise read as agreement.
         assert diff.certified
         assert diff.compared == 1
-        assert report is not None
         assert report.upserts_skipped == 1
 
     def test_they_diverged_before_and_the_test_can_tell(self):
@@ -226,7 +234,6 @@ class TestBothSidesCanBeGivenTheSameNormalizers:
 
         assert diff.certified
         assert diff.compared == 1
-        assert report is not None
         assert report.upserts_written == 1
 
 
@@ -266,13 +273,10 @@ class TestTheDefaultsAreUnchanged:
         # Effects address the *column* (`area_id`), not the relation (`area`), and
         # both must resolve or an FK column would never be normalized.
         #
-        # Note what this does **not** cover. `_resolve_field` has a fallback that
-        # scans `attname` when `get_field` raises, and on Django 6.0
-        # `get_field("area_id")` does not raise — it returns the ForeignKey
-        # directly — so that loop has no trigger here and deleting it leaves the
-        # suite green. It is kept because the declared floor is Django 4.2 and
-        # this suite runs one version; it is not claimed as covered. See the
-        # docstring in `canonicalisation._resolve_field`.
+        # `get_field` resolves both spellings by itself: `_forward_fields_map`
+        # indexes every forward field under `name` and `attname`, identically in
+        # Django 4.2 and 6.0. That is why `_resolve_field` no longer carries a
+        # fallback scan — see its docstring.
         from .models import Project
 
         assert canonical_value(Project, "area_id", 7) == 7
@@ -326,6 +330,42 @@ class TestVerificationStillExportsWhatItDefines:
 
         missing = [n for n in verification.__all__ if n not in namespace]
         assert not missing, missing
+
+    #: The names `verification` re-exports from `canonicalisation`. Written out
+    #: rather than derived, because every way of *deriving* them misses them:
+    #: they are not defined in `verification` (so a `__module__` filter skips
+    #: them) and the package root now maps them to `canonicalisation` (so an
+    #: `_EXPORTS` filter skips them too). They fell through all three of the
+    #: other tests here, and dropping `canonical_value` from `__all__` left the
+    #: whole suite green while genuinely breaking
+    #: `from django_rakaia.verification import *` — the one path the list exists
+    #: to keep working.
+    BACK_COMPAT_REEXPORTS = (
+        "DEFAULT_NORMALIZERS",
+        "Normalizer",
+        "canonical_value",
+        "normalize_decimal",
+        "normalize_temporal",
+        "normalize_uuid",
+    )
+
+    @pytest.mark.parametrize("name", BACK_COMPAT_REEXPORTS)
+    def test_a_reexported_name_survives_in_all(self, name):
+        from django_rakaia import verification
+
+        assert name in verification.__all__
+
+    @pytest.mark.parametrize("name", BACK_COMPAT_REEXPORTS)
+    def test_a_reexported_name_survives_a_star_import(self, name):
+        namespace: dict[str, object] = {}
+        exec("from django_rakaia.verification import *", namespace)  # noqa: S102
+        assert name in namespace
+
+    @pytest.mark.parametrize("name", BACK_COMPAT_REEXPORTS)
+    def test_a_reexported_name_is_the_same_object_as_in_its_own_module(self, name):
+        from django_rakaia import canonicalisation, verification
+
+        assert getattr(verification, name) is getattr(canonicalisation, name)
 
     def test_nothing_public_is_defined_here_and_left_out(self):
         from django_rakaia import verification

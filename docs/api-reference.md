@@ -186,6 +186,7 @@ page is the contract.
 | `register_stream_event_admin` | `django_rakaia` | `(event_model_class)` | Register a concrete StreamEvent subclass with the admin. |
 | `canonical_value` | `django_rakaia` | `(model: 'type', field_name: 'str', value: 'Any', normalizers: 'tuple[Normalizer, ...]' = (<function normalize_uuid>, <function normalize_decimal>, <function normalize_temporal>)) -> 'Any'` | Coerce ``value`` into the comparable form the column stores. |
 | `DEFAULT_NORMALIZERS` | `django_rakaia` | — | — |
+| `Normalizer` | `django_rakaia` | — | — |
 
 ## Constants
 
@@ -222,6 +223,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-131 exported names across 14 sections. 116 carry a docstring; 15 do not and show `—` above.
+132 exported names across 14 sections. 116 carry a docstring; 16 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

@@ -84,6 +84,14 @@ _EXPORTS: dict[str, str] = {
     # not, and `django_rakaia.verification` still re-exports both.
     "canonical_value": "django_rakaia.canonicalisation",
     "DEFAULT_NORMALIZERS": "django_rakaia.canonicalisation",
+    # `Normalizer` is exported because `DjangoExecutor(normalizers=...)` and
+    # `diff_effects_against_rows(normalizers=...)` are both public and both take
+    # a sequence of them, so a consumer writing its own could name the parameter
+    # type only by importing from a submodule. Additive: a new Tier 1 name, not
+    # a changed one. The three concrete `normalize_*` functions stay unexported —
+    # `DEFAULT_NORMALIZERS` already lets a consumer extend the set
+    # (`(*DEFAULT_NORMALIZERS, mine)`) without naming them individually.
+    "Normalizer": "django_rakaia.canonicalisation",
     "GREEN": "django_rakaia.verification",
     "RED": "django_rakaia.verification",
     "VACUOUS": "django_rakaia.verification",

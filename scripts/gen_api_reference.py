@@ -166,6 +166,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "register_stream_event_admin",
         "canonical_value",
         "DEFAULT_NORMALIZERS",
+        "Normalizer",
     ),
     "Constants": (
         "__version__",

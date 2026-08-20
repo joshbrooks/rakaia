@@ -134,6 +134,10 @@ RAKAIA_PUBLIC = {
 DJANGO_RAKAIA_PUBLIC = {
     "AmbientDatabaseAccess",
     "DEFAULT_NORMALIZERS",
+    # Added when `DjangoExecutor` gained `normalizers=` (#160): both public
+    # entry points that take a normalizer sequence needed the element type to be
+    # nameable without importing a submodule.
+    "Normalizer",
     "DiffReport",
     "DjangoExecutor",
     "DjangoProjectionReader",
