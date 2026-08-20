@@ -1,5 +1,6 @@
 """Minimal Django settings for the Rakaia polyglot sample app."""
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -59,12 +60,46 @@ TEMPLATES = [
     },
 ]
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    },
-}
+# SQLite is the default so the demo runs from a bare checkout. Set
+# POLYGLOT_DB=postgres (with the same PG* variables `just test-pg` uses) to
+# point it at Postgres instead — the interesting difference is under
+# `stress_translations --concurrency`, where SQLite's single-writer lock is a
+# hard ceiling and Postgres's is not.
+if os.environ.get("POLYGLOT_DB") == "postgres":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("PGDATABASE", "postgres"),
+            "USER": os.environ.get("PGUSER", "postgres"),
+            "PASSWORD": os.environ.get("PGPASSWORD", "postgres"),
+            "HOST": os.environ.get("PGHOST", "127.0.0.1"),
+            "PORT": os.environ.get("PGPORT", "55432"),
+        },
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            # SQLite's defaults (`journal_mode=delete`, `synchronous=FULL`)
+            # fsync twice per save here — once for the row UPDATE, once for the
+            # event append — which capped this demo at ~40 events/s regardless
+            # of how fast anything else was. The same work measured ~370/s with
+            # the settings below.
+            "OPTIONS": {
+                "init_command": ("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"),
+                # Without this, a second concurrent writer fails *immediately*
+                # with "database is locked" rather than waiting out `timeout`: a
+                # deferred transaction that starts by reading (which every
+                # append does — it locks the offset high-water) cannot upgrade
+                # to a write lock while another writer holds one, and SQLite
+                # does not retry an upgrade. Taking the write lock up front
+                # makes the wait honour `timeout` instead of raising.
+                "transaction_mode": "IMMEDIATE",
+                "timeout": 15,
+            },
+        },
+    }
 
 CHANNEL_LAYERS = {
     "default": {
