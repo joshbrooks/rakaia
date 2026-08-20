@@ -321,43 +321,43 @@ class TestTheFunctionIsPure:
     nothing was checking the design held.
     """
 
-    def test_the_state_passed_in_is_not_mutated(self):
-        # `now` is deliberately *not* NOW. The state's `last_updated` is NOW, so
-        # calling with `now=NOW` makes a `state.last_updated = now` mutation a
-        # no-op and this assertion cannot see it — which is exactly what happened
-        # the first time this test was written.
-        state = _state(2, 5, last_updated=NOW)
-        before = ProducerState(
-            epoch=state.epoch, last_seq=state.last_seq, last_updated=state.last_updated
-        )
-        validate_producer(state, PID, epoch=2, seq=6, now=NOW + 500.0)
-        assert state == before
-
+    # `now` is deliberately offset from the state's `last_updated`. With the two
+    # equal, a `state.last_updated = now` mutation is a no-op and the assertion
+    # cannot see it — which is how the first version of this test passed against
+    # code that mutated its input.
+    #
+    # `stale` selects which arm of the first branch the call lands in, because
+    # holding it fresh was how the *second* version still missed one: the
+    # unknown/expired arm was never entered, so a mutation at the top of it
+    # survived the whole suite.
     @pytest.mark.parametrize(
-        ("epoch", "seq"),
+        ("stale", "epoch", "seq"),
         [
-            # same epoch: duplicate, accept, gap
-            (2, 0),
-            (2, 5),
-            (2, 6),
-            (2, 8),
-            # lower epoch: stale. Reached only by varying `epoch` — an earlier
-            # version of this test held it at 2 and so never entered this branch
-            # or the next, leaving a `state.last_updated = now` inserted before
-            # either `return` alive against the whole suite.
-            (1, 0),
-            (1, 6),
-            # higher epoch: accepted restart, and invalid non-zero start
-            (3, 0),
-            (3, 6),
+            # known, fresh state — same epoch: duplicate, accept, gap
+            (False, 2, 0),
+            (False, 2, 5),
+            (False, 2, 6),
+            (False, 2, 8),
+            # known, fresh — lower epoch: stale-epoch rejection
+            (False, 1, 0),
+            (False, 1, 6),
+            # known, fresh — higher epoch: accepted restart, invalid non-zero start
+            (False, 3, 0),
+            (False, 3, 6),
+            # expired state: treated as unknown, so the epoch is not consulted.
+            # Both arms — the seq-0 accept and the seq-non-zero gap.
+            (True, 2, 0),
+            (True, 2, 6),
+            (True, 1, 6),
         ],
     )
-    def test_no_outcome_mutates_the_state(self, epoch, seq):
+    def test_no_outcome_mutates_the_state(self, stale, epoch, seq):
         # Every branch, not just the accept: `ProducerState` is a plain dataclass,
-        # so a rejection that advanced `last_updated` would keep a dead producer's
-        # state alive forever, and one that advanced `last_seq` would move a
-        # sequence on a write that never happened.
-        state = _state(2, 5, last_updated=NOW)
+        # and the in-memory store keeps these objects in a dict, so a rejection
+        # that advanced `last_updated` would keep a dead producer's state alive
+        # forever and one that advanced `last_seq` would move a sequence on a
+        # write that never happened.
+        state = _stale_state(2, 5) if stale else _state(2, 5, last_updated=NOW)
         before = ProducerState(
             epoch=state.epoch, last_seq=state.last_seq, last_updated=state.last_updated
         )

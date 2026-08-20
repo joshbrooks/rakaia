@@ -275,8 +275,15 @@ class TestTheReplayModuleIsShadowed:
     measurement while verifying #156.
 
     Renaming either would break `rakaia.__all__`, so the sharp edge is documented
-    in `replay.py` rather than removed. This pins the shape so the docstring
-    cannot quietly become wrong.
+    in `replay.py` rather than removed. These two cases pin the *shape* — that the
+    attribute is the function and the module is still importable — so a future
+    change that quietly fixed or worsened the shadowing shows up here.
+
+    There was a third case asserting the word "monkeypatch" appeared in
+    `replay.py`'s docstring. It is gone: a substring check on module source is
+    satisfied by a passing mention in a comment, which is the exact reason the
+    closed-outcome assertions were deleted from `test_producer.py` in the same
+    change. Keeping one while deleting the other was the inconsistency.
     """
 
     def test_the_package_attribute_is_the_function(self):
@@ -294,12 +301,3 @@ class TestTheReplayModuleIsShadowed:
         assert replay_module_attr is replay_fn
         assert sys.modules["rakaia.replay"].__name__ == "rakaia.replay"
         assert hasattr(sys.modules["rakaia.replay"], "build_pipeline")
-
-    def test_the_shadowing_is_documented_where_it_bites(self):
-        import sys
-
-        doc = sys.modules["rakaia.replay"].__doc__ or ""
-        assert "monkeypatch" in doc, (
-            "replay.py's docstring must keep warning that a monkeypatch through "
-            "the package root silently patches nothing"
-        )

@@ -14,7 +14,8 @@ versioned handlers and an effect executor.
    normally; only attribute access through the package root is shadowed. The
    trap is that a ``monkeypatch.setattr("rakaia.replay.<name>", …)`` lands on the
    function object and silently patches nothing, so a test measuring call counts
-   reports zero and reads as a pass. That cost a wrong measurement once (#161).
+   reports zero and reads as a pass. That cost a wrong measurement while
+   verifying #156, and is recorded as item 1 of #161.
 
    Renaming either one would be a breaking change to `rakaia.__all__`, so this
    is a documented sharp edge rather than a bug to fix. Import the names you
