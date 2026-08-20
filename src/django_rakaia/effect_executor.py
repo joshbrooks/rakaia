@@ -26,10 +26,7 @@ doesn't fire for an unchanged row.
 
 from __future__ import annotations
 
-import datetime as _dt
-import uuid as _uuid
 from collections.abc import Iterable, Sequence
-from decimal import Decimal
 from typing import Any
 
 from django.apps import apps
@@ -53,29 +50,43 @@ from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
 
 #: Value types a collapsed `Update` may write.
 #:
-#: An **allowlist**, deliberately, and the third shape this guard has taken. The
-#: first two enumerated what was unsafe — a lookup field appearing in `defaults`,
-#: then anything `Combinable` — and each time a review found a route the
-#: enumeration did not cover: a foreign key under its other spelling, a `Ref` and
-#: a literal resolving to one value, values distinct in Python but equal in the
-#: database, and `Q`, which is non-idempotent and hashable but not `Combinable`.
+#: Five, and each one is justified on its own rather than by a general argument.
+#: For every type here, **Python equality implies identical stored
+#: representation**: two equal values cannot be written differently. That is the
+#: property the grouping needs, because the key compares `defaults` with `==` and
+#: `hash` and then writes one member's values to every member's rows.
 #:
-#: "Is this value dangerous?" is an open question. "Is it one of a few kinds I
-#: know are safe to compare by value and re-write verbatim?" is a closed one, and
-#: being wrong about it costs a missed collapse rather than a wrong write. Which
-#: is the direction this guard should fail in.
+#: * ``str`` — equal strings store identically. Note Unicode NFC and NFD forms of
+#:   the same text are *unequal* in Python, so they never group in the first place.
+#: * ``bytes`` — the same.
+#: * ``int`` — the same. ``True == 1`` is handled by `type(v)` being part of the
+#:   key.
+#: * ``bool`` — two values.
+#: * ``NoneType`` — one value.
+#:
+#: The types deliberately **excluded**, each for a demonstrated reason rather than
+#: caution: ``float`` (``-0.0 == 0.0``, and they store as ``-0.0`` and ``0.0``),
+#: ``Decimal`` (``Decimal("1.0") == Decimal("1.00")``, storing as ``1.0`` and
+#: ``1.00``), aware ``datetime`` and ``time`` (the same instant in two time zones
+#: is equal and hash-equal, and stores as two different strings). For those four,
+#: ``__eq__`` is *semantic* equality that ignores exactly the representation the
+#: database keeps. ``date`` and ``UUID`` are excluded too, without a
+#: counterexample: nothing asked for them, and this guard has been wrong four
+#: times, so the benefit of admitting an unexamined type is not worth the shape of
+#: the risk.
+#:
+#: This is the guard's fourth shape. The first three enumerated what was unsafe —
+#: a lookup field appearing in `defaults`, anything `Combinable`, then a wider
+#: allowlist — and a review found a fresh route through each. An allowlist small
+#: enough to justify per type is the version that stops being a guess: a mistake
+#: costs a collapse that does not happen, and a fan-out writing one literal — the
+#: case #199 asked for — still collapses.
 _COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
     type(None),
     bool,
     int,
-    float,
-    Decimal,
     str,
     bytes,
-    _dt.datetime,
-    _dt.date,
-    _dt.time,
-    _uuid.UUID,
 )
 
 
@@ -268,12 +279,14 @@ class DjangoExecutor:
           effect silently writes nothing. ``resolved_at IS NULL`` is this
           codebase's own open predicate, so this is a shape a reconcile really
           produces;
-        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. That excludes
-          every query expression — ``F()``, ``Concat``, ``Case``, ``Subquery``,
-          and ``Q``, which is non-idempotent and hashable but not `Combinable` —
-          because a write that is not idempotent makes row-set overlap
-          observable. A fan-out setting a literal still collapses, which is the
-          case #199 asked for;
+        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. That covers two
+          separate hazards with one rule. It excludes every query expression —
+          ``F()``, ``Concat``, ``Case``, ``Subquery``, and ``Q``, which is
+          non-idempotent and hashable but not `Combinable` — because a write that
+          is not idempotent makes row-set overlap observable. And it excludes
+          types whose equality ignores representation the database stores, where
+          two "equal" defaults are two different writes and no overlap is needed
+          at all. See that tuple for the per-type reasoning;
         * empty ``defaults``, which is a no-op anyway;
         * ``defaults`` whose values are unhashable — a JSON column holds a dict,
           which cannot be part of a grouping key, and declining to group beats

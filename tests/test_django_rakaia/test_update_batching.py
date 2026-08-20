@@ -788,3 +788,104 @@ class TestASubclassIsNotItsBaseType:
             ("a", "first"),
             ("b", "second"),
         ]
+
+
+class TestEqualityThatIgnoresRepresentation:
+    """Four types whose `__eq__` hides exactly what the database stores.
+
+    The grouping key compares `defaults` with `==` and `hash`, then writes one
+    member's values to every member's rows. For `float`, `Decimal` and aware
+    `datetime`/`time`, Python equality is *semantic*: it deliberately treats
+    values as the same when their representations differ, and the representation
+    is what gets written.
+
+    No row overlap is involved, so none of the idempotence reasoning applies —
+    these are two different writes that the key called one write. All four are
+    excluded from `_COLLAPSIBLE_DEFAULTS` for exactly this reason, and each case
+    below is the counterexample that put its type on the excluded list.
+    """
+
+    def _pair(self, va, vb) -> dict[str, str]:
+        FinanceLine.objects.create(submission_id="a", suku="", delta=0)
+        FinanceLine.objects.create(submission_id="b", suku="", delta=0)
+        DjangoExecutor().apply(
+            [
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "a"},
+                    defaults={"suku": va},
+                ),
+                Update(
+                    model_label=MODEL,
+                    lookup={"submission_id": "b"},
+                    defaults={"suku": vb},
+                ),
+            ]
+        )
+        return dict(FinanceLine.objects.values_list("submission_id", "suku"))
+
+    def test_negative_zero_is_not_zero_once_stored(self):
+        assert -0.0 == 0.0 and hash(-0.0) == hash(0.0)
+        stored = self._pair(-0.0, 0.0)
+        assert stored == {"a": "-0.0", "b": "0.0"}
+
+    def test_decimal_trailing_zeros_survive(self):
+        from decimal import Decimal
+
+        assert Decimal("1.0") == Decimal("1.00")
+        stored = self._pair(Decimal("1.0"), Decimal("1.00"))
+        assert stored == {"a": "1.0", "b": "1.00"}
+
+    def test_one_instant_in_two_time_zones_stores_two_ways(self):
+        import datetime as dt
+
+        a = dt.datetime(2020, 1, 1, 12, tzinfo=dt.timezone.utc)
+        b = dt.datetime(2020, 1, 1, 13, tzinfo=dt.timezone(dt.timedelta(hours=1)))
+        assert a == b and hash(a) == hash(b)
+        stored = self._pair(a, b)
+        assert stored["a"] != stored["b"], stored
+
+    def test_the_same_for_a_bare_time(self):
+        import datetime as dt
+
+        a = dt.time(12, 0, tzinfo=dt.timezone.utc)
+        b = dt.time(13, 0, tzinfo=dt.timezone(dt.timedelta(hours=1)))
+        assert a == b and hash(a) == hash(b)
+        stored = self._pair(a, b)
+        assert stored["a"] != stored["b"], stored
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("resolved_by", "s"),
+            ("resolved_by", b"s"),
+            ("resolved_by", None),
+            ("dismissed_version", 3),
+            ("dismissed_version", True),
+        ],
+    )
+    def test_the_admitted_types_still_collapse(self, column, value):
+        # The narrowing must not cost the case #199 asked for. `str`, `bytes`,
+        # `int`, `bool` and `None` are admitted because equality implies identical
+        # storage for each — the property the grouping key actually relies on.
+        # Written against nullable columns so `None` is a legal value rather than
+        # an integrity error.
+        from .models import Alert
+
+        alert_model = "test_django_rakaia.Alert"
+        for key in ("a", "b"):
+            Alert.objects.create(stream_key=key, alert_type="t")
+
+        with CaptureQueriesContext(connection) as ctx:
+            DjangoExecutor().apply(
+                [
+                    Update(
+                        model_label=alert_model,
+                        lookup={"stream_key": key},
+                        defaults={column: value},
+                    )
+                    for key in ("a", "b")
+                ]
+            )
+
+        assert len(_update_statements(ctx)) == 1, (column, value)
