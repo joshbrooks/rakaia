@@ -285,6 +285,29 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert messages == []
 
+    def test_a_closed_stream_refuses_a_conflicting_batch_rather_than_raising(
+        self, store
+    ):
+        """Closed outranks both conflicts, for a batch as for a single append.
+
+        `test_append_many_to_a_closed_stream_refuses_every_item` uses a clean
+        batch, so it cannot see a store that forgets the stream is closed while
+        scanning for conflicts: such a store raises `SequenceConflict` here and
+        answers the clean batch correctly, which is a refusal turned into a 400
+        on one backend and not the other — #181's own shape.
+        """
+        store.create("s", content_type="application/json")
+        store.append("s", b'{"n": 1}', AppendOptions(seq="5", close=True))
+
+        results = store.append_many(
+            "s",
+            [
+                (b'{"n": 2}', AppendOptions(seq="1")),
+                (b"raw", AppendOptions(content_type="text/plain")),
+            ],
+        )
+        assert all(r.stream_closed and r.message is None for r in results)
+
     def test_append_many_validates_content_type_per_item(self, store):
         store.create("s", content_type="text/plain")
         with pytest.raises(ContentTypeMismatch):
