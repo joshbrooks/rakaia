@@ -424,10 +424,8 @@ class PreloadedProjectionReader(DjangoProjectionReader):
         # names) — so one query per shape fetches all of its rows at once.
         by_shape: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
         for eff in effects:
-            if not eff.lookup:
+            if not _preloadable(eff.lookup):
                 continue
-            if any("__" in k for k in eff.lookup):
-                continue  # spanning lookup — can't index by exact match; left to live get()
             shape = (eff.model_label, tuple(sorted(eff.lookup)))
             by_shape.setdefault(shape, []).append(eff.lookup)
 
@@ -487,9 +485,12 @@ class PreloadedProjectionReader(DjangoProjectionReader):
         The snapshot's own account of what it holds, so
         :func:`diff_effects_against_rows` can refuse a reader built from another
         batch instead of quietly falling back to a live query for the rest.
+
+        A lookup :func:`_preloadable` excluded is never in the snapshot, so this
+        answers ``False`` for it without re-testing that — the exclusion is
+        decided in one place, and asking here whether it *could* have been
+        preloaded is a different question from whether it was.
         """
-        if not lookup or any("__" in k for k in lookup):
-            return False
         model = apps.get_model(model_label)
         return (model_label, self._key(model, lookup.items())) in self._preloaded
 
@@ -513,23 +514,30 @@ class PreloadedProjectionReader(DjangoProjectionReader):
 # =============================================================================
 
 
+def _preloadable(lookup: dict[str, Any]) -> bool:
+    """Whether a bulk fetch can index this lookup by exact match.
+
+    The one place that decides it, for the two that care: the preload skips what
+    it cannot index, and the coverage check must skip exactly the same lookups or
+    it would refuse a reader for holding what it was never able to hold. An empty
+    lookup scopes the whole model, and a spanning one (``field__gte``, a
+    relation) is not an equality on a stored column; both are documented as
+    always-live on :class:`PreloadedProjectionReader`.
+    """
+    return bool(lookup) and not any("__" in k for k in lookup)
+
+
 def _require_preload_covers(
     reader: PreloadedProjectionReader,
     effects: Sequence[Effect],
     kinds: tuple[type, ...],
 ) -> None:
-    """Refuse a preloaded reader that was built from a different batch.
-
-    Only the lookups the reader *could* have preloaded are checked: an empty or
-    relation-spanning lookup is documented as always live, so its absence from
-    the snapshot says nothing about which batch built the reader.
-    """
+    """Refuse a preloaded reader that was built from a different batch."""
     uncovered = [
         eff
         for eff in effects
         if isinstance(eff, kinds)
-        and eff.lookup
-        and not any("__" in k for k in eff.lookup)
+        and _preloadable(eff.lookup)
         and not reader.preloaded(eff.model_label, eff.lookup)
     ]
     if not uncovered:

@@ -23,7 +23,7 @@ from django_rakaia.verification import (
     PreloadMismatch,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect, Upsert
+from rakaia.effects import Effect, Update, Upsert
 
 from .models import Alert, FinanceLine, Measure
 
@@ -138,6 +138,24 @@ class TestPreloadedProjectionReader:
         assert (
             reader.get("test_django_rakaia.FinanceLine", submission_id="late") is None
         )
+
+    def test_empty_lookup_is_not_preloaded_and_reads_live(self):
+        # The other shape a bulk fetch cannot index: an empty lookup scopes the
+        # whole model, so preloading it would cache one arbitrary row as *the*
+        # answer (and scan the table to get it). It stays live, which is visible
+        # as a row created after construction being the answer.
+        reader = PreloadedProjectionReader(
+            [
+                Update(
+                    model_label="test_django_rakaia.FinanceLine",
+                    lookup={},
+                    defaults={"suku": "A"},
+                )
+            ]
+        )
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        row = reader.get("test_django_rakaia.FinanceLine")
+        assert row is not None and row.submission_id == "s1"
 
     def test_spanning_lookup_is_not_preloaded_and_reads_live(self):
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
@@ -272,7 +290,7 @@ class TestPreloadOption:
                 reader=reader,
             )
 
-    def test_unpreloadable_lookups_are_not_a_mismatch(self):
+    def test_a_spanning_lookup_is_not_a_mismatch(self):
         """A spanning lookup is documented as always live, so its absence from the
         snapshot says nothing about which batch built the reader."""
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
@@ -285,13 +303,30 @@ class TestPreloadOption:
         reader = PreloadedProjectionReader(effects)
         assert diff_effects_against_rows(effects, reader=reader).certified
 
+    def test_an_empty_lookup_is_not_a_mismatch(self):
+        """The other always-live shape: an empty lookup scopes the whole model
+        (`Update({})` — update every row), so the snapshot cannot index it and
+        must not be blamed for not holding it."""
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
+        whole_model = Update(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={},
+            defaults={"suku": "A"},
+        )
+        effects = [_finance_effect("s1", "A", 5), whole_model]
+        reader = PreloadedProjectionReader(effects)
+        assert diff_effects_against_rows(effects, reader=reader).certified
 
-@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+
+@pytest.mark.django_db(databases=["default", "overlay"])
 def test_using_routes_the_reader_the_diff_builds() -> None:
     """``using=`` is the other half of building the reader internally: without it
     the fast path on a non-default alias would still need a hand-built reader,
-    which is the pattern #190 removes. Alias-aware, so `transaction=True` per
-    CLAUDE.md rather than a lent transaction on both aliases."""
+    which is the pattern #190 removes.
+
+    A plain marker on both aliases, not `transaction=True`: the diff only reads,
+    so there is no `atomic(using=)` for a lent transaction to supply and nothing
+    here whose failure mode is a lock (#148)."""
     FinanceLine.objects.using("overlay").create(submission_id="o1", suku="A", delta=1)
     effects = [_finance_effect("o1", "A", 1)]
 
