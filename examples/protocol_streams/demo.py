@@ -109,30 +109,30 @@ def section_producer_fencing(store: StreamStore) -> None:
         )
         return result.producer_result
 
-    P = "writer-A"
+    producer = "writer-A"
 
     # A fresh producer must open its epoch at seq=0.
-    assert isinstance(send(P, epoch=1, seq=0), ProducerAccepted)
-    assert isinstance(send(P, epoch=1, seq=1), ProducerAccepted)
+    assert isinstance(send(producer, epoch=1, seq=0), ProducerAccepted)
+    assert isinstance(send(producer, epoch=1, seq=1), ProducerAccepted)
 
     # Re-sending an already-seen (epoch, seq) is a DUPLICATE, not a second write
     # — this is what makes a network retry safe (idempotent append).
-    dup = send(P, epoch=1, seq=1)
+    dup = send(producer, epoch=1, seq=1)
     assert isinstance(dup, ProducerDuplicate) and dup.last_seq == 1
 
     # Skipping a sequence number is refused: the writer lost a message.
-    gap = send(P, epoch=1, seq=5)
+    gap = send(producer, epoch=1, seq=5)
     assert isinstance(gap, ProducerSequenceGap)
     assert gap.expected_seq == 2 and gap.received_seq == 5
 
     # Fencing: a NEW epoch (a restarted/failed-over writer) must restart at seq=0.
-    assert isinstance(send(P, epoch=2, seq=0), ProducerAccepted)
+    assert isinstance(send(producer, epoch=2, seq=0), ProducerAccepted)
     # ...and a straggling write from the OLD epoch is a zombie — rejected so a
     # partitioned old primary can't corrupt the log after failover.
-    zombie = send(P, epoch=1, seq=2)
+    zombie = send(producer, epoch=1, seq=2)
     assert isinstance(zombie, ProducerStaleEpoch) and zombie.current_epoch == 2
     # A new epoch that forgets to restart its sequence is rejected too.
-    assert isinstance(send(P, epoch=3, seq=9), ProducerInvalidEpochSeq)
+    assert isinstance(send(producer, epoch=3, seq=9), ProducerInvalidEpochSeq)
 
     # Only the ACCEPTED writes materialised (2 in epoch 1 + 1 in epoch 2).
     messages, _ = store.read(path)

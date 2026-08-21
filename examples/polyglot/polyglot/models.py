@@ -28,7 +28,7 @@ from django.utils import timezone
 DEFAULT_LANG = "en"
 
 
-class MSG_IDX(enum.Enum):
+class MsgIdx(enum.Enum):
     SINGULAR = 0
     PLURAL = 1
 
@@ -60,6 +60,9 @@ class TranslatableManager(models.Manager["Translatable"]):
             f"No translated content found: langcode='{langcode}', msgid='{msgid}'",
             stacklevel=2,
         )
+        # An untranslated msgid is a miss, not an error: the caller gets None and
+        # decides. Said explicitly because the branch above returns a string.
+        return None
 
     def ngettext(
         self, singular: str, plural: str, number: int, langcode: str = DEFAULT_LANG
@@ -78,7 +81,7 @@ class TranslatableManager(models.Manager["Translatable"]):
             f"No translated content found: langcode='{langcode}', singular='{singular}', plural='{plural}'",
             stacklevel=2,
         )
-        return singular if msg_idx == MSG_IDX.SINGULAR.value else plural
+        return singular if msg_idx == MsgIdx.SINGULAR.value else plural
 
     def pgettext(self, context: str, msgid: str, langcode: str = DEFAULT_LANG):
         try:
@@ -118,7 +121,7 @@ class TranslatableManager(models.Manager["Translatable"]):
             f"No translated content found: langcode='{langcode}', context='{context}', singular='{singular}'",
             stacklevel=2,
         )
-        return singular if msg_idx == MSG_IDX.SINGULAR.value else plural
+        return singular if msg_idx == MsgIdx.SINGULAR.value else plural
 
 
 class Translatable(models.Model):

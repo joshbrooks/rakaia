@@ -320,17 +320,21 @@ def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
         if eff.transition is None:
             continue
         patch = eff.patch or {}
-        for identity in rows:
-            out.append(
-                ExternalEffect(
-                    kind=eff.transition.kind,
-                    # Spread patch first so the orchestrator's own `key`/`state`
-                    # always win: reconcile_by_key is a generic primitive, and a
-                    # patch column named `key` or `state` must not clobber the
-                    # row identity or the transition state.
-                    payload={**patch, "key": dict(identity), "state": "resolved"},
-                )
+        # `kind` is bound out here rather than read inside the generator: the
+        # `is None` check above narrows `eff.transition` in this scope only, and
+        # a generator body is a scope of its own.
+        kind = eff.transition.kind
+        out.extend(
+            ExternalEffect(
+                kind=kind,
+                # Spread patch first so the orchestrator's own `key`/`state`
+                # always win: reconcile_by_key is a generic primitive, and a
+                # patch column named `key` or `state` must not clobber the
+                # row identity or the transition state.
+                payload={**patch, "key": dict(identity), "state": "resolved"},
             )
+            for identity in rows
+        )
     return out
 
 

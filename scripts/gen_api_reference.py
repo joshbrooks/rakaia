@@ -25,7 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.test_django_rakaia.settings")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-import django  # noqa: E402
+import django
 
 django.setup()
 

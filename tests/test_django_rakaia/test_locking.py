@@ -95,7 +95,7 @@ def _run(*targets: Any) -> None:
         def inner() -> None:
             try:
                 fn()
-            except BaseException as exc:  # noqa: BLE001 - re-raised below
+            except BaseException as exc:
                 errors.append(exc)
             finally:
                 connections.close_all()

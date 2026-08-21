@@ -37,7 +37,7 @@ uvicorn rakaia:app --port 4437
 ```python
 from rakaia import create_app, StreamStore
 
-app = create_app()                  # in-memory store
+app = create_app()  # in-memory store
 app = create_app(store=StreamStore())
 ```
 
@@ -49,10 +49,12 @@ from dataclasses import dataclass
 from django.db import models
 from django_rakaia.decorators import stream_model
 
+
 @dataclass
 class RoomData:
     id: int
     name: str
+
 
 @stream_model(
     stream_paths=lambda obj: f"room:{obj.id}:messages",
@@ -98,17 +100,22 @@ idempotent `update_or_create`, so replay can be re-run safely.
 ```python
 from rakaia import Upsert, register_handler, register_upcaster
 
-@register_handler(name="mogrify", event_match="room:*:messages",
-                  effective_from=0, effective_to=10_000)
-def mogrify_v1(event):
-    return Upsert(model_label="myapp.Room",
-                  lookup={"id": event["room_id"]},
-                  defaults={"name": event["name"]})
 
-@register_handler(name="mogrify", event_match="room:*:messages",
-                  effective_from=10_000)
+@register_handler(
+    name="mogrify", event_match="room:*:messages", effective_from=0, effective_to=10_000
+)
+def mogrify_v1(event):
+    return Upsert(
+        model_label="myapp.Room",
+        lookup={"id": event["room_id"]},
+        defaults={"name": event["name"]},
+    )
+
+
+@register_handler(name="mogrify", event_match="room:*:messages", effective_from=10_000)
 def mogrify_v2(event):  # bugfix only for events from seq 10_000 onward
     ...
+
 
 @register_upcaster(event_match="room:*:messages", from_version=1)
 def upcast_v1_to_v2(event):  # schema-shape change handled separately

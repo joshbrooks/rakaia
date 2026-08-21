@@ -31,18 +31,40 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra django --extra docs --extra prod
 
+      - name: Install just
+        # So the api-reference gate below can call the same recipe a developer
+        # runs, rather than a second copy of it inlined here.
+        uses: extractions/setup-just@v3
+
       - name: Lint with ruff
-        run: uv run ruff check src/ tests/ examples/
+        # No path arguments: the scope lives in `[tool.ruff]` in pyproject.toml
+        # so this and `just lint` cannot check different trees. They used to,
+        # and `just check` passed on diffs that failed here.
+        run: uv run ruff check
 
       - name: Format check with ruff
-        run: uv run ruff format --check src/ tests/ examples/
+        run: uv run ruff format --check
 
       - name: Type check with pyright
         # A hard gate since #143. Django's synthesised attributes (reverse
         # accessors, implicit `id`, `annotate()` aliases) are declared on the
         # models and at the query sites rather than waved through, so a new
         # type error here is a real one. Keep it failing.
+        #
+        # Pinned to the lockfile's pyright, matching `just typecheck`: pyright
+        # nags to set this to `latest`, which would let CI and a developer
+        # typecheck against different releases.
+        env:
+          PYRIGHT_PYTHON_FORCE_VERSION: "1.1.411"
         run: uv run pyright src/
+
+      - name: Check the API reference is not stale
+        # `docs/api-reference.md` is generated from `__all__`. Without this step
+        # the only thing enforcing it was `just check`, which nobody is obliged
+        # to run: two PRs based on the same older main each bumped the exported
+        # name count to the same wrong value, both merges took that line, and
+        # main shipped a file the generator disagreed with (#215).
+        run: just api-reference-check
 
       - name: Run tests
         run: uv run pytest --cov=src/rakaia --cov=src/django_rakaia --cov-report=term-missing

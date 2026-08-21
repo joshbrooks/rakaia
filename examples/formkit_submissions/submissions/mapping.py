@@ -44,7 +44,7 @@ def _progress(activity: dict[str, Any]) -> int:
 
 
 def total_budget(event: dict[str, Any]) -> Decimal:
-    return sum((_budget(a) for a in activities(event)), Decimal("0"))
+    return sum((_budget(a) for a in activities(event)), Decimal(0))
 
 
 def overall_progress(event: dict[str, Any]) -> Decimal:
@@ -53,13 +53,13 @@ def overall_progress(event: dict[str, Any]) -> Decimal:
     total = total_budget(event)
     if not acts or total == 0:
         return Decimal("0.00")
-    weighted = sum((_budget(a) * _progress(a) for a in acts), Decimal("0"))
+    weighted = sum((_budget(a) * _progress(a) for a in acts), Decimal(0))
     return (weighted / total).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # The tolerance threshold introduced by the v2 policy.
-LENIENT_THRESHOLD = Decimal("90")
-STRICT_THRESHOLD = Decimal("100")
+LENIENT_THRESHOLD = Decimal(90)
+STRICT_THRESHOLD = Decimal(100)
 
 
 def visit_status(progress: Decimal, *, lenient: bool) -> str:

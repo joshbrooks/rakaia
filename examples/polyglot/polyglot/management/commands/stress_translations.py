@@ -272,7 +272,7 @@ class Command(BaseCommand):
                     scrambled = scramble_differently(source, rng)
                     try:
                         save(pk, scrambled, worker)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         # A stress run reports what broke under load; it does not
                         # abort on the first "database is locked".
                         failures.append(f"{type(exc).__name__}: {exc}")

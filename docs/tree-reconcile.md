@@ -42,9 +42,11 @@ def reconcile_tree(submission_id, nodes):
     kept = [n["node_id"] for n in nodes]
     return [
         *[upsert(submission_id, n) for n in nodes],
-        Delete(model_label=NODE,
-               lookup={"submission_id": submission_id},   # whole subtree
-               spare=Exclude({"node_id__in": kept})),     # any depth
+        Delete(
+            model_label=NODE,
+            lookup={"submission_id": submission_id},  # whole subtree
+            spare=Exclude({"node_id__in": kept}),
+        ),  # any depth
     ]
 ```
 

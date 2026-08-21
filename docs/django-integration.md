@@ -20,7 +20,7 @@
 ```python
 # settings.py
 INSTALLED_APPS = [
-    "daphne",            # ASGI server (must come before django.contrib.staticfiles)
+    "daphne",  # ASGI server (must come before django.contrib.staticfiles)
     "channels",
     "django_rakaia",
     # ...
@@ -86,7 +86,7 @@ The store is chosen by the `RAKAIA_STORE` Django setting via
 
 ```python
 # settings.py
-RAKAIA_STORE = "durable"   # DjangoStreamStore (persisted in the DB)
+RAKAIA_STORE = "durable"  # DjangoStreamStore (persisted in the DB)
 # RAKAIA_STORE = "memory"  # StreamStore (default — in-memory, process-local)
 ```
 

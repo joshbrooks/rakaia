@@ -77,10 +77,10 @@ def balance_rollup(refs: Any) -> list[Effect]:
     for suku in sukus:
         rows = [line for line in lines if line.suku == suku]
         operational = sum(
-            (r.delta for r in rows if r.account == "operational"), Decimal("0")
+            (r.delta for r in rows if r.account == "operational"), Decimal(0)
         )
         infrastructure = sum(
-            (r.delta for r in rows if r.account == "infrastructure"), Decimal("0")
+            (r.delta for r in rows if r.account == "infrastructure"), Decimal(0)
         )
         effects.append(
             Upsert(

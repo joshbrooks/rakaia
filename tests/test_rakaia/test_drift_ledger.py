@@ -176,8 +176,10 @@ class TestMergeReplayAsksTheSameQuestion:
         assert result.events_processed == 10
         current = hash_function_source(_upcaster)
         assert result.warnings == [
-            f"RAKAIA_DRIFT upcaster={version.dotted_path!r} "
-            f"stored={STORED[:12]} current={current[:12]}"
+            (
+                f"RAKAIA_DRIFT upcaster={version.dotted_path!r} "
+                f"stored={STORED[:12]} current={current[:12]}"
+            )
         ]
 
     def test_strict_drift_raises_from_a_merge_too(

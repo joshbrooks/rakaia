@@ -53,7 +53,7 @@ def _subtotal(event: dict) -> Decimal:
     Always reads `quantity` — the v1->v2 upcaster guarantees the legacy `qty`
     key has already been renamed by the time a handler sees the event.
     """
-    total = Decimal("0")
+    total = Decimal(0)
     for item in event.get("items", []):
         total += Decimal(str(item["price"])) * Decimal(str(item["quantity"]))
     return total
@@ -88,7 +88,7 @@ def _totals_effect(event: dict, rate: Decimal) -> Effect:
 def order_totals_v1(event: dict) -> Effect | None:
     if _is_bonus(event):
         return None  # a loyalty-bonus event has no order to total
-    return _totals_effect(event, Decimal("0"))
+    return _totals_effect(event, Decimal(0))
 
 
 # ---------------------------------------------------------------------------

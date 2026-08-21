@@ -46,7 +46,7 @@ from rakaia import AppendOptions
 
 store.append(
     "submissions/tf",
-    data,                                   # the JSON payload bytes
+    data,  # the JSON payload bytes
     AppendOptions(label="update", metadata={"user": 42, "url": "/forms/tf/9"}),
 )
 ```
@@ -77,7 +77,8 @@ store.append("submissions/tf", data, AppendOptions(label="update"))
 
 # one-time backfill → stamp the *original historical* time, not the append time
 store.append(
-    "submissions/tf", data,
+    "submissions/tf",
+    data,
     AppendOptions(label="update", event_ts=original_created_at.timestamp()),
 )
 ```
@@ -115,7 +116,7 @@ block merges it in automatically.
 from rakaia import provenance
 
 with provenance(user=request.user.pk, url=request.path):
-    obj.save()          # any append this triggers is now attributed to the user
+    obj.save()  # any append this triggers is now attributed to the user
 ```
 
 Explicit metadata on an individual `AppendOptions` still wins over the ambient
@@ -169,10 +170,13 @@ state they're about to overwrite, read from the current-state projection):
 from rakaia import append_if_changed, AppendOptions
 
 changed = append_if_changed(
-    store, "submissions/tf", data,
-    current=SubmissionRecord.objects
-        .filter(key=sub).values_list("fields", flat=True).first(),
-    snapshot_of=lambda ev: ev["fields"],       # compare just the form fields
+    store,
+    "submissions/tf",
+    data,
+    current=SubmissionRecord.objects.filter(key=sub)
+    .values_list("fields", flat=True)
+    .first(),
+    snapshot_of=lambda ev: ev["fields"],  # compare just the form fields
     options=AppendOptions(label="update"),
 )
 # changed is True if it appended, False if the save was a no-op.

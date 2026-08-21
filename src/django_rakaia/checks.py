@@ -18,7 +18,10 @@ from __future__ import annotations
 from typing import Any
 
 from django.conf import settings
-from django.core.checks import Error, Warning, register
+
+# `Warning` shadows the builtin, but it is Django's own check class and this
+# module's whole job is returning them; aliasing it would obscure that.
+from django.core.checks import Error, Warning, register  # noqa: A004
 
 from .store import BACKENDS, DEFAULT_BACKEND
 

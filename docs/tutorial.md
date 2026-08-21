@@ -118,10 +118,16 @@ from rakaia import CollectingExecutor, replay, seed_stream
 STREAM = "invoices"
 
 EVENTS = [
-    {"invoice_id": "INV-1", "customer": "Ana",
-     "items": [{"price": "10.00", "quantity": 3}]},
-    {"invoice_id": "INV-2", "customer": "Bo",
-     "items": [{"price": "5.00", "quantity": 2}, {"price": "1.50", "quantity": 4}]},
+    {
+        "invoice_id": "INV-1",
+        "customer": "Ana",
+        "items": [{"price": "10.00", "quantity": 3}],
+    },
+    {
+        "invoice_id": "INV-2",
+        "customer": "Bo",
+        "items": [{"price": "5.00", "quantity": 2}, {"price": "1.50", "quantity": 4}],
+    },
 ]
 
 
@@ -134,7 +140,9 @@ class Command(BaseCommand):
         # Rehearsal: work out every change, write none of them.
         preview = CollectingExecutor()
         replay(store=store, stream_path=STREAM, executor=preview)
-        self.stdout.write(f"Dry run: would apply {len(preview.effects)} changes, wrote nothing.")
+        self.stdout.write(
+            f"Dry run: would apply {len(preview.effects)} changes, wrote nothing."
+        )
 
         # For real this time.
         replay(store=store, stream_path=STREAM, executor=DjangoExecutor())

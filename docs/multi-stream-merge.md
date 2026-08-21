@@ -14,10 +14,10 @@ from django_rakaia import DjangoProjectionReader
 
 merge_replay(
     store,
-    ["forms/sf", "forms/tf", "forms/ff"],   # several streams
+    ["forms/sf", "forms/tf", "forms/ff"],  # several streams
     DjangoExecutor(),
-    order_key=ENVELOPE_TS,                   # merge on the first-class envelope ts
-    reader=DjangoProjectionReader(),        # required iff staged / reducers
+    order_key=ENVELOPE_TS,  # merge on the first-class envelope ts
+    reader=DjangoProjectionReader(),  # required iff staged / reducers
 )
 ```
 
@@ -85,7 +85,7 @@ def merge_streams(store, stream_paths, order_key="ts"):
     for path in stream_paths:
         for offset, event in enumerate(read_events(store, path)):
             tagged.append(((event[order_key], path, offset), event))
-    tagged.sort(key=lambda item: item[0])       # deterministic total order
+    tagged.sort(key=lambda item: item[0])  # deterministic total order
     return [event for _, event in tagged]
 ```
 

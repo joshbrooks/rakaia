@@ -48,11 +48,23 @@
   lock belongs in one of those two files, marked `transaction=True`, and must
   be shown to fail with the lock removed** — two earlier attempts passed with
   and without it, which is the failure mode these tests exist to avoid.
-- **pyright is a hard gate** and `src/` is expected at zero errors. Run it as
-  `PYRIGHT_PYTHON_FORCE_VERSION=latest uv run pyright src/` locally — plain
-  `uv run pyright` can object to its own pinned version. Django's synthesised
-  attributes are declared explicitly (see the `if TYPE_CHECKING` blocks in
-  `django_rakaia/models.py`) rather than waved through with ignores.
+- **pyright is a hard gate** and `src/` is expected at zero errors. Run
+  `just typecheck`, which pins `PYRIGHT_PYTHON_FORCE_VERSION` to the version in
+  the lockfile. Do **not** set it to `latest`, which this file used to advise:
+  pyright nags that a newer release exists, and taking its suggestion typechecks
+  against a different pyright than CI — the nag is cosmetic, the divergence is
+  not. Django's synthesised attributes are declared explicitly (see the
+  `if TYPE_CHECKING` blocks in `django_rakaia/models.py`) rather than waved
+  through with ignores.
+- **Lint and format take no path arguments.** `[tool.ruff]` in `pyproject.toml`
+  decides what is checked, so `just lint`, CI and your editor all see the same
+  tree. Passing paths reintroduces the split that let `just check` pass on a diff
+  CI rejected. `just lint` / `just fmt`; the rule set and every deliberate
+  `ignore` carries its reason inline in `pyproject.toml`.
+- **`docs/api-reference.md` is gated in CI** (`just api-reference-check`), not
+  only by `just check`. If you add or remove an exported name, run
+  `just api-reference` and commit the result — and rebase before merging, since
+  the count line at the bottom is a single line two branches will both rewrite.
 - To reproduce the **full** CI gate locally you also need the docs extra
   (`zensical` isn't in `dev`/`django`): `uv sync --extra dev --extra django --extra docs`,
   then `uv run zensical build`. Without `--extra docs` that step fails with

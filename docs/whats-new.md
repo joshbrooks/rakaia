@@ -79,17 +79,22 @@ Fixing a rule forward never rewrites the past.
 ```python
 from rakaia import Upsert, register_handler
 
-@register_handler(name="order_totals", event_match="orders",
-                  effective_from=0, effective_to=3)      # tax-free era
-def order_totals_v1(event):
-    return Upsert(model_label="orders.OrderSummary",
-                  lookup={"order_id": event["order_id"]},
-                  defaults={"tax": 0})
 
-@register_handler(name="order_totals", event_match="orders",
-                  effective_from=3)                       # 10% from seq 3 on
-def order_totals_v2(event):
-    ...
+@register_handler(
+    name="order_totals", event_match="orders", effective_from=0, effective_to=3
+)  # tax-free era
+def order_totals_v1(event):
+    return Upsert(
+        model_label="orders.OrderSummary",
+        lookup={"order_id": event["order_id"]},
+        defaults={"tax": 0},
+    )
+
+
+@register_handler(
+    name="order_totals", event_match="orders", effective_from=3
+)  # 10% from seq 3 on
+def order_totals_v2(event): ...
 ```
 
 Each event flows to the handler version whose range covers its sequence number,
@@ -122,6 +127,7 @@ that migrates an event from one schema version to the next, applied on read
 ```python
 from rakaia import register_upcaster
 
+
 @register_upcaster(event_match="orders", from_version=1)
 def rename_qty(event):
     return {**event, "quantity": event.pop("qty")}
@@ -142,11 +148,12 @@ projection always converges to exactly the children the event describes.
 ```python
 from rakaia import reconcile_children
 
+
 def activity_rows(event):
     return reconcile_children(
         model_label="app.ActivityProgress",
         parent_lookup={"submission_id": event["id"]},
-        child_key="activity_index",   # each child keyed by its position
+        child_key="activity_index",  # each child keyed by its position
         items=event["activities"],
         defaults_fn=lambda a: {"progress": a["pct"]},
     )
@@ -207,11 +214,13 @@ earlier stages — deterministic and self-healing, no backfills.
 
 ```python
 @register_handler(name="sf12", event_match="SF_1_2", match_field="form_type", stage=1)
-def sf12(event, refs):                       # stage 1 gets a projection reader
+def sf12(event, refs):  # stage 1 gets a projection reader
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Upsert(model_label="ida_forms.Sf_1_2",
-                  lookup={"submission_id": event["key"]},
-                  defaults={"project_id": project.pk if project else None})
+    return Upsert(
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_id": project.pk if project else None},
+    )
 ```
 
 Replay makes two passes; the second reads what the first built:
@@ -262,7 +271,7 @@ shipped middleware opens the block for you.
 from rakaia import provenance
 
 with provenance(user=request.user.pk, url=request.path):
-    obj.save()          # every append inside is attributed to this user
+    obj.save()  # every append inside is attributed to this user
 ```
 
 ```mermaid
@@ -361,8 +370,8 @@ registry that failed to autodiscover. Read `verdict` instead, which separates
 
 ```python
 report = diff_effects_against_rows(ex.effects)
-assert report.certified, report      # not `report.ok` — see above
-report.raise_if_diff()               # raises VacuousVerification on an empty run
+assert report.certified, report  # not `report.ok` — see above
+report.raise_if_diff()  # raises VacuousVerification on an empty run
 ```
 
 Failures are checked *before* vacuity, so a real failure is never hidden behind
@@ -410,10 +419,13 @@ getting a handful of events into a stream, without Django in the picture.
 ```python
 from rakaia import AppendOptions, seed_stream
 
-store = seed_stream("submissions", [
-    ({"key": "s1", "a": 1}, AppendOptions(label="insert")),
-    ({"key": "s1", "a": 2}, AppendOptions(label="update")),
-])
+store = seed_stream(
+    "submissions",
+    [
+        ({"key": "s1", "a": 1}, AppendOptions(label="insert")),
+        ({"key": "s1", "a": 2}, AppendOptions(label="update")),
+    ],
+)
 ```
 
 Omit `store=` and you get a fresh in-memory one back; pass any `WritableStore`

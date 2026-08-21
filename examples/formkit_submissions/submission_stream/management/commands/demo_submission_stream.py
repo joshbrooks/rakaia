@@ -209,7 +209,7 @@ class Command(BaseCommand):
         self.stdout.write("-" * 60)
         for s in Submission.objects.all():
             self.stdout.write(
-                f"{s.key[:8]:<12}{s.status:>7}{str(s.user):>18}   {json.dumps(s.fields)}"
+                f"{s.key[:8]:<12}{s.status:>7}{s.user!s:>18}   {json.dumps(s.fields)}"
             )
         self.stdout.write("")
 

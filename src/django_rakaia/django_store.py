@@ -683,7 +683,7 @@ class DjangoStreamStore:
 
         messages: list[StreamMessage] = []
         for value, encoding in payloads:
-            event, (entry,) = write_enveloped_event(
+            _event, (entry,) = write_enveloped_event(
                 [stream],
                 value,
                 label=label,

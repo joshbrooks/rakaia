@@ -152,7 +152,7 @@ from rakaia import CollectingExecutor
 from rakaia import replay
 
 ex = CollectingExecutor()
-replay(store, "orders", ex)          # zero writes
+replay(store, "orders", ex)  # zero writes
 
 print(f"{len(ex.effects)} effects would be applied")
 for effect in ex.effects:
@@ -185,7 +185,7 @@ a named alias — read or write — raises `AmbientDatabaseAccess`:
 from django_rakaia import deny_database_access
 
 with deny_database_access("default"):
-    replay(store, "orders", CollectingExecutor())   # a stray query now raises
+    replay(store, "orders", CollectingExecutor())  # a stray query now raises
 ```
 
 **`assert_no_live_writes(*models, using="default")`** is the narrower one: it
@@ -255,8 +255,8 @@ from django_rakaia import rebuild_and_verify
 
 report = rebuild_and_verify(
     "submissions",
-    into="rebuild",                            # a disposable alias
-    live_models=[Submission, ProjectLink],     # what you expect rebuilt
+    into="rebuild",  # a disposable alias
+    live_models=[Submission, ProjectLink],  # what you expect rebuilt
     registry=reg,
 )
 report.raise_if_diff()
@@ -305,8 +305,9 @@ a `using=` database alias:
 DATABASES["rebuild"] = {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
 
 replay(
-    DjangoStreamStore(using="rebuild"), "submissions",  # the log comes from there too
-    DjangoExecutor(using="rebuild"),                 # writes land in the scratch DB
+    DjangoStreamStore(using="rebuild"),
+    "submissions",  # the log comes from there too
+    DjangoExecutor(using="rebuild"),  # writes land in the scratch DB
     reader=DjangoProjectionReader(using="rebuild"),  # stage-1 reads them back
     handler_registry=reg,
 )

@@ -630,11 +630,8 @@ async def _handle_read(
 
     # Long-poll: wait if caught up and no messages
     client_caught_up = False
-    if (
-        offset == "now"
-        and len(messages) == 0
-        or effective_offset is not None
-        and effective_offset == stream.current_offset
+    if (offset == "now" and len(messages) == 0) or (
+        effective_offset is not None and effective_offset == stream.current_offset
     ):
         client_caught_up = True
 
@@ -863,7 +860,7 @@ async def _handle_sse(
                 up_to_date,
                 cursor,
                 cursor_opts,
-            )  # noqa: B023
+            )
 
         await send_body_chunk(send, buffer)
 
@@ -1069,22 +1066,21 @@ async def _handle_append(
                 },
             )
             return
-        else:
-            # Simple close without producer
-            close_result = await store.run_sync(store.close_stream, path)
-            if close_result is None:
-                await _send_error(send, 404, b"Stream not found", cors)
-                return
-            await send_response(
-                send,
-                204,
-                {
-                    **cors,
-                    STREAM_OFFSET_HEADER_RESP: close_result.final_offset,
-                    STREAM_CLOSED_HEADER_RESP: "true",
-                },
-            )
+        # Simple close without producer
+        close_result = await store.run_sync(store.close_stream, path)
+        if close_result is None:
+            await _send_error(send, 404, b"Stream not found", cors)
             return
+        await send_response(
+            send,
+            204,
+            {
+                **cors,
+                STREAM_OFFSET_HEADER_RESP: close_result.final_offset,
+                STREAM_CLOSED_HEADER_RESP: "true",
+            },
+        )
+        return
 
     # Empty body without close is an error
     if len(body) == 0:

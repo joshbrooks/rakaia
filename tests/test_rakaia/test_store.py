@@ -511,7 +511,7 @@ class TestLongPoll:
         store.close_stream("foo")
         stream = store.get("foo")
         assert stream is not None
-        messages, timed_out, closed = await store.wait_for_messages(
+        _messages, _timed_out, closed = await store.wait_for_messages(
             "foo", offset=stream.current_offset, timeout_seconds=0.1
         )
         assert closed is True

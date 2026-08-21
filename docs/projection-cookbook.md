@@ -25,8 +25,9 @@ stages exist.
 ```python
 # cookbook/models.py
 class Project(models.Model):
-    code = models.CharField(max_length=32, unique=True)   # natural key
+    code = models.CharField(max_length=32, unique=True)  # natural key
     name = models.CharField(max_length=200, default="")
+
 
 class Task(models.Model):
     task_id = models.CharField(max_length=32, unique=True)  # natural key
@@ -50,6 +51,7 @@ task that needs it.
 # cookbook/handlers.py
 from rakaia import Upsert, register_handler, register_simple
 
+
 @register_simple(name="project", event_match="PROJECT", match_field="form_type")
 def project(event):
     # register_simple = the always-on "just project this" case — no
@@ -61,9 +63,11 @@ def project(event):
         defaults={"name": event["name"]},
     )
 
-@register_handler(name="task", event_match="TASK", effective_from=0,
-                  match_field="form_type", stage=1)
-def task(event, reader):                      # stage > 0 ⇒ fn(event, reader)
+
+@register_handler(
+    name="task", event_match="TASK", effective_from=0, match_field="form_type", stage=1
+)
+def task(event, reader):  # stage > 0 ⇒ fn(event, reader)
     linked = reader.get("cookbook.Project", code=event["project_code"])
     return Upsert(
         model_label="cookbook.Task",
@@ -81,8 +85,13 @@ def task(event, reader):                      # stage > 0 ⇒ fn(event, reader)
     instead of a `register(...)` per value:
 
     ```python
-    @register_handler(name="sweep", event_match={"TASK", "NOTE", "MILESTONE"},
-                      effective_from=0, match_field="form_type", stage=1)
+    @register_handler(
+        name="sweep",
+        event_match={"TASK", "NOTE", "MILESTONE"},
+        effective_from=0,
+        match_field="form_type",
+        stage=1,
+    )
     def sweep(event, reader): ...
     ```
 
@@ -117,8 +126,8 @@ from django_rakaia import diff_effects_against_rows
 ex = CollectingExecutor()
 replay(store, "cookbook", ex, reader=DjangoProjectionReader())
 
-report = diff_effects_against_rows(ex.effects)   # UUID/Decimal normalised by default
-assert report.certified, report                  # or: report.raise_if_diff()
+report = diff_effects_against_rows(ex.effects)  # UUID/Decimal normalised by default
+assert report.certified, report  # or: report.raise_if_diff()
 ```
 
 `diff_effects_against_rows` returns a `DiffReport` (`.verdict` / `.certified` /
@@ -216,12 +225,17 @@ fills in the real pk at apply time.
 from rakaia import Ref, Upsert
 
 return [
-    Upsert(model_label="cookbook.Project",
-           lookup={"code": event["code"]}, defaults={"name": event["name"]},
-           produces="proj"),                                  # names this row
-    Upsert(model_label="cookbook.Task",
-           lookup={"task_id": event["task_id"]},
-           defaults={"project_id": Ref("proj")}),             # → Project.pk
+    Upsert(
+        model_label="cookbook.Project",
+        lookup={"code": event["code"]},
+        defaults={"name": event["name"]},
+        produces="proj",
+    ),  # names this row
+    Upsert(
+        model_label="cookbook.Task",
+        lookup={"task_id": event["task_id"]},
+        defaults={"project_id": Ref("proj")},
+    ),  # → Project.pk
 ]
 ```
 
@@ -241,9 +255,12 @@ get full ORM fidelity without touching production:
 # settings: a throwaway alias (in-memory sqlite for CI, scratch Postgres for cut-over)
 DATABASES["rebuild"] = {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
 
-replay(store, "cookbook",
-       DjangoExecutor(using="rebuild"),
-       reader=DjangoProjectionReader(using="rebuild"))
+replay(
+    store,
+    "cookbook",
+    DjangoExecutor(using="rebuild"),
+    reader=DjangoProjectionReader(using="rebuild"),
+)
 # ...then diff the rebuilt rows against production and discard the scratch DB.
 ```
 

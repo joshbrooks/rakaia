@@ -69,14 +69,25 @@ log is not a special mechanism — it is just another projection of the log.
 
 ```python
 # per event, in stream order — the same fold replay() performs
-executor.apply([
-    Upsert(model_label="…SubmissionHistoryEntry",
-           lookup={"submission_id": key, "seq": seq},
-           defaults={"label": OP_TO_LABEL[op], "actor": actor, "ts": ts, "fields": fields}),
-    Upsert(model_label="…SubmissionRecord",
-           lookup={"submission_id": key},
-           defaults={"fields": fields, "actor": actor, "updated_at": ts}),
-])
+executor.apply(
+    [
+        Upsert(
+            model_label="…SubmissionHistoryEntry",
+            lookup={"submission_id": key, "seq": seq},
+            defaults={
+                "label": OP_TO_LABEL[op],
+                "actor": actor,
+                "ts": ts,
+                "fields": fields,
+            },
+        ),
+        Upsert(
+            model_label="…SubmissionRecord",
+            lookup={"submission_id": key},
+            defaults={"fields": fields, "actor": actor, "updated_at": ts},
+        ),
+    ]
+)
 ```
 
 ## Why the consumers are satisfied

@@ -50,7 +50,7 @@ store, build the app yourself:
 # wsgi_or_asgi.py
 from rakaia import StreamStore, create_app
 
-store = StreamStore()           # or your own implementation
+store = StreamStore()  # or your own implementation
 app = create_app(store=store)
 ```
 

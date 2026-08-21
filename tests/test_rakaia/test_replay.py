@@ -254,7 +254,7 @@ class TestUpcasting:
 
         def h(event):
             captured.append(event)
-            return None
+            return
 
         handlers.register("h", "s", h, 0, None)
         seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
@@ -285,7 +285,7 @@ class TestRangeBounds:
 
         def h(event):
             captured.append(event["id"])
-            return None
+            return
 
         reg.register("h", "s", h, 0, None)
         seed_stream("s", [{"id": i} for i in range(5)], store=store)
@@ -304,7 +304,7 @@ class TestRangeBounds:
 
         def h(event):
             captured.append(event["id"])
-            return None
+            return
 
         reg.register("h", "s", h, 0, None)
         seed_stream("s", [{"id": i} for i in range(5)], store=store)

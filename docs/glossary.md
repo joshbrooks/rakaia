@@ -192,7 +192,9 @@ forbids reading ambiently — bind it with `functools.partial`:
 
 ```python
 registry.register(
-    name="project", event_match="PROJECT", effective_from=0,
+    name="project",
+    event_match="PROJECT",
+    effective_from=0,
     fn=functools.partial(project_row, fk_exists=probe),
 )
 ```

@@ -73,7 +73,7 @@ class TestClosed:
         assert isinstance(verdict.producer_result, ProducerDuplicate)
 
     @pytest.mark.parametrize(
-        "producer_id,epoch,seq",
+        ("producer_id", "epoch", "seq"),
         [
             ("other", 2, 7),  # different producer
             ("p", 3, 7),  # same producer, later epoch

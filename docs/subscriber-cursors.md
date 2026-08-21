@@ -23,10 +23,10 @@ any store that can `read` and expose its head offset — the in-memory
 ```python
 from rakaia import poll
 
-result = poll(store, "submissions", cursor=None)   # first poll: everything
+result = poll(store, "submissions", cursor=None)  # first poll: everything
 for msg in result.messages:
     apply(msg)
-cursor = result.cursor                              # persist this watermark
+cursor = result.cursor  # persist this watermark
 
 # later — only the delta since `cursor`
 result = poll(store, "submissions", cursor)
@@ -83,7 +83,7 @@ store = DjangoStreamStore()
 result = poll_consumer(store, consumer_id="reporting", stream_path="submissions")
 for msg in result.messages:
     apply(msg)
-commit_cursor("reporting", "submissions", result.cursor)   # after applying
+commit_cursor("reporting", "submissions", result.cursor)  # after applying
 ```
 
 `poll_consumer` loads the stored cursor and calls `poll`; `commit_cursor` upserts

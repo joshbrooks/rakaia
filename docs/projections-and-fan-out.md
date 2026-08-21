@@ -22,8 +22,8 @@ the parent plus the child's index:
 ```python
 from rakaia import Upsert, register_handler
 
-@register_handler(name="activity_rows", event_match="submissions",
-                  effective_from=0)
+
+@register_handler(name="activity_rows", event_match="submissions", effective_from=0)
 def activity_rows(event: dict) -> list[Upsert]:
     sid = event["submission_id"]
     return [
@@ -73,8 +73,8 @@ flowchart LR
 ```python
 from rakaia import register_handler, reconcile_children
 
-@register_handler(name="activity_rows", event_match="submissions",
-                  effective_from=0)
+
+@register_handler(name="activity_rows", event_match="submissions", effective_from=0)
 def activity_rows(event: dict):
     return reconcile_children(
         model_label="submissions.ActivityProgress",
@@ -91,7 +91,7 @@ For `items=[A, B]` it returns two `Upsert` effects (indices 0 and 1) followed by
 Delete(
     model_label="submissions.ActivityProgress",
     lookup={"submission_id": sid},
-    spare=Exclude({"activity_index__in": [0, 1]}),   # spare the current children
+    spare=Exclude({"activity_index__in": [0, 1]}),  # spare the current children
 )
 ```
 
@@ -207,7 +207,7 @@ reconcile_aggregate(
     scope_lookup={},
     group_key="suku",
     groups={suku: {"ksp_total": total} for suku, total in recomputed.items()},
-    owns=["ksp_total"],            # <- multi-owner mode
+    owns=["ksp_total"],  # <- multi-owner mode
 )
 ```
 
@@ -225,8 +225,11 @@ reconcile, not the per-group upserts:
 
 ```python
 reconcile_aggregate(
-    "ida.SukuProjection", scope_lookup={}, group_key="suku",
-    groups=recomputed, owns=["ksp_total"],
+    "ida.SukuProjection",
+    scope_lookup={},
+    group_key="suku",
+    groups=recomputed,
+    owns=["ksp_total"],
     retire_filter={"report_id__in": touched_report_ids},
 )
 ```
