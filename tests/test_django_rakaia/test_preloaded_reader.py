@@ -23,7 +23,7 @@ from django_rakaia.verification import (
     PreloadMismatch,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect, Update, Upsert
+from rakaia.effects import Delete, Effect, Update, Upsert
 
 from .models import Alert, FinanceLine, Measure
 
@@ -302,6 +302,24 @@ class TestPreloadOption:
         effects = [_finance_effect("s1", "A", 5), spanning]
         reader = PreloadedProjectionReader(effects)
         assert diff_effects_against_rows(effects, reader=reader).certified
+
+    def test_an_effect_the_diff_never_reads_is_not_required_to_be_covered(self):
+        """Coverage is about the lookups this diff will make, not the batch.
+
+        A delete carries no values to diff, so the diff never asks the reader for
+        its row — and a reader built from only what *will* be read is correct.
+        Blaming it for the delete would refuse a legitimate reader (the same holds
+        for a narrower ``kinds=``).
+        """
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        read = _finance_effect("s1", "A", 1)
+        never_read = Delete(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={"submission_id": "gone"},
+        )
+        reader = PreloadedProjectionReader([read])
+
+        assert diff_effects_against_rows([read, never_read], reader=reader).certified
 
     def test_an_empty_lookup_is_not_a_mismatch(self):
         """The other always-live shape: an empty lookup scopes the whole model
