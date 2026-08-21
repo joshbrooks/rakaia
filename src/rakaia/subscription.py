@@ -125,11 +125,12 @@ def _after(a: str, b: str) -> bool:
     """True if offset `a` sorts strictly after `b` (chronologically later).
 
     Delegates to `offsets.after`, which raises `ForeignOffset` rather than
-    guessing when the two tokens come from different stores. This used to hold
-    its own parse-and-compare, with a lexicographic fallback for the case it
-    could not line up — and that fallback answered *wrongly* rather than
-    uncertainly, because a padded compound offset sorts below a padded plain one
-    on its first character. See `rakaia.offsets` for why there is nothing correct
-    to return there.
+    guessing when the two tokens are recognisably from different stores. This used
+    to hold its own parse-and-compare, with a lexicographic fallback for the case
+    it could not line up — and for that one pair the fallback answered *wrongly*
+    rather than uncertainly: a padded compound offset sorts *above* a padded plain
+    one, decided by the ``'_'`` at its seventeenth character. See `rakaia.offsets`
+    for why there is nothing correct to return there, and why byte order is still
+    the right answer for a store this library does not recognise.
     """
     return offsets_after(a, b)

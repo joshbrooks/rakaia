@@ -32,19 +32,19 @@ class TestComparingAcrossFormats:
 
     def test_the_guess_it_used_to_make_was_wrong(self):
         # Kept as a statement of the defect: lexicographically the in-memory
-        # token sorts *above* the durable one, because '0' < '3' decides it
-        # before any digit that means anything is reached. So the old fallback
-        # answered "yes, the cursor is beyond the head" for a cursor four events
-        # into a stream whose head is at forty-two.
+        # token sorts *above* the durable one. Both are zeros for sixteen
+        # characters; at the seventeenth the compound token has '_' (0x5F)
+        # against the plain one's '0' (0x30), which settles it before either has
+        # reached a digit that means anything. So the old fallback answered "yes,
+        # the cursor is beyond the head" for a cursor four events into a stream
+        # whose head is at forty-two.
         mem = "0000000000000000_0000000000000008"
         durable = "00000000000000000042"
         assert (mem > durable) is True  # what `a > b` returned
+        assert mem[:16] == durable[:16]
+        assert (mem[16], durable[16]) == ("_", "0")
         assert format_of(mem) is COMPOUND
         assert format_of(durable) is PLAIN
-
-    def test_an_unrecognised_token_is_refused_too(self):
-        with pytest.raises(ForeignOffset):
-            after("not-an-offset", "00000000000000000042")
 
     def test_within_one_format_it_still_answers(self):
         assert after("00000000000000000042", "00000000000000000009") is True
@@ -53,6 +53,45 @@ class TestComparingAcrossFormats:
 
     def test_equal_offsets_are_not_after_each_other(self):
         assert after(INITIAL_OFFSET, INITIAL_OFFSET) is False
+
+    def test_a_recognised_pair_is_ordered_numerically_not_byte_wise(self):
+        # Byte order and `key` agree on every token a store *renders* — that is
+        # what the padding buys. They part company on the unpadded tokens a
+        # client may send, where '9' outranks '4' and 9 does not outrank 42. Only
+        # `key` is right, which is why a recognised pair does not simply fall
+        # through to the byte-wise comparison the unrecognised pairs use.
+        assert ("9" > "42") is True
+        assert after("9", "42") is False
+        assert after("42", "9") is True
+
+
+class TestAThirdPartyStoreIsStillOrdered:
+    """The refusal has to be narrow, and this is why.
+
+    `protocols` promises a third-party `CursorStore` plugs in, and the protocol
+    says an offset is opaque and sorts byte-wise — so a store whose offsets are
+    ULIDs or timestamps matches neither `COMPOUND` nor `PLAIN` and is still
+    perfectly orderable. A first cut refused every unrecognised token, which
+    broke that seam for the sake of a pair that only arises from misuse, and told
+    the operator to clear a cursor because of a store switch that never happened.
+    """
+
+    def test_two_unrecognised_offsets_compare_byte_wise(self):
+        assert after("2026-08-21T00:00:05Z", "2026-08-21T00:00:03Z") is True
+        assert after("2026-08-21T00:00:03Z", "2026-08-21T00:00:05Z") is False
+        assert after("01ARZ3NDEKTSV4", "01ARZ3NDEKTSV4") is False
+
+    def test_poll_works_against_a_store_this_library_never_saw(self):
+        store = _HeadOnlyStore("2026-08-21T00:00:05Z")
+        # Behind the head, so the comparison must return False and let the read
+        # happen — not refuse for the crime of an unfamiliar format.
+        with pytest.raises(AssertionError, match="read"):
+            poll(store, "s", "2026-08-21T00:00:03Z")
+
+    def test_a_rewound_third_party_cursor_still_reports_rewound(self):
+        store = _HeadOnlyStore("2026-08-21T00:00:03Z", allow_read=True)
+        result = poll(store, "s", "2026-08-21T00:00:05Z")
+        assert result.status == "rewound"
 
 
 class _HeadOnlyStore:
@@ -67,14 +106,17 @@ class _HeadOnlyStore:
     can produce the refusal is the comparison rule.
     """
 
-    def __init__(self, head: str) -> None:
+    def __init__(self, head: str, *, allow_read: bool = False) -> None:
         self.head = head
+        self.allow_read = allow_read
 
     def get_current_offset(self, _path: str) -> str | None:
         return self.head
 
     def read(self, _path: str, offset: str | None = None, _limit: int | None = None):
-        raise AssertionError(f"read() reached with offset={offset!r}")
+        if not self.allow_read:
+            raise AssertionError(f"read() reached with offset={offset!r}")
+        return [], None
 
 
 class TestPollRefusesAForeignCursor:
@@ -142,17 +184,15 @@ class TestTheWidthHasOneHome:
 
 
 class TestRefusalIsCheckedAtEveryLevel:
-    """The three mutations that survived a first pass, each now pinned.
+    """The mutations that survived a first pass, each now pinned."""
 
-    Worth naming: dropping the `is None` half of `after`'s guard leaves the
-    *one*-unknown case still raising — via `None is not PLAIN` — so it looks
-    covered. It is the two-unknown case that then falls through to
-    `None.key(...)` and raises `AttributeError` instead of `ForeignOffset`.
-    """
-
-    def test_two_unrecognised_tokens_are_refused_not_crashed_on(self):
-        with pytest.raises(ForeignOffset):
-            after("garbage", "rubbish")
+    def test_an_unknown_token_does_not_crash_the_comparison(self):
+        # The guard names two formats in its message, so it must not fire on a
+        # pair where one or both are `None` — that path is byte order, not a
+        # refusal, and certainly not `None.key(...)`.
+        assert after("rubbish", "garbage") is True
+        assert after("garbage", "rubbish") is False
+        assert after("00000000000000000042", "garbage") is False  # '0' < 'g'
 
     def test_a_format_rejects_the_other_store_s_token(self):
         with pytest.raises(ForeignOffset):

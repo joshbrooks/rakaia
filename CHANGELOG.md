@@ -22,10 +22,17 @@ runnable demo for each.
 
   `OffsetFormat` now owns all five per store, as `COMPOUND` (the in-memory
   `{seq}_{byte}`) and `PLAIN` (the durable padded integer). The hand-picked
-  widths are written once each, and the pattern that validates a token is derived
-  from the widths that render it, so a format cannot be checked against a shape it
-  no longer produces. `ForeignOffset` is exported for consumers that catch it; it
-  subclasses `InvalidOffset`, which both stores already raised.
+  widths are written once each, and the shape that recognises a token is derived
+  from the field count that renders it, so a format cannot be checked against a
+  shape it no longer produces. `ForeignOffset` is exported for consumers that
+  catch it; it subclasses `InvalidOffset`, which both stores already raised.
+
+  The refusal is narrow on purpose: it fires only when both tokens are
+  recognisably from *different* rakaia stores, the one pair with no answer. A
+  format this library does not recognise — a third-party `CursorStore` issuing
+  ULIDs or timestamps, which `protocols` documents as a supported backend — is
+  still compared byte-wise, which is the ordering rule the protocol states for
+  any opaque offset.
 
 - **`DjangoExecutor(batch_updates=True)` collapses a fanned-out `Update` into one
   statement.** A handler that fans one change across many rows emits one `Update`

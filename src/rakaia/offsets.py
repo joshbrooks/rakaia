@@ -20,13 +20,19 @@ compare offsets from **the same store**. Two stores' offsets are not on one
 scale — an in-memory ``{seq}_{byte}`` counts events and bytes, a durable offset
 is an entry id — so there is no correct cross-store answer to compute. The old
 fallback compared them as text, where ``'0000000000000000_0000000000000008'``
-sorts *above* ``'00000000000000000042'`` because ``'0' < '3'`` settles it before
-any digit that means anything is reached. A cursor four events into a stream was
-reported as being beyond a head at forty-two.
+sorts *above* ``'00000000000000000042'``: the first sixteen characters are zeros
+in both, and at the seventeenth the compound token has ``'_'`` (0x5F) against the
+plain one's ``'0'`` (0x30), so it wins there — before either token has reached a
+digit that means anything. A cursor four events into a stream was reported as
+being beyond a head at forty-two.
 
-So the answer is to refuse. `after` raises `ForeignOffset` unless both tokens are
-in the same recognised format, which is the same judgement each store already
-made alone — see the `owns` docstring for why only a format can make it.
+So the answer is to refuse — but only for *that* pair. `after` raises
+`ForeignOffset` when both tokens are recognised and their formats differ, which
+is the same judgement each store already made alone (see the `owns` docstring for
+why only a format can make it). It does **not** refuse a token it merely does not
+recognise: the protocol's own rule is that an opaque offset sorts byte-wise, a
+third-party `CursorStore` is a documented seam, and its ULID or timestamp offsets
+are no less orderable for being unfamiliar.
 
 **How a mismatched pair actually arises.** Not from a production migration: the
 in-memory store is for tests, demos and the conformance runs, so no deployment
@@ -173,19 +179,39 @@ def format_of(token: str) -> OffsetFormat | None:
 def after(a: str, b: str) -> bool:
     """Whether offset `a` sorts strictly after `b`.
 
+    Refuses **only** the pair that has no answer: two tokens this library can see
+    are from *different* rakaia stores. Everything else is ordered, and by the
+    rule the protocol already states — an offset is "opaque, lexicographically
+    sortable" (§6), so byte order is the contract for any format, including one
+    this library has never seen.
+
+    That last part is deliberate and is a correction. `protocols` promises a
+    third-party `CursorStore` plugs in, and its offsets may be ULIDs, timestamps
+    or hex — none of which match `COMPOUND` or `PLAIN`. Refusing every
+    unrecognised token would have broken that seam for the sake of a pair that
+    only arises from misuse, and would have blamed a store switch that never
+    happened. So an unrecognised pair falls back to the byte-wise comparison the
+    protocol mandates.
+
+    Recognised same-format pairs get `key` instead of byte order, which is a
+    strict improvement rather than a different rule: it agrees with byte order on
+    every token a store *renders* (that is what the padding is for) and is also
+    right for the unpadded ones a client may send — see `pattern`.
+
     Raises:
-        ForeignOffset: if either token is unrecognised, or the two come from
-            different formats. There is no cross-store ordering to return — see
-            this module's docstring — and the alternative to raising is the
-            confident wrong answer this replaced.
+        ForeignOffset: if both tokens are recognised and come from different
+            formats. There is no cross-store ordering to return — see this
+            module's docstring — and the alternative to raising is the confident
+            wrong answer this replaced.
     """
     fmt_a, fmt_b = format_of(a), format_of(b)
-    if fmt_a is None or fmt_b is None or fmt_a is not fmt_b:
+    if fmt_a is not None and fmt_b is not None and fmt_a is not fmt_b:
         raise ForeignOffset(
-            f"Cannot order {a!r} against {b!r}: "
-            f"{'unrecognised offset format' if fmt_a is None or fmt_b is None else f'{fmt_a.name} against {fmt_b.name}'}"
-            f". An offset is opaque and only comparable within the store that "
-            f"issued it, so there is no answer here to compute — clear the saved "
-            f"position before switching stores."
+            f"Cannot order {a!r} against {b!r}: {fmt_a.name} against "
+            f"{fmt_b.name}. An offset is opaque and only comparable within the "
+            f"store that issued it, so there is no answer here to compute — "
+            f"clear the saved position before switching stores."
         )
-    return fmt_a.key(a) > fmt_b.key(b)
+    if fmt_a is not None and fmt_b is not None:
+        return fmt_a.key(a) > fmt_b.key(b)
+    return a > b

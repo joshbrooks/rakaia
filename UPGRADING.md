@@ -41,6 +41,12 @@ from a corrupted saved value — the in-memory store is for tests, demos and the
 conformance suite, so no deployment accumulates a cursor under it and then
 switches.
 
+**If you supply your own store, nothing changes at all.** The refusal fires only
+when rakaia can see that both tokens came from its own two formats and that those
+formats differ. A third-party `CursorStore` issuing ULIDs, timestamps or hex
+offsets matches neither, and its cursors are compared byte-wise exactly as before
+— which is the ordering rule the protocol states for any opaque offset.
+
 ---
 
 # 0.2.0
