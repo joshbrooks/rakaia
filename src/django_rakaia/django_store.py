@@ -358,6 +358,75 @@ class DjangoStreamStore:
             raise StreamNotFound(f"Stream not found: {path}") from None
 
     @staticmethod
+    def _facts(stream: Stream) -> StreamFacts:
+        """A locked stream row as `rakaia.append_decision` sees it.
+
+        The one place a row is narrowed to the four fields admission is decided
+        from, so a fifth fact cannot reach one write path and miss another. It
+        was written out inline at every call site, and the omission that shape
+        invites has happened twice: `closed_by` was missing from the fencing
+        path (#167) and from the batch path (#181), and in both cases a producer
+        retrying its own closing append was told a bare "closed".
+
+        `_close_locked` deliberately does *not* use this: a close carries no body
+        and no `Stream-Seq`, so it builds `StreamFacts` with only the two fields
+        that can decide it. Passing the other two would be equivalent today —
+        `decide_append` skips both checks when the options carry neither — but it
+        would say they were relevant, and the next person would have to work out
+        that they are not.
+        """
+        return StreamFacts(
+            closed=stream.closed,
+            closed_by=stream.closed_by,
+            content_type=stream.content_type,
+            last_seq=stream.last_seq,
+        )
+
+    def _record_write(
+        self,
+        stream: Stream,
+        *,
+        producer_commits: Iterable[ProducerAccepted] = (),
+        last_seq: str | None = None,
+        closing_opts: Any = None,
+    ) -> None:
+        """Record what a write that has already landed leaves behind.
+
+        **The order is the rule, not a matter of style**, which is why it is
+        written down once here rather than learned from reading three
+        implementations (#183). Every step is downstream of the rows being
+        written, and must stay that way:
+
+        1. **Producer state, and only for a write that succeeded.** This is what
+           a later writer is fenced against, so advancing it for a write that
+           did not happen would reject the retry that legitimately follows. One
+           commit per producer, not per event: the batch rule hands back the last
+           accepted outcome for each, and `append_many` promises a query count
+           that does not grow with the batch.
+        2. **`Stream-Seq`**, and only when it moved. An unconditional save costs
+           a statement on every append that does not use the header, which is
+           most of them.
+        3. **The close**, after the events, because a close is the statement
+           that nothing further follows *these* rows. Closing first would make
+           the stream's own admission rule refuse the write it is part of.
+        4. **The TTL window**, last, because an expiry clock extended before the
+           write could be extended for a write that then failed — and every step
+           above is a write that can fail.
+
+        Callers pass what their own decision produced; a step whose argument is
+        absent is skipped, which is how `create` and a plain unfenced append
+        reach the same code as a fenced batch.
+        """
+        for result in producer_commits:
+            self._commit_producer(stream, result)
+        if last_seq is not None and last_seq != stream.last_seq:
+            stream.last_seq = last_seq
+            stream.save(update_fields=["last_seq"])
+        if closing_opts is not None:
+            self._close_from_append(stream, closing_opts)
+        self._touch(stream)
+
+    @staticmethod
     def _touch(stream: Stream) -> None:
         """Extend the sliding TTL window. No-op for a stream without a TTL."""
         if stream.ttl_seconds is not None:
@@ -564,12 +633,7 @@ class DjangoStreamStore:
             # reached different verdicts on the two stores while this method's
             # docstring claimed they matched.
             verdict = decide_append(
-                StreamFacts(
-                    closed=stream.closed,
-                    closed_by=stream.closed_by,
-                    content_type=stream.content_type,
-                    last_seq=stream.last_seq,
-                ),
+                self._facts(stream),
                 opts,
                 producer_state=self._producer_state(
                     stream, getattr(opts, "producer_id", None)
@@ -585,16 +649,17 @@ class DjangoStreamStore:
 
             messages = self._write(stream, data, opts)
 
-            if verdict.producer_result is not None:
-                self._commit_producer(stream, verdict.producer_result)
-
-            if getattr(opts, "seq", None) is not None:
-                stream.last_seq = opts.seq
-                stream.save(update_fields=["last_seq"])
             close = bool(getattr(opts, "close", False))
-            if close:
-                self._close_from_append(stream, opts)
-            self._touch(stream)
+            self._record_write(
+                stream,
+                producer_commits=(
+                    [verdict.producer_result]
+                    if isinstance(verdict.producer_result, ProducerAccepted)
+                    else []
+                ),
+                last_seq=getattr(opts, "seq", None),
+                closing_opts=opts if close else None,
+            )
             # A JSON-mode array append writes several messages; the result
             # carries the last, whose offset is the stream's new head — which
             # is what a caller resumes from.
@@ -748,60 +813,27 @@ class DjangoStreamStore:
     def _append_with_producer_sync(
         self, path: str, data: bytes, options: Any = None
     ) -> AppendResult:
-        opts = options if options is not None else AppendOptions()
-        producer_id = getattr(opts, "producer_id", None)
-        epoch = getattr(opts, "producer_epoch", None)
-        seq = getattr(opts, "producer_seq", None)
-        if producer_id is None or epoch is None or seq is None:
-            return self.append(path, data, opts)
+        """A fenced append *is* an append, so this is `append`.
 
-        # The row lock `_locked_write` takes is what makes fencing fence:
-        # validation reads the producer's last state, and two concurrent retries
-        # of the same (producer_id, epoch, seq) that both read before either
-        # commits would both be accepted — the exact duplicate write the fencing
-        # exists to prevent. Serialized on the stream row, the loser re-reads the
-        # winner's committed state. (The in-memory store's per-producer
-        # asyncio.Lock is this lock's in-process analogue.)
-        with self._locked_write(path) as stream:
-            # The same shared sequence `append` uses. This path used to run its
-            # own: fencing first, then closed, and it never read `closed_by` —
-            # so a closed stream answered with the fencing outcome instead of
-            # the close, and a producer retrying its own closing append was
-            # never recognised.
-            verdict = decide_append(
-                StreamFacts(
-                    closed=stream.closed,
-                    closed_by=stream.closed_by,
-                    content_type=stream.content_type,
-                    last_seq=stream.last_seq,
-                ),
-                opts,
-                producer_state=self._producer_state(stream, producer_id),
-                now=time.time(),
-            )
-            if not verdict.write:
-                return AppendResult(
-                    message=None,
-                    stream_closed=verdict.stream_closed,
-                    producer_result=verdict.producer_result,
-                )
-            result = verdict.producer_result
+        It was a second copy of it — the same nine steps in the same order, 39
+        lines, differing only in a local alias for `verdict.producer_result` and
+        the order of two keyword arguments. That is what #183 is about: the copy
+        is where the divergence gets in, and this one had already diverged twice
+        before the admission rule was shared (#154, #167).
 
-            messages = self._write(stream, data, opts)
-            if result is not None:
-                self._commit_producer(stream, result)
-            if getattr(opts, "seq", None) is not None:
-                stream.last_seq = opts.seq
-                stream.save(update_fields=["last_seq"])
-            close = bool(getattr(opts, "close", False))
-            if close:
-                self._close_from_append(stream, opts)
-            self._touch(stream)
-            return AppendResult(
-                message=messages[-1] if messages else None,
-                producer_result=result,
-                stream_closed=close,
-            )
+        The reason it looked like a separate method is real but belongs to
+        `append`, and is documented there: the row lock `_locked_write` takes is
+        what makes fencing fence, because two concurrent retries of the same
+        `(producer_id, epoch, seq)` that both read before either commits would
+        both be accepted. That is the same lock a plain append needs to allocate
+        an offset, so there was never a second sequence to run — only one that
+        additionally consults the producer's state, which `decide_append` does
+        for any options carrying the triple.
+
+        The signature stays because `append_with_producer` is part of the store
+        protocol; only the duplicate body is gone.
+        """
+        return self.append(path, data, options)
 
     def append_many(
         self, path: str, events: Iterable[tuple[bytes, Any]]
@@ -879,12 +911,7 @@ class DjangoStreamStore:
                 if (pid := getattr(o, "producer_id", None)) is not None
             }
             batch = decide_append_batch(
-                StreamFacts(
-                    closed=stream.closed,
-                    closed_by=stream.closed_by,
-                    content_type=stream.content_type,
-                    last_seq=stream.last_seq,
-                ),
+                self._facts(stream),
                 [options for _data, options in items],
                 producer_states={
                     pid: self._producer_state(stream, pid) for pid in producer_ids
@@ -951,23 +978,18 @@ class DjangoStreamStore:
             # receiver's existing timing on the `append` path.
             self._publish(stream.stream_id, entries)
 
-            # Persist the fencing state the batch established, so a later batch
-            # or append is fenced against this one. The bulk path did not do it
-            # at all, because it never asked the fence in the first place (#154).
-            # One write per *producer*, not per item: the rule hands back the
-            # last accepted outcome for each, which is the only state a later
-            # writer can be fenced against. Committing per item reached the same
-            # place through N `update_or_create`s, which broke the flat query
-            # cost this method exists for.
-            for result in batch.producer_commits.values():
-                self._commit_producer(stream, result)
-
-            if batch.last_seq != stream.last_seq:
-                stream.last_seq = batch.last_seq
-                stream.save(update_fields=["last_seq"])
-            if batch.closing_opts is not None:
-                self._close_from_append(stream, batch.closing_opts)
-            self._touch(stream)
+            # Steps 6-9, through the same method `append` uses, so a batch
+            # cannot record its consequences in a different order from a single
+            # write. The batch rule has already reduced the per-item outcomes to
+            # exactly what belongs here: one producer commit each rather than one
+            # per event, the sequence the last written item reached, and the
+            # options of whichever item closed the stream.
+            self._record_write(
+                stream,
+                producer_commits=batch.producer_commits.values(),
+                last_seq=batch.last_seq,
+                closing_opts=batch.closing_opts,
+            )
 
             # One result per input item, in input order. An item the rule
             # refused keeps its slot with the outcome to report, rather than
