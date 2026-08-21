@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -81,8 +80,6 @@ from .registry import (
     get_default_registry,
     get_default_upcaster_registry,
 )
-
-_log = logging.getLogger("rakaia.replay")
 
 
 class _EnvelopeTs:
