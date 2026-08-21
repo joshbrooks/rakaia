@@ -13,6 +13,12 @@ the collapse is invisible except in the statement count.
 
 What is *not* free is order. These cases pin both halves: where batching happens,
 and the three shapes where it must not.
+
+That last claim — invisible except in the statement count — is *asserted* here and
+*measured* in `test_update_batching_equivalence.py`, which runs the same effects
+down both paths and compares every column. Read that file for which of these
+exclusions turn out to be load-bearing; a case here proving the collapse declined
+does not, on its own, say it needed to.
 """
 
 from __future__ import annotations

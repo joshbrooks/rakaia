@@ -48,39 +48,28 @@ from rakaia.effects import (
 
 from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
 
-#: Value types a collapsed `Update` may write.
+#: Value types a collapsed `Update` may write: the ones whose Python equality is
+#: safe to read as "the same write".
 #:
-#: Five, and each one is justified on its own rather than by a general argument.
-#: For every type here, **Python equality implies identical stored
-#: representation**: two equal values cannot be written differently. That is the
-#: property the grouping needs, because the key compares `defaults` with `==` and
-#: `hash` and then writes one member's values to every member's rows.
+#: The grouping key compares `defaults` with ``==`` and ``hash`` and then writes
+#: one member's values to every member's rows, so a type whose ``__eq__`` is
+#: looser than what the column stores could group two *different* writes. This
+#: admits only types with nothing to argue about — one representation each.
 #:
-#: * ``str`` — equal strings store identically. Note Unicode NFC and NFD forms of
-#:   the same text are *unequal* in Python, so they never group in the first place.
-#: * ``bytes`` — the same.
-#: * ``int`` — the same. ``True == 1`` is handled by `type(v)` being part of the
-#:   key.
-#: * ``bool`` — two values.
-#: * ``NoneType`` — one value.
+#: An allowlist, because the guard's first three shapes each enumerated what was
+#: unsafe (a lookup field in `defaults`, anything `Combinable`, a wider allowlist)
+#: and a review found a fresh route through each. Being wrong here costs a
+#: collapse that does not happen.
 #:
-#: The types deliberately **excluded**, each for a demonstrated reason rather than
-#: caution: ``float`` (``-0.0 == 0.0``, and they store as ``-0.0`` and ``0.0``),
-#: ``Decimal`` (``Decimal("1.0") == Decimal("1.00")``, storing as ``1.0`` and
-#: ``1.00``), aware ``datetime`` and ``time`` (the same instant in two time zones
-#: is equal and hash-equal, and stores as two different strings). For those four,
-#: ``__eq__`` is *semantic* equality that ignores exactly the representation the
-#: database keeps. ``date`` and ``UUID`` are excluded too, without a
-#: counterexample: nothing asked for them, and this guard has been wrong four
-#: times, so the benefit of admitting an unexamined type is not worth the shape of
-#: the risk.
-#:
-#: This is the guard's fourth shape. The first three enumerated what was unsafe —
-#: a lookup field appearing in `defaults`, anything `Combinable`, then a wider
-#: allowlist — and a review found a fresh route through each. An allowlist small
-#: enough to justify per type is the version that stops being a guess: a mistake
-#: costs a collapse that does not happen, and a fan-out writing one literal — the
-#: case #199 asked for — still collapses.
+#: So ``float``, ``Decimal``, ``datetime``, ``date``, ``time``, ``UUID`` and every
+#: ``str`` subclass — which is every `TextChoices` member — do not collapse.
+#: `tests/test_django_rakaia/test_update_batching_equivalence.py` measures what
+#: would happen if they did, and for most of them the answer is *nothing*: Django
+#: coerces an aware datetime to UTC, a ``DecimalField``'s scale erases a trailing
+#: zero, and ``-0.0`` round-trips as ``0.0``. That is not a reason to admit them.
+#: It is a reason not to claim they are dangerous — the one exclusion that
+#: demonstrably changes stored data is the query expression, and it is excluded by
+#: this same rule.
 _COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
     type(None),
     bool,
@@ -111,19 +100,24 @@ class DjangoExecutor:
 
     Pass `batch_updates=True` to collapse a fanned-out `Update` into one
     statement. A handler that emits one update per row — deliberately, so a
-    verification pass can diff them row by row — otherwise costs one statement
-    per row, and a form with eight repeating rows runs nine identical UPDATEs
-    (#199). With the flag on, consecutive updates sharing a model and identical
-    literal `defaults` become a single ``filter(field__in=[…]).update(…)``.
+    verification pass can diff them row by row — otherwise pays one statement per
+    row: a form with eight repeating rows runs nine identical UPDATEs (#199).
 
-    **Off by default, and that is a considered choice rather than caution.** The
-    collapse is semantics-preserving under conditions this executor checks — see
-    `_batch_key` — but the guard took four attempts to get right, and every
-    version in between looked closed at the time. Each failure wrote *wrong data*
-    rather than raising, and the collapse would otherwise apply to every
-    `apply()` in every consumer with no way to opt out or to bisect a suspected
-    write anomaly back to it. A flag puts that risk with the caller who wants the
-    speed and leaves the path that has always worked as the default.
+    **Collapses:** consecutive updates on one model, each matching a single field
+    by equality on a non-null value, all writing the same plain values (`str`,
+    `bytes`, `int`, `bool`, `None`).
+
+    **Does not collapse** — each applied on its own, exactly as with the flag off:
+    an expression (`F()`, `Case`, `Q`, `Subquery`), a composite or ``__``
+    traversing lookup, a null lookup value, an unhashable value such as a JSON
+    dict, or a value of any other type — including a `Decimal`, a datetime, and a
+    `TextChoices` member. Declining costs a statement, never a wrong row.
+
+    **Off by default.** The collapse is invisible in the rows, but the guard that
+    decides what may collapse was wrong four times, and each failure wrote wrong
+    data rather than raising. On by default it would apply to every `apply()` in
+    every consumer, with no way to opt out and no way to bisect a suspected write
+    anomaly back to it. The flag keeps that with the caller who wants the speed.
 
     Pass `normalizers` to define value-equality for `skip_unchanged` the same way
     `diff_effects_against_rows(normalizers=...)` defines it for the verify side.
@@ -239,33 +233,29 @@ class DjangoExecutor:
           advance, no per-row result a caller reads — so N statements setting the
           same columns to the same values are indistinguishable from one over the
           union of their rows.
-        * **Re-applying the defaults to a row cannot change it.** That is the
-          property the collapse actually needs, and it is why only *literal*
-          defaults are collapsed. Two members match one field with different
-          values, so their rows look disjoint — but a member can move a row into a
-          later member's value, and then the later statement matches it too. With
-          literal defaults that second write sets the same columns to the same
-          values and the answer is unchanged. With an expression it is not:
-          ``F("n") + 1`` applied twice is not applied once.
+        * **Re-applying the defaults to a row cannot change it**, which is why
+          only *literal* defaults are collapsed. Two members match the same field
+          on different values, so their rows look disjoint — but one member can
+          move a row into a later member's value, and the later statement then
+          matches it too. Writing the same literal twice is writing it once;
+          ``F("n") + 1`` twice is not. That is the one difference measured to
+          change stored data — see
+          `tests/test_django_rakaia/test_update_batching_equivalence.py`, which
+          also shows it needs *both* halves: an expression over rows that do not
+          overlap is harmless.
 
-          The row sets can overlap by more routes than a lookup key can see —
-          a foreign key reachable as both ``area`` and ``area_id``, a `Ref` and a
-          literal that resolve to one value (`check_disjoint_defaults` runs before
-          resolution and sees two lookups where the grouper sees one), and values
-          that are distinct in Python but equal in the database (``1`` and
-          ``"1"`` against an integer column). Guarding the lookup key closed one
-          of those and left the rest; requiring idempotent defaults closes all of
-          them at once, because every one of them needs a non-idempotent write to
-          become visible.
+          Requiring idempotent defaults is deliberately broader than that hazard,
+          because row sets can overlap by more routes than a lookup key can see: a
+          foreign key reachable as both ``area`` and ``area_id``, a `Ref` and a
+          literal resolving to one value, values distinct in Python but equal in
+          the column. Guarding the key closed one of those; this closes all of
+          them, since each needs a non-idempotent write to become visible.
         * Order *between* groups is preserved, and a run ends at the first
-          non-update, so nothing moves across an `Upsert`. Two updates with
-          different defaults can match one row through different lookups —
-          `check_disjoint_defaults` keys on the exact lookup and cannot see that —
-          and last-write-wins is today's answer, so their sequence is kept.
+          non-update, so nothing moves across an `Upsert` — which is what keeps a
+          `Ref` in a later lookup resolvable.
 
-        Refs are resolved before grouping: a lookup value may be a `Ref` standing
-        in for a row a sibling produced, and two effects are only alike once those
-        are substituted.
+        Refs are resolved before grouping: two effects are only alike once a `Ref`
+        standing in for a sibling's row has been substituted.
         """
         if not pending:
             return
@@ -297,14 +287,12 @@ class DjangoExecutor:
           effect silently writes nothing. ``resolved_at IS NULL`` is this
           codebase's own open predicate, so this is a shape a reconcile really
           produces;
-        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. That covers two
-          separate hazards with one rule. It excludes every query expression —
-          ``F()``, ``Concat``, ``Case``, ``Subquery``, and ``Q``, which is
-          non-idempotent and hashable but not `Combinable` — because a write that
-          is not idempotent makes row-set overlap observable. And it excludes
-          types whose equality ignores representation the database stores, where
-          two "equal" defaults are two different writes and no overlap is needed
-          at all. See that tuple for the per-type reasoning;
+        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. One rule for two
+          hazards: it excludes every query expression — ``F()``, ``Concat``,
+          ``Case``, ``Subquery``, and ``Q``, which is non-idempotent and hashable
+          but not `Combinable` — because a non-idempotent write makes row-set
+          overlap observable; and it excludes types whose equality ignores
+          representation the column keeps, where no overlap is needed at all;
         * empty ``defaults``, which is a no-op anyway;
         * ``defaults`` whose values are unhashable — a JSON column holds a dict,
           which cannot be part of a grouping key, and declining to group beats

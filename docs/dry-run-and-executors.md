@@ -83,6 +83,34 @@ replay(store, "orders", DjangoExecutor(skip_unchanged=True))
 It trades one `UPDATE` per row for one `SELECT` per row, so it pays off when
 re-materialising wide or large collections that mostly haven't changed.
 
+### Collapsing a fanned-out update
+
+A handler that fans one change across many rows emits one `Update` per row — on
+purpose, so a verification pass can diff them one at a time — and pays one
+statement per row. Saving a form with eight repeating rows runs nine identical
+`UPDATE`s.
+
+```python
+replay(store, "submissions", DjangoExecutor(batch_updates=True))
+```
+
+**This collapses.** Consecutive updates on one model, each matching a single
+field by equality on a non-null value, all writing the same plain values — a
+string, bytes, an integer, a boolean, `None`. Nine statements become one.
+
+**This may not.** Anything else is applied one statement at a time, exactly as
+with the flag off: an expression such as `F("total") + 1`, a lookup on two fields
+or one that traverses (`area__name`), a lookup matching `NULL`, a value that
+can't be hashed such as a JSON dict, or a value of any other type — a `Decimal`,
+a date or datetime, or a `TextChoices` member, which is the commonest one to be
+surprised by. Declining costs a statement, never a wrong row.
+
+**Off by default.** The rows come out the same either way — that is checked by
+running the same effects down both paths and comparing every column — but the
+rule deciding what may collapse was wrong four times, and each time it wrote
+wrong data rather than raising. Leaving it off means a consumer opts into the
+speed knowingly, and a suspected write anomaly can be bisected against it.
+
 ## Dry-run replay with `CollectingExecutor`
 
 To preview a replay without side effects, run it with a `CollectingExecutor` and
