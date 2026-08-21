@@ -171,7 +171,10 @@ class TestTheAdminAgreesWithEveryOtherReader:
         event = StreamEvent.objects.create(
             data="hello, world", event_type="append", payload_encoding="utf-8"
         )
-        assert "hello, world" in self._admin().data_preview(event)
+        # Equality, not containment: the JSON form `'"hello, world"'` contains
+        # the text too, so containment passes on a screen that ignores the
+        # encoding entirely.
+        assert self._admin().data_preview(event) == "hello, world"
 
     def test_an_ordinary_json_payload_previews_exactly_as_before(self):
         # The common case must not change shape.
@@ -254,7 +257,10 @@ class TestEveryAdminScreenAgrees:
         event = AppStreamEvent.objects.create(
             data="hello, world", event_type="append", payload_encoding="utf-8"
         )
-        assert "hello, world" in self._subclass_admin().data_preview(event)
+        # Exactly the text, not `json.dumps` of it. `"hello, world" in ...` is
+        # satisfied by the quoted JSON form, so it cannot see a screen that
+        # ignores `payload_encoding` — a green mutation found that gap.
+        assert self._subclass_admin().data_preview(event) == "hello, world"
 
     def test_a_registered_event_model_does_not_emit_raw_markup(self) -> None:
         # It used to hand back `<br>`/`&nbsp;` in a plain string, which Django
