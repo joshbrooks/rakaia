@@ -6,33 +6,28 @@ application directly, exercising the full HTTP protocol.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 import pytest_asyncio
 
-from rakaia import StreamStore, create_app
-from rakaia.handler import ServerOptions, _fault_injection_enabled_by_env
+from rakaia import StreamStore
+from rakaia.handler import _fault_injection_enabled_by_env
 from rakaia.types import INITIAL_OFFSET
+from tests.asgi_client import asgi_client
 
 
 def _fast_client(timeout: float = 0.2) -> httpx.AsyncClient:
     """A client whose server uses a short long-poll window (for wait tests)."""
-    app = create_app(
-        store=StreamStore(), options=ServerOptions(long_poll_timeout=timeout)
-    )
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return asgi_client(StreamStore(), long_poll_timeout=timeout)
 
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     """An httpx client driving a fresh ASGI app per test."""
-    store = StreamStore()
-    app = create_app(store=store)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with asgi_client(StreamStore()) as ac:
         yield ac
 
 
@@ -294,11 +289,7 @@ class TestMethods:
 
 def _fault_client(*, enabled: bool) -> httpx.AsyncClient:
     """A client whose server has the fault-injection endpoint on or off."""
-    app = create_app(
-        store=StreamStore(), options=ServerOptions(enable_fault_injection=enabled)
-    )
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return asgi_client(StreamStore(), enable_fault_injection=enabled)
 
 
 class TestFaultInjectionGate:
@@ -436,6 +427,39 @@ class TestConformanceGaps:
             assert response.status_code == 204
             assert response.headers.get("Stream-Up-To-Date") == "true"
             assert response.headers.get("Stream-Next-Offset") == tail
+
+    async def test_a_close_landing_during_a_long_poll_is_reported(self):
+        """A close landing while the client is parked comes back with the data.
+
+        This case passes with or without `_handle_read`'s re-fetch of the stream,
+        because `StreamStore.get` hands back the live object rather than a
+        snapshot — so the "first" fetch sees the close too. The re-fetch is
+        pinned by the durable-store twin of this test in
+        `test_django_rakaia/test_protocol_server.py`, where `get` returns a
+        detached row and dropping the re-fetch loses the `Stream-Closed`.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+
+            async def close_it() -> None:
+                await asyncio.sleep(0.05)
+                await client.post(
+                    "/foo",
+                    headers={"content-type": "text/plain", "Stream-Closed": "true"},
+                    content=b"two",
+                )
+
+            poll, _ = await asyncio.gather(
+                client.get(f"/foo?offset={tail}&live=long-poll"), close_it()
+            )
+
+            assert poll.status_code == 200
+            assert poll.content == b"two"
+            assert poll.headers.get("Stream-Closed") == "true"
+            assert poll.headers["etag"].endswith(':c"')
 
     async def test_sse_catch_up_pairs_each_data_event_with_control(self):
         """During catch-up every SSE data event is followed by a control event.

@@ -15,7 +15,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from rakaia import StreamStore, create_app
+from rakaia import StreamStore
 from rakaia.handler import STORE_FAILURE_STATUS, _status_for
 from rakaia.types import (
     ContentTypeMismatch,
@@ -27,13 +27,12 @@ from rakaia.types import (
     StreamError,
     StreamNotFound,
 )
+from tests.asgi_client import asgi_client
 
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(store=StreamStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with asgi_client(StreamStore()) as ac:
         yield ac
 
 
@@ -178,13 +177,11 @@ class TestFailureBecomesStatus:
         failure genuinely travels store → mapping → status.
         """
         store = StreamStore()
-        app = create_app(store=store)
 
         def _gone(*_args: object, **_kwargs: object) -> None:
             raise StreamNotFound("raised by the store, not the handler")
 
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with asgi_client(store) as ac:
             await ac.put("/s")
             store.read = _gone  # type: ignore[method-assign]
             assert (await ac.get("/s")).status_code == 404
@@ -290,13 +287,11 @@ class TestFailureBecomesStatus:
         This is the regression the old substring mapping could not survive.
         """
         store = StreamStore()
-        app = create_app(store=store)
 
         def _reworded(*_args: object, **_kwargs: object) -> None:
             raise StreamNotFound("wholly different wording")
 
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with asgi_client(store) as ac:
             # Create over HTTP — the handler keys streams by the full request
             # path ("/s"), so store.create("s") would leave the handler's
             # absent-stream 404 to answer before the patched read ever ran.
@@ -313,13 +308,11 @@ class TestFailureBecomesStatus:
         real server, a crashed connection instead of a 400.
         """
         store = StreamStore()
-        app = create_app(store=store)
 
         def _rejects(*_args: object, **_kwargs: object) -> None:
             raise InvalidOffset("offset belongs to no message")
 
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with asgi_client(store) as ac:
             await ac.put("/s")
             store.read = _rejects  # type: ignore[method-assign]
             r = await ac.get("/s", params={"offset": "0_0", "live": "sse"})

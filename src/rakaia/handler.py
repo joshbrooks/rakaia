@@ -33,6 +33,20 @@ from ._asgi import (
 from .cursor import CursorOptions, generate_response_cursor
 from .json_mode import is_json_content_type
 from .protocols import StreamServerStore
+from .read_decision import (
+    STREAM_CLOSED_HEADER_RESP,
+    STREAM_OFFSET_HEADER_RESP,
+    ReadFacts,
+    ReadRequest,
+    ReadVerdict,
+    decide_catch_up,
+    decide_head,
+    decide_read,
+    decide_wait_ended,
+    read_param_error,
+    sse_control_fields,
+    stream_ended,
+)
 from .store import StreamStore
 from .types import (
     PRODUCER_EPOCH_HEADER,
@@ -40,16 +54,11 @@ from .types import (
     PRODUCER_ID_HEADER,
     PRODUCER_RECEIVED_SEQ_HEADER,
     PRODUCER_SEQ_HEADER,
-    SSE_CLOSED_FIELD,
-    SSE_CURSOR_FIELD,
-    SSE_OFFSET_FIELD,
-    SSE_UP_TO_DATE_FIELD,
     STREAM_CLOSED_HEADER,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_SEQ_HEADER,
     STREAM_SSE_DATA_ENCODING_HEADER,
     STREAM_TTL_HEADER,
-    VALID_OFFSET_PATTERN,
     AppendOptions,
     ContentTypeMismatch,
     EmptyJsonArray,
@@ -194,15 +203,12 @@ async def _send_producer_response(
         await _send_error(send, status, body, cors, extra)
 
 
-# Header names used in responses (title case for HTTP convention)
-STREAM_OFFSET_HEADER_RESP = "Stream-Next-Offset"
-STREAM_CURSOR_HEADER_RESP = "Stream-Cursor"
-STREAM_UP_TO_DATE_HEADER_RESP = "Stream-Up-To-Date"
-STREAM_CLOSED_HEADER_RESP = "Stream-Closed"
-
-# `VALID_OFFSET_PATTERN` is imported from `.types` (the single source of truth,
-# #41). It is a syntactic guard only — an offset's meaning belongs to the store
-# that issued it, and the two stores use different formats.
+# The response header names live in `.read_decision`, the module that decides
+# what a read's headers are; they are imported above and used by the write paths
+# here too. `VALID_OFFSET_PATTERN` lives in `.types` (the single source of truth,
+# #41) and is now read only by `read_decision.read_param_error`. It is a
+# syntactic guard only — an offset's meaning belongs to the store that issued it,
+# and the two stores use different formats.
 
 # Strict integer pattern for producer headers
 STRICT_INTEGER_PATTERN = re.compile(r"^\d+$")
@@ -491,6 +497,27 @@ async def _handle_create(
 # =============================================================================
 
 
+def _facts(path: str, stream: Any) -> ReadFacts:
+    """A stream as `read_decision` sees it: the fields a response is built from.
+
+    The one place a store's stream object is narrowed to the read rules' inputs,
+    so the decision never holds a live store row.
+    """
+    return ReadFacts(
+        path=path,
+        tail_offset=stream.current_offset,
+        closed=stream.closed,
+        content_type=stream.content_type,
+        ttl_seconds=stream.ttl_seconds,
+        expires_at=stream.expires_at,
+    )
+
+
+async def _send_verdict(send: Send, verdict: ReadVerdict) -> None:
+    """Send what one of the `read_decision` functions decided."""
+    await send_response(send, verdict.status, verdict.headers, verdict.body or b"")
+
+
 async def _handle_head(
     path: str,
     send: Send,
@@ -502,30 +529,7 @@ async def _handle_head(
         await _send_error(send, 404, b"", cors)
         return
 
-    headers: dict[str, str] = {
-        **cors,
-        STREAM_OFFSET_HEADER_RESP: stream.current_offset,
-        "cache-control": "no-store",
-    }
-
-    if stream.content_type:
-        headers["content-type"] = stream.content_type
-
-    if stream.closed:
-        headers[STREAM_CLOSED_HEADER_RESP] = "true"
-
-    # Surface configured expiry metadata (HEAD must not extend the TTL window).
-    if stream.ttl_seconds is not None:
-        headers["Stream-TTL"] = str(stream.ttl_seconds)
-    if stream.expires_at:
-        headers["Stream-Expires-At"] = stream.expires_at
-
-    # ETag: {path_b64}:-1:{offset}[:c]
-    path_b64 = base64.b64encode(path.encode()).decode()
-    closed_suffix = ":c" if stream.closed else ""
-    headers["etag"] = f'"{path_b64}:-1:{stream.current_offset}{closed_suffix}"'
-
-    await send_response(send, 200, headers)
+    await _send_verdict(send, decide_head(_facts(path, stream), cors=cors))
 
 
 # =============================================================================
@@ -540,35 +544,21 @@ async def _validate_read_params(
     live: str | None,
     cors: dict[str, str],
 ) -> bool:
-    """Validate the GET read query parameters.
+    """Send the first read-parameter refusal, if there is one.
 
-    On the first invalid parameter, send a ``400`` and return ``False`` — the
-    caller must then return. Returns ``True`` when the read may proceed.
+    The rule itself is `read_decision.read_param_error`; this only performs the
+    send. Returns ``True`` when the read may proceed.
     """
-    if offset is not None:
-        if offset == "":
-            await _send_error(send, 400, b"Empty offset parameter", cors)
-            return False
-
-        if len(get_all_query_params(qs, "offset")) > 1:
-            await _send_error(
-                send, 400, b"Multiple offset parameters not allowed", cors
-            )
-            return False
-
-        if not VALID_OFFSET_PATTERN.match(offset):
-            await _send_error(send, 400, b"Invalid offset format", cors)
-            return False
-
-    # Long-poll and SSE both require an explicit offset.
-    if (live == "long-poll" or live == "sse") and not offset:
-        label = "SSE" if live == "sse" else "Long-poll"
-        await _send_error(
-            send, 400, f"{label} requires offset parameter".encode(), cors
-        )
-        return False
-
-    return True
+    refusal = read_param_error(
+        offset=offset,
+        live=live,
+        offset_count=len(get_all_query_params(qs, "offset")),
+    )
+    if refusal is None:
+        return True
+    status, message = refusal
+    await _send_error(send, status, message, cors)
+    return False
 
 
 async def _handle_read(
@@ -626,20 +616,7 @@ async def _handle_read(
     if offset == "now" and live != "long-poll":
         # A catch-up read extends the sliding TTL window.
         await store.run_sync(store.touch, path)
-        headers: dict[str, str] = {
-            **cors,
-            STREAM_OFFSET_HEADER_RESP: stream.current_offset,
-            STREAM_UP_TO_DATE_HEADER_RESP: "true",
-            "cache-control": "no-store",
-        }
-        if stream.content_type:
-            headers["content-type"] = stream.content_type
-        if stream.closed:
-            headers[STREAM_CLOSED_HEADER_RESP] = "true"
-
-        is_json = is_json_content_type(stream.content_type)
-        body = b"[]" if is_json else b""
-        await send_response(send, 200, headers, body)
+        await _send_verdict(send, decide_catch_up(_facts(path, stream), cors=cors))
         return
 
     # Read current messages
@@ -658,15 +635,14 @@ async def _handle_read(
     if live == "long-poll" and client_caught_up and len(messages) == 0:
         # If closed and at tail, return immediately
         if stream.closed:
-            await send_response(
+            await _send_verdict(
                 send,
-                204,
-                {
-                    **cors,
-                    STREAM_OFFSET_HEADER_RESP: stream.current_offset,
-                    STREAM_UP_TO_DATE_HEADER_RESP: "true",
-                    STREAM_CLOSED_HEADER_RESP: "true",
-                },
+                decide_wait_ended(
+                    response_offset=stream.current_offset,
+                    closed=True,
+                    response_cursor=None,
+                    cors=cors,
+                ),
             )
             return
 
@@ -677,87 +653,55 @@ async def _handle_read(
         )
         wait_messages, timed_out, stream_closed = wait_result
 
-        if stream_closed:
-            resp_cursor = generate_response_cursor(cursor, opts.cursor_options)
-            await send_response(
+        if stream_closed or timed_out:
+            if timed_out:
+                current_stream = await store.run_sync(store.get, path)
+                closed = bool(current_stream and current_stream.closed)
+            else:
+                closed = True
+            await _send_verdict(
                 send,
-                204,
-                {
-                    **cors,
-                    STREAM_OFFSET_HEADER_RESP: effective_offset
-                    or stream.current_offset,
-                    STREAM_UP_TO_DATE_HEADER_RESP: "true",
-                    STREAM_CURSOR_HEADER_RESP: resp_cursor,
-                    STREAM_CLOSED_HEADER_RESP: "true",
-                },
+                decide_wait_ended(
+                    response_offset=effective_offset or stream.current_offset,
+                    closed=closed,
+                    response_cursor=generate_response_cursor(
+                        cursor, opts.cursor_options
+                    ),
+                    cors=cors,
+                ),
             )
-            return
-
-        if timed_out:
-            resp_cursor = generate_response_cursor(cursor, opts.cursor_options)
-            timeout_headers: dict[str, str] = {
-                **cors,
-                STREAM_OFFSET_HEADER_RESP: effective_offset or stream.current_offset,
-                STREAM_UP_TO_DATE_HEADER_RESP: "true",
-                STREAM_CURSOR_HEADER_RESP: resp_cursor,
-            }
-            current_stream = await store.run_sync(store.get, path)
-            if current_stream and current_stream.closed:
-                timeout_headers[STREAM_CLOSED_HEADER_RESP] = "true"
-
-            # The protocol test expects body to be strictly empty
-            await send_response(send, 204, timeout_headers)
             return
 
         messages = wait_messages
         up_to_date = True
 
-    # Build response
-    headers = {**cors}
-
-    if stream.content_type:
-        headers["content-type"] = stream.content_type
-
-    last_message = messages[-1] if messages else None
-    response_offset = last_message.offset if last_message else stream.current_offset
-    headers[STREAM_OFFSET_HEADER_RESP] = response_offset
-
-    if live == "long-poll":
-        headers[STREAM_CURSOR_HEADER_RESP] = generate_response_cursor(
-            cursor, opts.cursor_options
-        )
-
-    if up_to_date:
-        headers[STREAM_UP_TO_DATE_HEADER_RESP] = "true"
-
-    # Stream-Closed when closed, at tail, and up-to-date
+    # Re-fetch: an append or a close can have landed while the messages were
+    # being read, and closed-at-tail must be judged against the tail as it is
+    # now, not as it was.
     current_stream = await store.run_sync(store.get, path)
-    client_at_tail = (
-        current_stream is not None and response_offset == current_stream.current_offset
+    verdict = decide_read(
+        _facts(path, stream),
+        ReadRequest(
+            offset=offset,
+            live=live,
+            if_none_match=get_header(scope, "if-none-match"),
+        ),
+        latest=_facts(path, current_stream) if current_stream is not None else None,
+        last_message_offset=messages[-1].offset if messages else None,
+        up_to_date=up_to_date,
+        response_cursor=(
+            generate_response_cursor(cursor, opts.cursor_options)
+            if live == "long-poll"
+            else None
+        ),
+        cors=cors,
     )
-    if current_stream and current_stream.closed and client_at_tail and up_to_date:
-        headers[STREAM_CLOSED_HEADER_RESP] = "true"
-
-    # ETag
-    start_offset = offset or "-1"
-    closed_suffix = (
-        ":c"
-        if (current_stream and current_stream.closed and client_at_tail and up_to_date)
-        else ""
-    )
-    path_b64 = base64.b64encode(path.encode()).decode()
-    etag = f'"{path_b64}:{start_offset}:{response_offset}{closed_suffix}"'
-    headers["etag"] = etag
-
-    # Conditional GET
-    if_none_match = get_header(scope, "if-none-match")
-    if if_none_match and if_none_match == etag:
-        await send_response(send, 304, {"etag": etag})
+    if verdict.body is not None:
+        await _send_verdict(send, verdict)
         return
 
-    # Format response
     response_data = await store.run_sync(store.format_response, path, messages)
-    await send_response(send, 200, headers, response_data)
+    await send_response(send, 200, verdict.headers, response_data)
 
 
 # =============================================================================
@@ -787,22 +731,19 @@ def _build_sse_control(
     cursor: str | None,
     cursor_options: CursorOptions,
 ) -> bytes:
-    """Build an SSE ``control`` event frame for a given offset.
+    """Frame an SSE ``control`` event. The fields are decided by
+    `read_decision.sse_control_fields`; this only encodes them.
 
     Emitted immediately after each ``data`` event during catch-up so consumers
-    can rely on strict data -> control pairing. Signals closure at the tail and
-    otherwise carries the collapse cursor and (at the tail) the up-to-date flag.
+    can rely on strict data -> control pairing.
     """
-    at_tail = control_offset == tail_offset
-    control_data: dict[str, str | bool] = {SSE_OFFSET_FIELD: control_offset}
-    if stream_is_closed and at_tail:
-        control_data[SSE_CLOSED_FIELD] = True
-    else:
-        control_data[SSE_CURSOR_FIELD] = generate_response_cursor(
-            cursor, cursor_options
-        )
-        if at_tail and up_to_date:
-            control_data[SSE_UP_TO_DATE_FIELD] = True
+    control_data = sse_control_fields(
+        control_offset=control_offset,
+        tail_offset=tail_offset,
+        closed=stream_is_closed,
+        up_to_date=up_to_date,
+        response_cursor=generate_response_cursor(cursor, cursor_options),
+    )
     return f"event: control\n{_encode_sse_data(json.dumps(control_data))}".encode()
 
 
@@ -810,9 +751,11 @@ def _closed_control(offset: str) -> bytes:
     """The terminal ``control`` frame: this offset is the tail and it is closed.
 
     A closed-at-tail frame carries ``closed`` instead of a cursor, so the cursor
-    arguments are never read.
+    arguments are never read. `up_to_date=True` because the tail of a closed
+    stream *is* up to date by definition — the flag is load-bearing now that
+    `closed_at_tail` is shared with the plain read.
     """
-    return _build_sse_control(offset, offset, True, False, None, CursorOptions())
+    return _build_sse_control(offset, offset, True, True, None, CursorOptions())
 
 
 async def _handle_sse(
@@ -918,10 +861,9 @@ async def _handle_sse(
 
         await send_body_chunk(send, buffer)
 
-        client_at_tail = control_offset == tail_offset
-
-        # If closed and at tail, end connection
-        if stream_is_closed and client_at_tail:
+        # End the connection once there can be nothing more: a closed stream at
+        # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
+        if stream_ended(closed=stream_is_closed, at_tail=control_offset == tail_offset):
             break
 
         current_offset = control_offset

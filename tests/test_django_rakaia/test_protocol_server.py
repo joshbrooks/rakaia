@@ -13,6 +13,7 @@ pinned below so a regression would be loud.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
@@ -21,16 +22,14 @@ import pytest_asyncio
 from asgiref.sync import sync_to_async
 
 from django_rakaia.django_store import DjangoStreamStore
-from rakaia import create_app
+from tests.asgi_client import asgi_client
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(store=DjangoStreamStore())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with asgi_client(DjangoStreamStore()) as ac:
         yield ac
 
 
@@ -214,3 +213,34 @@ class TestCapabilitiesTheDeletedImplementationLacked:
         store = DjangoStreamStore()
         messages, _ = await sync_to_async(store.read)("/s")
         assert messages[0].event_ts is not None
+
+    async def test_a_close_landing_during_a_long_poll_is_reported(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """The read is answered against the stream as it is *now*.
+
+        `_handle_read` fetches the stream, waits, then fetches it again before
+        deciding, and only the second fetch can see a close that landed while
+        the client was parked. This case is what distinguishes the two fetches:
+        the durable store hands back a detached row, so the first one stays open
+        forever. Removing the re-fetch leaves the rest of the suite green — the
+        in-memory store returns a live object, so every core test covers itself.
+        """
+        await client.put("/s", headers=JSON)
+        await client.post("/s", content=b'{"id": 1}', headers=JSON)
+        tail = (await client.get("/s")).headers["Stream-Next-Offset"]
+
+        async def close_it() -> None:
+            await asyncio.sleep(0.05)
+            await client.post(
+                "/s", content=b'{"id": 2}', headers={**JSON, "Stream-Closed": "true"}
+            )
+
+        poll, _ = await asyncio.gather(
+            client.get(f"/s?offset={tail}&live=long-poll"), close_it()
+        )
+
+        assert poll.status_code == 200
+        assert poll.json() == [{"id": 2}]
+        assert poll.headers.get("Stream-Closed") == "true"
+        assert poll.headers["etag"].endswith(':c"')
