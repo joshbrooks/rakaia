@@ -346,6 +346,32 @@ class ServerStoreContract:
         assert messages == [], "a refused batch must write nothing"
         assert store.get("s").last_seq is None
 
+    def test_a_batch_conflicting_with_the_stream_writes_nothing(self, store):
+        """The same rule, against the sequence the stream already had.
+
+        The sibling above starts from a fresh stream, so its conflict is between
+        two items of the batch — which a store that never read the stream's own
+        `Stream-Seq` still catches. This one puts an *admissible* item in front
+        of an item that conflicts with the pre-batch value, which is the only
+        arrangement that can leave a written prefix behind. Getting it wrong
+        breaks all-or-nothing on one backend and not the other: the durable
+        store's transaction rolls the prefix back whatever it decided.
+        """
+        store.create("s")
+        store.append("s", b'{"id": 0}', AppendOptions(seq="5"))
+
+        with pytest.raises(SequenceConflict):
+            store.append_many(
+                "s",
+                [
+                    (b'{"id": 1}', None),
+                    (b'{"id": 2}', AppendOptions(seq="3")),
+                ],
+            )
+        messages, _ = store.read("s")
+        assert len(messages) == 1, "the admissible item must not have been written"
+        assert store.get("s").last_seq == "5"
+
     def test_append_many_advances_seq_like_a_loop_of_append(self, store):
         store.create("s")
         store.append_many(
