@@ -300,6 +300,29 @@ class ServerStoreContract:
         with pytest.raises(SequenceConflict):
             store.append_many("s", [(b'{"id": 2}', AppendOptions(seq="5"))])
 
+    def test_a_seq_conflict_late_in_a_batch_writes_nothing(self, store):
+        """All-or-nothing, on the *other* conflict.
+
+        A single-item batch cannot tell a refusal apart from a refusal that
+        happened to leave nothing behind, and the content-type case above is the
+        only multi-item one — so a store could scan for content type, skip
+        `Stream-Seq` entirely, and stay green while a conflicting batch left its
+        prefix written. The durable store's transaction rolls back either way;
+        the in-memory store has nothing to roll back and must refuse up front.
+        """
+        store.create("s")
+        with pytest.raises(SequenceConflict):
+            store.append_many(
+                "s",
+                [
+                    (b'{"id": 1}', AppendOptions(seq="2")),
+                    (b'{"id": 2}', AppendOptions(seq="1")),
+                ],
+            )
+        messages, _ = store.read("s")
+        assert messages == [], "a refused batch must write nothing"
+        assert store.get("s").last_seq is None
+
     def test_append_many_advances_seq_like_a_loop_of_append(self, store):
         store.create("s")
         store.append_many(
