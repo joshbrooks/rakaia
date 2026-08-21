@@ -43,7 +43,11 @@ from typing import Any
 from asgiref.sync import sync_to_async
 from django.db import transaction
 
-from rakaia.append_decision import AppendVerdict, StreamFacts, decide_append
+from rakaia.append_decision import (
+    StreamFacts,
+    decide_append,
+    decide_append_batch,
+)
 from rakaia.context import merge_provenance
 from rakaia.json_mode import (
     format_json_response,
@@ -848,84 +852,60 @@ class DjangoStreamStore:
         Fencing used to be the exception: this method hand-rolled a shorter
         admission check that read content type and ``Stream-Seq`` and nothing
         else, so a batch was never fenced and never recorded the producer state
-        it established (#154). Both now go through the shared rule.
+        it established (#154). Then the per-item rule was shared but the
+        *batch* rule was still written twice, and the two versions disagreed
+        (#181) — this one short-circuited a closed stream before consulting the
+        rule, so a producer re-sending the append that closed the stream was
+        told a bare "closed" instead of "duplicate". Both levels now go through
+        ``rakaia.append_decision``.
         """
         items = list(events)
         if not items:
             return []
 
         with self._locked_write(path) as stream:
-            if stream.closed:
-                return [AppendResult(message=None, stream_closed=True) for _ in items]
-
-            # Admission, decided by the same rule the other three write doors
-            # use. This loop used to hand-roll a shorter version — content type
-            # and Stream-Seq only — which meant a batch was never fenced: a
-            # producer displaced by a newer epoch was refused item-by-item
-            # through `append` and silently accepted in bulk (#154).
-            #
-            # The facts advance across the batch exactly as they would across a
-            # loop of `append`: `last_seq` moves with each accepted item, and a
-            # producer's state moves with each accepted fenced write. Conflicts
-            # still raise (they are caller errors and the whole batch is
-            # abandoned); fencing outcomes are returned per item, so an item the
-            # fence refuses becomes a refusal in its own slot rather than
+            # Admission, decided by the same rule the in-memory store's batch
+            # path uses, so the two cannot drift on what a batch may do. It owns
+            # both batch-level rules: all-or-nothing on a conflict, and how the
+            # facts advance from item to item — `Stream-Seq` and producer state
+            # only for items actually written, and a close taking effect for the
+            # items after it. Conflicts propagate out (caller errors, and the
+            # whole batch is abandoned); fencing outcomes come back per item, so
+            # a refused item becomes a refusal in its own slot rather than
             # aborting its siblings.
-            now = time.time()
-            last_seq = stream.last_seq
-            producer_states = {
-                pid: self._producer_state(stream, pid)
-                for pid in {getattr(o, "producer_id", None) for _d, o in items} - {None}
+            producer_ids = {
+                pid
+                for _d, o in items
+                if (pid := getattr(o, "producer_id", None)) is not None
             }
-            verdicts: list[AppendVerdict] = []
-            cut = len(items)
-            for i, (_data, options) in enumerate(items):
-                producer_id = getattr(options, "producer_id", None)
-                verdict = decide_append(
-                    StreamFacts(
-                        closed=False,
-                        closed_by=stream.closed_by,
-                        content_type=stream.content_type,
-                        last_seq=last_seq,
-                    ),
-                    options,
-                    producer_state=producer_states.get(producer_id),
-                    now=now,
-                )
-                verdicts.append(verdict)
-                if not verdict.write:
-                    continue
-                seq = getattr(options, "seq", None)
-                if seq is not None:
-                    last_seq = seq
-                if verdict.producer_result is not None and producer_id is not None:
-                    # Advance the in-batch view of this producer, so a second
-                    # item from the same producer is fenced against the first
-                    # rather than against the pre-batch row.
-                    producer_states[producer_id] = ProducerState(
-                        epoch=getattr(options, "producer_epoch", 0) or 0,
-                        last_seq=getattr(options, "producer_seq", 0) or 0,
-                        last_updated=now,
-                    )
-                if getattr(options, "close", False):
-                    cut = i + 1
-                    break
+            batch = decide_append_batch(
+                StreamFacts(
+                    closed=stream.closed,
+                    closed_by=stream.closed_by,
+                    content_type=stream.content_type,
+                    last_seq=stream.last_seq,
+                ),
+                [options for _data, options in items],
+                producer_states={
+                    pid: self._producer_state(stream, pid) for pid in producer_ids
+                },
+                now=time.time(),
+            )
+            verdicts = batch.verdicts
 
-            # An item the fence refused is not written, but it keeps its slot in
+            # An item the rule refused is not written, but it keeps its slot in
             # the results so callers still get one answer per input item.
             admitted = [
-                (item, v)
-                for item, v in zip(items[:cut], verdicts[:cut], strict=False)
-                if v.write
+                (item, v) for item, v in zip(items, verdicts, strict=True) if v.write
             ]
             written = [item for item, _v in admitted]
-            refused = items[cut:]
 
-            if not written:
-                # Every item was refused — by the fence, or by a close earlier in
-                # the batch. There is nothing to allocate an offset block for,
-                # and asking for a block of zero is an error. Each item still
-                # gets its own answer.
+            if not batch.writes_anything:
+                # Every item was refused — by the fence, by a close earlier in
+                # the batch, or because the stream was already closed. There is
+                # nothing to allocate an offset block for, and asking for a
+                # block of zero is an error. Each item still gets its own
+                # answer, fencing outcome included.
                 return [
                     AppendResult(
                         message=None,
@@ -933,7 +913,7 @@ class DjangoStreamStore:
                         producer_result=v.producer_result,
                     )
                     for v in verdicts
-                ] + [AppendResult(message=None, stream_closed=True) for _ in refused]
+                ]
 
             # Mirror `append`'s per-event envelope mapping and payload encoding.
             # `merge_provenance` is evaluated per item so ambient provenance is
@@ -979,27 +959,20 @@ class DjangoStreamStore:
                 if verdict.producer_result is not None:
                     self._commit_producer(stream, verdict.producer_result)
 
-            if last_seq != stream.last_seq:
-                stream.last_seq = last_seq
+            if batch.last_seq != stream.last_seq:
+                stream.last_seq = batch.last_seq
                 stream.save(update_fields=["last_seq"])
-            closing = cut < len(items) or bool(
-                written and getattr(written[-1][1], "close", False)
-            )
-            if closing:
-                self._close_from_append(stream, written[-1][1])
+            if batch.closing_opts is not None:
+                self._close_from_append(stream, batch.closing_opts)
             self._touch(stream)
 
-            # One result per input item, in input order. An item the fence
+            # One result per input item, in input order. An item the rule
             # refused keeps its slot with the outcome to report, rather than
             # vanishing from the results and shifting every later item's answer
             # onto the wrong input.
             persisted = iter(entries)
             results: list[AppendResult] = []
-            for i, (_data, options) in enumerate(items):
-                if i >= cut:
-                    results.append(AppendResult(message=None, stream_closed=True))
-                    continue
-                verdict = verdicts[i]
+            for (_data, options), verdict in zip(items, verdicts, strict=True):
                 if not verdict.write:
                     results.append(
                         AppendResult(

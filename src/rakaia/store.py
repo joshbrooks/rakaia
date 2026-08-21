@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
-from .append_decision import StreamFacts, decide_append
+from .append_decision import StreamFacts, decide_append, decide_append_batch
 from .context import merge_provenance
 from .json_mode import (
     format_json_response,
@@ -28,10 +28,8 @@ from .types import (
     AppendOptions,
     AppendResult,
     CloseResult,
-    ContentTypeMismatch,
     ProducerAccepted,
     ProducerValidationResult,
-    SequenceConflict,
     Stream,
     StreamConfigConflict,
     StreamMessage,
@@ -346,35 +344,40 @@ class StreamStore:
         the whole batch before anything is written. The durable store's single
         transaction can only be all-or-nothing on a conflict, and the two
         stores must agree — a plain loop here would leave the prefix written.
+
+        That admissibility scan is `rakaia.append_decision.decide_append_batch`,
+        shared with the durable store, so the two cannot drift on what a *batch*
+        is allowed to do any more than they can on a single append. It used to
+        be hand-rolled here, and it advanced its `Stream-Seq` view on items the
+        fence would refuse — so a batch whose first item was fenced out raised a
+        conflict against a sequence nothing had written (#181). The verdicts are
+        deliberately discarded: this store then *is* a loop of `append`, which
+        re-derives each one against really-advanced state. The shared rule is
+        called for its all-or-nothing pre-flight, which a loop cannot give.
         """
         items = list(events)
         if not items:
             return []
         stream = self._get_if_not_expired(path)
-        if stream is not None and not stream.closed:
-            last_seq = stream.last_seq
-            for _data, options in items:
-                opts = options or AppendOptions()
-                if (
-                    opts.content_type
-                    and stream.content_type
-                    and normalize_content_type(opts.content_type)
-                    != normalize_content_type(stream.content_type)
-                ):
-                    raise ContentTypeMismatch(
-                        f"Content-type mismatch: expected "
-                        f"{stream.content_type}, got {opts.content_type}"
-                    )
-                if opts.seq is not None:
-                    if last_seq is not None and opts.seq <= last_seq:
-                        raise SequenceConflict(
-                            f"Sequence conflict: {opts.seq} <= {last_seq}"
-                        )
-                    last_seq = opts.seq
-                if opts.close:
-                    # Items after a close observe the closed stream and are
-                    # refused, not validated.
-                    break
+        if stream is not None:
+            producer_ids = {
+                pid
+                for _d, o in items
+                if (pid := getattr(o, "producer_id", None)) is not None
+            }
+            decide_append_batch(
+                StreamFacts(
+                    closed=stream.closed,
+                    closed_by=stream.closed_by,
+                    content_type=stream.content_type,
+                    last_seq=stream.last_seq,
+                ),
+                [options for _data, options in items],
+                producer_states={
+                    pid: self._producer_state(stream, pid) for pid in producer_ids
+                },
+                now=time.time(),
+            )
         return [self.append(path, data, options) for data, options in items]
 
     async def append_with_producer(

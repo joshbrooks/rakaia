@@ -331,6 +331,99 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert len(messages) == 2, "the item after the close must not be written"
 
+    async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
+        """An item the fence refuses is not written, so it cannot move
+        `Stream-Seq` for the items after it.
+
+        A loop of `append` gets this for free: `last_seq` is only assigned after
+        a write lands. A batch has to say so, because its admission scan walks
+        every item before anything is written — and if the scan advances the seq
+        view on an item that will never be written, a later legitimate item
+        collides with a sequence nothing ever took. #181: the two stores
+        hand-rolled that scan separately and only one of them got this right.
+        """
+        await self._sync(store.create, "s")
+        await store.append_with_producer("s", b'{"n": 0}', self._producer("p", 2, 0))
+        results = await self._sync(
+            store.append_many,
+            "s",
+            [
+                # Stale epoch: refused, so its seq="9" is never taken.
+                (
+                    b'{"n": 1}',
+                    AppendOptions(
+                        producer_id="p", producer_epoch=1, producer_seq=0, seq="9"
+                    ),
+                ),
+                (b'{"n": 2}', AppendOptions(seq="3")),
+            ],
+        )
+        assert isinstance(results[0].producer_result, ProducerStaleEpoch)
+        assert results[0].message is None
+        assert results[1].message is not None, (
+            "seq='3' is free: the refused item never took seq='9'"
+        )
+        stream = await self._sync(store.get, "s")
+        assert stream.last_seq == "3"
+
+    async def test_append_many_to_a_closed_stream_recognises_the_closing_producer(
+        self, store
+    ):
+        """A batch is admitted on the same terms as a single append, including
+        the idempotent re-send of the append that closed the stream.
+
+        `append` reports that tuple as a duplicate so the producer can tell "my
+        close landed" from "someone else closed this". A batch that answers a
+        bare "closed" to the same tuple tells the producer to give up on a write
+        that in fact succeeded.
+        """
+        await self._sync(store.create, "s")
+        closing = AppendOptions(
+            producer_id="p", producer_epoch=1, producer_seq=0, close=True
+        )
+        await store.append_with_producer("s", b'{"n": 1}', closing)
+
+        results = await self._sync(store.append_many, "s", [(b'{"n": 1}', closing)])
+
+        assert results[0].stream_closed is True
+        assert results[0].message is None
+        assert isinstance(results[0].producer_result, ProducerDuplicate)
+
+    async def test_append_many_items_after_a_close_are_admitted_like_a_loop(
+        self, store
+    ):
+        """The items after an in-batch close observe the stream the close left
+        behind — including the closing tuple, so a producer re-sending its own
+        closing append inside the same batch is told it is a duplicate rather
+        than a bare "closed"."""
+        await self._sync(store.create, "s")
+        closing = AppendOptions(
+            producer_id="p", producer_epoch=1, producer_seq=0, close=True
+        )
+        results = await self._sync(
+            store.append_many, "s", [(b'{"n": 1}', closing), (b'{"n": 1}', closing)]
+        )
+
+        assert results[0].message is not None and results[0].stream_closed
+        assert results[1].message is None and results[1].stream_closed
+        assert isinstance(results[1].producer_result, ProducerDuplicate)
+
+    async def test_append_many_fences_the_second_item_against_the_first(self, store):
+        """Within one batch a producer's state advances item by item, so a
+        second item repeating the first item's sequence is a duplicate — the
+        same answer a loop of `append` gives."""
+        await self._sync(store.create, "s")
+        opts = self._producer("p", 1, 0)
+        results = await self._sync(
+            store.append_many, "s", [(b'{"n": 1}', opts), (b'{"n": 2}', opts)]
+        )
+
+        assert isinstance(results[0].producer_result, ProducerAccepted)
+        assert isinstance(results[1].producer_result, ProducerDuplicate)
+        assert results[1].message is None
+        messages, _ = await self._sync(store.read, "s")
+        assert len(messages) == 1, "the duplicate must not be written"
+
     # =========================================================================
     # Close
     # =========================================================================

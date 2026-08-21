@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.append_decision import StreamFacts, decide_append
+from rakaia.append_decision import StreamFacts, decide_append, decide_append_batch
 from rakaia.types import (
     AppendOptions,
     ClosedBy,
@@ -232,3 +232,125 @@ class TestOrdering:
                 ),
                 producer_state=state,
             )
+
+
+def _decide_batch(facts=None, items=(), *, producer_states=None):
+    return decide_append_batch(
+        facts or StreamFacts(),
+        list(items),
+        producer_states=producer_states,
+        now=NOW,
+    )
+
+
+class TestBatchAdmissibility:
+    """The batch rule, same treatment: no store, no database.
+
+    Both stores hand-rolled this and the two disagreed (#181). Each case below
+    is one of the ways they disagreed, or one of the rules that stops them
+    disagreeing again.
+    """
+
+    def test_one_verdict_per_item_in_order(self):
+        batch = _decide_batch(items=[AppendOptions(), None, AppendOptions()])
+        assert len(batch.verdicts) == 3
+        assert all(v.write for v in batch.verdicts)
+        assert batch.writes_anything is True
+
+    def test_an_empty_batch_decides_nothing(self):
+        batch = _decide_batch()
+        assert batch.verdicts == []
+        assert batch.writes_anything is False
+
+    def test_stream_seq_advances_across_the_batch(self):
+        batch = _decide_batch(items=[AppendOptions(seq="1"), AppendOptions(seq="2")])
+        assert all(v.write for v in batch.verdicts)
+        assert batch.last_seq == "2"
+
+    def test_a_conflict_inside_the_batch_propagates(self):
+        """All-or-nothing: the caller has decided nothing when it sees this, so
+        it writes nothing. A plain loop of `append` would leave a prefix."""
+        with pytest.raises(SequenceConflict):
+            _decide_batch(items=[AppendOptions(seq="2"), AppendOptions(seq="1")])
+
+    def test_a_refused_item_does_not_advance_stream_seq(self):
+        """The in-memory store's own scan advanced it here, so a batch whose
+        first item was fenced out raised a conflict against a sequence nothing
+        had ever written."""
+        state = ProducerState(epoch=5, last_seq=0, last_updated=NOW)
+        batch = _decide_batch(
+            items=[
+                AppendOptions(
+                    producer_id="p", producer_epoch=1, producer_seq=0, seq="9"
+                ),
+                AppendOptions(seq="3"),
+            ],
+            producer_states={"p": state},
+        )
+        assert isinstance(batch.verdicts[0].producer_result, ProducerStaleEpoch)
+        assert batch.verdicts[0].write is False
+        assert batch.verdicts[1].write is True
+        assert batch.last_seq == "3"
+
+    def test_a_producer_is_fenced_against_its_own_earlier_item(self):
+        opts = AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)
+        batch = _decide_batch(items=[opts, opts])
+        assert isinstance(batch.verdicts[0].producer_result, ProducerAccepted)
+        assert isinstance(batch.verdicts[1].producer_result, ProducerDuplicate)
+        assert batch.verdicts[1].write is False
+
+    def test_a_refused_item_does_not_advance_its_producer(self):
+        """A gap is refused and takes no sequence, so the next item from the
+        same producer is still judged against the pre-batch state."""
+        batch = _decide_batch(
+            items=[
+                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=4),
+                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0),
+            ]
+        )
+        assert isinstance(batch.verdicts[0].producer_result, ProducerSequenceGap)
+        assert isinstance(batch.verdicts[1].producer_result, ProducerAccepted)
+        assert batch.verdicts[1].write is True
+
+    def test_a_close_refuses_the_items_after_it(self):
+        closing = AppendOptions(close=True)
+        batch = _decide_batch(items=[AppendOptions(), closing, AppendOptions()])
+        assert [v.write for v in batch.verdicts] == [True, True, False]
+        assert batch.verdicts[2].stream_closed is True
+        assert batch.closing_opts is closing
+
+    def test_a_close_records_which_tuple_closed_the_stream(self):
+        """So the items after it can recognise a re-send of that same closing
+        append as a duplicate — the answer a loop of `append` gives, and the
+        one the durable store lost by short-circuiting on `closed`."""
+        closing = AppendOptions(
+            producer_id="p", producer_epoch=0, producer_seq=0, close=True
+        )
+        batch = _decide_batch(items=[closing, closing])
+        assert batch.verdicts[0].write is True
+        assert batch.verdicts[1].write is False
+        assert batch.verdicts[1].stream_closed is True
+        assert isinstance(batch.verdicts[1].producer_result, ProducerDuplicate)
+        assert batch.closing_opts is closing
+
+    def test_an_already_closed_stream_still_gets_a_verdict_per_item(self):
+        batch = _decide_batch(
+            StreamFacts(closed=True, closed_by=ClosedBy("p", epoch=0, seq=0)),
+            items=[
+                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0),
+                AppendOptions(),
+            ],
+        )
+        assert batch.writes_anything is False
+        assert isinstance(batch.verdicts[0].producer_result, ProducerDuplicate)
+        assert isinstance(batch.verdicts[1].producer_result, ProducerStreamClosed)
+
+    def test_the_callers_producer_states_are_not_mutated(self):
+        """The rule is pure: a store must be free to abandon the whole batch on
+        a conflict without having had its own state advanced under it."""
+        states = {"p": None}
+        _decide_batch(
+            items=[AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)],
+            producer_states=states,
+        )
+        assert states == {"p": None}

@@ -34,10 +34,36 @@ persist — so a new backend implements *storage*, not protocol semantics.
 Conflicts are *raised* (`ContentTypeMismatch`, `SequenceConflict`) because they
 are caller errors; fencing outcomes are *returned* because they are protocol
 results carrying their own statuses and headers.
+
+## Batches
+
+`decide_append_batch` is the same question asked of a whole batch, and it is
+here for the same reason: both stores had grown their own version and the two
+genuinely disagreed (#181). A batch adds exactly two rules to the per-item one,
+and both are easy to get subtly wrong in isolation:
+
+- **All-or-nothing on a conflict.** Every item is decided before any of them is
+  written, so a conflict refuses the batch rather than leaving a written prefix.
+  The durable store's single transaction can only behave that way; the
+  in-memory store has to be told to.
+- **The facts advance across the batch**, exactly as they would across a loop of
+  `append` — which is what `append_many` promises on both backends. That means
+  they advance *only for an item that is actually written*: an item the fence
+  refuses takes no `Stream-Seq`, and does not move its producer's sequence. It
+  also means an item with `close=True` closes the stream *for the items after
+  it*, which then see a closed stream with a `closed_by` — so a producer
+  re-sending its own closing append later in the same batch is recognised as a
+  duplicate rather than told a bare "closed".
+
+Each of those three was live: the in-memory store advanced `Stream-Seq` on
+refused items (raising a conflict on a sequence nothing had taken), and the
+durable store short-circuited a closed stream and its own post-close items
+before consulting the rule at all (losing the duplicate).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +72,7 @@ from .producer import validate_producer
 from .types import (
     ClosedBy,
     ContentTypeMismatch,
+    ProducerAccepted,
     ProducerDuplicate,
     ProducerState,
     ProducerStreamClosed,
@@ -152,3 +179,102 @@ def decide_append(
         raise SequenceConflict(f"Sequence conflict: {seq} <= {facts.last_seq}")
 
     return AppendVerdict(write=True, producer_result=producer_result)
+
+
+@dataclass(frozen=True)
+class BatchVerdict:
+    """The decision for a whole batch: one verdict per input item, in order.
+
+    ``verdicts`` is always the same length as the items handed in, so a store
+    can zip it back against its inputs — an item the batch refuses keeps its
+    slot rather than vanishing and shifting every later item's answer onto the
+    wrong input.
+
+    ``closing_opts`` is the options object of the item that closed the stream,
+    or None if nothing in the batch closed it. A store needs it to record
+    *which* producer tuple did the closing.
+    """
+
+    verdicts: list[AppendVerdict]
+    last_seq: str | None = None
+    closing_opts: Any = None
+
+    @property
+    def writes_anything(self) -> bool:
+        """Whether any item is to be written. A store that allocates an offset
+        block up front must check this: a block of zero is an error."""
+        return any(v.write for v in self.verdicts)
+
+
+def decide_append_batch(
+    facts: StreamFacts,
+    items: Sequence[Any],
+    *,
+    producer_states: Mapping[str, ProducerState | None] | None = None,
+    now: float,
+) -> BatchVerdict:
+    """Decide a whole batch, as a loop of :func:`decide_append` over advancing
+    facts. See the "Batches" section of the module docstring for the two rules
+    this adds and why they are here rather than in each store.
+
+    ``items`` is the per-item options, in order — the same objects
+    ``decide_append`` takes, and ``None`` for a raw append with no options.
+    ``producer_states`` is the pre-batch state for every producer id appearing
+    in the batch; a missing key is read as "no state", the same as ``None``.
+
+    Nothing is mutated: ``producer_states`` is copied, and the caller's
+    ``facts`` is untouched. A conflict propagates out of the loop, which is what
+    makes the batch all-or-nothing — the caller has decided nothing by the time
+    it sees the exception, so it writes nothing.
+    """
+    states = dict(producer_states or {})
+    closed = facts.closed
+    closed_by = facts.closed_by
+    last_seq = facts.last_seq
+    closing_opts: Any = None
+
+    verdicts: list[AppendVerdict] = []
+    for opts in items:
+        producer_id = getattr(opts, "producer_id", None)
+        verdict = decide_append(
+            StreamFacts(
+                closed=closed,
+                closed_by=closed_by,
+                content_type=facts.content_type,
+                last_seq=last_seq,
+            ),
+            opts,
+            producer_state=states.get(producer_id) if producer_id is not None else None,
+            now=now,
+        )
+        verdicts.append(verdict)
+        if not verdict.write:
+            # Refused, so it is not written, so it moves nothing. This is the
+            # half the in-memory store's own scan got wrong: it advanced
+            # `last_seq` here, and a later item then collided with a sequence
+            # no write had ever taken.
+            continue
+
+        seq = getattr(opts, "seq", None)
+        if seq is not None:
+            last_seq = seq
+        if producer_id is not None and isinstance(
+            verdict.producer_result, ProducerAccepted
+        ):
+            # The state the store will commit after this item lands, so the
+            # next item from the same producer is fenced against this one
+            # rather than against the pre-batch row.
+            states[producer_id] = verdict.producer_result.proposed_state
+        if getattr(opts, "close", False):
+            # The rest of the batch observes the stream this item leaves
+            # behind, closing tuple included.
+            closed = True
+            closing_opts = opts
+            if producer_id is not None:
+                closed_by = ClosedBy(
+                    producer_id=producer_id,
+                    epoch=getattr(opts, "producer_epoch", None) or 0,
+                    seq=getattr(opts, "producer_seq", None) or 0,
+                )
+
+    return BatchVerdict(verdicts=verdicts, last_seq=last_seq, closing_opts=closing_opts)
