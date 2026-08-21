@@ -117,6 +117,9 @@ page is the contract.
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
+| `rebuild_and_verify` | `django_rakaia` | `(stream_path: 'str', *, into: 'str', live_models: 'Sequence[type[Model]]', source: 'ReadableStore \| None' = None, live_using: 'str' = 'default', registry: 'HandlerRegistry \| None' = None, upcaster_registry: 'UpcasterRegistry \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, event_match: 'str \| None' = None, on_drift: 'OnDriftPolicy' = 'warn') -> 'DiffReport'` | Rebuild ``stream_path`` into ``into`` under both guards and diff the result against the live rows. |
+| `GuardNotArmed` | `django_rakaia` | — | The read guard did not fire on a deliberate ambient query, so a green verdict from this run would be unsupported. |
+| `ScratchAliasNotEmpty` | `django_rakaia` | — | The ``into`` alias already holds rows for a model being rebuilt. |
 | `deny_database_access` | `django_rakaia` | `(*aliases: 'str') -> 'Iterator[None]'` | Raise :class:`AmbientDatabaseAccess` on any query to ``aliases`` in the block. |
 | `assert_no_live_writes` | `django_rakaia` | `(*models: 'type[Model]', using: 'str' = 'default') -> 'Iterator[None]'` | Assert the ``using`` row counts of ``models`` are unchanged across the block. |
 | `AmbientDatabaseAccess` | `django_rakaia` | — | A guarded connection alias was queried inside ``deny_database_access`` — a handler (or a helper it calls) read the database directly instead of through the injected reader. |
@@ -223,6 +226,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-132 exported names across 14 sections. 116 carry a docstring; 16 do not and show `—` above.
+135 exported names across 14 sections. 119 carry a docstring; 16 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

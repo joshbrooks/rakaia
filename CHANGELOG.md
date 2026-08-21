@@ -11,6 +11,30 @@ runnable demo for each.
 
 ### Added
 
+- **`rebuild_and_verify()` — one call for "can the log rebuild this, and does it
+  match?"** Getting a trustworthy answer previously meant composing six
+  interfaces in the right order — move the log off the database being guarded,
+  arm `assert_no_live_writes` outside and `deny_database_access` inside, record
+  the effects while still applying them (so a stage > 0 handler can read what
+  stage 0 wrote), replay, build a `PreloadedProjectionReader`, diff — and then
+  separately remembering the part written down nowhere: *a pass means nothing
+  unless the guards were actually armed*. `hermeticity.py` asked the caller to
+  check that by hand; ADR 0003 records the first production consumer leaving the
+  read guard unwired for months.
+
+  The new call does the composition and checks its own work. It trips the read
+  guard on purpose and raises `GuardNotArmed` if nothing happens, so a green
+  verdict cannot be obtained with the guard off. It refuses a from-scratch claim
+  it cannot honour — `ScratchAliasNotEmpty` when the disposable alias still holds
+  rows from an earlier run, which a stage > 0 handler would otherwise read as if
+  the log had produced them. It returns the same `DiffReport`, so `verdict` still
+  separates "nothing disagreed" from "nothing was compared". `live_models` is
+  required rather than defaulted to empty: defaulting it would disarm the write
+  guard without saying so, which is the failure this exists to stop.
+
+  The individual pieces stay exported. This is the shortest route to a
+  trustworthy answer, not the only permitted one.
+
 - **`DjangoExecutor(normalizers=...)`, and `Normalizer` as an exported name.**
   Deciding whether a stored value differs from the one the log carries is one
   question, and two paths asked it: `diff_effects_against_rows` to check that
