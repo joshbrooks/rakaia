@@ -998,3 +998,259 @@ class TestAnOutOfRangeIntegerIsNotBound:
         # The out-of-range lookup matches nothing, as it did before; the sibling
         # writes.
         assert FinanceLine.objects.get(submission_id="real").suku == "z"
+
+
+class TestTheShapeProductionActuallyEmits:
+    """The fan-out as it exists in a production database, not as invented here.
+
+    Everything above this line is a property test: a shape chosen to make one
+    rule fail if it is wrong. These are the reverse — shapes measured off the
+    consumer's own data (~16.7k submissions), kept because what the collapse is
+    *worth*, and what bounds it, are facts about their schema rather than about
+    this code.
+
+    Three numbers came out of that measurement and each one is a case below.
+
+    * **The worst real fan-out is 33 statements, and it collapses to 2** — one
+      submission of form SF 2.3 with 32 repeater rows. Not to 1: the main row
+      lives in a different table from its repeaters, and the model is part of
+      the grouping key. #199 reported 9 as the worst; 33 is what the data holds.
+    * **A form with three repeater tables costs 4 statements, however many rows
+      it has.** Form SF 1.3 fans out to 8 rows across three tables on nearly
+      every save (its median fan-out *is* 8). The collapse is bounded by the
+      number of tables, not the number of rows — so the ceiling on this
+      optimisation is the schema, and it is worth being able to see that.
+    * **The lookup column is a `UUIDField`, and the same row arrives under two
+      Python types.** The event carries ``str(pk)``; the reader hands back
+      ``UUID`` objects for the repeater rows. `exact` and `IN` prepare their
+      operands separately — the discovery that shipped `_values_are_bindable`
+      — and no case above binds a UUID at all.
+
+    One thing production did *not* reach: 33 values is three orders of magnitude
+    under SQLite's 32766 bind cap, so nothing in that dataset exercises
+    `TestALargeFanOutIsChunked`. That case stays synthetic by necessity, and is
+    worth keeping for exactly that reason — a consumer whose fan-out is a
+    reconcile over a whole table rather than one form's repeaters would find it.
+    """
+
+    MAIN = "test_django_rakaia.SubmissionProjection"
+    REPEATER = "test_django_rakaia.RepeaterProjection"
+
+    def _fan_out(self, repeaters: int, status: int = 3):
+        """The effects one status change produces, in emission order.
+
+        Mirrors the consumer's binding: the main row first, then one `Update` per
+        repeater row, all with identical literal defaults.
+        """
+        import uuid
+
+        from .models import RepeaterProjection, SubmissionProjection
+
+        parent = uuid.uuid4()
+        SubmissionProjection.objects.create(submission_id=parent)
+        children = [uuid.uuid4() for _ in range(repeaters)]
+        RepeaterProjection.objects.bulk_create(
+            RepeaterProjection(submission_id=c, parent_id=parent) for c in children
+        )
+
+        effects = [
+            Update(
+                model_label=self.MAIN,
+                # The real event carries the key as a string, so the main row's
+                # lookup value is a `str` while the repeaters' are `UUID`s.
+                lookup={"submission_id": str(parent)},
+                defaults={"status_id": status},
+            )
+        ]
+        effects += [
+            Update(
+                model_label=self.REPEATER,
+                lookup={"submission_id": c},
+                defaults={"status_id": status},
+            )
+            for c in children
+        ]
+        return parent, children, effects
+
+    def test_the_worst_real_fan_out_is_thirty_three_statements_and_collapses_to_two(
+        self,
+    ) -> None:
+        """SF 2.3, submission ``fa93be38-9fc0-430e-a8bc-c337bb32ea58``: 1 + 32.
+
+        Two statements, not one — the main row is in another table — and not 33.
+        """
+        from .models import RepeaterProjection, SubmissionProjection
+
+        parent, children, effects = self._fan_out(repeaters=32)
+        assert len(effects) == 33
+
+        with CaptureQueriesContext(connection) as ctx:
+            _batching().apply(effects)
+
+        assert len(_update_statements(ctx)) == 2, _update_statements(ctx)
+        assert SubmissionProjection.objects.get(submission_id=parent).status_id == 3
+        assert (
+            RepeaterProjection.objects.filter(
+                submission_id__in=children, status_id=3
+            ).count()
+            == 32
+        )
+
+    def test_the_win_is_bounded_by_tables_not_rows(self) -> None:
+        """SF 1.3: 8 rows across three repeater tables is 4 statements, not 1.
+
+        Identical defaults, identical lookup column, adjacent — and still one
+        statement per table, because a collapsed update names a table. Written
+        with the two repeater fixtures this app has plus the main row, so it
+        asserts the rule that produces the 4; the third table would add a third.
+        """
+        import uuid
+
+        from .models import (
+            ArchivedDoc,
+            RepeaterProjection,
+            SoftDeleteDoc,
+            SubmissionProjection,
+        )
+
+        parent = uuid.uuid4()
+        SubmissionProjection.objects.create(submission_id=parent)
+        kids = [uuid.uuid4() for _ in range(3)]
+        RepeaterProjection.objects.bulk_create(
+            RepeaterProjection(submission_id=k, parent_id=parent) for k in kids
+        )
+        for model in (SoftDeleteDoc, ArchivedDoc):
+            model.objects.create(name="row-a", is_active=True)
+            model.objects.create(name="row-b", is_active=True)
+
+        effects = [
+            Update(
+                model_label=self.MAIN,
+                lookup={"submission_id": str(parent)},
+                defaults={"status_id": 3},
+            ),
+            *[
+                Update(
+                    model_label=self.REPEATER,
+                    lookup={"submission_id": k},
+                    defaults={"status_id": 3},
+                )
+                for k in kids
+            ],
+            *[
+                Update(
+                    model_label=f"test_django_rakaia.{label}",
+                    lookup={"name": name},
+                    defaults={"is_active": False},
+                )
+                for label in ("SoftDeleteDoc", "ArchivedDoc")
+                for name in ("row-a", "row-b")
+            ],
+        ]
+
+        with CaptureQueriesContext(connection) as ctx:
+            _batching().apply(effects)
+
+        # Four tables touched, eight effects, four statements.
+        assert len(_update_statements(ctx)) == 4, _update_statements(ctx)
+        assert SoftDeleteDoc.objects.filter(is_active=False).count() == 2
+        assert ArchivedDoc.objects.filter(is_active=False).count() == 2
+        assert RepeaterProjection.objects.filter(status_id=3).count() == 3
+
+    def test_a_uuid_and_a_string_for_different_rows_share_one_in_list(self) -> None:
+        """The production key type, under both Python types that reach it.
+
+        The event carries the key as ``str(pk)`` and the reader hands back
+        ``UUID`` objects, so a real batch mixes the two. They are unequal in
+        Python and hash differently; the grouping key does not include the lookup
+        *value*, only its field, so they group anyway and both go into one ``IN``
+        list. That is the case that would notice if Django ever prepared an ``IN``
+        operand differently from an ``exact`` one for `UUIDField` — which is
+        exactly what it does for an out-of-range integer, the discovery that
+        `_values_are_bindable` exists for.
+        """
+        import uuid
+
+        from .models import RepeaterProjection
+
+        a, b = uuid.uuid4(), uuid.uuid4()
+        RepeaterProjection.objects.bulk_create(
+            [
+                RepeaterProjection(submission_id=a, parent_id=a),
+                RepeaterProjection(submission_id=b, parent_id=a),
+            ]
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            _batching().apply(
+                [
+                    Update(
+                        model_label=self.REPEATER,
+                        lookup={"submission_id": a},  # a UUID, from the reader
+                        defaults={"status_id": 7},
+                    ),
+                    Update(
+                        model_label=self.REPEATER,
+                        lookup={"submission_id": str(b)},  # a str, from the event
+                        defaults={"status_id": 7},
+                    ),
+                ]
+            )
+
+        statements = _update_statements(ctx)
+        assert len(statements) == 1, statements
+        assert " IN (" in statements[0].upper()
+        assert list(
+            RepeaterProjection.objects.order_by("submission_id").values_list(
+                "status_id", flat=True
+            )
+        ) == [7, 7]
+
+    def test_one_row_under_two_types_never_reaches_the_grouper(self) -> None:
+        """And the same row under both types is refused before batching exists.
+
+        This is the hazard class that narrowed the defaults allowlist — values
+        distinct in Python, one row in the database — arriving on the *lookup*
+        side. It cannot be a batching bug, because `check_disjoint_defaults`
+        canonicalises a lookup with ``json.dumps(..., default=str)``, so a `UUID`
+        and its `str` form are already one row to it and two effects writing
+        ``status_id`` on it are a collision.
+
+        Worth pinning from both directions: the collision check's notion of row
+        identity is *coarser* than the grouping key's, and that is the safe
+        direction for the pair to disagree in. If `_row_key` were ever tightened
+        to compare Python values, this shape would start reaching the collapse
+        instead — where it happens to be harmless today, since two literal
+        writes of the same value are one write, but nothing would be saying so.
+        """
+        import uuid
+
+        import pytest
+
+        from rakaia.effects import EffectCollisionError
+
+        from .models import RepeaterProjection
+
+        a = uuid.uuid4()
+        RepeaterProjection.objects.create(submission_id=a, parent_id=a)
+
+        with pytest.raises(EffectCollisionError):
+            _batching().apply(
+                [
+                    Update(
+                        model_label=self.REPEATER,
+                        lookup={"submission_id": a},
+                        defaults={"status_id": 7},
+                    ),
+                    Update(
+                        model_label=self.REPEATER,
+                        lookup={"submission_id": str(a)},
+                        defaults={"status_id": 7},
+                    ),
+                ]
+            )
+
+    # There is deliberately no flag-off counterpart to the case above. It would
+    # assert 33 statements where `TestTheCollapseIsOptIn` already asserts one per
+    # effect, and a mutation ignoring the flag reddens that class first — a guard
+    # that never fails on its own is a cost with no cover.

@@ -397,5 +397,46 @@ class History(models.Model):
         unique_together = ["submission_id", "version"]
 
 
+class SubmissionProjection(models.Model):
+    """A main projection row, in the shape the consumer of #199 actually has.
+
+    The other fixtures in this file were designed for the property under test.
+    This pair was copied off a production schema, because the fan-out #199
+    reported is a *shape* — a main row and its repeater rows, each keyed by its
+    own submission UUID, all carrying a denormalised status — and the shape is
+    what decides how much of it collapses.
+
+    ``submission_id`` is a ``UUIDField`` because that is the column the real
+    lookup binds against, and no other fixture here has one paired with a
+    column a collapsed update is allowed to write. ``status_id`` stands for the
+    denormalised status FK id: a nullable integer, which is exactly the
+    ``workflow_status_id`` the status fold sets.
+    """
+
+    submission_id = models.UUIDField(unique=True)
+    status_id = models.IntegerField(null=True, default=None)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+class RepeaterProjection(models.Model):
+    """A repeater row of `SubmissionProjection`, keyed by its own submission UUID.
+
+    ``parent_id`` is the main row's ``submission_id`` — the column the fold
+    queries to find the fan-out — and the repeater's *own* ``submission_id`` is
+    what each emitted `Update` looks up. So one logical status change becomes one
+    update on `SubmissionProjection` plus one per row here, which is the whole of
+    #199.
+    """
+
+    submission_id = models.UUIDField(unique=True)
+    parent_id = models.UUIDField()
+    status_id = models.IntegerField(null=True, default=None)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 # Register the admin interface for AppStreamEvent
 register_stream_event_admin(AppStreamEvent)
