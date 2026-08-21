@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -23,14 +22,13 @@ from .json_mode import (
     normalize_content_type,
     process_json_append,
 )
+from .offsets import COMPOUND
 from .producer import is_producer_state_expired
 from .types import (
-    INITIAL_OFFSET,
     AppendOptions,
     AppendResult,
     CloseResult,
     ContentTypeMismatch,
-    InvalidOffset,
     ProducerAccepted,
     ProducerValidationResult,
     SequenceConflict,
@@ -40,15 +38,13 @@ from .types import (
     StreamNotFound,
 )
 
-# NB: this module generates offsets (the `{seq}_{byte}` format) but never
-# *validates* them, so it deliberately does not import `VALID_OFFSET_PATTERN`.
-# Offset validation lives in the protocol server (`handler`), which uses the
-# one pattern from `.types` (#41).
+# This module neither renders nor validates the offset format itself: both are
+# `COMPOUND`'s job (`rakaia.offsets`). It still does not import
+# `VALID_OFFSET_PATTERN` — that is the protocol server's syntactic guard on what
+# a *client* may send, and it accepts both stores' shapes by design (#41), so it
+# cannot tell a foreign offset from one of ours.
 
 _log = logging.getLogger("rakaia.store")
-
-# This store's offsets, and nothing else. See `StreamStore._check_offset`.
-_COMPOUND_OFFSET = re.compile(r"^\d+_\d+$")
 
 
 class StreamStore:
@@ -179,7 +175,7 @@ class StreamStore:
         # INITIAL_OFFSET (generation 0).
         prior = self._retired_seq.get(path)
         initial_offset = (
-            INITIAL_OFFSET if prior is None else f"{prior + 1:016d}_{0:016d}"
+            COMPOUND.first() if prior is None else COMPOUND.render(prior + 1, 0)
         )
         stream = Stream(
             path=path,
@@ -666,17 +662,14 @@ class StreamStore:
             # Storing the payload unframed (#155) therefore leaves every offset
             # exactly where it was; only `StreamMessage.data` changes.
             byte_offset += len(payload) + (1 if json_mode else 0)
-            # Offsets are `{read_seq}_{byte_offset}`, each zero-padded to 16
-            # digits so they sort byte-wise lexicographically (the protocol's
-            # requirement, and what keeps offsets monotonic across recreate).
-            # `:016d` is a minimum width, not a cap: the ordering guarantee holds
-            # only while both fields stay < 10**16. That bound is unreachable
-            # here — the byte offset is capped by the process's memory (this
-            # store holds every message in RAM, so 10**16 bytes = ~10 PB is
-            # impossible) and 10**16 recreations of one path equally so. A
-            # durable backend that could exceed it must widen the fields (and
-            # INITIAL_OFFSET) in lockstep.
-            new_offset = f"{read_seq:016d}_{byte_offset:016d}"
+            # `COMPOUND` owns the shape, the field widths and the padding
+            # that makes offsets sort byte-wise (see `rakaia.offsets`). The
+            # widths used to be written out here, again where a recreated path
+            # picks up its first offset, and a third time inside the
+            # `INITIAL_OFFSET` literal — with a comment saying a change had to
+            # update all three "in lockstep", which is a rule announcing it has
+            # no home (#182).
+            new_offset = COMPOUND.render(read_seq, byte_offset)
 
             message = StreamMessage(
                 data=payload,
@@ -705,11 +698,7 @@ class StreamStore:
         offsets opaque rather than uniform (§6), so only the issuing store can
         judge — `VALID_OFFSET_PATTERN` accepts both formats by design.
         """
-        if not _COMPOUND_OFFSET.match(offset):
-            raise InvalidOffset(
-                f"Not an offset this store issued: {offset!r}. In-memory-store "
-                f"offsets have the compound {{seq}}_{{byte}} form."
-            )
+        COMPOUND.require(offset)
 
     def _find_offset_index(self, stream: Stream, offset: str) -> int:
         """Find first message with offset > given offset (lexicographic)."""

@@ -15,6 +15,40 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## `poll` refuses a cursor from another store instead of reporting `rewound`
+
+`rakaia.subscription.poll` compares your saved cursor against the stream head to
+decide whether the log was rebuilt beneath you. If the cursor came from a
+*different* store than the one being read, that comparison had no correct answer
+to give and gave a wrong one: an in-memory cursor four events into a stream was
+judged to be beyond a durable head at forty-two, because the two formats are
+padded to different widths and the comparison fell back to text order.
+
+It now raises `ForeignOffset` (a subclass of the existing `InvalidOffset`, so
+`except InvalidOffset` still catches it).
+
+**What changes for you.** Nothing, unless a cursor really is crossing stores —
+in which case you previously got `Poll(status="rewound")`, which instructs a
+consumer to discard its derived state and re-read the whole stream. The final
+state was correct; the stated reason was not. If you have a consumer branching on
+`.rewound`, it will now see an exception on that path instead. Clear the saved
+cursor when you change stores.
+
+Realistically this arises in a test that builds a cursor with the wrong store, or
+from a corrupted saved value — the in-memory store is for tests, demos and the
+conformance suite, so no deployment accumulates a cursor under it and then
+switches.
+
+**If you supply your own store, nothing changes at all.** The refusal fires only
+when rakaia can see that both tokens came from its own two formats and that those
+formats differ. A third-party `CursorStore` issuing ULIDs, timestamps or hex
+offsets matches neither, and its cursors are compared byte-wise exactly as before
+— which is the ordering rule the protocol states for any opaque offset.
+
+---
+
 # 0.2.0
 
 Everything in this file so far. `0.1.0` was the initial groundwork and `0.2.0`

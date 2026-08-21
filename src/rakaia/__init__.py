@@ -47,6 +47,7 @@ from .history import (
     history_effects,
     label_marker,
 )
+from .offsets import ForeignOffset
 from .projections import (
     project_latest,
     reconcile_aggregate,
@@ -190,6 +191,7 @@ __all__ = [
     "ContentTypeMismatch",
     "InvalidJson",
     "EmptyJsonArray",
+    "ForeignOffset",
     "InvalidOffset",
     # Cursor
     "calculate_cursor",

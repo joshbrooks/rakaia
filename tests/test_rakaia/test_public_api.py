@@ -60,6 +60,7 @@ RAKAIA_PUBLIC = {
     "ContentTypeMismatch",
     "EmptyJsonArray",
     "InvalidJson",
+    "ForeignOffset",
     "InvalidOffset",
     "SequenceConflict",
     "StreamConfigConflict",

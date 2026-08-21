@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .offsets import after as offsets_after
 from .protocols import CursorStore
 from .types import StreamMessage
 
@@ -120,23 +121,16 @@ def _tail(messages: list[StreamMessage], fallback: str) -> str:
     return messages[-1].offset if messages else fallback
 
 
-def _offset_key(offset: str) -> tuple[int, ...] | None:
-    """Parse a rakaia offset into an orderable tuple of ints, or None.
-
-    Both stores now emit zero-padded, lexicographically-sortable offsets (the
-    in-memory ``{seq}_{bytes}`` and the Django store's padded integer, #34), so
-    plain string order already matches. Comparing the parsed ints is kept as a
-    defensive fallback that also tolerates a non-padded offset (``"9"`` vs
-    ``"10"``) should any store or older cursor produce one."""
-    try:
-        return tuple(int(part) for part in offset.split("_"))
-    except ValueError:
-        return None
-
-
 def _after(a: str, b: str) -> bool:
-    """True if offset `a` sorts strictly after `b` (chronologically later)."""
-    ka, kb = _offset_key(a), _offset_key(b)
-    if ka is None or kb is None or len(ka) != len(kb):
-        return a > b  # unparseable/mismatched shape: fall back to lexicographic
-    return ka > kb
+    """True if offset `a` sorts strictly after `b` (chronologically later).
+
+    Delegates to `offsets.after`, which raises `ForeignOffset` rather than
+    guessing when the two tokens are recognisably from different stores. This used
+    to hold its own parse-and-compare, with a lexicographic fallback for the case
+    it could not line up — and for that one pair the fallback answered *wrongly*
+    rather than uncertainly: a padded compound offset sorts *above* a padded plain
+    one, decided by the ``'_'`` at its seventeenth character. See `rakaia.offsets`
+    for why there is nothing correct to return there, and why byte order is still
+    the right answer for a store this library does not recognise.
+    """
+    return offsets_after(a, b)
