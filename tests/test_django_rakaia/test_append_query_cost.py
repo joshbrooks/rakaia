@@ -182,3 +182,42 @@ class TestAppendQueryCost:
             store.append_many("s", [(b'{"n": 1}', AppendOptions())] * batch)
 
         assert _shapes(ctx) == _STEADY_STATE_APPEND, _data_queries(ctx)
+
+    @pytest.mark.parametrize("batch", [1, 4, 20])
+    def test_a_fenced_append_many_is_flat_in_the_batch_size(self, batch: int) -> None:
+        """Producer fencing costs one read and one write per *producer*, not per
+        item, so the flat-cost claim survives a fenced batch too.
+
+        Both halves are easy to lose. The state is read once because the batch
+        rule is asked for the whole batch at once and advances its own view from
+        item to item; it is written once because the rule hands back the last
+        accepted outcome per producer, which is the only state a later writer can
+        be fenced against. Committing each accepted item in turn reaches the same
+        final state through N `update_or_create`s -- correct, and invisible to
+        every other test in the suite.
+        """
+        store = self._warm()
+        items = [
+            (
+                b'{"n": 1}',
+                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=i),
+            )
+            for i in range(batch)
+        ]
+        with CaptureQueriesContext(connection) as ctx:
+            results = store.append_many("s", items)
+
+        assert all(r.message is not None for r in results)
+        assert _shapes(ctx) == [
+            "SELECT rakaia_stream",
+            # The producer's pre-batch state, read once for the whole batch.
+            "SELECT rakaia_streamproducer",
+            "INSERT rakaia_streamevent",
+            "SELECT rakaia_streamoffsetwatermark",
+            "UPDATE rakaia_streamoffsetwatermark",
+            "INSERT rakaia_streamentry",
+            # `update_or_create`: the existence probe, then the write. Once --
+            # an INSERT here because this producer is new to the stream.
+            "SELECT rakaia_streamproducer",
+            "INSERT rakaia_streamproducer",
+        ], _data_queries(ctx)

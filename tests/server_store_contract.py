@@ -285,6 +285,29 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert messages == []
 
+    def test_a_closed_stream_refuses_a_conflicting_batch_rather_than_raising(
+        self, store
+    ):
+        """Closed outranks both conflicts, for a batch as for a single append.
+
+        `test_append_many_to_a_closed_stream_refuses_every_item` uses a clean
+        batch, so it cannot see a store that forgets the stream is closed while
+        scanning for conflicts: such a store raises `SequenceConflict` here and
+        answers the clean batch correctly, which is a refusal turned into a 400
+        on one backend and not the other — #181's own shape.
+        """
+        store.create("s", content_type="application/json")
+        store.append("s", b'{"n": 1}', AppendOptions(seq="5", close=True))
+
+        results = store.append_many(
+            "s",
+            [
+                (b'{"n": 2}', AppendOptions(seq="1")),
+                (b"raw", AppendOptions(content_type="text/plain")),
+            ],
+        )
+        assert all(r.stream_closed and r.message is None for r in results)
+
     def test_append_many_validates_content_type_per_item(self, store):
         store.create("s", content_type="text/plain")
         with pytest.raises(ContentTypeMismatch):
@@ -299,6 +322,55 @@ class ServerStoreContract:
         store.append("s", b'{"id": 1}', AppendOptions(seq="5"))
         with pytest.raises(SequenceConflict):
             store.append_many("s", [(b'{"id": 2}', AppendOptions(seq="5"))])
+
+    def test_a_seq_conflict_late_in_a_batch_writes_nothing(self, store):
+        """All-or-nothing, on the *other* conflict.
+
+        A single-item batch cannot tell a refusal apart from a refusal that
+        happened to leave nothing behind, and the content-type case above is the
+        only multi-item one — so a store could scan for content type, skip
+        `Stream-Seq` entirely, and stay green while a conflicting batch left its
+        prefix written. The durable store's transaction rolls back either way;
+        the in-memory store has nothing to roll back and must refuse up front.
+        """
+        store.create("s")
+        with pytest.raises(SequenceConflict):
+            store.append_many(
+                "s",
+                [
+                    (b'{"id": 1}', AppendOptions(seq="2")),
+                    (b'{"id": 2}', AppendOptions(seq="1")),
+                ],
+            )
+        messages, _ = store.read("s")
+        assert messages == [], "a refused batch must write nothing"
+        assert store.get("s").last_seq is None
+
+    def test_a_batch_conflicting_with_the_stream_writes_nothing(self, store):
+        """The same rule, against the sequence the stream already had.
+
+        The sibling above starts from a fresh stream, so its conflict is between
+        two items of the batch — which a store that never read the stream's own
+        `Stream-Seq` still catches. This one puts an *admissible* item in front
+        of an item that conflicts with the pre-batch value, which is the only
+        arrangement that can leave a written prefix behind. Getting it wrong
+        breaks all-or-nothing on one backend and not the other: the durable
+        store's transaction rolls the prefix back whatever it decided.
+        """
+        store.create("s")
+        store.append("s", b'{"id": 0}', AppendOptions(seq="5"))
+
+        with pytest.raises(SequenceConflict):
+            store.append_many(
+                "s",
+                [
+                    (b'{"id": 1}', None),
+                    (b'{"id": 2}', AppendOptions(seq="3")),
+                ],
+            )
+        messages, _ = store.read("s")
+        assert len(messages) == 1, "the admissible item must not have been written"
+        assert store.get("s").last_seq == "5"
 
     def test_append_many_advances_seq_like_a_loop_of_append(self, store):
         store.create("s")
@@ -330,6 +402,99 @@ class ServerStoreContract:
         assert store.get("s").closed is True
         messages, _ = store.read("s")
         assert len(messages) == 2, "the item after the close must not be written"
+
+    async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
+        """An item the fence refuses is not written, so it cannot move
+        `Stream-Seq` for the items after it.
+
+        A loop of `append` gets this for free: `last_seq` is only assigned after
+        a write lands. A batch has to say so, because its admission scan walks
+        every item before anything is written — and if the scan advances the seq
+        view on an item that will never be written, a later legitimate item
+        collides with a sequence nothing ever took. #181: the two stores
+        hand-rolled that scan separately and only one of them got this right.
+        """
+        await self._sync(store.create, "s")
+        await store.append_with_producer("s", b'{"n": 0}', self._producer("p", 2, 0))
+        results = await self._sync(
+            store.append_many,
+            "s",
+            [
+                # Stale epoch: refused, so its seq="9" is never taken.
+                (
+                    b'{"n": 1}',
+                    AppendOptions(
+                        producer_id="p", producer_epoch=1, producer_seq=0, seq="9"
+                    ),
+                ),
+                (b'{"n": 2}', AppendOptions(seq="3")),
+            ],
+        )
+        assert isinstance(results[0].producer_result, ProducerStaleEpoch)
+        assert results[0].message is None
+        assert results[1].message is not None, (
+            "seq='3' is free: the refused item never took seq='9'"
+        )
+        stream = await self._sync(store.get, "s")
+        assert stream.last_seq == "3"
+
+    async def test_append_many_to_a_closed_stream_recognises_the_closing_producer(
+        self, store
+    ):
+        """A batch is admitted on the same terms as a single append, including
+        the idempotent re-send of the append that closed the stream.
+
+        `append` reports that tuple as a duplicate so the producer can tell "my
+        close landed" from "someone else closed this". A batch that answers a
+        bare "closed" to the same tuple tells the producer to give up on a write
+        that in fact succeeded.
+        """
+        await self._sync(store.create, "s")
+        closing = AppendOptions(
+            producer_id="p", producer_epoch=1, producer_seq=0, close=True
+        )
+        await store.append_with_producer("s", b'{"n": 1}', closing)
+
+        results = await self._sync(store.append_many, "s", [(b'{"n": 1}', closing)])
+
+        assert results[0].stream_closed is True
+        assert results[0].message is None
+        assert isinstance(results[0].producer_result, ProducerDuplicate)
+
+    async def test_append_many_items_after_a_close_are_admitted_like_a_loop(
+        self, store
+    ):
+        """The items after an in-batch close observe the stream the close left
+        behind — including the closing tuple, so a producer re-sending its own
+        closing append inside the same batch is told it is a duplicate rather
+        than a bare "closed"."""
+        await self._sync(store.create, "s")
+        closing = AppendOptions(
+            producer_id="p", producer_epoch=1, producer_seq=0, close=True
+        )
+        results = await self._sync(
+            store.append_many, "s", [(b'{"n": 1}', closing), (b'{"n": 1}', closing)]
+        )
+
+        assert results[0].message is not None and results[0].stream_closed
+        assert results[1].message is None and results[1].stream_closed
+        assert isinstance(results[1].producer_result, ProducerDuplicate)
+
+    async def test_append_many_fences_the_second_item_against_the_first(self, store):
+        """Within one batch a producer's state advances item by item, so a
+        second item repeating the first item's sequence is a duplicate — the
+        same answer a loop of `append` gives."""
+        await self._sync(store.create, "s")
+        opts = self._producer("p", 1, 0)
+        results = await self._sync(
+            store.append_many, "s", [(b'{"n": 1}', opts), (b'{"n": 2}', opts)]
+        )
+
+        assert isinstance(results[0].producer_result, ProducerAccepted)
+        assert isinstance(results[1].producer_result, ProducerDuplicate)
+        assert results[1].message is None
+        messages, _ = await self._sync(store.read, "s")
+        assert len(messages) == 1, "the duplicate must not be written"
 
     # =========================================================================
     # Close
