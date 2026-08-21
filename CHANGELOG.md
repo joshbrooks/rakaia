@@ -88,6 +88,24 @@ runnable demo for each.
   The individual pieces stay exported. This is the shortest route to a
   trustworthy answer, not the only permitted one.
 
+- **`diff_effects_against_rows(effects, preload=True)` — the bulk verification
+  path as one option.** Avoiding one query per row used to mean building a
+  `PreloadedProjectionReader` with your effects and then passing *the same*
+  effects to the diff, with nothing enforcing the "same". Get it wrong and you
+  got a report rather than an error: one resting partly on a snapshot of a
+  different batch, or — handing a generator to both — on nothing at all. The flag
+  builds the reader from the list the diff is already given, so there is no second
+  list to keep in step, and `using=` names the alias that reader reads from.
+
+  The bulk fetch is a point-in-time snapshot, so the flag is for read-only
+  verification and stays off during live staged replay, where the rows change as
+  the replay writes them. `PreloadedProjectionReader` remains exported for a
+  caller that needs it standalone, but handing one back to the diff now has to
+  cover that call's effects — `PreloadMismatch`, a new exported error, instead of
+  a half-snapshot answer — and `reader=` together with `preload=`/`using=` is a
+  `TypeError` rather than one of them quietly winning. `rebuild_and_verify()`
+  keeps its single bulk read and no longer composes the reader itself.
+
 - **`DjangoExecutor(normalizers=...)`, and `Normalizer` as an exported name.**
   Deciding whether a stored value differs from the one the log carries is one
   question, and two paths asked it: `diff_effects_against_rows` to check that

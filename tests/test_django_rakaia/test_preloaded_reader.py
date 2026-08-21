@@ -14,15 +14,16 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from django.db import connection
+from django.db import connection, connections
 from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.verification import (
     PreloadedProjectionReader,
+    PreloadMismatch,
     diff_effects_against_rows,
 )
-from rakaia.effects import Effect, Upsert
+from rakaia.effects import Delete, Effect, Update, Upsert
 
 from .models import Alert, FinanceLine, Measure
 
@@ -138,6 +139,24 @@ class TestPreloadedProjectionReader:
             reader.get("test_django_rakaia.FinanceLine", submission_id="late") is None
         )
 
+    def test_empty_lookup_is_not_preloaded_and_reads_live(self):
+        # The other shape a bulk fetch cannot index: an empty lookup scopes the
+        # whole model, so preloading it would cache one arbitrary row as *the*
+        # answer (and scan the table to get it). It stays live, which is visible
+        # as a row created after construction being the answer.
+        reader = PreloadedProjectionReader(
+            [
+                Update(
+                    model_label="test_django_rakaia.FinanceLine",
+                    lookup={},
+                    defaults={"suku": "A"},
+                )
+            ]
+        )
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        row = reader.get("test_django_rakaia.FinanceLine")
+        assert row is not None and row.submission_id == "s1"
+
     def test_spanning_lookup_is_not_preloaded_and_reads_live(self):
         FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
         # A relation/transform lookup (`__`) can't be indexed by exact match, so
@@ -165,3 +184,194 @@ class TestPreloadedProjectionReader:
         assert (
             reader.get("test_django_rakaia.FinanceLine", submission_id="s1") is not None
         )
+
+
+@pytest.mark.django_db
+class TestPreloadOption:
+    """``diff_effects_against_rows(effects, preload=True)`` — the fast path as one
+    option on the diff (#190).
+
+    The pattern this replaces was: build a ``PreloadedProjectionReader`` with your
+    effects, then pass *the same* effects to the diff, with nothing enforcing the
+    "same". Getting it wrong returned a report rather than an error — a report
+    resting on a snapshot of a different batch. With the flag there is one list,
+    so there is nothing to keep in step.
+    """
+
+    def test_preload_agrees_with_the_plain_path(self):
+        for i in range(6):
+            FinanceLine.objects.create(submission_id=f"s{i}", suku="A", delta=i)
+        # One row deliberately wrong, so agreement covers a RED verdict too.
+        FinanceLine.objects.filter(submission_id="s3").update(delta=99)
+        effects = [_finance_effect(f"s{i}", "A", i) for i in range(6)]
+
+        slow = diff_effects_against_rows(effects)
+        fast = diff_effects_against_rows(effects, preload=True)
+
+        assert fast.verdict == slow.verdict == "red"
+        assert fast.compared == slow.compared == 6
+        assert [str(p) for p in fast.problems] == [str(p) for p in slow.problems]
+
+    def test_preload_uses_one_query_for_the_whole_sweep(self):
+        for i in range(10):
+            FinanceLine.objects.create(submission_id=f"s{i}", suku="A", delta=i)
+        effects = [_finance_effect(f"s{i}", "A", i) for i in range(10)]
+
+        with CaptureQueriesContext(connection) as fast:
+            assert diff_effects_against_rows(effects, preload=True).ok
+        with CaptureQueriesContext(connection) as slow:
+            assert diff_effects_against_rows(effects).ok
+
+        assert len(fast) == 1  # one `submission_id__in=[...]` for the batch
+        assert len(slow) == 10  # the cost the flag exists to remove
+
+    def test_preload_consumes_a_one_shot_iterable_once(self):
+        """The drift the two-argument pattern allowed, at its sharpest.
+
+        Handing a generator to the reader *and* to the diff left the diff an
+        exhausted iterator: nothing compared, and only ``raise_if_diff``'s
+        vacuity guard between that and a report that reads as a pass. One list
+        means the flag cannot lose the batch.
+        """
+        for i in range(4):
+            FinanceLine.objects.create(submission_id=f"s{i}", suku="A", delta=i)
+        effects = (_finance_effect(f"s{i}", "A", i) for i in range(4))
+
+        report = diff_effects_against_rows(effects, preload=True)
+
+        assert report.compared == 4 and report.certified
+
+    def test_an_explicit_preloaded_reader_also_survives_a_one_shot_iterable(self):
+        """The coverage check walks the effects, so it must not be the only walk.
+
+        Reading them twice would leave the diff loop an exhausted iterator and a
+        report of nothing — `.ok` vacuously true — from a call that looked
+        entirely correct.
+        """
+        for i in range(4):
+            FinanceLine.objects.create(submission_id=f"s{i}", suku="A", delta=i)
+        batch = [_finance_effect(f"s{i}", "A", i) for i in range(4)]
+        reader = PreloadedProjectionReader(batch)
+
+        report = diff_effects_against_rows(iter(batch), reader=reader)
+
+        assert report.compared == 4 and report.certified
+
+    def test_reader_together_with_preload_is_refused(self):
+        effects = [_finance_effect("s1", "A", 1)]
+        with pytest.raises(TypeError, match="preload=/using="):
+            diff_effects_against_rows(
+                effects, reader=DjangoProjectionReader(), preload=True
+            )
+
+    def test_reader_together_with_using_is_refused(self):
+        effects = [_finance_effect("s1", "A", 1)]
+        with pytest.raises(TypeError, match="preload=/using="):
+            diff_effects_against_rows(
+                effects, reader=DjangoProjectionReader(), using="overlay"
+            )
+
+    def test_a_reader_built_from_another_batch_is_refused(self):
+        """The misuse that used to answer instead of raising.
+
+        The reader below was preloaded with one effect and the diff is given two,
+        so half the report would come from the snapshot and half from live
+        queries taken afterwards.
+        """
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        FinanceLine.objects.create(submission_id="s2", suku="A", delta=2)
+        preloaded = [_finance_effect("s1", "A", 1)]
+        diffed = [*preloaded, _finance_effect("s2", "A", 2)]
+
+        reader = PreloadedProjectionReader(preloaded)
+        with pytest.raises(PreloadMismatch, match="did not preload 1 of the 2"):
+            diff_effects_against_rows(diffed, reader=reader)
+
+        # The covering batch is still accepted, so the standalone reader remains
+        # usable with the diff for a caller that genuinely needs it.
+        assert diff_effects_against_rows(preloaded, reader=reader).certified
+
+    def test_a_live_fallback_does_not_count_as_covered(self):
+        """A memoised live answer is a reading taken at another moment, so it must
+        not satisfy the coverage check — otherwise touching the reader first would
+        launder a mismatched batch."""
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        FinanceLine.objects.create(submission_id="s2", suku="A", delta=2)
+        reader = PreloadedProjectionReader([_finance_effect("s1", "A", 1)])
+        assert reader.get("test_django_rakaia.FinanceLine", submission_id="s2")
+
+        with pytest.raises(PreloadMismatch):
+            diff_effects_against_rows(
+                [_finance_effect("s1", "A", 1), _finance_effect("s2", "A", 2)],
+                reader=reader,
+            )
+
+    def test_a_spanning_lookup_is_not_a_mismatch(self):
+        """A spanning lookup is documented as always live, so its absence from the
+        snapshot says nothing about which batch built the reader."""
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
+        spanning = Upsert(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={"delta__gte": 1},
+            defaults={"suku": "A"},
+        )
+        effects = [_finance_effect("s1", "A", 5), spanning]
+        reader = PreloadedProjectionReader(effects)
+        assert diff_effects_against_rows(effects, reader=reader).certified
+
+    def test_an_effect_the_diff_never_reads_is_not_required_to_be_covered(self):
+        """Coverage is about the lookups this diff will make, not the batch.
+
+        A delete carries no values to diff, so the diff never asks the reader for
+        its row — and a reader built from only what *will* be read is correct.
+        Blaming it for the delete would refuse a legitimate reader (the same holds
+        for a narrower ``kinds=``).
+        """
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=1)
+        read = _finance_effect("s1", "A", 1)
+        never_read = Delete(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={"submission_id": "gone"},
+        )
+        reader = PreloadedProjectionReader([read])
+
+        assert diff_effects_against_rows([read, never_read], reader=reader).certified
+
+    def test_an_empty_lookup_is_not_a_mismatch(self):
+        """The other always-live shape: an empty lookup scopes the whole model
+        (`Update({})` — update every row), so the snapshot cannot index it and
+        must not be blamed for not holding it."""
+        FinanceLine.objects.create(submission_id="s1", suku="A", delta=5)
+        whole_model = Update(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={},
+            defaults={"suku": "A"},
+        )
+        effects = [_finance_effect("s1", "A", 5), whole_model]
+        reader = PreloadedProjectionReader(effects)
+        assert diff_effects_against_rows(effects, reader=reader).certified
+
+
+@pytest.mark.django_db(databases=["default", "overlay"])
+def test_using_routes_the_reader_the_diff_builds() -> None:
+    """``using=`` is the other half of building the reader internally: without it
+    the fast path on a non-default alias would still need a hand-built reader,
+    which is the pattern #190 removes.
+
+    A plain marker on both aliases, not `transaction=True`: the diff only reads,
+    so there is no `atomic(using=)` for a lent transaction to supply and nothing
+    here whose failure mode is a lock (#148)."""
+    FinanceLine.objects.using("overlay").create(submission_id="o1", suku="A", delta=1)
+    effects = [_finance_effect("o1", "A", 1)]
+
+    # The row exists only on `overlay`, so the alias is load-bearing on both of
+    # the readers the diff can build.
+    assert diff_effects_against_rows(effects, using="overlay").certified
+    assert diff_effects_against_rows(effects, preload=True, using="overlay").certified
+    assert not diff_effects_against_rows(effects).certified
+
+    with CaptureQueriesContext(connections["overlay"]) as ctx:
+        assert diff_effects_against_rows(
+            effects, preload=True, using="overlay"
+        ).certified
+    assert len(ctx) == 1

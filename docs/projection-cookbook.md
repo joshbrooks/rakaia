@@ -158,26 +158,28 @@ unaffected; `.certified` is the stricter property a migration proof wants.
 
 The diff does one `reader.get` per effect — one round-trip each. Fine for a
 cookbook; on a full reconcile (tens of thousands of effects) it is tens of
-thousands of round-trips. Give the *same* batch to a
-[`PreloadedProjectionReader`](../src/django_rakaia/verification.py) and it
-bulk-fetches every lookup up front, one query per `(model, lookup-shape)` group,
-then serves each `get` from an in-memory snapshot:
+thousands of round-trips. `preload=True` fetches every lookup in the batch up
+front instead, one query per `(model, lookup-shape)` group, and serves each
+comparison from that snapshot:
 
 ```python
-from django_rakaia import (
-    PreloadedProjectionReader,
-    diff_effects_against_rows,
-)
+from django_rakaia import diff_effects_against_rows
 
-effects = list(ex.effects)
-reader = PreloadedProjectionReader(effects, using="rebuild")   # one bulk fetch per shape
-diff_effects_against_rows(effects, reader=reader).raise_if_diff()
+diff_effects_against_rows(ex.effects, preload=True, using="rebuild").raise_if_diff()
 ```
 
-It is a **point-in-time snapshot** — build it for read-only verification, not for
-live staged replay (where rows change as the replay writes them; use a plain
-`DjangoProjectionReader` there). A `get` for a lookup outside the batch, or one
-that spans a relation (`field__gte`), falls back to a live query and memoises it.
+The bulk fetch is a **point-in-time snapshot** — use it for read-only
+verification, not for live staged replay, where the rows change as the replay
+writes them and the snapshot is simply wrong. Leave the flag off there.
+
+The reader behind the flag,
+[`PreloadedProjectionReader`](../src/django_rakaia/verification.py), stays public
+for a caller that needs it on its own; a `get` for a lookup outside its batch, or
+one that spans a relation (`field__gte`), falls back to a live query and memoises
+it. Passing one back in as `reader=` still works, but it must have been built from
+the effects being diffed — the diff raises `PreloadMismatch` rather than answering
+half from a snapshot of another batch, which is what `preload=True` exists to make
+unnecessary. `reader=` and `preload=`/`using=` are mutually exclusive.
 
 ## Run it
 

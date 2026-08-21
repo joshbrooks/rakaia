@@ -3,9 +3,9 @@ reconstruct this projection, and does the result match what production holds?**
 
 Answering it by hand means composing six interfaces in the right order — move the
 log off the guarded database, arm the write guard outside and the read guard
-inside, record the effects while still applying them, replay, build a batch
-reader, diff — and then separately remembering the part that is written down
-nowhere: *a pass means nothing unless the guards were actually armed.*
+inside, record the effects while still applying them, replay, diff in bulk — and
+then separately remembering the part that is written down nowhere: *a pass means
+nothing unless the guards were actually armed.*
 `hermeticity.py` says so in prose and leaves it to the caller's discipline. ADR
 0003 records what that discipline is worth in practice: the first production
 consumer left the read guard unwired for months.
@@ -47,12 +47,7 @@ from .hermeticity import (
     deny_database_access,
 )
 from .projection_reader import DjangoProjectionReader
-from .verification import (
-    DiffReport,
-    Normalizer,
-    PreloadedProjectionReader,
-    diff_effects_against_rows,
-)
+from .verification import DiffReport, Normalizer, diff_effects_against_rows
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.db.models import Model
@@ -249,10 +244,14 @@ def rebuild_and_verify(
                 reader=DjangoProjectionReader(using=into),
             )
 
-        # Guard down: the diff's whole job is to read the live rows.
-        reader = PreloadedProjectionReader(recorder.effects, using=live_using)
+        # Guard down: the diff's whole job is to read the live rows. `preload`
+        # is the bulk-fetching reader — one query per lookup shape rather than
+        # one per effect — built by the diff from the batch it is diffing.
         return diff_effects_against_rows(
-            recorder.effects, reader=reader, normalizers=normalizers
+            recorder.effects,
+            preload=True,
+            using=live_using,
+            normalizers=normalizers,
         )
 
 
