@@ -176,6 +176,16 @@ class TestTheAdminAgreesWithEveryOtherReader:
         # encoding entirely.
         assert self._admin().data_preview(event) == "hello, world"
 
+    def test_a_long_text_body_is_cut_to_the_same_budget_as_json(self):
+        # The two branches share `_truncate` so a list cell cannot blow out on
+        # one and not the other; only the JSON branch was pinned, so dropping
+        # the call on this one was invisible.
+        event = StreamEvent.objects.create(
+            data="x" * 500, event_type="append", payload_encoding="utf-8"
+        )
+        preview = self._admin().data_preview(event)
+        assert len(preview) == 100 and preview.endswith("...")
+
     def test_an_ordinary_json_payload_previews_exactly_as_before(self):
         # The common case must not change shape.
         event = StreamEvent.objects.create(data={"n": 1}, event_type="create")
