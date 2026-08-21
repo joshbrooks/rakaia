@@ -592,6 +592,35 @@ class TestThePlainReadAndTheLivePushAgree:
 
         assert get.headers[STREAM_OFFSET_HEADER_RESP] == sse[SSE_OFFSET_FIELD]
 
+    @pytest.mark.parametrize(("closed", "at_tail", "up_to_date"), CASES)
+    def test_the_live_push_claims_up_to_date_only_at_the_tail(
+        self, closed: bool, at_tail: bool, up_to_date: bool
+    ):
+        """The one thing the two do *not* answer alike, stated rather than left out.
+
+        A plain read reports `Stream-Up-To-Date` whenever the store says so; the
+        live push emits one control frame per message during catch-up, so only
+        the frame at the tail can claim it. Both are right for what they
+        describe, which is why `closed_at_tail` is shared and this is not.
+        """
+        tail = "0000000005"
+        offset = tail if at_tail else "0000000003"
+        sse = sse_control_fields(
+            control_offset=offset,
+            tail_offset=tail,
+            closed=closed,
+            up_to_date=up_to_date,
+            response_cursor="41",
+        )
+        expected = (
+            at_tail
+            and up_to_date
+            and not closed_at_tail(
+                closed=closed, at_tail=at_tail, up_to_date=up_to_date
+            )
+        )
+        assert (SSE_UP_TO_DATE_FIELD in sse) is expected
+
 
 class TestTheLivePushControlFrame:
     def test_a_closed_tail_carries_closure_and_no_cursor(self):
