@@ -124,9 +124,11 @@ class TestTheEtag:
         )
 
     def test_closed_at_tail_adds_the_c_suffix(self):
-        assert read_etag(
-            "/s", start_offset="3", response_offset="7", closed=True
-        ).endswith(':7:c"')
+        expected_b64 = base64.b64encode(b"/s").decode()
+        assert (
+            read_etag("/s", start_offset="3", response_offset="7", closed=True)
+            == f'"{expected_b64}:3:7:c"'
+        )
 
     def test_the_suffix_tracks_the_header_not_the_raw_closed_flag(self):
         """A closed stream read from behind caches under a key with no `:c`.
@@ -250,6 +252,22 @@ class TestHead:
     def test_a_zero_ttl_is_still_reported(self):
         """`0` is a configured TTL, not an absent one."""
         assert decide_head(facts(ttl_seconds=0)).headers[STREAM_TTL_HEADER_RESP] == "0"
+
+    def test_the_etag_is_the_tail_read_from_the_start(self):
+        expected_b64 = base64.b64encode(b"/s").decode()
+        assert decide_head(facts()).headers["etag"] == f'"{expected_b64}:-1:0000000005"'
+
+    def test_a_closed_stream_caches_under_a_closed_key(self):
+        """A HEAD is always at the tail, so its raw closed flag *is* closed-at-tail.
+
+        Asserted as the whole ETag rather than "ends with `:c`", so a suffix that
+        appeared in the wrong position or against the wrong offset would show.
+        """
+        expected_b64 = base64.b64encode(b"/s").decode()
+        assert (
+            decide_head(facts(closed=True)).headers["etag"]
+            == f'"{expected_b64}:-1:0000000005:c"'
+        )
 
     def test_cors_headers_are_merged_in(self):
         verdict = decide_head(facts(), cors={"access-control-allow-origin": "*"})

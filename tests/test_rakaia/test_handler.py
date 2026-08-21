@@ -7,6 +7,7 @@ application directly, exercising the full HTTP protocol.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 
 import httpx
@@ -450,6 +451,10 @@ class TestConformanceGaps:
             assert response.status_code == 204
             assert response.headers.get("Stream-Up-To-Date") == "true"
             assert response.headers.get("Stream-Next-Offset") == tail
+            # An open stream must not be reported closed. The 204 looks the same
+            # either way, so without this a false end-of-stream would tell a
+            # client to stop polling and nothing would notice.
+            assert "Stream-Closed" not in response.headers
 
     async def test_a_close_landing_during_a_long_poll_is_reported(self):
         """A close landing while the client is parked comes back with the data.
@@ -483,6 +488,37 @@ class TestConformanceGaps:
             assert poll.content == b"two"
             assert poll.headers.get("Stream-Closed") == "true"
             assert poll.headers["etag"].endswith(':c"')
+
+    async def test_the_terminal_sse_frame_says_the_stream_is_closed(self):
+        """A stream closed while the consumer is parked ends with `streamClosed`.
+
+        `docs/protocol.md` requires the final control event to carry
+        `streamClosed: true`. Nothing in the suite asserted the closed control
+        frame's fields at all — a terminal frame carrying a cursor instead would
+        leave a consumer waiting for data that can never arrive.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+
+            async def close_it() -> None:
+                await asyncio.sleep(0.05)
+                # Empty body + Stream-Closed is a close with no data, so the
+                # consumer is woken by the closure rather than by a message.
+                await client.post("/foo", headers={"Stream-Closed": "true"})
+
+            sse, _ = await asyncio.gather(
+                client.get(f"/foo?offset={tail}&live=sse"), close_it()
+            )
+
+            frames = [
+                json.loads(line[len("data:") :])
+                for line in sse.text.split("\n")
+                if line.startswith("data:")
+            ]
+            assert frames[-1] == {"streamNextOffset": tail, "streamClosed": True}
 
     async def test_sse_catch_up_pairs_each_data_event_with_control(self):
         """During catch-up every SSE data event is followed by a control event.
