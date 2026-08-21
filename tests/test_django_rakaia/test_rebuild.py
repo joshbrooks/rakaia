@@ -107,11 +107,12 @@ class TestTheVerdict:
             )
 
         assert report.certified and report.compared == 5
-        # The write guard's own row counts are not the diff's reads.
+        # `q["sql"]` is None for a transaction-control statement on Postgres, and
+        # the write guard's own row counts are not the diff's reads.
         reads = [
-            q["sql"]
-            for q in ctx.captured_queries
-            if "financeline" in q["sql"].lower() and "count" not in q["sql"].lower()
+            sql
+            for sql in ((q["sql"] or "").lower() for q in ctx.captured_queries)
+            if "financeline" in sql and "count" not in sql
         ]
         assert len(reads) == 1, reads
 
