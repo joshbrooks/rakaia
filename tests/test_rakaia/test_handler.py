@@ -411,6 +411,68 @@ class TestConformanceGaps:
         assert again.content == b""
         assert again.headers["etag"] == etag
 
+    async def test_a_read_carries_the_cors_header(self, client: httpx.AsyncClient):
+        """Every read response is cross-origin readable, not just the preflight.
+
+        The preflight above and `HEAD` were the only cover; the four read exits
+        that build their own header set could each drop CORS unnoticed, which a
+        browser would see and no test would.
+        """
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        for url in ("/foo", "/foo?offset=now"):
+            response = await client.get(url)
+            assert response.headers["access-control-allow-origin"] == "*", url
+
+    async def test_two_streams_at_the_same_offset_cache_separately(
+        self, client: httpx.AsyncClient
+    ):
+        """The ETag names the stream, so one stream's tag cannot match another's.
+
+        Both streams here sit at the same offset with the same content, so a tag
+        that forgot the path would match across them and serve a 304 for a body
+        the client has never seen.
+        """
+        for path in ("/a", "/b"):
+            await client.put(
+                path, headers={"content-type": "text/plain"}, content=b"one"
+            )
+
+        etag_a = (await client.get("/a")).headers["etag"]
+        crossed = await client.get("/b", headers={"if-none-match": etag_a})
+        assert crossed.status_code == 200
+        assert crossed.headers["etag"] != etag_a
+
+    async def test_the_etag_names_the_offset_the_client_asked_for(self):
+        """`?offset=now` caches under `now`, not under the tail it resolved to.
+
+        `now` means "wherever the stream is when you get this", so two clients
+        sending it at different times must not collide on one cache key.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+
+            async def append() -> None:
+                await asyncio.sleep(0.05)
+                await client.post(
+                    "/foo", headers={"content-type": "text/plain"}, content=b"two"
+                )
+
+            poll, _ = await asyncio.gather(
+                client.get("/foo?offset=now&live=long-poll"), append()
+            )
+
+            assert poll.status_code == 200
+            assert ":now:" in poll.headers["etag"]
+
+    async def test_two_offset_parameters_are_rejected(self, client: httpx.AsyncClient):
+        """Only the query string knows how many times `offset` was sent."""
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        response = await client.get("/foo?offset=-1&offset=-1")
+        assert response.status_code == 400
+        assert response.content == b"Multiple offset parameters not allowed"
+
     async def test_a_stale_if_none_match_gets_the_body(self, client: httpx.AsyncClient):
         await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
         response = await client.get("/foo", headers={"if-none-match": '"stale"'})
@@ -455,6 +517,55 @@ class TestConformanceGaps:
             # either way, so without this a false end-of-stream would tell a
             # client to stop polling and nothing would notice.
             assert "Stream-Closed" not in response.headers
+            assert response.headers["Stream-Cursor"]
+            assert response.headers["access-control-allow-origin"] == "*"
+
+    async def test_a_long_poll_on_an_already_closed_tail_returns_at_once(self):
+        """The exit taken before waiting: closed, at the tail, nothing to send.
+
+        It carries no `Stream-Cursor` where the two post-wait exits do — a quirk
+        of the original code, kept deliberately, and asserted here so it is a
+        decision rather than an accident.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+            await client.post("/foo", headers={"Stream-Closed": "true"})
+
+            response = await client.get(f"/foo?offset={tail}&live=long-poll")
+            assert response.status_code == 204
+            assert response.headers.get("Stream-Closed") == "true"
+            assert response.headers.get("Stream-Up-To-Date") == "true"
+            assert "Stream-Cursor" not in response.headers
+            assert response.headers["access-control-allow-origin"] == "*"
+
+    async def test_a_close_with_no_data_ends_a_parked_long_poll(self):
+        """A close carrying no message still has to reach the waiting client.
+
+        The sibling of the case below, one line apart in the handler: this one
+        comes back through the wait's own closed signal rather than through a
+        re-fetch, and without it a client polls a dead stream forever.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+
+            async def close_it() -> None:
+                await asyncio.sleep(0.05)
+                await client.post("/foo", headers={"Stream-Closed": "true"})
+
+            poll, _ = await asyncio.gather(
+                client.get(f"/foo?offset={tail}&live=long-poll"), close_it()
+            )
+
+            assert poll.status_code == 204
+            assert poll.headers.get("Stream-Closed") == "true"
+            assert poll.headers.get("Stream-Up-To-Date") == "true"
+            assert poll.headers["Stream-Cursor"]
 
     async def test_a_close_landing_during_a_long_poll_is_reported(self):
         """A close landing while the client is parked comes back with the data.
@@ -488,6 +599,8 @@ class TestConformanceGaps:
             assert poll.content == b"two"
             assert poll.headers.get("Stream-Closed") == "true"
             assert poll.headers["etag"].endswith(':c"')
+            # A long-poll 200 carries the collapse cursor; a plain read does not.
+            assert poll.headers["Stream-Cursor"]
 
     async def test_the_terminal_sse_frame_says_the_stream_is_closed(self):
         """A stream closed while the consumer is parked ends with `streamClosed`.
@@ -518,7 +631,11 @@ class TestConformanceGaps:
                 for line in sse.text.split("\n")
                 if line.startswith("data:")
             ]
-            assert frames[-1] == {"streamNextOffset": tail, "streamClosed": True}
+            terminal = {"streamNextOffset": tail, "streamClosed": True}
+            assert frames[-1] == terminal
+            # Exactly once: the live push stops at a closed tail, and a second
+            # terminal frame would mean it went round the loop again.
+            assert frames.count(terminal) == 1
 
     async def test_sse_catch_up_pairs_each_data_event_with_control(self):
         """During catch-up every SSE data event is followed by a control event.
@@ -550,11 +667,12 @@ class TestConformanceGaps:
                 if event_line:
                     frames.append(event_line[len("event:") :].strip())
 
-            data_indices = [i for i, e in enumerate(frames) if e == "data"]
-            assert len(data_indices) == 2
-            # Every data frame must be immediately followed by a control frame.
-            for i in data_indices:
-                assert frames[i + 1] == "control"
+            # The whole sequence, not just the pairing: a closed stream at its
+            # tail stops the live push, so there is nothing after the last
+            # control frame. Asserted as the exact list because a trailing
+            # duplicate control frame is what a missing stop looks like, and a
+            # pairing check cannot see it.
+            assert frames == ["data", "control", "data", "control"]
 
 
 # Mark all tests as async via pytest-asyncio auto mode
