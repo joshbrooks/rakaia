@@ -27,10 +27,11 @@ doesn't fire for an unchanged row.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from enum import Enum
 from typing import Any
 
 from django.apps import apps
-from django.db import transaction
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.db.models import Q
 
 from rakaia.effects import (
@@ -47,6 +48,78 @@ from rakaia.effects import (
 )
 
 from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
+
+#: Value types a collapsed `Update` may write: the ones whose Python equality is
+#: safe to read as "the same write".
+#:
+#: The grouping key compares `defaults` with ``==`` and ``hash`` and then writes
+#: one member's values to every member's rows, so a type whose ``__eq__`` is
+#: looser than what the column stores could group two *different* writes. This
+#: admits only types with nothing to argue about — one representation each.
+#:
+#: An allowlist, because the guard's first three shapes each enumerated what was
+#: unsafe (a lookup field in `defaults`, anything `Combinable`, a wider allowlist)
+#: and a review found a fresh route through each. Being wrong here costs a
+#: collapse that does not happen.
+#:
+#: So ``float``, ``Decimal``, ``datetime``, ``date``, ``time`` and ``UUID`` do not
+#: collapse. `tests/test_django_rakaia/test_update_batching_equivalence.py`
+#: measures what would happen if they did, and for most of them the answer is
+#: *nothing*: Django coerces an aware datetime to UTC, a ``DecimalField``'s scale
+#: erases a trailing zero, and ``-0.0`` round-trips as ``0.0``. That is not a
+#: reason to admit them. It is a reason not to claim they are dangerous — the one
+#: exclusion that demonstrably changes stored data is the query expression, and it
+#: is excluded by this same rule.
+#:
+#: See `_is_collapsible_value` for the one widening: an `Enum` member over one of
+#: these, which is what `models.TextChoices` and `models.IntegerChoices` are.
+_COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
+    type(None),
+    bool,
+    int,
+    str,
+    bytes,
+)
+
+
+def _is_collapsible_value(value: Any) -> bool:
+    """Whether a `defaults` value may take part in a collapse.
+
+    `_COLLAPSIBLE_DEFAULTS` by exact type, plus one deliberate widening: an `Enum`
+    member whose *value* is one of those types and which compares the way that
+    type does. That is `models.TextChoices` and `models.IntegerChoices` — Django's
+    own idiom for a choices column.
+
+    The widening is not a convenience. `type(v)` for a `TextChoices` member is the
+    enum class, not ``str``, so the exact-type test excluded it and a status change
+    fanned across many rows never collapsed: the feature declined on the single
+    commonest shape of the case it was built for.
+
+    Both conditions are needed, and each rules out something different:
+
+    * ``type(v.value) in _COLLAPSIBLE_DEFAULTS`` rules out an enum over a value
+      type whose equality ignores stored representation (``class E(float, Enum)``),
+      and one over a ``str`` *subclass* — ``v.value`` is then an instance of the
+      subclass, not of ``str``.
+    * ``type(v).__eq__ is type(v.value).__eq__`` rules out an enum that overrides
+      equality itself. Two members with plain ``str`` values ``'a'`` and ``'A'``
+      pass the first test, and a case-insensitive ``__eq__``/``__hash__`` on the
+      enum class would make them group — writing one member's value to the other's
+      rows.
+
+    A plain `Enum` with no mixin fails the second test, since its equality is
+    identity. That is *stricter* than value equality and so would be safe, but it
+    is excluded anyway: Django has no sensible column form for it.
+    """
+    if type(value) in _COLLAPSIBLE_DEFAULTS:
+        return True
+    if isinstance(value, Enum):
+        value_type = type(value.value)
+        return (
+            value_type in _COLLAPSIBLE_DEFAULTS
+            and type(value).__eq__ is value_type.__eq__
+        )
+    return False
 
 
 def _row_accessor(obj: Any) -> Any:
@@ -68,6 +141,28 @@ class DjangoExecutor:
     touching production, at full ORM fidelity. `using=None` targets the default
     alias, exactly as before. Pair with `DjangoProjectionReader(using=...)`.
 
+    Pass `batch_updates=True` to collapse a fanned-out `Update` into one
+    statement. A handler that emits one update per row — deliberately, so a
+    verification pass can diff them row by row — otherwise pays one statement per
+    row: a form with eight repeating rows runs nine identical UPDATEs (#199).
+
+    **Collapses:** consecutive updates on one model, each matching a single field
+    by equality on a non-null value, all writing the same plain values — `str`,
+    `bytes`, `int`, `bool`, `None`, or a `models.TextChoices` / `IntegerChoices`
+    member over one of those.
+
+    **Does not collapse** — each applied on its own, exactly as with the flag off:
+    an expression (`F()`, `Case`, `Q`, `Subquery`), a composite or ``__``
+    traversing lookup, a null lookup value, an unhashable value such as a JSON
+    dict, or a value of any other type — including a `Decimal`, a `float`, and a
+    date or datetime. Declining costs a statement, never a wrong row.
+
+    **Off by default.** The collapse is invisible in the rows, but the guard that
+    decides what may collapse was wrong four times, and each failure wrote wrong
+    data rather than raising. On by default it would apply to every `apply()` in
+    every consumer, with no way to opt out and no way to bisect a suspected write
+    anomaly back to it. The flag keeps that with the caller who wants the speed.
+
     Pass `normalizers` to define value-equality for `skip_unchanged` the same way
     `diff_effects_against_rows(normalizers=...)` defines it for the verify side.
     Both default to `DEFAULT_NORMALIZERS`, so out of the box the two paths already
@@ -84,8 +179,10 @@ class DjangoExecutor:
         skip_unchanged: bool = False,
         using: str | None = None,
         normalizers: Sequence[Normalizer] | None = None,
+        batch_updates: bool = False,
     ) -> None:
         self._skip_unchanged = skip_unchanged
+        self._batch_updates = batch_updates
         self._using = using
         self._normalizers = (
             DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
@@ -110,8 +207,16 @@ class DjangoExecutor:
             # regardless of handler order. Writes apply before deletes/retires,
             # so a produces= row is always recorded before any later effect that
             # refs it.
+            # A run of consecutive `Update`s is applied together so a fanned-out
+            # change costs one statement instead of one per row (#199). The run
+            # is flushed the moment anything else appears, which is what keeps a
+            # `Ref` in an update's lookup resolvable: it binds to a row an
+            # earlier `Upsert` materialised, so an update must never be hoisted
+            # above its producer.
+            pending: list[Update] = []
             for eff in effects_list:
                 if isinstance(eff, Upsert):
+                    self._flush_updates(pending, resolver)
                     obj, outcome = self._upsert(resolver.resolve_effect(eff))
                     if outcome == "created":
                         created += 1
@@ -123,7 +228,8 @@ class DjangoExecutor:
                     if eff.produces is not None:
                         resolver.record(eff.produces, _row_accessor(obj))
                 elif isinstance(eff, Update):
-                    self._update(resolver.resolve_effect(eff))
+                    pending.append(eff)
+            self._flush_updates(pending, resolver)
             for eff in effects_list:
                 if isinstance(eff, Delete):
                     self._delete(resolver.resolve_effect(eff))
@@ -155,6 +261,192 @@ class DjangoExecutor:
             )
             return obj, ("created" if was_created else "written")
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
+
+    def _flush_updates(self, pending: list[Update], resolver: RefResolver) -> None:
+        """Apply a run of consecutive `Update`s, collapsing what can be collapsed.
+
+        Consecutive updates that share a model, share identical ``defaults``, and
+        each match on **one equality against the same non-null field** become a
+        single ``filter(field__in=[…]).update(**defaults)``. Everything else
+        applies one statement at a time, so a mixed batch degrades rather than
+        raising.
+
+        Why the collapse preserves the answer:
+
+        * `Update` is ``filter(...).update(...)`` — no signals, no ``auto_now``
+          advance, no per-row result a caller reads — so N statements setting the
+          same columns to the same values are indistinguishable from one over the
+          union of their rows.
+        * **Re-applying the defaults to a row cannot change it**, which is why
+          only *literal* defaults are collapsed. Two members match the same field
+          on different values, so their rows look disjoint — but one member can
+          move a row into a later member's value, and the later statement then
+          matches it too. Writing the same literal twice is writing it once;
+          ``F("n") + 1`` twice is not. That is the one difference measured to
+          change stored data — see
+          `tests/test_django_rakaia/test_update_batching_equivalence.py`, which
+          also shows it needs *both* halves: an expression over rows that do not
+          overlap is harmless.
+
+          Requiring idempotent defaults is deliberately broader than that hazard,
+          because row sets can overlap by more routes than a lookup key can see: a
+          foreign key reachable as both ``area`` and ``area_id``, a `Ref` and a
+          literal resolving to one value, values distinct in Python but equal in
+          the column. Guarding the key closed one of those; this closes all of
+          them, since each needs a non-idempotent write to become visible.
+        * Order *between* groups is preserved, and a run ends at the first
+          non-update, so nothing moves across an `Upsert` — which is what keeps a
+          `Ref` in a later lookup resolvable.
+
+        Refs are resolved before grouping: two effects are only alike once a `Ref`
+        standing in for a sibling's row has been substituted.
+        """
+        if not pending:
+            return
+        resolved = [resolver.resolve_effect(eff) for eff in pending]
+        pending.clear()
+
+        run: list[Update] = []
+        run_key: tuple[Any, ...] | None = None
+        for eff in resolved:
+            key = self._batch_key(eff)
+            if run and key is not None and key == run_key:
+                run.append(eff)
+                continue
+            self._flush_run(run)
+            run, run_key = [eff], key
+        self._flush_run(run)
+
+    @staticmethod
+    def _batch_key(eff: Update) -> tuple[Any, ...] | None:
+        """A key two updates share iff they may be collapsed, else ``None``.
+
+        ``None`` for anything without a safe ``__in`` form:
+
+        * a lookup that is not exactly one equality — a composite key or a ``__``
+          traversal has no single column to gather;
+        * a **null** lookup value. ``filter(f=None)`` is ``f IS NULL``, and Django
+          strips ``None`` from an ``__in`` right-hand side, so gathering a
+          null-matching effect emits a clause that does not match its rows and the
+          effect silently writes nothing. ``resolved_at IS NULL`` is this
+          codebase's own open predicate, so this is a shape a reconcile really
+          produces;
+        * a ``defaults`` value outside `_COLLAPSIBLE_DEFAULTS`. One rule for two
+          hazards: it excludes every query expression — ``F()``, ``Concat``,
+          ``Case``, ``Subquery``, and ``Q``, which is non-idempotent and hashable
+          but not `Combinable` — because a non-idempotent write makes row-set
+          overlap observable; and it excludes types whose equality ignores
+          representation the column keeps, where no overlap is needed at all;
+        * empty ``defaults``, which is a no-op anyway;
+        * ``defaults`` whose values are unhashable — a JSON column holds a dict,
+          which cannot be part of a grouping key, and declining to group beats
+          declining to run.
+        """
+        defaults = eff.defaults or {}
+        if not defaults or len(eff.lookup) != 1:
+            return None
+        ((field, value),) = eff.lookup.items()
+        if "__" in field or value is None:
+            return None
+        if not all(_is_collapsible_value(v) for v in defaults.values()):
+            return None
+        try:
+            # `type(v)` is part of the key, not just `v`. Python calls `1`, `1.0`,
+            # `True` and `Decimal("1")` equal and hashes them alike, but writing
+            # them to a text or JSON column produces different rows — so grouping
+            # on value alone would apply one member's `defaults` to another's rows
+            # and change what was stored. `type(v) in ...` rather than
+            # `isinstance` for the same reason: `bool` is a subclass of `int`.
+            return (
+                eff.model_label,
+                field,
+                frozenset((k, type(v), v) for k, v in defaults.items()),
+            )
+        except TypeError:
+            return None  # an unhashable default value
+
+    def _flush_run(self, run: list[Update]) -> None:
+        """One statement for a collapsible run, else one per effect.
+
+        A run only grows while its `_batch_key` is not ``None``, so a
+        non-collapsible effect is always a run of one and the length test is the
+        only condition needed here. For a non-null value
+        ``field__in=[v]`` and ``field=v`` are the same query, but keeping the
+        single case on plain equality means the ``IN`` form is only ever built
+        where it has been shown to be safe.
+        """
+        if not run:
+            return
+        if not self._batch_updates or len(run) == 1:
+            for eff in run:
+                self._update(eff)
+            return
+        (field,) = run[0].lookup
+        model = apps.get_model(run[0].model_label)
+        values = [eff.lookup[field] for eff in run]
+        defaults = run[0].defaults or {}
+
+        if not self._values_are_bindable(model, field, values):
+            for eff in run:
+                self._update(eff)
+            return
+
+        manager = self._manager(model)
+        # One statement per chunk, not per row. An `IN` list is one bind parameter
+        # per value and SQLite caps those at `max_query_params` (32766), so a
+        # fan-out large enough to be worth collapsing was large enough to raise
+        # where the per-effect loop had worked. Chunking keeps the statement count
+        # proportional to the batch rather than to the rows, which is the point,
+        # and every chunk is inside the caller's `atomic()` so a failure mid-way
+        # rolls the whole thing back exactly as before.
+        limit = self._bind_limit(len(defaults))
+        for start in range(0, len(values), limit):
+            manager.filter(**{f"{field}__in": values[start : start + limit]}).update(
+                **defaults
+            )
+
+    def _bind_limit(self, reserved: int) -> int:
+        """How many lookup values one statement may carry.
+
+        `reserved` is the number of parameters the ``SET`` clause already needs.
+        Backends that do not declare a cap (Postgres binds client-side) get a
+        large-but-finite chunk rather than an unbounded one, so a pathological
+        batch degrades into more statements instead of one enormous query.
+        """
+        declared = getattr(
+            connections[self._using or DEFAULT_DB_ALIAS].features,
+            "max_query_params",
+            None,
+        )
+        return max(1, (declared or 65_536) - reserved - 1)
+
+    def _values_are_bindable(self, model: type, field: str, values: list[Any]) -> bool:
+        """Whether every value can be bound as an ``IN`` member.
+
+        The equality form and the ``IN`` form are not the same query, and this is
+        the last place that shows: Django compiles an out-of-range integer
+        ``exact`` lookup away to "matches nothing", but hands the same value
+        straight to the driver inside an ``IN``, where SQLite raises and takes the
+        rest of the batch with it. So a run containing one is applied per effect,
+        where each out-of-range member is the no-op it was before.
+
+        Only integer columns have a range to check, and asking for one anywhere
+        else is not portable — `integer_field_range` answers ``(None, None)`` for
+        an unknown internal type on SQLite and raises ``KeyError`` on Postgres.
+        The Postgres leg is what caught that; the SQLite run was green.
+        """
+        internal_type = model._meta.get_field(field).get_internal_type()
+        alias = self._using or DEFAULT_DB_ALIAS
+        try:
+            low, high = connections[alias].ops.integer_field_range(internal_type)
+        except KeyError:
+            return True  # not an integer column; no range to exceed
+        if low is None or high is None:
+            return True
+        # No `bool` special case: `True` and `False` are 1 and 0, inside every
+        # integer range, so excluding them would be a branch that never decides
+        # anything.
+        return all(not isinstance(v, int) or low <= v <= high for v in values)
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: update the rows matching `lookup` in place, never

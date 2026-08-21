@@ -11,6 +11,36 @@ runnable demo for each.
 
 ### Added
 
+- **`DjangoExecutor(batch_updates=True)` collapses a fanned-out `Update` into one
+  statement.** A handler that fans one change across many rows emits one `Update`
+  per row — on purpose, so a verification pass can diff them one at a time — and
+  pays one statement per row. Saving a form with eight repeating rows runs nine
+  identical `UPDATE`s.
+
+  *Collapses:* consecutive updates on one model, each matching a single field by
+  equality on a non-null value, all writing the same plain values — a string,
+  bytes, an integer, a boolean, `None`, or a `models.TextChoices` /
+  `IntegerChoices` member over one of those.
+
+  *May not:* anything else is applied one statement at a time, exactly as with the
+  flag off — an expression such as `F("total") + 1`, a composite or traversing
+  lookup, a lookup matching `NULL`, an unhashable value such as a JSON dict, or a
+  value of any other type, including a `Decimal`, a `float`, and a date or
+  datetime. Declining costs a statement, never a wrong row.
+
+  *Worth it for:* a replay, reconcile or backfill. Each statement not issued is
+  worth about 0.4 ms (Postgres, and mostly query-building rather than network — the
+  same benchmark against in-memory SQLite still saves 0.13 ms), and the bound is
+  the number of tables rather than the number of rows. On the shapes the consumer
+  of #199 emits that is 1.3x for a typical form save, 4.7x for their worst one, and
+  20x for a reconcile over 500 rows. See `docs/dry-run-and-executors.md`.
+
+  **Off by default.** The rows come out the same either way, and that is checked
+  by running the same effects down both paths and comparing every column — not
+  argued. But the rule deciding what may collapse was wrong four times, and each
+  time it wrote wrong data rather than raising, so a consumer opts in knowingly
+  and a suspected write anomaly stays bisectable against it.
+
 - **`rebuild_and_verify()` — one call for "can the log rebuild this, and does it
   match?"** Getting a trustworthy answer previously meant composing six
   interfaces in the right order — move the log off the database being guarded,
