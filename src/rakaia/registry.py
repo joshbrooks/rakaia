@@ -21,6 +21,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+# `HandlerDriftError` is defined next to the rule that raises it, in
+# `rakaia.drift`, and re-exported here so `rakaia.registry.HandlerDriftError` —
+# where callers have always imported it from — keeps working.
+from .drift import DriftLedger
+from .drift import HandlerDriftError as HandlerDriftError
 from .registration_log import RegistrationLog
 from .source_hash import hash_function_source, is_importable, unwrap_handler
 
@@ -51,10 +56,6 @@ class UpcasterConflictError(Exception):
 
 class UpcasterChainError(Exception):
     """Cannot upcast: missing or ambiguous link in the upcaster chain."""
-
-
-class HandlerDriftError(Exception):
-    """A handler/upcaster's source body differs from its registered hash."""
 
 
 # =============================================================================
@@ -920,8 +921,7 @@ class UpcasterRegistry(_LogBackedRegistry):
         event_match_str: str,
         target_version: int,
         *,
-        drift_callback: Callable[[UpcasterVersion, str], None] | None = None,
-        hasher: Callable[[Any], str] | None = None,
+        drift: DriftLedger | None = None,
     ) -> dict[str, Any]:
         """
         Upcast `event` from its current schema_version up to `target_version`.
@@ -938,15 +938,16 @@ class UpcasterRegistry(_LogBackedRegistry):
         steps off the new value — keep the discriminator field constant, or route
         those steps on the stream path.
 
-        If `drift_callback` is provided, it is called once per step with
-        `(version, current_hash)` if the upcaster's source hash has changed
-        since registration. The callback decides whether to raise or warn.
+        Pass a `DriftLedger` as `drift` to have each step checked against the
+        source hash it was registered with; the ledger holds the policy (warn or
+        raise), reports each drifted upcaster once however many events pass
+        through it, and memoises the hashing. Omit it and no step is checked.
 
-        `hasher` overrides how a step's live source hash is computed. A replay
-        passes one memoised for its own duration: an upcaster's source cannot
-        change mid-replay, and re-reading it per event per step was a measurable
-        share of replay time (#156). Defaults to hashing afresh, so a caller
-        that keeps no such ledger is unaffected.
+        This used to be two options — a callback and a hasher — that had to
+        agree: the callback without the hasher re-read the upcaster's source for
+        every event (a measurable share of replay time, #156), and the hasher
+        without the callback skipped the check in silence. One object cannot be
+        half-passed (#187).
         """
         current = int(event.get("schema_version", 1))
         if current > target_version:
@@ -975,10 +976,13 @@ class UpcasterRegistry(_LogBackedRegistry):
                     f"{[u.event_match for u in matching]}"
                 )
             step = matching[0]
-            if drift_callback is not None:
-                live_hash = (hasher or hash_function_source)(step.fn)
-                if live_hash != step.source_hash:
-                    drift_callback(step, live_hash)
+            if drift is not None:
+                drift.check(
+                    kind="upcaster",
+                    name=step.dotted_path,
+                    stored_hash=step.source_hash,
+                    fn=step.fn,
+                )
             event = step.fn(event)
             current += 1
             event = {**event, "schema_version": current}
@@ -989,23 +993,19 @@ class UpcasterRegistry(_LogBackedRegistry):
         event: dict[str, Any],
         event_match_str: str,
         *,
-        drift_callback: Callable[[UpcasterVersion, str], None] | None = None,
-        hasher: Callable[[Any], str] | None = None,
+        drift: DriftLedger | None = None,
     ) -> dict[str, Any]:
         """Upcast `event` all the way to the current schema for its match.
 
         Convenience over `current_version` + `apply_chain`: the normalise-on-read
         step every consumer outside `replay()` needs. Returns the event unchanged
         when no upcasters apply or it is already current.
+
+        `drift` is forwarded to `apply_chain`; without one, no step is checked
+        against its registered source hash.
         """
         target = self.current_version(event_match_str, event)
-        return self.apply_chain(
-            event,
-            event_match_str,
-            target,
-            drift_callback=drift_callback,
-            hasher=hasher,
-        )
+        return self.apply_chain(event, event_match_str, target, drift=drift)
 
     def all_upcasters(self) -> list[UpcasterVersion]:
         return list(self._upcasters.values())
@@ -1063,6 +1063,7 @@ def upcast(
     event_match: str,
     *,
     registry: UpcasterRegistry | None = None,
+    drift: DriftLedger | None = None,
 ) -> dict[str, Any]:
     """Normalise `event` to the current schema for `event_match`.
 
@@ -1072,9 +1073,15 @@ def upcast(
         normalised = upcast(raw_event, "submissions")
 
     Uses the process-wide default registry unless `registry` is given.
+
+    Normalise-on-read is **not** drift-checked by default: a one-off read has
+    nowhere to report to, and warning on every read of an edited upcaster would
+    be noise. Pass a `DriftLedger` to opt in — then this path answers the same
+    question a replay does, and the answers land in `ledger.warnings` /
+    `ledger.drifted` (or raise, with `on_drift="raise"`).
     """
     target = registry if registry is not None else _default_upcaster_registry
-    return target.upcast_to_current(event, event_match)
+    return target.upcast_to_current(event, event_match, drift=drift)
 
 
 def register_handler(

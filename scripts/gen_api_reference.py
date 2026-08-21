@@ -66,6 +66,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "replay_stream",
         "merge_replay",
         "ReplayResult",
+        "DriftLedger",
         "fold_events",
         "project_latest",
     ),
