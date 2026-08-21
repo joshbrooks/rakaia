@@ -11,6 +11,24 @@ runnable demo for each.
 
 ### Added
 
+- **`DriftLedger` — one object that knows whether a rule's code has changed.**
+  Warning that the code behind a stored handler, reducer or upcaster has been
+  edited since it was registered used to be three near-identical checks, and the
+  entry point into the third took two options that had to agree: pass the report
+  callback without the hash memo and every event re-read the source, pass the memo
+  without the callback and the check was skipped in silence. One object now owns
+  all three questions — has this rule drifted, have I already said so, what have I
+  hashed — so there is one check reached three ways and one option to pass.
+
+  `ReplayResult.warnings` and `.drift_detected` still read the same, but they are
+  now views onto `ReplayResult.drift` rather than lists of their own, so the result
+  and the log cannot disagree. Constructing a `ReplayResult` with `warnings=` or
+  `drift_detected=` is no longer accepted; pass `drift=DriftLedger(...)`.
+
+  `upcast()` — normalising one event on read, outside a replay — takes a `drift=`
+  ledger and is silent without one, which is the path that previously had no way
+  to ask. See `docs/versioned-handlers.md`.
+
 - **`rakaia.offsets` — a stream position's rules, one home each.** An offset has
   about five rules: what the first one is, how wide it is, how to make the next
   one, how to tell a valid one, and how to compare two. The durable store kept
