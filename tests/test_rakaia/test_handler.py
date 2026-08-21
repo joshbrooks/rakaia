@@ -393,6 +393,29 @@ class TestConformanceGaps:
         allow = response.headers.get("access-control-allow-headers", "").lower()
         assert "if-none-match" in allow
 
+    async def test_a_matching_if_none_match_gets_a_304(self, client: httpx.AsyncClient):
+        """The preflight above allowed the header; nothing proved it was honoured.
+
+        Until this test, the handler could have answered a matching ETag with a
+        full 200 and the whole suite stayed green — the only cover was the
+        preflight, which never sends the header it advertises.
+        """
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        first = await client.get("/foo")
+        assert first.status_code == 200
+        etag = first.headers["etag"]
+
+        again = await client.get("/foo", headers={"if-none-match": etag})
+        assert again.status_code == 304
+        assert again.content == b""
+        assert again.headers["etag"] == etag
+
+    async def test_a_stale_if_none_match_gets_the_body(self, client: httpx.AsyncClient):
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        response = await client.get("/foo", headers={"if-none-match": '"stale"'})
+        assert response.status_code == 200
+        assert response.content == b"one"
+
     async def test_head_returns_ttl_metadata(self, client: httpx.AsyncClient):
         await client.put(
             "/foo",
