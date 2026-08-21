@@ -458,11 +458,15 @@ def test_get_store_returns_durable_when_setting_set(settings):
 @pytest.mark.django_db(transaction=True)
 class TestExpiryReaping:
     def test_a_refused_append_still_reaps_the_expired_row(self):
-        """The reap must run outside the write transaction.
+        """The reap must survive the write transaction's rollback.
 
-        `_require`'s expiry delete inside `transaction.atomic()` is rolled
-        back by the very `StreamNotFound` unwind that reports it — the write
-        path raised 404s forever without ever actually deleting the row.
+        An expiry delete issued inside `transaction.atomic()` is undone by the
+        very `StreamNotFound` unwind that reports it — the write path raised
+        404s forever without ever actually deleting the row. It was fixed once
+        with a second, unlocked read of the stream row before the transaction
+        opened, and again — without that read — by carrying the expiry out of
+        the transaction as a signal and reaping past the rollback
+        (`_locked_write`, #202). This test is what both had to satisfy.
         """
         import time
 
@@ -473,6 +477,31 @@ class TestExpiryReaping:
         time.sleep(0.01)
         with pytest.raises(StreamNotFound):
             store.append("s", b'{"id": 1}')
+        assert not Stream.objects.filter(stream_id="s").exists()
+
+    def test_a_create_whose_body_is_rejected_still_reaps(self):
+        """`create`'s own reap has to survive its own rollback too.
+
+        `create` reaps inside its transaction and normally gets away with it: it
+        goes on to insert the replacement row and commit, so the delete commits
+        with it. Not if the `initial_data` it was handed then fails validation —
+        `_payloads_for` raises before any *event* row is written, having already
+        inserted the replacement stream row, and the rollback that reports the
+        bad body takes the reap back out with it. That is the one case
+        `create`'s pre-transaction `_reap_if_expired` is still there for, and
+        deleting the call left the whole suite green until this test existed.
+        """
+        import time
+
+        from rakaia.types import InvalidJson
+
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json", ttl_seconds=0)
+        time.sleep(0.01)
+        with pytest.raises(InvalidJson):
+            store.create(
+                "s", content_type="application/json", initial_data=b"not json at all"
+            )
         assert not Stream.objects.filter(stream_id="s").exists()
 
 
