@@ -241,6 +241,22 @@ class TestPreloadOption:
 
         assert report.compared == 4 and report.certified
 
+    def test_an_explicit_preloaded_reader_also_survives_a_one_shot_iterable(self):
+        """The coverage check walks the effects, so it must not be the only walk.
+
+        Reading them twice would leave the diff loop an exhausted iterator and a
+        report of nothing — `.ok` vacuously true — from a call that looked
+        entirely correct.
+        """
+        for i in range(4):
+            FinanceLine.objects.create(submission_id=f"s{i}", suku="A", delta=i)
+        batch = [_finance_effect(f"s{i}", "A", i) for i in range(4)]
+        reader = PreloadedProjectionReader(batch)
+
+        report = diff_effects_against_rows(iter(batch), reader=reader)
+
+        assert report.compared == 4 and report.certified
+
     def test_reader_together_with_preload_is_refused(self):
         effects = [_finance_effect("s1", "A", 1)]
         with pytest.raises(TypeError, match="preload=/using="):

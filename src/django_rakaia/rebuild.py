@@ -3,8 +3,9 @@ reconstruct this projection, and does the result match what production holds?**
 
 Answering it by hand means composing six interfaces in the right order — move the
 log off the guarded database, arm the write guard outside and the read guard
-inside, record the effects while still applying them, replay, diff in bulk — and then separately remembering the part that is written down
-nowhere: *a pass means nothing unless the guards were actually armed.*
+inside, record the effects while still applying them, replay, diff in bulk — and
+then separately remembering the part that is written down nowhere: *a pass means
+nothing unless the guards were actually armed.*
 `hermeticity.py` says so in prose and leaves it to the caller's discipline. ADR
 0003 records what that discipline is worth in practice: the first production
 consumer left the read guard unwired for months.
