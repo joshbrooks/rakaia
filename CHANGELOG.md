@@ -28,6 +28,13 @@ runnable demo for each.
   value of any other type, including a `Decimal`, a `float`, and a date or
   datetime. Declining costs a statement, never a wrong row.
 
+  *Worth it for:* a replay, reconcile or backfill. Each statement not issued is
+  worth about 0.4 ms (Postgres, and mostly query-building rather than network — the
+  same benchmark against in-memory SQLite still saves 0.13 ms), and the bound is
+  the number of tables rather than the number of rows. On the shapes the consumer
+  of #199 emits that is 1.3x for a typical form save, 4.7x for their worst one, and
+  20x for a reconcile over 500 rows. See `docs/dry-run-and-executors.md`.
+
   **Off by default.** The rows come out the same either way, and that is checked
   by running the same effects down both paths and comparing every column — not
   argued. But the rule deciding what may collapse was wrong four times, and each

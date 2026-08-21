@@ -111,6 +111,37 @@ rule deciding what may collapse was wrong four times, and each time it wrote
 wrong data rather than raising. Leaving it off means a consumer opts into the
 speed knowingly, and a suspected write anomaly can be bisected against it.
 
+### Is it worth turning on?
+
+**For a replay, reconcile or backfill, clearly. For one interactive save, barely.**
+
+Measured on the fan-out shapes the consumer of #199 actually emits — Postgres 16
+in a local container, one `apply()` call, median of 150–300 runs:
+
+| what is being saved | statements | before | after | |
+|---|---|---|---|---|
+| a typical form (3 repeater tables) | 8 → 4 | 5.9 ms | 4.4 ms | 1.3× |
+| the worst single form in their data | 33 → 2 | 17.2 ms | 3.7 ms | 4.7× |
+| a reconcile over 500 rows | 501 → 2 | 217 ms | 10.6 ms | 20.5× |
+
+Each statement not issued is worth about **0.4 ms**, and that figure barely moves
+across shapes from 2 to 501 statements — so the arithmetic for your own fan-out is
+just "statements saved × 0.4 ms".
+
+Two things worth knowing before reading those numbers across:
+
+- **The saving is not mostly network.** An empty round trip to the same database
+  measures 0.1 ms, so roughly three quarters of the 0.4 ms is work — Django
+  building the query and the server parsing and planning it. Repeating the
+  benchmark against in-memory SQLite, where a round trip costs 0.006 ms, still
+  saves 0.13 ms per statement. So the win survives a local socket, and grows if
+  your database is a network hop away: at 1 ms of latency each statement costs
+  about 1.3 ms, which turns the worst form above into roughly 40 ms saved rather
+  than 13.
+- **The bound is tables, not rows.** A form with three repeater tables costs 4
+  statements no matter how many rows each holds, which is why the typical case
+  gains 1.3× while the reconcile gains 20×. The ceiling is your schema.
+
 ## Dry-run replay with `CollectingExecutor`
 
 To preview a replay without side effects, run it with a `CollectingExecutor` and
