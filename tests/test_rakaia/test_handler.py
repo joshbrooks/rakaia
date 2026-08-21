@@ -667,11 +667,12 @@ class TestConformanceGaps:
                 if event_line:
                     frames.append(event_line[len("event:") :].strip())
 
-            data_indices = [i for i, e in enumerate(frames) if e == "data"]
-            assert len(data_indices) == 2
-            # Every data frame must be immediately followed by a control frame.
-            for i in data_indices:
-                assert frames[i + 1] == "control"
+            # The whole sequence, not just the pairing: a closed stream at its
+            # tail stops the live push, so there is nothing after the last
+            # control frame. Asserted as the exact list because a trailing
+            # duplicate control frame is what a missing stop looks like, and a
+            # pairing check cannot see it.
+            assert frames == ["data", "control", "data", "control"]
 
 
 # Mark all tests as async via pytest-asyncio auto mode
