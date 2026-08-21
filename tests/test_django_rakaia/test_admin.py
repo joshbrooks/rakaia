@@ -16,6 +16,7 @@ from django_rakaia.admin import (
     register_stream_event_admin,
 )
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
+from tests.test_django_rakaia.models import AppStreamEvent
 
 pytestmark = pytest.mark.django_db
 
@@ -177,3 +178,108 @@ class TestTheAdminAgreesWithEveryOtherReader:
         event = StreamEvent.objects.create(data={"n": 1}, event_type="create")
         preview = self._admin().data_preview(event)
         assert '"n"' in preview and "1" in preview
+
+
+class TestEveryAdminScreenAgrees:
+    """The same two questions, asked of each of the three screens.
+
+    #195 fixed the answer on the event list and left the entries list and the
+    factory an app registers its own event model with untouched — so a labelless
+    append still showed `APPEND` on two screens out of three, and the factory's
+    preview still printed a base64 body as base64 (#201). One test per screen,
+    because a test of the shared helper is exactly what would have missed this:
+    #195 had one, and both other screens were green throughout.
+
+    Each asks what the screen *renders*, not what it calls.
+    """
+
+    def _subclass_admin(self):
+        # The admin an app actually gets: `models.py` registers `AppStreamEvent`
+        # through `register_stream_event_admin` at import, so this is the same
+        # instance a consumer's site would serve.
+        return django_admin.site._registry[AppStreamEvent]
+
+    def _appended(self, label: str | None = None):
+        """One raw append through the store, and the entry it produced."""
+        from django_rakaia.django_store import DjangoStreamStore
+        from rakaia import AppendOptions
+
+        store = DjangoStreamStore()
+        store.create("s")
+        options = AppendOptions(label=label) if label is not None else None
+        store.append("s", b'{"n": 1}', options)
+        return store, StreamEntry.objects.get()
+
+    def test_the_entries_list_shows_no_label_for_a_labelless_append(self) -> None:
+        store, entry = self._appended()
+        badge = StreamEntryAdmin(StreamEntry, django_admin.site).event_type_badge(entry)
+
+        assert store.read("s")[0][0].label == ""
+        assert "APPEND" not in badge
+        # Deliberately absent, not blank — a blank badge reads as a bug.
+        assert "—" in badge
+
+    def test_the_entries_list_still_shows_a_real_label(self) -> None:
+        _, entry = self._appended(label="update")
+        badge = StreamEntryAdmin(StreamEntry, django_admin.site).event_type_badge(entry)
+        assert "UPDATE" in badge and "#ffc107" in badge
+
+    def test_a_registered_event_model_shows_no_label_for_a_labelless_append(
+        self,
+    ) -> None:
+        # The worst of the three: this is the copy a consumer inherits.
+        event = AppStreamEvent.objects.create(event_type="append", data={"n": 1})
+        badge = self._subclass_admin().event_type_badge(event)
+
+        assert "APPEND" not in badge
+        assert "—" in badge
+
+    def test_a_registered_event_model_still_shows_a_real_label(self) -> None:
+        event = AppStreamEvent.objects.create(event_type="delete", data={})
+        badge = self._subclass_admin().event_type_badge(event)
+        assert "DELETE" in badge and "#dc3545" in badge
+
+    def test_a_registered_event_model_does_not_preview_a_body_as_base64(self) -> None:
+        event = AppStreamEvent.objects.create(
+            data="//4AYmluYXJ5", event_type="append", payload_encoding="base64"
+        )
+        preview = self._subclass_admin().data_preview(event)
+
+        assert "//4AYmluYXJ5" not in preview, (
+            "the preview shows the stored base64 rather than saying what it is"
+        )
+        assert "base64" in preview and "9 bytes" in preview
+
+    def test_a_registered_event_model_previews_a_text_body_as_its_text(self) -> None:
+        event = AppStreamEvent.objects.create(
+            data="hello, world", event_type="append", payload_encoding="utf-8"
+        )
+        assert "hello, world" in self._subclass_admin().data_preview(event)
+
+    def test_a_registered_event_model_does_not_emit_raw_markup(self) -> None:
+        # It used to hand back `<br>`/`&nbsp;` in a plain string, which Django
+        # escapes — so the viewer read the tags rather than seeing the layout.
+        event = AppStreamEvent.objects.create(event_type="create", data={"a": 1})
+        preview = self._subclass_admin().data_preview(event)
+        assert "<br>" not in preview and "&nbsp;" not in preview
+        assert '"a": 1' in preview
+
+    def test_all_three_screens_render_one_append_the_same_way(self) -> None:
+        # The point of the shared helper: the next screen cannot disagree.
+        _, entry = self._appended()
+        event = entry.event
+
+        from_events = StreamEventAdmin(StreamEvent, django_admin.site)
+        from_entries = StreamEntryAdmin(StreamEntry, django_admin.site)
+        assert from_events.event_type_badge(event) == from_entries.event_type_badge(
+            entry
+        )
+
+        same = AppStreamEvent.objects.create(
+            event_type=event.event_type,
+            data=event.data,
+            payload_encoding=event.payload_encoding,
+        )
+        subclass = self._subclass_admin()
+        assert subclass.event_type_badge(same) == from_events.event_type_badge(event)
+        assert subclass.data_preview(same) == from_events.data_preview(event)
