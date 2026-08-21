@@ -53,13 +53,20 @@ nothing to work around::
                DjangoExecutor(using="rebuild"),
                reader=DjangoProjectionReader(using="rebuild"), ...)
 
-This used to be the whole obstacle in practice, because the store had no
-``using`` at all and so could only read ``default``. The answer documented here
-was a six-line drain of the durable log into an in-memory ``StreamStore`` first,
-with the guard down — code every consumer wrote and no test covered, since the
-store was untestable off ``default``. ``DjangoStreamStore(using=...)`` (#180)
-replaced it with a keyword argument. An in-memory store is still a perfectly good
-event source; it is no longer the price of admission.
+That works when the log *is* on the other alias — a scratch database restored
+from a dump, say. When the log lives on the alias being guarded, which is the
+ordinary case, the messages have to leave it before the guard goes up; there is
+no keyword argument that makes reading the guarded database acceptable, because
+that is the property under test. ``rebuild_and_verify`` does that read once, with
+the guard down, and replays from the messages.
+
+This used to be the whole obstacle in practice for a different reason: the store
+had no ``using`` at all, so it could only read ``default``, and the drain was
+therefore *mandatory* — six lines every consumer hand-wrote, covered by no test,
+since the store could not be pointed anywhere else in order to test it.
+``DjangoStreamStore(using=...)`` (#180) fixed the untestable part. An in-memory
+store is still a perfectly good event source; it is no longer the price of
+admission.
 
 Worth stating because the first production consumer left this guard unwired for
 months, having recorded "a blanket deny on ``default`` trips on the store's own
@@ -67,10 +74,20 @@ reads" as the blocker. That was a real blocker, and it is now gone.
 
 **A pass only means something if you have watched the guard fail.** Nothing here
 distinguishes "no handler read the database" from "the guard was never armed",
-so pair the run with a deliberate ambient read and check that it raises::
+so a run has to pair itself with a deliberate ambient read and check that it
+raises::
 
     with deny_database_access("default"):
         SomeModel.objects.filter(pk=1).exists()   # must raise AmbientDatabaseAccess
+
+That is a rule this module cannot enforce about itself, and asking a caller to
+remember it did not work — see ADR 0003. If you are arming these guards in order
+to answer "can the log rebuild this, and does it match?", use
+:func:`django_rakaia.rebuild.rebuild_and_verify` instead: it arms both guards in
+the right places, runs that probe itself, and raises rather than certifying if
+the guard turns out to be silent. Reach for the guards directly when your
+question is a different one — a partial replay, a merge, a rebuild you intend to
+keep.
 
 See ADR 0003 (``docs/adr/0003-handler-hermeticity.md``).
 """

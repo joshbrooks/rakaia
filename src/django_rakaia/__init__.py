@@ -96,6 +96,14 @@ _EXPORTS: dict[str, str] = {
     "RED": "django_rakaia.verification",
     "VACUOUS": "django_rakaia.verification",
     # -- rebuild isolation ---------------------------------------------------
+    # `rebuild_and_verify` composes everything in this block with the verify
+    # block above (#184). The pieces stay exported: it is the shortest route to
+    # a trustworthy answer, not the only permitted one, and a consumer with a
+    # different question — a partial replay, a merge, a rebuild it wants to keep
+    # — still needs the guards on their own.
+    "rebuild_and_verify": "django_rakaia.rebuild",
+    "GuardNotArmed": "django_rakaia.rebuild",
+    "ScratchAliasNotEmpty": "django_rakaia.rebuild",
     "deny_database_access": "django_rakaia.hermeticity",
     "assert_no_live_writes": "django_rakaia.hermeticity",
     "AmbientDatabaseAccess": "django_rakaia.hermeticity",

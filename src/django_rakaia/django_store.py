@@ -35,7 +35,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -168,6 +169,19 @@ def write_enveloped_event(
 _POLL_INTERVAL_SECONDS = 0.05
 
 
+class _StreamExpired(Exception):
+    """Internal: the locked stream row had aged out. Never leaves this module.
+
+    Raised inside a write transaction and caught immediately outside it, which
+    is the only way the reap can survive the rollback that reporting the expiry
+    causes. `DjangoStreamStore._locked_write` is the whole of its lifetime.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(path)
+        self.path = path
+
+
 class DjangoStreamStore:
     """A durable store backed by the django_rakaia ORM models.
 
@@ -261,19 +275,13 @@ class DjangoStreamStore:
 
         return False
 
-    def _get_if_not_expired(
-        self, path: str, *, for_update: bool = False
-    ) -> Stream | None:
+    def _get_if_not_expired(self, path: str) -> Stream | None:
         """The live stream at `path`, deleting it first if it has expired.
 
-        `for_update` locks the stream row for the enclosing transaction, so a
-        writer's closed/Stream-Seq/producer checks and its write are one
-        atomic step against concurrent writers. Only valid inside
-        `transaction.atomic()`; a no-op on backends without row locks (SQLite).
+        The unlocked read, for the read paths. A writer wants
+        `_locked_write`, which takes the row lock in the same single SELECT.
         """
-        base = self._streams()
-        qs = base.select_for_update() if for_update else base
-        stream = qs.filter(stream_id=path).first()
+        stream = self._streams().filter(stream_id=path).first()
         if stream is None:
             return None
         if self._is_expired(stream):
@@ -281,8 +289,8 @@ class DjangoStreamStore:
             return None
         return stream
 
-    def _require(self, path: str, *, for_update: bool = False) -> Stream:
-        stream = self._get_if_not_expired(path, for_update=for_update)
+    def _require(self, path: str) -> Stream:
+        stream = self._get_if_not_expired(path)
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
         return stream
@@ -290,12 +298,60 @@ class DjangoStreamStore:
     def _reap_if_expired(self, path: str) -> None:
         """Expire-and-delete `path` now, outside any write transaction.
 
-        The write paths call this before opening `transaction.atomic()`:
-        `_require`'s expiry delete *inside* the transaction is rolled back by
-        the very `StreamNotFound` unwind that reports it, so the write path
-        would otherwise never actually reap.
+        `create` calls this before opening `transaction.atomic()`. Its own
+        in-transaction reap does normally survive — it goes on to insert the
+        replacement row and commit — but not if the `initial_data` it was given
+        then fails validation, and the rollback that reports *that* takes the
+        reap with it.
+
+        The append paths do not need it: `_locked_write` carries the expiry out
+        of the transaction itself, and so reaps with one read of the stream row
+        rather than two (#202).
         """
         self._get_if_not_expired(path)
+
+    @contextmanager
+    def _locked_write(self, path: str) -> Iterator[Stream]:
+        """Open a write transaction on `path`'s locked, live stream row.
+
+        The single door every append and fenced close goes through. It yields
+        the `Stream` inside `transaction.atomic()` with the row locked, so a
+        writer's closed / content-type / producer checks and its write are one
+        indivisible step against concurrent writers. Raises `StreamNotFound`
+        for an absent *or* expired stream, and the expired one is reaped.
+
+        **One read of the stream row, not two.** Reaping an expired stream and
+        locking a live one look like two different jobs — the reap has to
+        commit, and a write transaction that ends in `StreamNotFound` rolls
+        back — so the write paths used to do both: an unlocked read to reap
+        before `atomic()`, then the locked read inside it. That is one wasted
+        SELECT on *every* append, to handle a case that is rare and already
+        handled by every read path (#202).
+
+        Instead the locked read decides, and the expiry leaves the transaction
+        as `_StreamExpired` — a signal, not an outcome — to be reaped on the
+        far side of the rollback and reported as `StreamNotFound`. Nothing has
+        been written at that point, so there is nothing for the rollback to
+        lose. `TestExpiryReaping` is what holds this to actually deleting the
+        row; it is the test that caught the version of this that reported 404s
+        forever without ever reaping.
+
+        Only for the *write* paths. A reader wants `_require`, which does not
+        lock and does not need a transaction.
+        """
+        try:
+            with transaction.atomic(using=self._using):
+                stream = (
+                    self._streams().select_for_update().filter(stream_id=path).first()
+                )
+                if stream is None:
+                    raise StreamNotFound(f"Stream not found: {path}")
+                if self._is_expired(stream):
+                    raise _StreamExpired(path)
+                yield stream
+        except _StreamExpired:
+            self.delete(path)
+            raise StreamNotFound(f"Stream not found: {path}") from None
 
     @staticmethod
     def _touch(stream: Stream) -> None:
@@ -409,12 +465,21 @@ class DjangoStreamStore:
     def _close_with_producer_sync(
         self, path: str, producer_id: str, epoch: int, seq: int
     ) -> CloseResult | None:
-        self._reap_if_expired(path)
-        with transaction.atomic(using=self._using):
-            stream = self._get_if_not_expired(path, for_update=True)
-            if stream is None:
-                return None
+        # An absent or expired stream is reported as `None` here, not raised —
+        # `close_stream` promises that — so the one `StreamNotFound`
+        # `_locked_write` can raise is translated back. Nothing inside the block
+        # raises it.
+        try:
+            return self._close_locked(path, producer_id, epoch, seq)
+        except StreamNotFound:
+            return None
 
+    def _close_locked(
+        self, path: str, producer_id: str, epoch: int, seq: int
+    ) -> CloseResult:
+        """The fenced close itself, on the locked row. Split out only so its
+        `StreamNotFound` has somewhere to be caught."""
+        with self._locked_write(path) as stream:
             # A close is admitted on the same terms as a fenced append with no
             # body, so it asks the same question: an already-closed stream is
             # reported, never re-closed — a different producer's close must not
@@ -469,9 +534,10 @@ class DjangoStreamStore:
         persisted: `label` maps to `event_type` (a raw append keeps the stable
         `"append"` label) and `metadata` to the JSON column.
 
-        Runs in a transaction so `get_next_offset()` can lock the stream row:
-        concurrent appends serialize on offset allocation instead of racing to
-        the same value and failing `unique_together(stream, offset)`.
+        Runs in the transaction `_locked_write` opens, so `get_next_offset()`
+        can lock the offset high-water: concurrent appends serialize on offset
+        allocation instead of racing to the same value and failing
+        `unique_together(stream, offset)`.
 
         Admission (closed / content-type / producer fencing / Stream-Seq) is
         decided by `rakaia.append_decision`, shared with the in-memory store, so
@@ -487,10 +553,7 @@ class DjangoStreamStore:
           step, and the result reports `stream_closed=True`.
         """
         opts = options if options is not None else AppendOptions()
-        self._reap_if_expired(path)
-        with transaction.atomic(using=self._using):
-            stream = self._require(path, for_update=True)
-
+        with self._locked_write(path) as stream:
             # Admission is decided in `rakaia.append_decision`, shared with the
             # in-memory store. This path used to inline its own shorter sequence
             # and ignore `opts.producer_id` entirely, so the same options
@@ -688,17 +751,14 @@ class DjangoStreamStore:
         if producer_id is None or epoch is None or seq is None:
             return self.append(path, data, opts)
 
-        self._reap_if_expired(path)
-        with transaction.atomic(using=self._using):
-            # The row lock is what makes fencing fence: validation reads the
-            # producer's last state, and two concurrent retries of the same
-            # (producer_id, epoch, seq) that both read before either commits
-            # would both be accepted — the exact duplicate write the fencing
-            # exists to prevent. Serialized on the stream row, the loser
-            # re-reads the winner's committed state. (The in-memory store's
-            # per-producer asyncio.Lock is this lock's in-process analogue.)
-            stream = self._require(path, for_update=True)
-
+        # The row lock `_locked_write` takes is what makes fencing fence:
+        # validation reads the producer's last state, and two concurrent retries
+        # of the same (producer_id, epoch, seq) that both read before either
+        # commits would both be accepted — the exact duplicate write the fencing
+        # exists to prevent. Serialized on the stream row, the loser re-reads the
+        # winner's committed state. (The in-memory store's per-producer
+        # asyncio.Lock is this lock's in-process analogue.)
+        with self._locked_write(path) as stream:
             # The same shared sequence `append` uses. This path used to run its
             # own: fencing first, then closed, and it never read `closed_by` —
             # so a closed stream answered with the fencing outcome instead of
@@ -794,10 +854,7 @@ class DjangoStreamStore:
         if not items:
             return []
 
-        self._reap_if_expired(path)
-        with transaction.atomic(using=self._using):
-            stream = self._require(path, for_update=True)
-
+        with self._locked_write(path) as stream:
             if stream.closed:
                 return [AppendResult(message=None, stream_closed=True) for _ in items]
 

@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .event_message import event_label, payload_fields
+from .event_message import event_view_of_entry
 from .models import StreamEntry
 
 
@@ -66,19 +66,13 @@ def frame_event(entry: StreamEntry) -> dict[str, Any]:
     `data`/`payload_encoding` pair rather than the decoded bytes `message_of`
     produces — see `payload_fields` for why passing the pair through is what
     makes the subscriber's inverse exact.
+
+    One line, because the assembly is `event_view` now and shared with both HTTP
+    surfaces. This function used to build the dict itself and published the
+    *event's* `created_at` where they published the *entry's* — the same event
+    with two timestamps, and the entry's is the one `read()` reports (#185).
     """
-    return {
-        "id": entry.event.id,
-        "offset": entry.offset,
-        # Inverted, not the raw column: publishing `event_type` directly sent
-        # subscribers the internal `"append"` sentinel where `read()` reports
-        # `""` for the same event (#153).
-        "event_type": event_label(entry.event.event_type),
-        "created_at": entry.event.created_at.isoformat()
-        if entry.event.created_at
-        else None,
-        **payload_fields(entry.event.data, entry.event.payload_encoding),
-    }
+    return event_view_of_entry(entry, event_id=True, offset=True)
 
 
 def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:

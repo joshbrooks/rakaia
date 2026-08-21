@@ -5,9 +5,9 @@ There are exactly three `select_for_update()` calls in this package:
 
 * `models.py` — `Stream.get_next_offset_block`, the offset watermark. Raced in
   `test_concurrent_appends.py`.
-* `django_store.py` — `_live_stream(..., for_update=True)`, the stream row. It
-  is what makes a writer's closed / content-type / producer checks and its write
-  one indivisible step.
+* `django_store.py` — `_locked_write`, the stream row. It is what makes a
+  writer's closed / content-type / producer checks and its write one indivisible
+  step, and it is the door every append and fenced close goes through.
 * `effect_executor.py` — `DjangoExecutor._retire`, which captures the rows a
   retire is about to flip so it can report exactly those.
 
@@ -222,7 +222,7 @@ class TestOpensItsOwnTransaction:
 @requires_row_locks
 @pytest.mark.django_db(transaction=True)
 class TestStreamRowLock:
-    """`_live_stream(..., for_update=True)` serialises writers on one stream.
+    """`_locked_write` serialises writers on one stream.
 
     The property is not "appends are ordered" — the offset watermark gives that
     — but that a writer's *decision* (is this stream closed? does the content

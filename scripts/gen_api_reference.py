@@ -112,6 +112,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "ModelStreamReader",
     ),
     "Rehearsing a rebuild safely": (
+        "rebuild_and_verify",
+        "GuardNotArmed",
+        "ScratchAliasNotEmpty",
         "deny_database_access",
         "assert_no_live_writes",
         "AmbientDatabaseAccess",
