@@ -114,10 +114,12 @@ class TestTheVerdict:
         assert not report.certified
 
     def test_comparing_nothing_is_refused_rather_than_certified(self):
-        # The vacuity trap: an empty stream, a renamed path, a registry that
-        # failed to autodiscover — all produce zero effects, and "nothing
-        # disagreed" reads as a pass. `raise_if_diff` already refuses this; the
-        # verdict has to carry it too.
+        # The vacuity trap: an empty stream, an `event_match` that stopped
+        # matching, a registry that failed to autodiscover — all produce zero
+        # effects, and "nothing disagreed" reads as a pass. `raise_if_diff`
+        # already refuses this; the verdict has to carry it too. (A *renamed*
+        # path is not in this class: the drain raises `StreamNotFound`, so it
+        # fails loudly rather than vacuously.)
         DjangoStreamStore().create(PATH)  # exists, no events
 
         report = rebuild_and_verify(
