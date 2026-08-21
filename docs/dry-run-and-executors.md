@@ -189,7 +189,44 @@ Drop `--dry-run` to apply the same effects via the `DjangoExecutor`. See
 [Versioned handlers](versioned-handlers.md) for the full command reference
 (`--from`, `--to`, `--strict-drift`).
 
-## Verifying a from-scratch rebuild: the `using=` seam
+## Verifying a from-scratch rebuild: one call
+
+```python
+from django_rakaia import rebuild_and_verify
+
+report = rebuild_and_verify(
+    "submissions",
+    into="rebuild",                            # a disposable alias
+    live_models=[Submission, ProjectLink],     # what you expect rebuilt
+    registry=reg,
+)
+report.raise_if_diff()
+```
+
+That is the whole gate. It replays the log into the scratch alias, holds both
+guards over the run, and diffs the effects against your live rows. Read
+`report.verdict`, not `report.ok`: a replay that produced no effects compared
+nothing, and "nothing disagreed" is vacuously true for it.
+
+Two things it refuses rather than lets past:
+
+- **`GuardNotArmed`** — it trips the read guard on purpose before replaying, and
+  objects if nothing happens. A pass obtained with the guard off looks identical
+  to a real one from the outside, which is why this is a raise and not a warning.
+- **`ScratchAliasNotEmpty`** — the scratch alias still holds rows from an earlier
+  run. A stage > 0 handler would read those as if the log had produced them, and
+  the diff (which compares against *production*) would never notice. Nothing is
+  deleted for you; truncating a database on the strength of a keyword argument is
+  the more dangerous of the two options.
+
+`live_models` is required, and deliberately has no default: an empty one disarms
+the write guard, and doing that silently is the exact failure the gate exists to
+prevent. Pass `()` if you really mean it.
+
+The rest of this section is what that call does, and when to assemble it
+yourself instead.
+
+### The `using=` seam
 
 A `CollectingExecutor` answers a **regression** question: *"does replaying the log
 reproduce the rows I already have?"* It writes nothing, so it leans on the target
@@ -220,10 +257,22 @@ replay(
 The store joined that list late (#180), and its absence was the whole obstacle in
 practice: `deny_database_access("default")` catches *every* statement on the alias
 it guards, including the store's own reads, so a rebuild whose log lived on
-`default` tripped its own guard. The documented workaround was to copy the log
-into an in-memory store first — six lines, at every call site, and untested,
-because the store could not be pointed anywhere else in order to test it. If you
-are following an older recipe that drains the log by hand, you no longer need to.
+`default` tripped its own guard.
+
+Note what the example above assumes: **the log is on the scratch alias**, not on
+the database being guarded. That holds when the scratch alias is a restored dump
+of production, and then there is nothing to work around — point the store at
+`using="rebuild"` and the guard has no honest reason to fire.
+
+When the log is on the database you are guarding — the ordinary case — the
+messages still have to leave it before the guard goes up, because a hermetic
+rebuild must not read the database it is reconstructing. That is a real step, not
+a workaround for a missing keyword argument, and it is one of the things
+`rebuild_and_verify` does for you: it reads the stream once with the guard down
+and replays from those messages, keeping offsets and the whole envelope as the
+durable log recorded them. What `using=` on the store removed was the *untested*
+part — the six lines every consumer hand-wrote, at a seam that could not be
+pointed anywhere else in order to test it.
 
 Because it is the real ORM, you get full fidelity — constraints, defaults, joins,
 `__gte` — for free, with no query engine to write and nothing written to
