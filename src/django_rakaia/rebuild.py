@@ -230,9 +230,11 @@ def rebuild_and_verify(
 
     recorder = _RecordingExecutor(_django_executor(into))
 
-    # The write guard goes outside: it tolerates arbitrary reads, so it can wrap
-    # the drain and the diff too. The read guard can only cover the region where
-    # no legitimate query to `live_using` happens — the replay.
+    # The write guard goes outside, and covers the diff as well as the replay: it
+    # counts rows rather than intercepting statements, so it tolerates the diff's
+    # legitimate reads of `live_using`. The read guard cannot — it fails on every
+    # statement — so it covers the replay only. (The drain is outside both, by
+    # necessity: it is the read that moves the log off the guarded alias.)
     with assert_no_live_writes(*live_models, using=live_using):
         with deny_database_access(live_using):
             _prove_read_guard_armed(live_using)

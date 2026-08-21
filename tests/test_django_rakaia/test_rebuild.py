@@ -431,3 +431,145 @@ class TestTheRecordingTee:
 
         assert tee.effects == [effect]
         assert inner.effects == [effect]
+
+
+class TestWhatItForwardsToReplay:
+    """A forwarded argument that quietly stops being forwarded is the worst kind
+    of defect in a trust gate: the call still returns a verdict, and the verdict
+    still looks like evidence."""
+
+    def test_a_strict_drift_policy_is_honoured(self):
+        # `on_drift="raise"` degrading to "warn" is silent -- the run completes
+        # and certifies, having replayed handlers whose code no longer matches
+        # what produced the recorded rows.
+        from rakaia.registry import HandlerDriftError
+
+        rows = [{"id": "a", "suku": "s1", "delta": 1}]
+        _seed_log(*rows)
+        _live(*rows)
+
+        reg = HandlerRegistry()
+        version = reg.register(
+            name="fin",
+            event_match=PATH,
+            fn=lambda event: [],  # noqa: ARG005
+            effective_from=0,
+        )
+        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+
+        with pytest.raises(HandlerDriftError):
+            rebuild_and_verify(
+                PATH,
+                into="overlay",
+                live_models=[FinanceLine],
+                registry=reg,
+                on_drift="raise",
+            )
+
+    def test_the_match_string_can_differ_from_the_stream_path(self):
+        # Content-routed registries match on something other than the path, so a
+        # dropped `event_match` matches nothing and the run reports VACUOUS.
+        rows = [{"id": "a", "suku": "s1", "delta": 1}]
+        _seed_log(*rows)
+        _live(*rows)
+
+        reg = HandlerRegistry()
+        reg.register(
+            name="fin",
+            event_match="routed-elsewhere",
+            fn=lambda event: [
+                Upsert(
+                    model_label="test_django_rakaia.FinanceLine",
+                    lookup={"submission_id": event["id"]},
+                    defaults={"suku": event["suku"], "delta": event["delta"]},
+                )
+            ],
+            effective_from=0,
+        )
+
+        report = rebuild_and_verify(
+            PATH,
+            into="overlay",
+            live_models=[FinanceLine],
+            registry=reg,
+            event_match="routed-elsewhere",
+        )
+
+        assert report.certified
+
+    def test_upcasters_run_before_the_handlers(self):
+        # The log holds the old shape; only the upcaster knows the new one. A
+        # dropped registry means the handler reads a field that is not there.
+        from rakaia.registry import UpcasterRegistry
+
+        _seed_log({"id": "a", "suku": "s1", "old_delta": 3})
+        _live({"id": "a", "suku": "s1", "delta": 3})
+
+        ups = UpcasterRegistry()
+        ups.register(PATH, 1, lambda event: {**event, "delta": event.pop("old_delta")})
+
+        report = rebuild_and_verify(
+            PATH,
+            into="overlay",
+            live_models=[FinanceLine],
+            registry=_registry(),
+            upcaster_registry=ups,
+        )
+
+        assert report.certified
+
+
+class TestProductionNeedNotBeTheDefaultAlias:
+    """`live_using` has four use sites -- the drain, the write guard, the read
+    guard, and the diff reader -- and every one of them is a place a hardcoded
+    'default' would look right. Nothing exercises them while every test leaves
+    the parameter alone, so this run swaps the two aliases over.
+    """
+
+    def test_the_whole_gate_runs_with_the_aliases_swapped(self):
+        import json
+
+        rows = [{"id": "a", "suku": "s1", "delta": 1}]
+
+        store = DjangoStreamStore(using="overlay")
+        store.create(PATH)
+        for row in rows:
+            store.append(PATH, json.dumps(row).encode())
+        for row in rows:
+            FinanceLine.objects.using("overlay").create(
+                submission_id=row["id"], suku=row["suku"], delta=row["delta"]
+            )
+
+        report = rebuild_and_verify(
+            PATH,
+            into="default",
+            live_using="overlay",
+            live_models=[FinanceLine],
+            registry=_registry(),
+        )
+
+        assert report.certified
+        assert FinanceLine.objects.using("default").count() == 1
+
+    def test_drift_against_the_named_live_alias_is_what_is_reported(self):
+        # Pins that the *diff* follows `live_using` too, not just the replay:
+        # `default` holds a matching row and `overlay` a wrong one, so a reader
+        # left on 'default' would certify.
+        import json
+
+        store = DjangoStreamStore(using="overlay")
+        store.create(PATH)
+        store.append(PATH, json.dumps({"id": "a", "suku": "s1", "delta": 1}).encode())
+        FinanceLine.objects.using("overlay").create(
+            submission_id="a", suku="s1", delta=999
+        )
+
+        report = rebuild_and_verify(
+            PATH,
+            into="default",
+            live_using="overlay",
+            live_models=[FinanceLine],
+            registry=_registry(),
+        )
+
+        assert report.verdict == RED
