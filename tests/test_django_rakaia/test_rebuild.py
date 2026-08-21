@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.rebuild import rebuild_and_verify
@@ -91,6 +92,28 @@ class TestTheVerdict:
 
         assert report.certified
         assert report.compared == 2
+
+    def test_the_final_diff_reads_the_live_rows_in_one_query(self):
+        """The gate keeps the bulk read, and does not need a second effect list
+        to get it: it asks the diff for `preload=True` (#190). One `IN (...)`
+        over the batch, not one `SELECT` per effect."""
+        rows = [{"id": f"r{i}", "suku": "s", "delta": i} for i in range(5)]
+        _seed_log(*rows)
+        _live(*rows)
+
+        with CaptureQueriesContext(connection) as ctx:
+            report = rebuild_and_verify(
+                PATH, into="overlay", live_models=[FinanceLine], registry=_registry()
+            )
+
+        assert report.certified and report.compared == 5
+        # The write guard's own row counts are not the diff's reads.
+        reads = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "financeline" in q["sql"].lower() and "count" not in q["sql"].lower()
+        ]
+        assert len(reads) == 1, reads
 
     def test_a_drifted_row_is_reported_not_raised(self):
         _seed_log({"id": "a", "suku": "s1", "delta": 1})

@@ -69,6 +69,7 @@ __all__ = [
     # defined here
     "DiffReport",
     "FieldDiff",
+    "PreloadMismatch",
     "PreloadedProjectionReader",
     "RowDiff",
     "VacuousVerification",
@@ -257,6 +258,23 @@ class VacuousVerification(AssertionError):
         super().__init__(str(report))
 
 
+class PreloadMismatch(ValueError):
+    """A :class:`PreloadedProjectionReader` was handed to
+    :func:`diff_effects_against_rows` together with effects its bulk fetch does
+    not cover.
+
+    The reader is a snapshot of *the batch it was constructed with*. Diff a
+    different batch through it and the rows outside the snapshot are answered
+    from a live query taken later — so a report can rest on two different
+    readings of the database and say nothing about it. Raised rather than
+    tolerated: the mismatch produces a wrong answer, not a slow one.
+
+    Reaching this at all is avoidable — ``diff_effects_against_rows(effects,
+    preload=True)`` builds the reader from the same list it diffs, so there is
+    no second list to keep in step.
+    """
+
+
 # =============================================================================
 # Default normalizers
 # =============================================================================
@@ -271,6 +289,8 @@ def diff_effects_against_rows(
     effects: Iterable[Effect],
     *,
     reader: DjangoProjectionReader | None = None,
+    preload: bool = False,
+    using: str | None = None,
     normalizers: Sequence[Normalizer] | None = None,
     kinds: tuple[type, ...] = _WRITE_EFFECTS,
 ) -> DiffReport:
@@ -283,9 +303,52 @@ def diff_effects_against_rows(
 
     ``normalizers`` defaults to :data:`DEFAULT_NORMALIZERS` (UUID + Decimal); pass
     an explicit list to extend or replace them, or ``[]`` to compare raw values.
+
+    Args:
+        effects: The batch to check.
+        preload: Fetch the batch's rows in bulk up front — one query per
+            ``(model, lookup-shape)`` group instead of one ``SELECT`` per effect
+            (see :class:`PreloadedProjectionReader`, which this builds from
+            *this* call's ``effects``, so the two can never be different lists).
+            **Read-only verification only.** The bulk fetch is a point-in-time
+            snapshot, so it is wrong during live staged replay, where the rows
+            change as the replay writes them; leave it off there.
+        using: The connection alias the reader built here reads from. Defaults to
+            Django's default alias.
+        reader: An explicit reader, for a lookup source this function should not
+            choose. Mutually exclusive with ``preload`` and ``using``, which
+            configure the reader this function builds: passing both is a
+            :class:`TypeError` rather than one of them silently winning.
+
+    Raises:
+        TypeError: ``reader`` was passed together with ``preload`` or ``using``.
+        PreloadMismatch: ``reader`` is a :class:`PreloadedProjectionReader` whose
+            bulk fetch does not cover these effects — the mismatch this
+            function's ``preload=True`` exists to make unreachable.
     """
-    active_reader = reader if reader is not None else DjangoProjectionReader()
+    if reader is not None and (preload or using is not None):
+        raise TypeError(
+            "diff_effects_against_rows() got reader= together with "
+            "preload=/using=, which configure the reader it would build itself. "
+            "Pass one or the other: preload=True for the bulk-fetching reader, "
+            "or a fully configured reader= (a PreloadedProjectionReader built "
+            "from these same effects, if that is what you want)."
+        )
     active_norms = DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
+
+    active_reader: DjangoProjectionReader
+    if reader is None and preload:
+        # One list, used for both the bulk fetch and the diff below. This is the
+        # whole point of the flag: there is no second list to drift.
+        effects = list(effects)
+        active_reader = PreloadedProjectionReader(effects, using=using)
+    elif reader is None:
+        active_reader = DjangoProjectionReader(using=using)
+    else:
+        active_reader = reader
+        if isinstance(active_reader, PreloadedProjectionReader):
+            effects = list(effects)
+            _require_preload_covers(active_reader, effects, kinds)
 
     rows: list[RowDiff] = []
     for eff in effects:
@@ -316,12 +379,16 @@ class PreloadedProjectionReader(DjangoProjectionReader):
 
     :func:`diff_effects_against_rows` does one ``reader.get`` per effect, which is
     one round-trip per effect: fine for a handful, thousands on a full reconcile
-    sweep. Give the *same* batch to this reader and to the diff and that collapses
-    to **one query per (model, lookup-shape) group**::
+    sweep. Preloading collapses that to **one query per (model, lookup-shape)
+    group**, and the way to ask for it is::
 
-        effects = list(collecting_executor.effects)
-        reader = PreloadedProjectionReader(effects, using="rebuild")
-        diff_effects_against_rows(effects, reader=reader).raise_if_diff()
+        diff_effects_against_rows(effects, preload=True).raise_if_diff()
+
+    which builds this reader from the same list it diffs. Constructing it by hand
+    is for a caller that needs the reader on its own (a lookup loop outside a
+    diff, or as the ``reader=`` of something else) — a hand-built reader passed
+    back into the diff must cover that call's effects, or the diff raises
+    :class:`PreloadMismatch` rather than answering from a partial snapshot.
 
     Semantics and limits:
 
@@ -345,6 +412,11 @@ class PreloadedProjectionReader(DjangoProjectionReader):
         # such row" — a real cached answer). A key *absent* from the map has never
         # been fetched, so get() does a live lookup and memoises it.
         self._cache: dict[tuple[str, tuple], Any] = {}
+        # The keys the bulk fetch asked for — what this snapshot covers. A key
+        # added to `_cache` later by a live fallback is deliberately not in here:
+        # it was read at a different moment, which is exactly what
+        # `PreloadMismatch` is about.
+        self._preloaded: set[tuple[str, tuple]] = set()
         self._preload(effects)
 
     def _preload(self, effects: Iterable[Effect]) -> None:
@@ -381,6 +453,7 @@ class PreloadedProjectionReader(DjangoProjectionReader):
                 ):  # first row wins, mirroring get()->first()
                     requested[key] = row
             self._cache.update(requested)
+            self._preloaded.update(requested)
 
     def _fetch(
         self, model_label: str, fields: tuple[str, ...], lookups: list[dict[str, Any]]
@@ -408,6 +481,18 @@ class PreloadedProjectionReader(DjangoProjectionReader):
             for f, v in sorted(items, key=lambda kv: kv[0])
         )
 
+    def preloaded(self, model_label: str, lookup: dict[str, Any]) -> bool:
+        """Whether this reader's bulk fetch covers ``lookup`` on ``model_label``.
+
+        The snapshot's own account of what it holds, so
+        :func:`diff_effects_against_rows` can refuse a reader built from another
+        batch instead of quietly falling back to a live query for the rest.
+        """
+        if not lookup or any("__" in k for k in lookup):
+            return False
+        model = apps.get_model(model_label)
+        return (model_label, self._key(model, lookup.items())) in self._preloaded
+
     def get(self, model_label: str, /, **lookup: Any) -> Any | None:
         if any("__" in k for k in lookup):
             return super().get(model_label, **lookup)  # spanning — not preloadable
@@ -426,6 +511,38 @@ class PreloadedProjectionReader(DjangoProjectionReader):
 # =============================================================================
 # Internal
 # =============================================================================
+
+
+def _require_preload_covers(
+    reader: PreloadedProjectionReader,
+    effects: Sequence[Effect],
+    kinds: tuple[type, ...],
+) -> None:
+    """Refuse a preloaded reader that was built from a different batch.
+
+    Only the lookups the reader *could* have preloaded are checked: an empty or
+    relation-spanning lookup is documented as always live, so its absence from
+    the snapshot says nothing about which batch built the reader.
+    """
+    uncovered = [
+        eff
+        for eff in effects
+        if isinstance(eff, kinds)
+        and eff.lookup
+        and not any("__" in k for k in eff.lookup)
+        and not reader.preloaded(eff.model_label, eff.lookup)
+    ]
+    if not uncovered:
+        return
+    first = uncovered[0]
+    raise PreloadMismatch(
+        f"the PreloadedProjectionReader passed as reader= did not preload "
+        f"{len(uncovered)} of the {len(effects)} effect(s) being diffed (first: "
+        f"{first.model_label} {first.lookup!r}), so it was built from a "
+        f"different batch and this diff would rest on two readings of the "
+        f"database. Call diff_effects_against_rows(effects, preload=True) "
+        f"instead, which builds the reader from the effects it diffs."
+    )
 
 
 def _diff_row(

@@ -73,6 +73,7 @@ _EXPORTS: dict[str, str] = {
     # -- verifying a rebuild -------------------------------------------------
     "diff_effects_against_rows": "django_rakaia.verification",
     "PreloadedProjectionReader": "django_rakaia.verification",
+    "PreloadMismatch": "django_rakaia.verification",
     "DiffReport": "django_rakaia.verification",
     "RowDiff": "django_rakaia.verification",
     "FieldDiff": "django_rakaia.verification",

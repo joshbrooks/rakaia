@@ -129,6 +129,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "VACUOUS",
         "VacuousVerification",
         "VerificationError",
+        "PreloadMismatch",
     ),
     "Audit trails and provenance": (
         "provenance",

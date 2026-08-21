@@ -147,6 +147,10 @@ DJANGO_RAKAIA_PUBLIC = {
     # without importing a submodule.
     "Normalizer",
     "PreloadedProjectionReader",
+    # Added with `diff_effects_against_rows(preload=True)` (#190): the diff
+    # refuses a hand-built preloaded reader that covers a different batch, and a
+    # consumer catching that needs to name the error without a submodule import.
+    "PreloadMismatch",
     "GuardNotArmed",
     "ProvenanceMiddleware",
     "RED",

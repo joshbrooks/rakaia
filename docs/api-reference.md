@@ -124,7 +124,7 @@ page is the contract.
 | `assert_no_live_writes` | `django_rakaia` | `(*models: 'type[Model]', using: 'str' = 'default') -> 'Iterator[None]'` | Assert the ``using`` row counts of ``models`` are unchanged across the block. |
 | `AmbientDatabaseAccess` | `django_rakaia` | — | A guarded connection alias was queried inside ``deny_database_access`` — a handler (or a helper it calls) read the database directly instead of through the injected reader. |
 | `LiveWriteLeaked` | `django_rakaia` | — | A guarded model's row count changed inside ``assert_no_live_writes`` — a rebuild mutated the live database it was only supposed to reconstruct. |
-| `diff_effects_against_rows` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, reader: 'DjangoProjectionReader \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, kinds: 'tuple[type, ...]' = (<class 'rakaia.effects.Upsert'>, <class 'rakaia.effects.Update'>)) -> 'DiffReport'` | Diff each write effect's ``defaults`` against its live projection row. |
+| `diff_effects_against_rows` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, reader: 'DjangoProjectionReader \| None' = None, preload: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, kinds: 'tuple[type, ...]' = (<class 'rakaia.effects.Upsert'>, <class 'rakaia.effects.Update'>)) -> 'DiffReport'` | Diff each write effect's ``defaults`` against its live projection row. |
 | `DiffReport` | `django_rakaia` | `(rows: 'list[RowDiff]') -> None` | Aggregate result of :func:`diff_effects_against_rows`. |
 | `RowDiff` | `django_rakaia` | `(model_label: 'str', lookup: 'dict[str, Any]', missing: 'bool', field_diffs: 'list[FieldDiff]' = <factory>) -> None` | The verification outcome for one write effect's target row. |
 | `FieldDiff` | `django_rakaia` | `(field: 'str', expected: 'Any', actual: 'Any') -> None` | One field whose stored value disagrees with the effect's ``defaults``. |
@@ -134,6 +134,7 @@ page is the contract.
 | `VACUOUS` | `django_rakaia` | — | — |
 | `VacuousVerification` | `django_rakaia` | `(report: 'DiffReport') -> 'None'` | Raised by :meth:`DiffReport.raise_if_diff` when nothing was compared. |
 | `VerificationError` | `django_rakaia` | `(report: 'DiffReport') -> 'None'` | Raised by :meth:`DiffReport.raise_if_diff` when a projection disagrees. |
+| `PreloadMismatch` | `django_rakaia` | — | A :class:`PreloadedProjectionReader` was handed to :func:`diff_effects_against_rows` together with effects its bulk fetch does not cover. |
 
 ## Audit trails and provenance
 
@@ -226,6 +227,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-135 exported names across 14 sections. 119 carry a docstring; 16 do not and show `—` above.
+136 exported names across 14 sections. 120 carry a docstring; 16 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
