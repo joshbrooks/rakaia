@@ -31,6 +31,8 @@ from rakaia.types import StreamMessage
 from .offsets import format_offset
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from datetime import datetime
+
     from .models import StreamEntry
 
 # StreamEvent.event_type is required metadata for the dashboard; raw stream
@@ -146,4 +148,87 @@ def message_of(entry: StreamEntry) -> StreamMessage:
         event_ts=event.event_ts if event.event_ts is not None else written_at,
         label=event_label(event.event_type),
         metadata=event.metadata or None,
+    )
+
+
+def event_view(
+    *,
+    event_type: str,
+    data: Any,
+    payload_encoding: str | None,
+    created_at: datetime | None,
+    event_id: int | None = None,
+    offset: int | None = None,
+    stream_id: str | None = None,
+) -> dict[str, Any]:
+    """One event, as a JSON object. The wire counterpart to `message_of`.
+
+    Both reverse the same three storage facts; they differ only in how the
+    payload rides, because JSON cannot carry bytes — so this publishes the stored
+    ``data``/``payload_encoding`` pair and lets the consumer run `decode_payload`
+    itself (see `payload_fields` for why passing the pair through is what makes
+    that inverse exact).
+
+    Everything the two *can* agree on, they do. In particular ``created_at``
+    must be the **entry's**, which is what `message_of` reports as
+    `StreamMessage.timestamp` and therefore what `read()` surfaces. It is not
+    interchangeable with the event's: a message is per-stream, so one fanned-out
+    event has one transport time per stream that received it, and the event's own
+    ``created_at`` is a single value matching none of them exactly. Before this
+    existed the channel-layer frame published the event's while both HTTP
+    surfaces published the entry's — one event, two answers (#185).
+
+    **Takes facts, not a model.** Two of the three callers read through
+    ``.values()`` to fetch only the columns they need; requiring a `StreamEntry`
+    would have forced them onto full model instances and changed their queries as
+    a side effect of tidying their serialisation. `event_view_of_entry` is the
+    adapter for callers that do hold an entry.
+
+    The identity keys are opt-in because the surfaces genuinely differ in what
+    they need: a channel frame identifies the event, a per-stream API already
+    knows its stream, and a cross-stream listing has to say which stream each
+    event came from.
+
+    They are omitted on ``None`` specifically — ``is not None``, not truthiness —
+    so an ``offset=0`` or ``event_id=0`` is still published. The ORM mints
+    neither (offsets and primary keys both start at 1), so that is a property of
+    this function rather than a reachable row, and it is asserted as one.
+    ``created_at`` uses truthiness because a ``datetime`` is never falsy, so the
+    distinction cannot arise there.
+    """
+    view: dict[str, Any] = {}
+    if event_id is not None:
+        view["id"] = event_id
+    if stream_id is not None:
+        view["stream_id"] = stream_id
+    if offset is not None:
+        view["offset"] = offset
+    view["event_type"] = event_label(event_type)
+    view["created_at"] = created_at.isoformat() if created_at else None
+    view.update(payload_fields(data, payload_encoding))
+    return view
+
+
+def event_view_of_entry(
+    entry: StreamEntry,
+    *,
+    event_id: bool = False,
+    offset: bool = False,
+    stream_id: bool = False,
+) -> dict[str, Any]:
+    """`event_view` for a caller holding a `StreamEntry`.
+
+    Reads ``entry.event``; pass an entry fetched with ``select_related("event")``
+    to avoid a query per row, and with ``select_related("stream")`` too if you
+    ask for ``stream_id``.
+    """
+    event = entry.event
+    return event_view(
+        event_type=event.event_type,
+        data=event.data,
+        payload_encoding=event.payload_encoding,
+        created_at=entry.created_at,
+        event_id=event.id if event_id else None,
+        offset=entry.offset if offset else None,
+        stream_id=entry.stream.stream_id if stream_id else None,
     )
