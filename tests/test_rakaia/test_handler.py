@@ -6,33 +6,29 @@ application directly, exercising the full HTTP protocol.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 import pytest_asyncio
 
-from rakaia import StreamStore, create_app
-from rakaia.handler import ServerOptions, _fault_injection_enabled_by_env
+from rakaia import StreamStore
+from rakaia.handler import _fault_injection_enabled_by_env
 from rakaia.types import INITIAL_OFFSET
+from tests.asgi_client import asgi_client
 
 
 def _fast_client(timeout: float = 0.2) -> httpx.AsyncClient:
     """A client whose server uses a short long-poll window (for wait tests)."""
-    app = create_app(
-        store=StreamStore(), options=ServerOptions(long_poll_timeout=timeout)
-    )
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return asgi_client(StreamStore(), long_poll_timeout=timeout)
 
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     """An httpx client driving a fresh ASGI app per test."""
-    store = StreamStore()
-    app = create_app(store=store)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with asgi_client(StreamStore()) as ac:
         yield ac
 
 
@@ -294,11 +290,7 @@ class TestMethods:
 
 def _fault_client(*, enabled: bool) -> httpx.AsyncClient:
     """A client whose server has the fault-injection endpoint on or off."""
-    app = create_app(
-        store=StreamStore(), options=ServerOptions(enable_fault_injection=enabled)
-    )
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return asgi_client(StreamStore(), enable_fault_injection=enabled)
 
 
 class TestFaultInjectionGate:
@@ -402,6 +394,29 @@ class TestConformanceGaps:
         allow = response.headers.get("access-control-allow-headers", "").lower()
         assert "if-none-match" in allow
 
+    async def test_a_matching_if_none_match_gets_a_304(self, client: httpx.AsyncClient):
+        """The preflight above allowed the header; nothing proved it was honoured.
+
+        Until this test, the handler could have answered a matching ETag with a
+        full 200 and the whole suite stayed green — the only cover was the
+        preflight, which never sends the header it advertises.
+        """
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        first = await client.get("/foo")
+        assert first.status_code == 200
+        etag = first.headers["etag"]
+
+        again = await client.get("/foo", headers={"if-none-match": etag})
+        assert again.status_code == 304
+        assert again.content == b""
+        assert again.headers["etag"] == etag
+
+    async def test_a_stale_if_none_match_gets_the_body(self, client: httpx.AsyncClient):
+        await client.put("/foo", headers={"content-type": "text/plain"}, content=b"one")
+        response = await client.get("/foo", headers={"if-none-match": '"stale"'})
+        assert response.status_code == 200
+        assert response.content == b"one"
+
     async def test_head_returns_ttl_metadata(self, client: httpx.AsyncClient):
         await client.put(
             "/foo",
@@ -436,6 +451,74 @@ class TestConformanceGaps:
             assert response.status_code == 204
             assert response.headers.get("Stream-Up-To-Date") == "true"
             assert response.headers.get("Stream-Next-Offset") == tail
+            # An open stream must not be reported closed. The 204 looks the same
+            # either way, so without this a false end-of-stream would tell a
+            # client to stop polling and nothing would notice.
+            assert "Stream-Closed" not in response.headers
+
+    async def test_a_close_landing_during_a_long_poll_is_reported(self):
+        """A close landing while the client is parked comes back with the data.
+
+        This case passes with or without `_handle_read`'s re-fetch of the stream,
+        because `StreamStore.get` hands back the live object rather than a
+        snapshot — so the "first" fetch sees the close too. The re-fetch is
+        pinned by the durable-store twin of this test in
+        `test_django_rakaia/test_protocol_server.py`, where `get` returns a
+        detached row and dropping the re-fetch loses the `Stream-Closed`.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+
+            async def close_it() -> None:
+                await asyncio.sleep(0.05)
+                await client.post(
+                    "/foo",
+                    headers={"content-type": "text/plain", "Stream-Closed": "true"},
+                    content=b"two",
+                )
+
+            poll, _ = await asyncio.gather(
+                client.get(f"/foo?offset={tail}&live=long-poll"), close_it()
+            )
+
+            assert poll.status_code == 200
+            assert poll.content == b"two"
+            assert poll.headers.get("Stream-Closed") == "true"
+            assert poll.headers["etag"].endswith(':c"')
+
+    async def test_the_terminal_sse_frame_says_the_stream_is_closed(self):
+        """A stream closed while the consumer is parked ends with `streamClosed`.
+
+        `docs/protocol.md` requires the final control event to carry
+        `streamClosed: true`. Nothing in the suite asserted the closed control
+        frame's fields at all — a terminal frame carrying a cursor instead would
+        leave a consumer waiting for data that can never arrive.
+        """
+        async with _fast_client(timeout=2.0) as client:
+            await client.put(
+                "/foo", headers={"content-type": "text/plain"}, content=b"one"
+            )
+            tail = (await client.get("/foo")).headers["Stream-Next-Offset"]
+
+            async def close_it() -> None:
+                await asyncio.sleep(0.05)
+                # Empty body + Stream-Closed is a close with no data, so the
+                # consumer is woken by the closure rather than by a message.
+                await client.post("/foo", headers={"Stream-Closed": "true"})
+
+            sse, _ = await asyncio.gather(
+                client.get(f"/foo?offset={tail}&live=sse"), close_it()
+            )
+
+            frames = [
+                json.loads(line[len("data:") :])
+                for line in sse.text.split("\n")
+                if line.startswith("data:")
+            ]
+            assert frames[-1] == {"streamNextOffset": tail, "streamClosed": True}
 
     async def test_sse_catch_up_pairs_each_data_event_with_control(self):
         """During catch-up every SSE data event is followed by a control event.
