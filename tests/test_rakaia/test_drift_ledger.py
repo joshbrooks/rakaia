@@ -31,7 +31,7 @@ from rakaia.drift import DriftLedger, HandlerDriftError
 from rakaia.effects import Upsert
 from rakaia.executors import InMemoryProjections
 from rakaia.registry import HandlerRegistry, UpcasterRegistry, upcast
-from rakaia.replay import replay
+from rakaia.replay import merge_replay, replay
 from rakaia.seed import seed_stream
 from rakaia.source_hash import hash_function_source
 from rakaia.store import StreamStore
@@ -131,6 +131,71 @@ BUILDERS = {
 def seeded() -> StreamStore:
     """Ten events, so "once per registration" is distinguishable from "once"."""
     return seed_stream("s", [{"id": i, "schema_version": 1} for i in range(10)])
+
+
+class TestMergeReplayAsksTheSameQuestion:
+    """`merge_replay` decodes and upcasts at its own call site, so it is its own
+    interface into the drift check — and it was the third path nothing covered.
+
+    Round 1 of the review on #212 found the mutation: pointing `merge_replay`'s
+    upcast at no ledger left the whole suite green, while the identical mutation
+    on `replay()`'s call went red. Pre-existing, and the same shape #187 is
+    about, so it is pinned here rather than left for a fourth round of it.
+    """
+
+    @pytest.fixture
+    def two_streams(self) -> StreamStore:
+        store = seed_stream("a", [{"id": i, "schema_version": 1} for i in range(5)])
+        return seed_stream(
+            "b", [{"id": i + 5, "schema_version": 1} for i in range(5)], store=store
+        )
+
+    def _drifted(self):
+        handlers = HandlerRegistry()
+        handlers.register("h", "s", _handler, 0, None)
+        upcasters = UpcasterRegistry()
+        version = upcasters.register("s", 1, _upcaster)
+        object.__setattr__(version, "source_hash", STORED)
+        return handlers, upcasters, version
+
+    def test_a_drifted_upcaster_is_reported_once_across_every_stream(
+        self, two_streams: StreamStore
+    ) -> None:
+        handlers, upcasters, version = self._drifted()
+
+        result = merge_replay(
+            two_streams,
+            ["a", "b"],
+            InMemoryProjections(),
+            order_key="id",
+            handler_registry=handlers,
+            upcaster_registry=upcasters,
+            event_match="s",
+        )
+
+        assert result.events_processed == 10
+        current = hash_function_source(_upcaster)
+        assert result.warnings == [
+            f"RAKAIA_DRIFT upcaster={version.dotted_path!r} "
+            f"stored={STORED[:12]} current={current[:12]}"
+        ]
+
+    def test_strict_drift_raises_from_a_merge_too(
+        self, two_streams: StreamStore
+    ) -> None:
+        handlers, upcasters, _version = self._drifted()
+
+        with pytest.raises(HandlerDriftError, match="upcaster"):
+            merge_replay(
+                two_streams,
+                ["a", "b"],
+                InMemoryProjections(),
+                order_key="id",
+                handler_registry=handlers,
+                upcaster_registry=upcasters,
+                event_match="s",
+                on_drift="raise",
+            )
 
 
 class TestEveryKindIsCheckedTheSameWay:
