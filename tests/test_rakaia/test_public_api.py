@@ -99,6 +99,7 @@ RAKAIA_PUBLIC = {
     "HANDLERS_META_STREAM",
     "REDUCERS_META_STREAM",
     "UPCASTERS_META_STREAM",
+    "DriftLedger",
     "HandlerDriftError",
     "HandlerGapError",
     "HandlerOverlapError",

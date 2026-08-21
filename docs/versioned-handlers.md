@@ -265,6 +265,21 @@ The drift signal tells you that a function you'd promised to leave alone
 remedy is either to revert the change or to formalise it as a new
 version covering the appropriate seq range.
 
+Handlers, reducers and upcasters are all checked the same way, by the same code:
+one `DriftLedger` per replay, which knows what has drifted, says so once however
+long the stream is, and reads each function's source at most once. `upcast()` —
+normalising one event on read, outside a replay — is silent by default because it
+has nowhere to report to; hand it a ledger to ask the same question:
+
+```python
+from rakaia import DriftLedger, upcast
+
+ledger = DriftLedger()                 # or DriftLedger(on_drift="raise")
+event = upcast(raw, "submissions", drift=ledger)
+if ledger.drifted:
+    ...  # ledger.warnings holds the RAKAIA_DRIFT lines
+```
+
 ### Upcasters rewrite history — and are *not* seq-versioned
 
 Handlers are bracketed by a `[from_seq, to_seq)` range, so old events keep the

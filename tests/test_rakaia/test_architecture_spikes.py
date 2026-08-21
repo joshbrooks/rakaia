@@ -96,17 +96,18 @@ def test_a_handler_source_is_hashed_once_per_replay(monkeypatch) -> None:
     re-hashing one unchanged function. This pins the shape rather than the
     timing -- one resolved handler means one hash, whatever the stream length.
     """
-    import sys
+    from rakaia import drift as drift_module
 
-    replay_module = sys.modules["rakaia.replay"]
     calls: list[object] = []
-    original = replay_module.hash_function_source
+    original = drift_module.hash_function_source
 
     def counting(fn: object) -> str:
         calls.append(fn)
         return original(fn)
 
-    monkeypatch.setattr(replay_module, "hash_function_source", counting)
+    # The memo lives on the replay's `DriftLedger` (#187), so the hashing this
+    # counts is the hashing that module does.
+    monkeypatch.setattr(drift_module, "hash_function_source", counting)
 
     store = StreamStore()
     store.create("s")
