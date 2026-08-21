@@ -951,13 +951,16 @@ class DjangoStreamStore:
             # receiver's existing timing on the `append` path.
             self._publish(stream.stream_id, entries)
 
-            # Persist the fencing state each accepted item established, so a
-            # later batch or append is fenced against this one. `append` does
-            # this via `_commit_producer`; the bulk path did not do it at all,
-            # because it never asked the fence in the first place (#154).
-            for _item, verdict in admitted:
-                if verdict.producer_result is not None:
-                    self._commit_producer(stream, verdict.producer_result)
+            # Persist the fencing state the batch established, so a later batch
+            # or append is fenced against this one. The bulk path did not do it
+            # at all, because it never asked the fence in the first place (#154).
+            # One write per *producer*, not per item: the rule hands back the
+            # last accepted outcome for each, which is the only state a later
+            # writer can be fenced against. Committing per item reached the same
+            # place through N `update_or_create`s, which broke the flat query
+            # cost this method exists for.
+            for result in batch.producer_commits.values():
+                self._commit_producer(stream, result)
 
             if batch.last_seq != stream.last_seq:
                 stream.last_seq = batch.last_seq

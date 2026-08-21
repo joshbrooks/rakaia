@@ -345,6 +345,41 @@ class TestBatchAdmissibility:
         assert isinstance(batch.verdicts[0].producer_result, ProducerDuplicate)
         assert isinstance(batch.verdicts[1].producer_result, ProducerStreamClosed)
 
+    def test_the_batch_commits_one_state_per_producer(self):
+        """The last accepted outcome per producer, not one per accepted item.
+
+        A store persists exactly these, so the count of writes it owes does not
+        grow with the batch. Three accepted items from one producer leave one
+        commit, carrying the third item's sequence.
+        """
+        batch = _decide_batch(
+            items=[
+                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=i)
+                for i in range(3)
+            ]
+        )
+        assert all(v.write for v in batch.verdicts)
+        assert list(batch.producer_commits) == ["p"]
+        assert batch.producer_commits["p"].proposed_state.last_seq == 2
+
+    def test_each_producer_in_a_batch_gets_its_own_commit(self):
+        batch = _decide_batch(
+            items=[
+                AppendOptions(producer_id="a", producer_epoch=0, producer_seq=0),
+                AppendOptions(producer_id="b", producer_epoch=0, producer_seq=0),
+            ]
+        )
+        assert sorted(batch.producer_commits) == ["a", "b"]
+
+    def test_a_refused_producer_leaves_no_commit(self):
+        """Nothing was written, so there is nothing to persist — a commit here
+        would advance a producer whose write never landed."""
+        batch = _decide_batch(
+            items=[AppendOptions(producer_id="p", producer_epoch=0, producer_seq=4)]
+        )
+        assert isinstance(batch.verdicts[0].producer_result, ProducerSequenceGap)
+        assert batch.producer_commits == {}
+
     def test_the_callers_producer_states_are_not_mutated(self):
         """The rule is pure: a store must be free to abandon the whole batch on
         a conflict without having had its own state advanced under it."""

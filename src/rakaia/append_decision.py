@@ -64,7 +64,7 @@ before consulting the rule at all (losing the duplicate).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .json_mode import normalize_content_type
@@ -193,11 +193,19 @@ class BatchVerdict:
     ``closing_opts`` is the options object of the item that closed the stream,
     or None if nothing in the batch closed it. A store needs it to record
     *which* producer tuple did the closing.
+
+    ``producer_commits`` is the fencing state the batch establishes: the *last*
+    accepted outcome per producer id, which is the only one worth persisting.
+    Committing each accepted item's outcome in turn reaches the same final state
+    but costs a write per item, and ``append_many`` promises a query count that
+    does not grow with the batch — so the rule hands back the one commit per
+    producer instead of leaving each store to work that out.
     """
 
     verdicts: list[AppendVerdict]
     last_seq: str | None = None
     closing_opts: Any = None
+    producer_commits: dict[str, ProducerAccepted] = field(default_factory=dict)
 
     @property
     def writes_anything(self) -> bool:
@@ -232,6 +240,7 @@ def decide_append_batch(
     closed_by = facts.closed_by
     last_seq = facts.last_seq
     closing_opts: Any = None
+    commits: dict[str, ProducerAccepted] = {}
 
     verdicts: list[AppendVerdict] = []
     for opts in items:
@@ -263,8 +272,12 @@ def decide_append_batch(
         ):
             # The state the store will commit after this item lands, so the
             # next item from the same producer is fenced against this one
-            # rather than against the pre-batch row.
+            # rather than against the pre-batch row. Overwriting the entry in
+            # `commits` is what keeps the store's writes one-per-producer: a
+            # later accepted item from the same producer supersedes this one,
+            # and only the last state is worth persisting.
             states[producer_id] = verdict.producer_result.proposed_state
+            commits[producer_id] = verdict.producer_result
         if getattr(opts, "close", False):
             # The rest of the batch observes the stream this item leaves
             # behind, closing tuple included.
@@ -277,4 +290,9 @@ def decide_append_batch(
                     seq=getattr(opts, "producer_seq", None) or 0,
                 )
 
-    return BatchVerdict(verdicts=verdicts, last_seq=last_seq, closing_opts=closing_opts)
+    return BatchVerdict(
+        verdicts=verdicts,
+        last_seq=last_seq,
+        closing_opts=closing_opts,
+        producer_commits=commits,
+    )
