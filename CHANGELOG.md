@@ -11,6 +11,22 @@ runnable demo for each.
 
 ### Added
 
+- **`rakaia.offsets` — a stream position's rules, one home each.** An offset has
+  about five rules: what the first one is, how wide it is, how to make the next
+  one, how to tell a valid one, and how to compare two. The durable store kept
+  four of its five in one file. The in-memory store had them spread across two
+  files with the field width written out three times — and a comment saying a
+  change must update them "in lockstep", which is a rule announcing that it has
+  no home. **The fifth, comparison, had no home in either**, so the one place
+  that needed it carried its own guess.
+
+  `OffsetFormat` now owns all five per store, as `COMPOUND` (the in-memory
+  `{seq}_{byte}`) and `PLAIN` (the durable padded integer). The hand-picked
+  widths are written once each, and the pattern that validates a token is derived
+  from the widths that render it, so a format cannot be checked against a shape it
+  no longer produces. `ForeignOffset` is exported for consumers that catch it; it
+  subclasses `InvalidOffset`, which both stores already raised.
+
 - **`DjangoExecutor(batch_updates=True)` collapses a fanned-out `Update` into one
   statement.** A handler that fans one change across many rows emits one `Update`
   per row — on purpose, so a verification pass can diff them one at a time — and

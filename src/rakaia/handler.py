@@ -32,6 +32,7 @@ from ._asgi import (
 )
 from .cursor import CursorOptions, generate_response_cursor
 from .json_mode import is_json_content_type
+from .offsets import ForeignOffset
 from .protocols import StreamServerStore
 from .store import StreamStore
 from .types import (
@@ -84,6 +85,11 @@ STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     InvalidJson: (400, b"Invalid JSON"),
     EmptyJsonArray: (400, b"Empty arrays are not allowed"),
     InvalidOffset: (400, b"Invalid offset"),
+    # Listed explicitly even though `_status_for` walks the MRO and would find
+    # `InvalidOffset` anyway: the closed-set test insists on a decision per
+    # failure, which is the point of it. A later offset failure might warrant 409
+    # or 410, and inheriting silently is how that would go unnoticed.
+    ForeignOffset: (400, b"Invalid offset"),
 }
 
 
