@@ -185,6 +185,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "ContentTypeMismatch",
         "InvalidJson",
         "InvalidOffset",
+        "ForeignOffset",
         "EmptyJsonArray",
         "SpareKeys",
         "StreamConfigConflict",

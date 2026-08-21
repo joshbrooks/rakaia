@@ -81,10 +81,16 @@ class OffsetFormat:
 
     @property
     def pattern(self) -> re.Pattern[str]:
-        """Exactly this format's tokens, and nothing else.
+        """This format's *shape*: how many numeric fields, joined by ``_``.
 
-        Built from `widths` rather than written alongside it, so a format cannot
-        be validated against a shape it no longer renders.
+        Built from `widths` so the field count cannot drift from what `render`
+        produces. It deliberately does **not** pin each field's width: the widths
+        are a padding and sort rule for offsets this store issues, not an input
+        filter. Clients send unpadded offsets — the dashboard's ``?after=42`` is
+        one — and both regexes this replaced accepted them, so tightening to
+        ``\\d{20}`` here would reject requests that work today. What the shape
+        does settle is the only question `owns` is asked: which of the two stores
+        a token belongs to, one field against two.
         """
         return re.compile("^" + "_".join(r"\d+" for _ in self.widths) + "$")
 

@@ -55,11 +55,46 @@ class TestComparingAcrossFormats:
         assert after(INITIAL_OFFSET, INITIAL_OFFSET) is False
 
 
+class _HeadOnlyStore:
+    """A `CursorStore` whose head is a *durable* offset.
+
+    Needed because neither real store can reach the direction the defect actually
+    took: against `StreamStore` the comparison of a plain cursor to a compound
+    head happens to return False, so `poll` falls through to `read`, and it is
+    `StreamStore._check_offset` that refuses. That makes the seam look covered
+    while `_after` is not exercised at all. Here the head is `PLAIN`, the cursor
+    is `COMPOUND`, and `read` asserts rather than answers — so the only thing that
+    can produce the refusal is the comparison rule.
+    """
+
+    def __init__(self, head: str) -> None:
+        self.head = head
+
+    def get_current_offset(self, _path: str) -> str | None:
+        return self.head
+
+    def read(self, _path: str, offset: str | None = None, _limit: int | None = None):
+        raise AssertionError(f"read() reached with offset={offset!r}")
+
+
 class TestPollRefusesAForeignCursor:
-    """The public seam. Today this reports `rewound` — "the log was rebuilt
-    beneath you, reset your derived state" — for a cursor that is simply from
-    another store. The data converges after the re-read, so nothing is corrupted;
-    the consumer is told the wrong reason and does a full re-read for it."""
+    """The public seam, and the one place the fifth rule is load-bearing."""
+
+    def test_a_foreign_cursor_is_refused_before_the_read(self):
+        # The defect, in the direction it occurred: '..._0000000000000008' sorts
+        # *above* '00000000000000000042' as text, because '_' outranks '0' at the
+        # seventeenth character. The old `a > b` therefore said "yes, beyond the
+        # head" and returned `rewound` for a consumer four events in.
+        store = _HeadOnlyStore("00000000000000000042")
+        with pytest.raises(ForeignOffset):
+            poll(store, "s", "0000000000000000_0000000000000008")
+
+    def test_the_same_seam_still_compares_within_one_format(self):
+        # Guards against a refusal that refuses everything: a durable cursor
+        # genuinely behind a durable head must reach the read, not raise.
+        store = _HeadOnlyStore("00000000000000000042")
+        with pytest.raises(AssertionError, match="read"):
+            poll(store, "s", "00000000000000000009")
 
     def test_a_cursor_from_another_store_raises(self):
         store = StreamStore()
@@ -93,6 +128,17 @@ class TestTheWidthHasOneHome:
         assert COMPOUND.render(0, 0) == INITIAL_OFFSET
         assert COMPOUND.render(3, 128) == f"{3:016d}_{128:016d}"
         assert PLAIN.render(42) == "00000000000000000042"
+
+    def test_a_width_pads_output_without_filtering_input(self):
+        # The widths govern what a store *renders*, so that offsets sort. They
+        # are not a request filter: clients send unpadded offsets (the dashboard
+        # takes `?after=42`), both regexes this replaced accepted them, and
+        # tightening `pattern` to `\d{20}` would break that. What `owns` decides
+        # is which store a token came from — one field against two.
+        assert PLAIN.owns("42")
+        assert COMPOUND.owns("3_128")
+        assert not PLAIN.owns("3_128")
+        assert not COMPOUND.owns("42")
 
 
 class TestRefusalIsCheckedAtEveryLevel:
