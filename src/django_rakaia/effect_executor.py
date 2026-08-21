@@ -27,6 +27,7 @@ doesn't fire for an unchanged row.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from enum import Enum
 from typing import Any
 
 from django.apps import apps
@@ -61,15 +62,17 @@ from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
 #: and a review found a fresh route through each. Being wrong here costs a
 #: collapse that does not happen.
 #:
-#: So ``float``, ``Decimal``, ``datetime``, ``date``, ``time``, ``UUID`` and every
-#: ``str`` subclass — which is every `TextChoices` member — do not collapse.
-#: `tests/test_django_rakaia/test_update_batching_equivalence.py` measures what
-#: would happen if they did, and for most of them the answer is *nothing*: Django
-#: coerces an aware datetime to UTC, a ``DecimalField``'s scale erases a trailing
-#: zero, and ``-0.0`` round-trips as ``0.0``. That is not a reason to admit them.
-#: It is a reason not to claim they are dangerous — the one exclusion that
-#: demonstrably changes stored data is the query expression, and it is excluded by
-#: this same rule.
+#: So ``float``, ``Decimal``, ``datetime``, ``date``, ``time`` and ``UUID`` do not
+#: collapse. `tests/test_django_rakaia/test_update_batching_equivalence.py`
+#: measures what would happen if they did, and for most of them the answer is
+#: *nothing*: Django coerces an aware datetime to UTC, a ``DecimalField``'s scale
+#: erases a trailing zero, and ``-0.0`` round-trips as ``0.0``. That is not a
+#: reason to admit them. It is a reason not to claim they are dangerous — the one
+#: exclusion that demonstrably changes stored data is the query expression, and it
+#: is excluded by this same rule.
+#:
+#: See `_is_collapsible_value` for the one widening: an `Enum` member over one of
+#: these, which is what `models.TextChoices` and `models.IntegerChoices` are.
 _COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
     type(None),
     bool,
@@ -77,6 +80,46 @@ _COLLAPSIBLE_DEFAULTS: tuple[type, ...] = (
     str,
     bytes,
 )
+
+
+def _is_collapsible_value(value: Any) -> bool:
+    """Whether a `defaults` value may take part in a collapse.
+
+    `_COLLAPSIBLE_DEFAULTS` by exact type, plus one deliberate widening: an `Enum`
+    member whose *value* is one of those types and which compares the way that
+    type does. That is `models.TextChoices` and `models.IntegerChoices` — Django's
+    own idiom for a choices column.
+
+    The widening is not a convenience. `type(v)` for a `TextChoices` member is the
+    enum class, not ``str``, so the exact-type test excluded it and a status change
+    fanned across many rows never collapsed: the feature declined on the single
+    commonest shape of the case it was built for.
+
+    Both conditions are needed, and each rules out something different:
+
+    * ``type(v.value) in _COLLAPSIBLE_DEFAULTS`` rules out an enum over a value
+      type whose equality ignores stored representation (``class E(float, Enum)``),
+      and one over a ``str`` *subclass* — ``v.value`` is then an instance of the
+      subclass, not of ``str``.
+    * ``type(v).__eq__ is type(v.value).__eq__`` rules out an enum that overrides
+      equality itself. Two members with plain ``str`` values ``'a'`` and ``'A'``
+      pass the first test, and a case-insensitive ``__eq__``/``__hash__`` on the
+      enum class would make them group — writing one member's value to the other's
+      rows.
+
+    A plain `Enum` with no mixin fails the second test, since its equality is
+    identity. That is *stricter* than value equality and so would be safe, but it
+    is excluded anyway: Django has no sensible column form for it.
+    """
+    if type(value) in _COLLAPSIBLE_DEFAULTS:
+        return True
+    if isinstance(value, Enum):
+        value_type = type(value.value)
+        return (
+            value_type in _COLLAPSIBLE_DEFAULTS
+            and type(value).__eq__ is value_type.__eq__
+        )
+    return False
 
 
 def _row_accessor(obj: Any) -> Any:
@@ -104,14 +147,15 @@ class DjangoExecutor:
     row: a form with eight repeating rows runs nine identical UPDATEs (#199).
 
     **Collapses:** consecutive updates on one model, each matching a single field
-    by equality on a non-null value, all writing the same plain values (`str`,
-    `bytes`, `int`, `bool`, `None`).
+    by equality on a non-null value, all writing the same plain values — `str`,
+    `bytes`, `int`, `bool`, `None`, or a `models.TextChoices` / `IntegerChoices`
+    member over one of those.
 
     **Does not collapse** — each applied on its own, exactly as with the flag off:
     an expression (`F()`, `Case`, `Q`, `Subquery`), a composite or ``__``
     traversing lookup, a null lookup value, an unhashable value such as a JSON
-    dict, or a value of any other type — including a `Decimal`, a datetime, and a
-    `TextChoices` member. Declining costs a statement, never a wrong row.
+    dict, or a value of any other type — including a `Decimal`, a `float`, and a
+    date or datetime. Declining costs a statement, never a wrong row.
 
     **Off by default.** The collapse is invisible in the rows, but the guard that
     decides what may collapse was wrong four times, and each failure wrote wrong
@@ -304,7 +348,7 @@ class DjangoExecutor:
         ((field, value),) = eff.lookup.items()
         if "__" in field or value is None:
             return None
-        if not all(type(v) in _COLLAPSIBLE_DEFAULTS for v in defaults.values()):
+        if not all(_is_collapsible_value(v) for v in defaults.values()):
             return None
         try:
             # `type(v)` is part of the key, not just `v`. Python calls `1`, `1.0`,

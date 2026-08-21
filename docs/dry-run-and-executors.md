@@ -96,14 +96,14 @@ replay(store, "submissions", DjangoExecutor(batch_updates=True))
 
 **This collapses.** Consecutive updates on one model, each matching a single
 field by equality on a non-null value, all writing the same plain values — a
-string, bytes, an integer, a boolean, `None`. Nine statements become one.
+string, bytes, an integer, a boolean, `None`, or a `TextChoices` /
+`IntegerChoices` member over one of those. Nine statements become one.
 
 **This may not.** Anything else is applied one statement at a time, exactly as
 with the flag off: an expression such as `F("total") + 1`, a lookup on two fields
 or one that traverses (`area__name`), a lookup matching `NULL`, a value that
 can't be hashed such as a JSON dict, or a value of any other type — a `Decimal`,
-a date or datetime, or a `TextChoices` member, which is the commonest one to be
-surprised by. Declining costs a statement, never a wrong row.
+a `float`, a date or datetime. Declining costs a statement, never a wrong row.
 
 **Off by default.** The rows come out the same either way — that is checked by
 running the same effects down both paths and comparing every column — but the

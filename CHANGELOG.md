@@ -18,14 +18,15 @@ runnable demo for each.
   identical `UPDATE`s.
 
   *Collapses:* consecutive updates on one model, each matching a single field by
-  equality on a non-null value, all writing the same plain values (a string,
-  bytes, an integer, a boolean, `None`).
+  equality on a non-null value, all writing the same plain values — a string,
+  bytes, an integer, a boolean, `None`, or a `models.TextChoices` /
+  `IntegerChoices` member over one of those.
 
   *May not:* anything else is applied one statement at a time, exactly as with the
   flag off — an expression such as `F("total") + 1`, a composite or traversing
   lookup, a lookup matching `NULL`, an unhashable value such as a JSON dict, or a
-  value of any other type, including a `Decimal`, a datetime, and a `TextChoices`
-  member. Declining costs a statement, never a wrong row.
+  value of any other type, including a `Decimal`, a `float`, and a date or
+  datetime. Declining costs a statement, never a wrong row.
 
   **Off by default.** The rows come out the same either way, and that is checked
   by running the same effects down both paths and comparing every column — not

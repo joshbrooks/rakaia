@@ -20,6 +20,7 @@ under test. An `==` comparison here would agree with itself and prove nothing.
 from __future__ import annotations
 
 import datetime as dt
+import enum
 import uuid
 from contextlib import contextmanager
 from decimal import Decimal
@@ -53,6 +54,45 @@ class Marker(models.TextChoices):
     """A `str` subclass, which is what every idiomatic Django choices field is."""
 
     YES = "y", "Yes"
+
+
+class Actor(models.IntegerChoices):
+    SYSTEM = 1, "System"
+
+
+class Bare(enum.Enum):
+    """No mixin, so equality is identity."""
+
+    YES = "y"
+
+
+class _Ci(str):
+    """A `str` subclass with its own equality — the thing the value-type test
+    exists to keep out, since a subclass may define equality however it likes."""
+
+    def __eq__(self, other: object) -> bool:
+        return str.lower(self) == str.lower(other)  # type: ignore[arg-type]
+
+    def __hash__(self) -> int:
+        return hash(str.lower(self))
+
+
+class Subclassed(_Ci, enum.Enum):
+    YES = _Ci("y")
+
+
+class LooseEq(str, enum.Enum):
+    """Plain `str` values, but equality overridden on the enum itself — so two
+    members with values 'y' and 'Y' compare and hash alike."""
+
+    LOWER = "y"
+    UPPER = "Y"
+
+    def __eq__(self, other: object) -> bool:
+        return str.lower(self) == str.lower(other)  # type: ignore[arg-type]
+
+    def __hash__(self) -> int:
+        return hash(str.lower(self))
 
 
 def _columns(model: type) -> list[str]:
@@ -287,15 +327,97 @@ class TestWhatDoesNotCollapse:
             expect_collapse=False,
         )
 
-    def test_a_text_choices_default(self):
-        # Django's own idiom for a choices column, and a `str` subclass — so
-        # `type(v) in _COLLAPSIBLE_DEFAULTS` is False and the commonest kind of
-        # status fan-out does not collapse. A missed optimisation, pinned here so
-        # that widening the allowlist to admit it is a deliberate change.
+    def test_an_enum_over_a_str_subclass(self):
+        # `v.value` is an instance of the subclass rather than of `str`, so the
+        # value-type test declines — and it should, because the subclass is free to
+        # define equality however it likes.
         _seed(History, _history("a", "b"))
         assert_flag_changes_only_the_statement_count(
             History,
-            [_upd(HISTORY, {"submission_id": i}, marker=Marker.YES) for i in "ab"],
+            [_upd(HISTORY, {"submission_id": i}, marker=Subclassed.YES) for i in "ab"],
+            expect_collapse=False,
+        )
+
+    def test_an_enum_that_overrides_equality(self):
+        # Plain `str` values, so the value-type test passes — but the enum's own
+        # case-insensitive `__eq__`/`__hash__` would make two members with values
+        # 'y' and 'Y' group, and one member's value would reach the other's rows.
+        _seed(History, _history("a", "b"))
+        assert_flag_changes_only_the_statement_count(
+            History,
+            [_upd(HISTORY, {"submission_id": i}, marker=LooseEq.LOWER) for i in "ab"],
+            expect_collapse=False,
+        )
+
+    def test_a_plain_enum_with_no_mixin(self):
+        # Identity equality, which is *stricter* than value equality and so would
+        # be safe to collapse — declined anyway, because Django has no sensible
+        # column form for it and admitting it buys nothing. Note what it does
+        # store: `str(Bare.YES)` is `'Bare.YES'`, not `'y'`. That needs a column
+        # with room, which is why this case is on `status` (16) rather than
+        # `History.marker` (1) — Postgres rejects the overlong value and SQLite
+        # quietly accepts it, so on the default leg the first version of this test
+        # passed for the wrong reason.
+        _seed(SukuProjection, [{"suku": s, "status": "old"} for s in ("s1", "s2")])
+        assert_flag_changes_only_the_statement_count(
+            SukuProjection,
+            [_upd(SUKU, {"suku": s}, status=Bare.YES) for s in ("s1", "s2")],
+            expect_collapse=False,
+        )
+
+
+class TestDjangoChoicesFields:
+    """`models.TextChoices` and `models.IntegerChoices` are the idiomatic way to
+    write a choices column, and a status change fanned across many rows is the
+    single commonest shape of the case this feature exists for.
+
+    They were excluded until the widening in `_is_collapsible_value`, for a reason
+    that was an accident rather than a decision: `type(v)` is the enum class, not
+    `str`, so the exact-type test never matched. The feature declined on exactly
+    what it was built for.
+    """
+
+    def test_a_text_choices_default_collapses(self):
+        _seed(History, _history("a", "b", "c"))
+        assert_flag_changes_only_the_statement_count(
+            History,
+            [_upd(HISTORY, {"submission_id": i}, marker=Marker.YES) for i in "abc"],
+            expect_collapse=True,
+        )
+
+    def test_it_stores_the_member_value_not_its_repr(self):
+        # The equality assertion above compares the two paths against each other,
+        # so it would be satisfied by both storing `'Marker.YES'`. This says what
+        # the column actually holds.
+        _seed(History, _history("a", "b"))
+        DjangoExecutor(using=BATCHED, batch_updates=True).apply(
+            [_upd(HISTORY, {"submission_id": i}, marker=Marker.YES) for i in "ab"]
+        )
+        assert set(History.objects.using(BATCHED).values_list("marker", flat=True)) == {
+            "y"
+        }
+
+    def test_an_integer_choices_default_collapses(self):
+        _seed(History, _history("a", "b", "c"))
+        assert_flag_changes_only_the_statement_count(
+            History,
+            [_upd(HISTORY, {"submission_id": i}, actor=Actor.SYSTEM) for i in "abc"],
+            expect_collapse=True,
+        )
+
+    def test_a_member_and_its_bare_value_do_not_group(self):
+        # `Marker.YES == "y"` and they hash alike, but `type(v)` is part of the
+        # grouping key, so these stay apart. Declining is the safe direction and
+        # this pins it: grouping them would rest on the enum's equality agreeing
+        # with `str`'s, which `_is_collapsible_value` checks for the *member* but
+        # has no reason to trust across two different types.
+        _seed(History, _history("a", "b"))
+        assert_flag_changes_only_the_statement_count(
+            History,
+            [
+                _upd(HISTORY, {"submission_id": "a"}, marker=Marker.YES),
+                _upd(HISTORY, {"submission_id": "b"}, marker="y"),
+            ],
             expect_collapse=False,
         )
 
@@ -458,4 +580,29 @@ class TestWhichExclusionsAreLoadBearing:
             '`1`/`True`/`"1"` are now distinguishable once stored, so the '
             f"`type(v)` component of the key has become load-bearing:\n"
             f"  off: {plain}\n  on:  {batched}"
+        )
+
+    def test_an_enum_overriding_equality_is_a_real_hazard(self):
+        """The `__eq__` half of the enum widening, demonstrated rather than argued.
+
+        `LooseEq.LOWER` ('y') and `LooseEq.UPPER` ('Y') compare and hash alike, so
+        with the guard off they group and one member's value reaches the other's
+        rows. Unlike the representation cases above, the column *can* tell: these
+        are two different strings.
+
+        This is why admitting `TextChoices` is a check on the member's equality and
+        not simply `isinstance(v, str)`.
+        """
+        _seed(History, _history("a", "b"))
+        effects = [
+            _upd(HISTORY, {"submission_id": "a"}, marker=LooseEq.LOWER),
+            _upd(HISTORY, {"submission_id": "b"}, marker=LooseEq.UPPER),
+        ]
+        with collapse_everything_hashable():
+            plain, batched, _, batched_n = _both_paths(History, effects)
+        assert batched_n == 1, "the collapse did not happen, so nothing is demonstrated"
+        assert batched != plain, (
+            "grouping two members of a loosely-equal enum did not change what was "
+            "stored — the equality check in `_is_collapsible_value` would then be "
+            f"unnecessary:\n  off: {plain}\n  on:  {batched}"
         )
