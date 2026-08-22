@@ -39,11 +39,12 @@ results carrying their own statuses and headers.
 
 `decide_append_batch` is the same question asked of a whole batch, and it is
 here for the same reason: both stores had grown their own version and the two
-genuinely disagreed (#181). A batch adds exactly two rules to the per-item one,
-and both are easy to get subtly wrong in isolation:
+genuinely disagreed (#181). A batch adds two rules to the per-item one, plus the
+payload check the section below covers, and each is easy to get subtly wrong in
+isolation:
 
-- **All-or-nothing on a conflict.** Every item is decided before any of them is
-  written, so a conflict refuses the batch rather than leaving a written prefix.
+- **All-or-nothing on a refusal.** Every item is decided before any of them is
+  written, so a refusal refuses the batch rather than leaving a written prefix.
   The durable store's single transaction can only behave that way; the
   in-memory store has to be told to.
 - **The facts advance across the batch**, exactly as they would across a loop of
@@ -59,6 +60,27 @@ Each of those three was live: the in-memory store advanced `Stream-Seq` on
 refused items (raising a conflict on a sequence nothing had taken), and the
 durable store short-circuited a closed stream and its own post-close items
 before consulting the rule at all (losing the duplicate).
+
+### Payload validity is part of the batch decision
+
+The rules above read the *options*; `check_payload` reads the *body*. It is here
+rather than in each store because the all-or-nothing property above is a claim
+about the whole batch, and neither store honoured it for a bad body (#214):
+
+- the in-memory store never looked at a payload during the pre-flight, so a
+  batch whose second item was not JSON raised `InvalidJson` from the loop with
+  the first item already persisted — a written prefix sitting behind a refusal,
+  the exact thing all-or-nothing exists to prevent;
+- the durable store encoded each item independently, so the same batch did not
+  raise at all and stored a non-JSON body in a stream declared
+  `application/json`.
+
+So `decide_append_batch` takes the payloads and checks each one **in the loop,
+after that item's admission verdict and only for an item that is to be
+written** — which is the order a loop of `append` produces, and the reason the
+check cannot simply be a pass over the payloads before or after the scan. A
+closed stream must answer "closed", not "invalid JSON"; an item the fence
+refuses is never written, so its body is never parsed.
 """
 
 from __future__ import annotations
@@ -67,7 +89,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .json_mode import normalize_content_type
+from .json_mode import (
+    is_json_content_type,
+    normalize_content_type,
+    process_json_append,
+)
 from .producer import validate_producer
 from .types import (
     ClosedBy,
@@ -181,6 +207,24 @@ def decide_append(
     return AppendVerdict(write=True, producer_result=producer_result)
 
 
+def check_payload(content_type: str | None, data: bytes) -> None:
+    """Raise if `data` is not a body the stream's content type can hold.
+
+    Only a stream declared `application/json` constrains its bodies: the payload
+    must parse, and an append of `[]` is the no-op the protocol rejects. Every
+    other content type — including none at all, the event-sourcing shape — takes
+    the bytes as they come, so there is nothing to refuse.
+
+    The parsed result is deliberately thrown away. Deciding validity is not the
+    same job as deciding *how many messages* a body becomes — that is a split
+    each store performs on its own rows, through `process_json_append` either
+    way, so both reach the same answer (#214). What belongs here is only the
+    refusal, because only the refusal has to happen before anything is written.
+    """
+    if is_json_content_type(content_type):
+        process_json_append(data)
+
+
 @dataclass(frozen=True)
 class BatchVerdict:
     """The decision for a whole batch: one verdict per input item, in order.
@@ -218,22 +262,29 @@ def decide_append_batch(
     facts: StreamFacts,
     items: Sequence[Any],
     *,
+    payloads: Sequence[bytes],
     producer_states: Mapping[str, ProducerState | None] | None = None,
     now: float,
 ) -> BatchVerdict:
     """Decide a whole batch, as a loop of :func:`decide_append` over advancing
-    facts. See the "Batches" section of the module docstring for the two rules
-    this adds and why they are here rather than in each store.
+    facts. See the "Batches" section of the module docstring for the rules this
+    adds and why they are here rather than in each store.
 
     ``items`` is the per-item options, in order — the same objects
     ``decide_append`` takes, and ``None`` for a raw append with no options.
-    ``producer_states`` is the pre-batch state for every producer id appearing
-    in the batch; a missing key is read as "no state", the same as ``None``.
+    ``payloads`` is the bodies for those same items, in the same order and of
+    the same length; it is a required argument rather than an optional one so
+    that a store cannot obtain a batch verdict without having its bodies
+    checked. ``producer_states`` is the pre-batch state for every producer id
+    appearing in the batch; a missing key is read as "no state", the same as
+    ``None``.
 
     Nothing is mutated: ``producer_states`` is copied, and the caller's
     ``facts`` is untouched. A conflict propagates out of the loop, which is what
     makes the batch all-or-nothing — the caller has decided nothing by the time
-    it sees the exception, so it writes nothing.
+    it sees the exception, so it writes nothing. That is equally true of the
+    payload check: `InvalidJson` from item three leaves items one and two
+    undecided and therefore unwritten.
     """
     states = dict(producer_states or {})
     closed = facts.closed
@@ -243,7 +294,7 @@ def decide_append_batch(
     commits: dict[str, ProducerAccepted] = {}
 
     verdicts: list[AppendVerdict] = []
-    for opts in items:
+    for opts, data in zip(items, payloads, strict=True):
         producer_id = getattr(opts, "producer_id", None)
         verdict = decide_append(
             StreamFacts(
@@ -263,6 +314,11 @@ def decide_append_batch(
             # `last_seq` here, and a later item then collided with a sequence
             # no write had ever taken.
             continue
+
+        # Admitted, so it is going to be written — which is the point at which a
+        # loop of `append` would parse the body. Raising here refuses the whole
+        # batch with nothing written, on either backend.
+        check_payload(facts.content_type, data)
 
         seq = getattr(opts, "seq", None)
         if seq is not None:
