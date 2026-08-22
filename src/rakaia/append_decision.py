@@ -39,11 +39,12 @@ results carrying their own statuses and headers.
 
 `decide_append_batch` is the same question asked of a whole batch, and it is
 here for the same reason: both stores had grown their own version and the two
-genuinely disagreed (#181). A batch adds exactly two rules to the per-item one,
-and both are easy to get subtly wrong in isolation:
+genuinely disagreed (#181). A batch adds two rules to the per-item one, plus the
+payload check the section below covers, and each is easy to get subtly wrong in
+isolation:
 
-- **All-or-nothing on a conflict.** Every item is decided before any of them is
-  written, so a conflict refuses the batch rather than leaving a written prefix.
+- **All-or-nothing on a refusal.** Every item is decided before any of them is
+  written, so a refusal refuses the batch rather than leaving a written prefix.
   The durable store's single transaction can only behave that way; the
   in-memory store has to be told to.
 - **The facts advance across the batch**, exactly as they would across a loop of

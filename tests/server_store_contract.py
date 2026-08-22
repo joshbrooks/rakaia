@@ -618,6 +618,17 @@ class ServerStoreContract:
     answer rather than inherit one.
     """
 
+    def test_characterising_the_flattening_flag_has_no_default(self):
+        """CHARACTERISING (#214): the flag above must stay undefaulted.
+
+        Its docstring says so, and giving it a default left this whole suite
+        green on both backends — a third backend would then silently inherit an
+        answer to a question nobody has decided, which is the one thing
+        recording the divergence here was meant to prevent. An annotation with
+        no value creates no class attribute, so `vars` is what sees it.
+        """
+        assert "append_many_flattens_json_arrays" not in vars(ServerStoreContract)
+
     def test_characterising_batch_array_flattening_per_backend(self, store):
         """CHARACTERISING (#214): how many messages one array-payload batch item
         becomes. Records today's divergence; asserts neither is correct."""
