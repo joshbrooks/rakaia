@@ -80,50 +80,53 @@ def _event_badge(event_type: str) -> SafeString:
     )
 
 
-class EventTypeFilter(admin.SimpleListFilter):
+class EventTypeFieldListFilter(admin.AllValuesFieldListFilter):
     """The event-type sidebar filter, showing labels rather than the column.
 
-    A *display-name* change, not a swap of the value. A filter has to put the
-    stored value in the querystring and match on the stored column, or it selects
-    nothing; only the text beside the link is presentational. So `lookups()`
-    pairs each stored `event_type` with what `event_label_display` says a reader
-    sees, and `queryset()` filters on the raw column.
+    `event_type` holds a sentinel for "a raw append, which carried no label", and
+    Django's own filter prints the column — so the sidebar said `append` beside a
+    badge that said the event had no label, one event described two ways on one
+    screen (#210).
 
-    Django's own `AllValuesFieldListFilter` — what `list_filter = ["event_type"]`
-    resolves to — prints the column, so the screen said `append` in the sidebar
-    while the badge one column over said "no label" for the same event (#210).
-    `parameter_name` is deliberately the field path, which is exactly the key
-    that filter used, so an existing bookmark or link keeps working.
+    This is a **display-name change and nothing else**, which is why it subclasses
+    the filter it replaces (`list_filter = ["event_type"]` resolves to
+    `AllValuesFieldListFilter`) and overrides only the text. A filter has to put
+    the *stored* value in the querystring and match on the stored column, or it
+    selects nothing; everything about which rows a link selects is inherited
+    rather than restated — the querystring key and value, the null choice, the
+    OR of a repeated parameter, and the fact that the choices for a related path
+    like ``event__event_type`` come from the event table without joining the
+    entries table to get them.
+
+    Written for a field path rather than as a `SimpleListFilter` for exactly that
+    reason: the hand-rolled version had to re-implement each of those, and got
+    two of them wrong — `?event_type=a&event_type=b` selected only `b`, and the
+    entries sidebar ran a `DISTINCT` over the fan-out table on every render.
     """
 
-    title = "event type"
-    parameter_name = "event_type"
+    def choices(self, changelist):
+        # Django yields "All" first, then one choice per non-null stored value in
+        # `lookup_choices` order, then the empty-value choice if some row is
+        # null. Only the middle group names a stored `event_type`, so only it is
+        # relabelled — and by position, so whatever Django put in the choice
+        # (query string, selected flag, and the " (N)" it appends when facet
+        # counts are on) is passed through untouched.
+        stored = [value for value in self.lookup_choices if value is not None]
+        # `or ()`: the stub types the base `choices()` as optional, because the
+        # abstract `ListFilter` declares it and returns nothing. This subclass's
+        # parent always yields.
+        for index, choice in enumerate(super().choices(changelist) or ()):
+            if 1 <= index <= len(stored):
+                value = str(stored[index - 1])
+                shown = str(choice["display"])
+                choice["display"] = event_label_display(value) + shown[len(value) :]
+            yield choice
 
-    def lookups(self, request, model_admin):
-        stored = (
-            model_admin.get_queryset(request)
-            .order_by(self.parameter_name)
-            .values_list(self.parameter_name, flat=True)
-            .distinct()
-        )
-        return [(value, event_label_display(value)) for value in stored]
 
-    def queryset(self, request, queryset):  # noqa: ARG002 - Django's signature
-        value = self.value()
-        if value is None:
-            return queryset
-        return queryset.filter(**{self.parameter_name: value})
-
-
-class EntryEventTypeFilter(EventTypeFilter):
-    """`EventTypeFilter` for the entries list, which reaches its event.
-
-    Only the path differs, and it is one attribute because `parameter_name` is
-    both the querystring key and the ORM path — the same two roles Django's
-    field filter gives `field_path`.
-    """
-
-    parameter_name = "event__event_type"
+# `list_filter` entries: the field path stays the field path — this only changes
+# what the sidebar prints next to each link.
+_EVENT_TYPE_FILTER = ("event_type", EventTypeFieldListFilter)
+_ENTRY_EVENT_TYPE_FILTER = ("event__event_type", EventTypeFieldListFilter)
 
 
 def _event_data_preview(data: Any, payload_encoding: str | None) -> str:
@@ -165,7 +168,7 @@ class StreamEventAdmin(admin.ModelAdmin):
         "stream_count",
         "created_at",
     ]
-    list_filter = [EventTypeFilter, "created_at"]
+    list_filter = [_EVENT_TYPE_FILTER, "created_at"]
     search_fields = ["data"]
     readonly_fields = ["data", "event_type", "created_at", "streams_list"]
     ordering = ["-created_at"]
@@ -204,7 +207,7 @@ class StreamEntryAdmin(admin.ModelAdmin):
         "event_type_badge",
         "created_at",
     ]
-    list_filter = ["stream", EntryEventTypeFilter, "created_at"]
+    list_filter = ["stream", _ENTRY_EVENT_TYPE_FILTER, "created_at"]
     search_fields = ["stream__stream_id", "event__data"]
     readonly_fields = ["stream", "event", "offset", "created_at"]
     ordering = ["-created_at"]
@@ -256,7 +259,7 @@ def register_stream_event_admin(event_model_class):
             "stream_count",
             "created_at",
         ]
-        list_filter = [EventTypeFilter, "created_at"]
+        list_filter = [_EVENT_TYPE_FILTER, "created_at"]
         search_fields = ["data"]
         readonly_fields = ["data", "event_type", "created_at", "streams_list"]
         ordering = ["-created_at"]

@@ -473,3 +473,95 @@ class TestTheTypeFilterShowsLabelsAndFiltersOnTheColumn:
         # pass against the raw column too.
         assert str(appended) == f"Event #{appended.id} ({NO_LABEL_DISPLAY})"
         assert str(created) == f"Event #{created.id} (create)"
+
+
+class TestRelabellingTheFilterChangedNothingElseAboutIt:
+    """Everything a link selects is Django's answer, not ours.
+
+    The first attempt at #210 rebuilt the filter as a `SimpleListFilter`, which
+    means re-implementing every behaviour of the one it replaced. Two came out
+    wrong: a repeated parameter — which Django ORs — selected only the last
+    value, and the entries sidebar listed its choices by joining the fan-out
+    table instead of reading the event table directly.
+
+    Each case here pins one of those against the plain field filter, which is
+    what the screens used before, so "display-only" is a tested claim rather
+    than an intention.
+    """
+
+    def _plain(self, model, list_filter):
+        class PlainFieldFilterAdmin(django_admin.ModelAdmin):
+            pass
+
+        PlainFieldFilterAdmin.list_filter = list_filter
+        return PlainFieldFilterAdmin(model, django_admin.site)
+
+    def _events(self):
+        for event_type in ("append", "create", "delete"):
+            event = StreamEvent.objects.create(event_type=event_type, data={})
+            if event_type != "delete":
+                # `delete` deliberately has no entry: the entries sidebar must
+                # still offer it, which is what says its choices come from the
+                # event table rather than a join.
+                StreamEntry.objects.create(
+                    stream=Stream.objects.get_or_create(stream_id="s")[0],
+                    event=event,
+                    offset=event.id,
+                )
+
+    def test_a_repeated_parameter_still_selects_both_types(self) -> None:
+        self._events()
+        query = "?event_type=append&event_type=create"
+        request = RequestFactory().get(f"/{query}")
+        request.user = _AdminUser()  # type: ignore[assignment]
+
+        admin = StreamEventAdmin(StreamEvent, django_admin.site)
+        changelist = admin.get_changelist_instance(request)
+        assert sorted(event.event_type for event in changelist.queryset) == [
+            "append",
+            "create",
+        ]
+
+    def test_a_repeated_parameter_selects_the_same_rows_as_before(self) -> None:
+        self._events()
+        query = "?event__event_type=append&event__event_type=create"
+        request = RequestFactory().get(f"/{query}")
+        request.user = _AdminUser()  # type: ignore[assignment]
+        other = RequestFactory().get(f"/{query}")
+        other.user = _AdminUser()  # type: ignore[assignment]
+
+        plain = self._plain(StreamEntry, ["event__event_type"])
+        admin = StreamEntryAdmin(StreamEntry, django_admin.site)
+        # Sorted: the two admins order their lists differently by design, and it
+        # is *which rows* the link selects that must not have moved.
+        now = sorted(e.pk for e in admin.get_changelist_instance(request).queryset)
+        before = sorted(e.pk for e in plain.get_changelist_instance(other).queryset)
+        assert now == before
+
+    def test_the_entries_sidebar_offers_a_type_no_entry_carries(self) -> None:
+        # Django's field filter reads the *event* table for a related path. A
+        # hand-rolled `lookups()` over the entries queryset both dropped this
+        # choice and made the sidebar scan the fan-out table.
+        self._events()
+        displays = [
+            display
+            for display, _ in _filter_choices(
+                StreamEntryAdmin(StreamEntry, django_admin.site), "event__event_type"
+            )
+        ]
+        assert displays == ["All", NO_LABEL_DISPLAY, "create", "delete"]
+
+    def test_facet_counts_survive_the_relabelling(self) -> None:
+        # With `?_facets=True` Django appends " (N)" to each choice. Relabelling
+        # replaces the value and keeps the count.
+        self._events()
+        assert _filter_choices(
+            StreamEventAdmin(StreamEvent, django_admin.site),
+            "event_type",
+            _facets="True",
+        ) == [
+            ("All", "?_facets=True"),
+            (f"{NO_LABEL_DISPLAY} (1)", "?_facets=True&event_type=append"),
+            ("create (1)", "?_facets=True&event_type=create"),
+            ("delete (1)", "?_facets=True&event_type=delete"),
+        ]
