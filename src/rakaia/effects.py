@@ -503,6 +503,64 @@ def _row_key(effect: RowEffect) -> tuple[str, str]:
     return (effect.model_label, canon_lookup)
 
 
+class _WrittenFields:
+    """Which columns of which rows a batch of effects already writes.
+
+    `check_disjoint_defaults` is this class walked once over a whole batch. The
+    replay orchestrator needs the same question asked *incrementally* — "would
+    adding this event's effects to the batch I am holding collide?" — before
+    there is a batch to check. Both go through here so the rule that decides
+    what a collision is has one home rather than two that can drift (#152).
+
+    `collides` only reports; `record` only remembers. Keeping the raise out of
+    both is what lets the orchestrator use the answer to flush early, while
+    `check_disjoint_defaults` keeps raising with the same message and the same
+    effect indices it always did.
+    """
+
+    def __init__(self) -> None:
+        # (model_label, canonical lookup) -> {column: index of the effect that
+        # first wrote it}
+        self._seen: dict[tuple[str, str], dict[str, int]] = {}
+
+    @staticmethod
+    def _writes(effect: Effect) -> tuple[tuple[str, str], dict[str, Any]] | None:
+        """The row and columns `effect` writes, or None if it writes none.
+
+        Only :class:`Upsert` and :class:`Update` carry `defaults`; a delete or a
+        retire names no column, and an effect with empty `defaults` writes
+        nothing to collide over.
+        """
+        if not isinstance(effect, (Upsert, Update)) or not effect.defaults:
+            return None
+        return _row_key(effect), effect.defaults
+
+    def collides(self, effect: Effect) -> tuple[str, int] | None:
+        """The first ``(column, earlier effect index)`` `effect` would overwrite,
+        or None if it is disjoint from everything recorded so far."""
+        writes = self._writes(effect)
+        if writes is None:
+            return None
+        row, defaults = writes
+        existing = self._seen.get(row)
+        if existing is None:
+            return None
+        for field_name in defaults:
+            if field_name in existing:
+                return (field_name, existing[field_name])
+        return None
+
+    def record(self, effect: Effect, idx: int) -> None:
+        """Remember that effect number `idx` writes these columns of this row."""
+        writes = self._writes(effect)
+        if writes is None:
+            return
+        row, defaults = writes
+        existing = self._seen.setdefault(row, {})
+        for field_name in defaults:
+            existing.setdefault(field_name, idx)
+
+
 def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
     """
     Raise EffectCollisionError if two write effects targeting the same
@@ -514,17 +572,13 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
     same column on the same row is always a bug. Delete and retire effects are
     ignored, as are effects without `defaults`.
     """
-    # field -> first-seen effect index, keyed by row
-    seen: dict[tuple[str, str], dict[str, int]] = {}
+    seen = _WrittenFields()
     for idx, eff in enumerate(effects):
-        if not isinstance(eff, (Upsert, Update)) or not eff.defaults:
-            continue
-        row = _row_key(eff)
-        existing = seen.setdefault(row, {})
-        for field in eff.defaults:
-            if field in existing:
-                raise EffectCollisionError(
-                    f"Effects #{existing[field]} and #{idx} both write field "
-                    f"{field!r} on {eff.model_label} {eff.lookup!r}"
-                )
-            existing[field] = idx
+        hit = seen.collides(eff)
+        if hit is not None:
+            field_name, first = hit
+            raise EffectCollisionError(
+                f"Effects #{first} and #{idx} both write field "
+                f"{field_name!r} on {eff.model_label} {eff.lookup!r}"
+            )
+        seen.record(eff, idx)
