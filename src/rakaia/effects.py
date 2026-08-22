@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NoReturn, Protocol, TypeVar, cast, runtime_checkable
 
 # =============================================================================
 # Symbolic refs — bind to a sibling effect's generated key
@@ -277,6 +277,26 @@ class DuplicateProducesError(Exception):
 # =============================================================================
 
 
+#: An effect, kept as its own concrete type through `RefResolver.resolve_effect`
+#: so a caller that hands in an `Update` gets an `Update` back.
+_EffectT = TypeVar("_EffectT", bound="Effect")
+
+#: The two shapes of `spare`, likewise kept concrete: a `Delete` may spare by
+#: flat lookup or composite key, a `Retire` only by composite key.
+_SpareT = TypeVar("_SpareT", bound="Exclude | SpareKeys | None")
+
+
+def _assert_never(value: NoReturn) -> NoReturn:
+    """Exhaustiveness check: a value pyright believes is unreachable.
+
+    `typing.assert_never` would say this, but it landed in 3.11 and this package
+    supports 3.10 with zero runtime dependencies, so it is written out. Passing
+    a value pyright can still narrow is an argument-type error, which is how a
+    new member of the `Effect` union becomes a build failure.
+    """
+    raise AssertionError(f"Unhandled effect variant: {type(value).__name__}")
+
+
 class RefResolver:
     """Resolves `Ref` placeholders against rows produced earlier in one batch.
 
@@ -290,10 +310,6 @@ class RefResolver:
     ``None``). The `CollectingExecutor` does *not* resolve — a dry run keeps the
     literal ``Ref`` values, which is correct.
     """
-
-    # Effect fields whose dict values may carry a Ref. Which of them a given
-    # variant has is decided by the variant's own type, not by a rule here.
-    _MAPPING_FIELDS = ("lookup", "defaults", "patch")
 
     def __init__(self) -> None:
         self._symbols: dict[str, Callable[[str], Any]] = {}
@@ -333,43 +349,85 @@ class RefResolver:
                 f"produced row has no attribute {value.field!r}."
             ) from exc
 
-    def _resolve_mapping(self, mapping: dict[str, Any] | None) -> dict[str, Any] | None:
+    def _resolve_lookup(self, mapping: dict[str, Any]) -> dict[str, Any]:
+        """A mapping with its `Ref` values substituted, or the mapping itself
+        (same object) when it carries none — so a caller can test by identity."""
         if not mapping or not any(isinstance(v, Ref) for v in mapping.values()):
-            return mapping  # unchanged (same object) — no Ref to substitute
+            return mapping
         return {k: self.resolve_value(v) for k, v in mapping.items()}
 
-    def _resolve_spare(self, spare: Any) -> Any:
+    def _resolve_mapping(self, mapping: dict[str, Any] | None) -> dict[str, Any] | None:
+        """`_resolve_lookup` for a field that may be absent (an `Upsert`'s or
+        `Update`'s ``defaults``)."""
+        return mapping if mapping is None else self._resolve_lookup(mapping)
+
+    def _resolve_spare(self, spare: _SpareT) -> _SpareT:
         """Substitute Refs inside a `spare`, returning it unchanged when there
-        is nothing to substitute (so the caller can compare by identity)."""
+        is nothing to substitute (so the caller can compare by identity).
+
+        Generic in the spare's own type because the two effects that have one do
+        not have the *same* one: a `Delete` may spare by flat lookup or by
+        composite key, a `Retire` only by composite key. Returning the declared
+        union instead would make `dc_replace(retire, spare=...)` a type error.
+        """
         if isinstance(spare, Exclude):
-            resolved = self._resolve_mapping(spare.lookup)
-            return spare if resolved is spare.lookup else Exclude(lookup=resolved or {})
+            resolved = self._resolve_lookup(spare.lookup)
+            if resolved is spare.lookup:
+                return spare
+            return cast("_SpareT", Exclude(lookup=resolved))
         if isinstance(spare, SpareKeys):
-            keys = [self._resolve_mapping(k) for k in spare.keys]
+            keys = [self._resolve_lookup(k) for k in spare.keys]
             if all(n is o for n, o in zip(keys, spare.keys, strict=True)):
                 return spare
-            return SpareKeys(keys=[k or {} for k in keys])
+            return cast("_SpareT", SpareKeys(keys=keys))
         return spare
 
-    def resolve_effect(self, effect: Any) -> Any:
+    def resolve_effect(self, effect: _EffectT) -> _EffectT:
         """Return `effect` with every `Ref` value substituted, or `effect`
-        itself (unchanged) when it carries no refs — the common fast path."""
-        changed: dict[str, Any] = {}
-        for name in self._MAPPING_FIELDS:
-            if not hasattr(effect, name):
-                continue
-            original = getattr(effect, name)
-            resolved = self._resolve_mapping(original)
-            if resolved is not original:
-                changed[name] = resolved
-        spare = getattr(effect, "spare", None)
-        if spare is not None:
-            resolved_spare = self._resolve_spare(spare)
-            if resolved_spare is not spare:
-                changed["spare"] = resolved_spare
-        if not changed:
-            return effect
-        return dc_replace(effect, **changed)
+        itself (unchanged) when it carries no refs — the common fast path.
+
+        **Each variant names its own ref-bearing fields, in code pyright checks.**
+        This used to walk a tuple of three field-name *strings* with `hasattr`,
+        which reintroduced the "which fields does this variant have?" reasoning
+        that one-type-per-operation removed — and got it wrong silently: a
+        renamed field made `hasattr` return False, so the `Ref` was never
+        substituted and the placeholder object itself was written to the
+        database. Reading `effect.patch` instead of ``getattr(effect, "patch")``
+        makes that rename a type error, and `_assert_never` makes a *new* effect
+        variant one too, which nothing caught before (#161 item 2).
+
+        Mutation this is pinned by: rename `Retire.patch`, and
+        `just typecheck` fails here rather than the suite passing.
+        """
+        if isinstance(effect, (Upsert, Update)):
+            lookup = self._resolve_lookup(effect.lookup)
+            defaults = self._resolve_mapping(effect.defaults)
+            if lookup is effect.lookup and defaults is effect.defaults:
+                return effect
+            return cast(
+                "_EffectT", dc_replace(effect, lookup=lookup, defaults=defaults)
+            )
+        if isinstance(effect, Delete):
+            lookup = self._resolve_lookup(effect.lookup)
+            spare = self._resolve_spare(effect.spare)
+            if lookup is effect.lookup and spare is effect.spare:
+                return effect
+            return cast("_EffectT", dc_replace(effect, lookup=lookup, spare=spare))
+        if isinstance(effect, Retire):
+            lookup = self._resolve_lookup(effect.lookup)
+            patch = self._resolve_lookup(effect.patch)
+            spare = self._resolve_spare(effect.spare)
+            if (
+                lookup is effect.lookup
+                and patch is effect.patch
+                and spare is effect.spare
+            ):
+                return effect
+            return cast(
+                "_EffectT",
+                dc_replace(effect, lookup=lookup, patch=patch, spare=spare),
+            )
+        _assert_never(effect)
 
 
 # =============================================================================

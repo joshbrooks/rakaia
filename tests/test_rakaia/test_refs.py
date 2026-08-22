@@ -13,6 +13,7 @@ import pytest
 from rakaia.effects import (
     Delete,
     DuplicateProducesError,
+    Exclude,
     Ref,
     RefResolver,
     Retire,
@@ -132,3 +133,96 @@ class TestRefResolver:
         )
         resolved = resolver.resolve_effect(eff)
         assert resolved.spare == SpareKeys([{"project_id": 3}])
+
+
+class TestEveryRefBearingFieldIsReached:
+    """One case per (variant, ref-bearing field), because the resolver used to
+    find them by string.
+
+    `Retire.patch` and `Delete.spare`'s flat `Exclude` had no case at all, which
+    is exactly why renaming either was silent: `hasattr` returned False, the
+    `Ref` was never substituted, and the placeholder object itself went to the
+    database. `lookup` and `defaults` were covered, so those two renames already
+    broke something; these two did not (#161 item 2).
+
+    Mutation these are pinned by: with the resolver's per-variant dispatch
+    replaced by the old three-string walk, renaming `Retire.patch` leaves the
+    whole suite green. With the dispatch, it is a `just typecheck` failure.
+    """
+
+    @staticmethod
+    def _accessor(row):
+        return lambda field: row[field]
+
+    def test_a_ref_in_a_retires_patch_is_substituted(self):
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 11}))
+        eff = Retire(
+            model_label="app.Alert",
+            lookup={"stream_key": "k"},
+            patch={"resolved_by_id": Ref("proj"), "resolved_at": "t"},
+        )
+        resolved = resolver.resolve_effect(eff)
+        assert resolved.patch == {"resolved_by_id": 11, "resolved_at": "t"}
+
+    def test_a_ref_in_a_deletes_flat_exclude_is_substituted(self):
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 5}))
+        eff = Delete(
+            model_label="app.Row",
+            lookup={"parent_id": "p1"},
+            spare=Exclude(lookup={"project_id": Ref("proj")}),
+        )
+        resolved = resolver.resolve_effect(eff)
+        assert resolved.spare == Exclude(lookup={"project_id": 5})
+
+    def test_a_ref_in_a_retires_lookup_is_substituted(self):
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 9}))
+        eff = Retire(
+            model_label="app.Alert",
+            lookup={"project_id": Ref("proj")},
+            patch={"resolved_at": "t"},
+        )
+        resolved = resolver.resolve_effect(eff)
+        assert resolved.lookup == {"project_id": 9}
+        assert resolved.patch == {"resolved_at": "t"}
+
+    def test_a_ref_in_a_deletes_lookup_is_substituted(self):
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 4}))
+        eff = Delete(model_label="app.Row", lookup={"project_id": Ref("proj")})
+        assert resolver.resolve_effect(eff).lookup == {"project_id": 4}
+
+    def test_an_update_keeps_its_own_type(self):
+        # The resolver is generic in the effect type, so a caller that hands in
+        # an `Update` gets an `Update` back — `_flush_updates` relies on it.
+        resolver = RefResolver()
+        resolver.record("proj", self._accessor({"pk": 2}))
+        eff = Update(
+            model_label="app.Row",
+            lookup={"project_id": Ref("proj")},
+            defaults={"n": 1},
+        )
+        resolved = resolver.resolve_effect(eff)
+        assert isinstance(resolved, Update)
+        assert resolved.lookup == {"project_id": 2}
+
+    def test_an_effect_with_no_refs_anywhere_is_returned_unchanged(self):
+        # The identity fast path has to hold for every variant, not just the
+        # upsert the older test used — each now takes its own branch.
+        resolver = RefResolver()
+        for eff in (
+            Upsert(model_label="app.R", lookup={"a": 1}, defaults={"b": 2}),
+            Update(model_label="app.R", lookup={"a": 1}, defaults={"b": 2}),
+            Delete(
+                model_label="app.R", lookup={"a": 1}, spare=Exclude(lookup={"b": 2})
+            ),
+            Retire(
+                model_label="app.R",
+                lookup={"a": 1},
+                patch={"b": 2},
+                spare=SpareKeys([{"c": 3}]),
+            ),
+        ):
+            assert resolver.resolve_effect(eff) is eff
