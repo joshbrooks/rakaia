@@ -501,50 +501,6 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert len(messages) == 2
 
-    # -------------------------------------------------------------------------
-    # CHARACTERISING: batch array flattening diverges (#214, undecided)
-    # -------------------------------------------------------------------------
-    #
-    # `append` flattens a top-level JSON array one level on both backends, and
-    # `test_a_json_array_append_flattens_into_separate_messages` below pins it.
-    # `append_many` does *not* agree: the in-memory store inherits the flatten
-    # by delegating to `append`, and the durable store declines it on the
-    # grounds that a batch item is one event whose payload may be a list.
-    #
-    # The tests below are **characterising, not normative**. They record what
-    # each backend does today so that neither can drift while the question is
-    # open; they assert nothing about which answer is right. When #214 is
-    # decided, delete `append_many_flattens_json_arrays`, fold these into one
-    # assertion, and move them out of this section.
-
-    append_many_flattens_json_arrays: bool
-    """Whether this backend's `append_many` flattens a top-level JSON array.
-
-    Set per subclass because the two disagree and the disagreement is not yet
-    resolved. It is deliberately not defaulted: a new backend must state its
-    answer rather than inherit one.
-    """
-
-    def test_characterising_batch_array_flattening_per_backend(self, store):
-        """CHARACTERISING (#214): how many messages one array-payload batch item
-        becomes. Records today's divergence; asserts neither is correct."""
-        store.create("s", content_type="application/json")
-        store.append_many("s", [(b'[{"id": 1}, {"id": 2}]', None)])
-        messages, _ = store.read("s")
-        expected = 2 if self.append_many_flattens_json_arrays else 1
-        assert len(messages) == expected
-
-    def test_characterising_a_batch_returns_one_result_per_item_regardless(self, store):
-        """CHARACTERISING (#214): the part both backends *do* agree on, and the
-        reason the divergence is easy to miss — one `AppendResult` per input item
-        either way, so nothing in the return value reveals which happened."""
-        store.create("s", content_type="application/json")
-        results = store.append_many(
-            "s", [(b'[{"id": 1}, {"id": 2}]', None), (b'{"id": 3}', None)]
-        )
-        assert len(results) == 2
-        assert all(r.message is not None for r in results)
-
     async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
         """An item the fence refuses is not written, so it cannot move
         `Stream-Seq` for the items after it.
@@ -637,6 +593,50 @@ class ServerStoreContract:
         assert results[1].message is None
         messages, _ = await self._sync(store.read, "s")
         assert len(messages) == 1, "the duplicate must not be written"
+
+    # -------------------------------------------------------------------------
+    # CHARACTERISING: batch array flattening diverges (#214, undecided)
+    # -------------------------------------------------------------------------
+    #
+    # `append` flattens a top-level JSON array one level on both backends, and
+    # `test_a_json_array_append_flattens_into_separate_messages` below pins it.
+    # `append_many` does *not* agree: the in-memory store inherits the flatten
+    # by delegating to `append`, and the durable store declines it on the
+    # grounds that a batch item is one event whose payload may be a list.
+    #
+    # The tests below are **characterising, not normative**. They record what
+    # each backend does today so that neither can drift while the question is
+    # open; they assert nothing about which answer is right. When #214 is
+    # decided, delete `append_many_flattens_json_arrays`, fold these into one
+    # assertion, and move them out of this section.
+
+    append_many_flattens_json_arrays: bool
+    """Whether this backend's `append_many` flattens a top-level JSON array.
+
+    Set per subclass because the two disagree and the disagreement is not yet
+    resolved. It is deliberately not defaulted: a new backend must state its
+    answer rather than inherit one.
+    """
+
+    def test_characterising_batch_array_flattening_per_backend(self, store):
+        """CHARACTERISING (#214): how many messages one array-payload batch item
+        becomes. Records today's divergence; asserts neither is correct."""
+        store.create("s", content_type="application/json")
+        store.append_many("s", [(b'[{"id": 1}, {"id": 2}]', None)])
+        messages, _ = store.read("s")
+        expected = 2 if self.append_many_flattens_json_arrays else 1
+        assert len(messages) == expected
+
+    def test_characterising_a_batch_returns_one_result_per_item_regardless(self, store):
+        """CHARACTERISING (#214): the part both backends *do* agree on, and the
+        reason the divergence is easy to miss — one `AppendResult` per input item
+        either way, so nothing in the return value reveals which happened."""
+        store.create("s", content_type="application/json")
+        results = store.append_many(
+            "s", [(b'[{"id": 1}, {"id": 2}]', None), (b'{"id": 3}', None)]
+        )
+        assert len(results) == 2
+        assert all(r.message is not None for r in results)
 
     # =========================================================================
     # Close
