@@ -445,9 +445,17 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert messages == [], "a refused batch must write nothing"
 
-    def test_a_bad_body_is_refused_for_a_single_item_batch_too(self, store):
+    def test_a_single_item_batch_with_a_bad_body_raises(self, store):
         """The narrow case, so a store cannot pass by only checking item two
-        onwards — a batch of one is still a batch."""
+        onwards — a batch of one is still a batch.
+
+        Named for the raise and nothing more, because that is all it can see.
+        Deleting the pre-flight's `check_payload` leaves this test green on both
+        backends: with one item there is no prefix to strand, so "refused by the
+        pre-flight" and "raised by the write that followed" leave identical
+        state. The sibling above is what pins the pre-flight; this pins only
+        that a lone bad body does not get in.
+        """
         store.create("s", content_type="application/json")
         with pytest.raises(InvalidJson):
             store.append_many("s", [(b"not json", None)])
