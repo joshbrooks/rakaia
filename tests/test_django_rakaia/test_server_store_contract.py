@@ -20,6 +20,11 @@ from tests.server_store_contract import ServerStoreContract
 
 @pytest.mark.django_db(transaction=True)
 class TestDjangoStreamStoreServerContract(ServerStoreContract):
+    # CHARACTERISING (#214): `append_many` here declines the flatten
+    # deliberately — a batch item is one event whose payload may be a list. The
+    # opposite of the in-memory store, and not yet reconciled.
+    append_many_flattens_json_arrays = False
+
     @pytest.fixture
     def store(self) -> DjangoStreamStore:
         return DjangoStreamStore()

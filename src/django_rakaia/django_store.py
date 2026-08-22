@@ -882,8 +882,10 @@ class DjangoStreamStore:
         The rest of :meth:`append`'s semantics hold per item too, because the
         same ``decide_append`` rule decides every item: a closed stream refuses
         every item with ``stream_closed=True``; per-item ``content_type`` and
-        ``seq`` are validated (the whole batch, before any row is written — a
-        conflict raises and writes nothing); **producer fencing applies per
+        ``seq`` are validated, and so is every admitted item's *body* against
+        the stream's content type (the whole batch, before any row is written —
+        a refusal raises and writes nothing, so a JSON-mode stream can no longer
+        take a body that is not JSON, #214); **producer fencing applies per
         item**, with an item's outcome returned in its own slot rather than
         aborting its siblings; and an item with ``close=True`` closes the
         stream, refusing the items after it, exactly as a loop of ``append``
@@ -921,6 +923,7 @@ class DjangoStreamStore:
             batch = decide_append_batch(
                 self._facts(stream),
                 [options for _data, options in items],
+                payloads=[data for data, _options in items],
                 producer_states={
                     pid: self._producer_state(stream, pid) for pid in producer_ids
                 },

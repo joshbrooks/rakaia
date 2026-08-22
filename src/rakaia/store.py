@@ -340,10 +340,12 @@ class StreamStore:
         (producer/seq/close validation, TTL touch, long-poll notification). An
         empty batch returns ``[]``.
 
-        A content-type or Stream-Seq conflict anywhere in the batch refuses
-        the whole batch before anything is written. The durable store's single
-        transaction can only be all-or-nothing on a conflict, and the two
-        stores must agree — a plain loop here would leave the prefix written.
+        A refusal anywhere in the batch refuses the whole batch before anything
+        is written — a content-type or Stream-Seq conflict, and equally a body
+        the stream's content type cannot hold (`InvalidJson`, `EmptyJsonArray`).
+        The durable store's single transaction can only be all-or-nothing, and
+        the two stores must agree — a plain loop here would leave the prefix
+        written, and did (#214).
 
         That admissibility scan is `rakaia.append_decision.decide_append_batch`,
         shared with the durable store, so the two cannot drift on what a *batch*
@@ -353,7 +355,10 @@ class StreamStore:
         conflict against a sequence nothing had written (#181). The verdicts are
         deliberately discarded: this store then *is* a loop of `append`, which
         re-derives each one against really-advanced state. The shared rule is
-        called for its all-or-nothing pre-flight, which a loop cannot give.
+        called for its all-or-nothing pre-flight, which a loop cannot give. The
+        payload check rides along for the same reason: the loop below will parse
+        each body again on its way to storing it, so the pre-flight exists only
+        to have refused the batch before the first `append` runs.
         """
         items = list(events)
         if not items:
@@ -373,6 +378,7 @@ class StreamStore:
                     last_seq=stream.last_seq,
                 ),
                 [options for _data, options in items],
+                payloads=[data for data, _options in items],
                 producer_states={
                     pid: self._producer_state(stream, pid) for pid in producer_ids
                 },

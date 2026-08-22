@@ -29,6 +29,8 @@ from rakaia.protocols import StreamServerStore
 from rakaia.types import (
     AppendOptions,
     ContentTypeMismatch,
+    EmptyJsonArray,
+    InvalidJson,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -402,6 +404,139 @@ class ServerStoreContract:
         assert store.get("s").closed is True
         messages, _ = store.read("s")
         assert len(messages) == 2, "the item after the close must not be written"
+
+    # -------------------------------------------------------------------------
+    # Batch payload validity (#214)
+    # -------------------------------------------------------------------------
+
+    def test_a_bad_body_late_in_a_batch_writes_nothing(self, store):
+        """All-or-nothing covers the *body*, not only the options.
+
+        This is the case that made #214: the in-memory store's pre-flight read
+        the options and never the payloads, so the loop of `append` behind it
+        raised `InvalidJson` on item two with item one already persisted — a
+        written prefix sitting behind a refusal. The durable store encoded each
+        item on its own and did not raise at all.
+
+        The first item is deliberately admissible, because a single-item batch
+        cannot tell "refused" from "refused and happened to leave nothing".
+        """
+        store.create("s", content_type="application/json")
+        with pytest.raises(InvalidJson):
+            store.append_many("s", [(b'{"id": 1}', None), (b"not json", None)])
+        messages, _ = store.read("s")
+        assert messages == [], "a refused batch must write nothing"
+
+    def test_an_empty_array_late_in_a_batch_writes_nothing(self, store):
+        """The other body the protocol rejects, and a separate code path.
+
+        `[]` parses, so a store could validate JSON syntax and still take the
+        no-op append the protocol says is a 400 (§7.1). Same prefix problem.
+        """
+        store.create("s", content_type="application/json")
+        with pytest.raises(EmptyJsonArray):
+            store.append_many("s", [(b'{"id": 1}', None), (b"[]", None)])
+        messages, _ = store.read("s")
+        assert messages == [], "a refused batch must write nothing"
+
+    def test_a_bad_body_is_refused_for_a_single_item_batch_too(self, store):
+        """The narrow case, so a store cannot pass by only checking item two
+        onwards — a batch of one is still a batch."""
+        store.create("s", content_type="application/json")
+        with pytest.raises(InvalidJson):
+            store.append_many("s", [(b"not json", None)])
+        messages, _ = store.read("s")
+        assert messages == []
+
+    def test_a_closed_stream_answers_closed_rather_than_raising_on_a_bad_body(
+        self, store
+    ):
+        """Closed outranks payload validity, exactly as it outranks the two
+        conflicts.
+
+        A refused item is never written, so its body is never parsed — which is
+        what a loop of `append` does, since `append` reports the closed stream
+        before it looks at the data. Checking the payloads in a pass of their own
+        would tell a client to fix a body whose write can never land.
+        """
+        store.create("s", content_type="application/json")
+        store.close_stream("s")
+        results = store.append_many("s", [(b"not json", None)])
+        assert results[0].stream_closed and results[0].message is None
+
+    def test_a_bad_body_after_a_close_in_the_batch_is_not_parsed_either(self, store):
+        """The same rule where the close comes from *inside* the batch.
+
+        The sibling above starts from an already-closed stream, which a store
+        could handle by short-circuiting before it ever reaches the per-item
+        loop. Here item one closes the stream and item two — refused because of
+        it — carries a body that would raise. It must not.
+        """
+        store.create("s", content_type="application/json")
+        results = store.append_many(
+            "s",
+            [(b'{"id": 1}', AppendOptions(close=True)), (b"not json", None)],
+        )
+        assert results[0].message is not None
+        assert results[1].message is None and results[1].stream_closed
+        messages, _ = store.read("s")
+        assert len(messages) == 1
+
+    # -------------------------------------------------------------------------
+    # CHARACTERISING: batch array flattening diverges (#214, undecided)
+    # -------------------------------------------------------------------------
+    #
+    # `append` flattens a top-level JSON array one level on both backends, and
+    # `test_a_json_array_append_flattens_into_separate_messages` below pins it.
+    # `append_many` does *not* agree: the in-memory store inherits the flatten
+    # by delegating to `append`, and the durable store declines it on the
+    # grounds that a batch item is one event whose payload may be a list.
+    #
+    # The tests below are **characterising, not normative**. They record what
+    # each backend does today so that neither can drift while the question is
+    # open; they assert nothing about which answer is right. When #214 is
+    # decided, delete `append_many_flattens_json_arrays`, fold these into one
+    # assertion, and move them out of this section.
+
+    append_many_flattens_json_arrays: bool
+    """Whether this backend's `append_many` flattens a top-level JSON array.
+
+    Set per subclass because the two disagree and the disagreement is not yet
+    resolved. It is deliberately not defaulted: a new backend must state its
+    answer rather than inherit one.
+    """
+
+    def test_characterising_batch_array_flattening_per_backend(self, store):
+        """CHARACTERISING (#214): how many messages one array-payload batch item
+        becomes. Records today's divergence; asserts neither is correct."""
+        store.create("s", content_type="application/json")
+        store.append_many("s", [(b'[{"id": 1}, {"id": 2}]', None)])
+        messages, _ = store.read("s")
+        expected = 2 if self.append_many_flattens_json_arrays else 1
+        assert len(messages) == expected
+
+    def test_characterising_a_batch_returns_one_result_per_item_regardless(self, store):
+        """CHARACTERISING (#214): the part both backends *do* agree on, and the
+        reason the divergence is easy to miss — one `AppendResult` per input item
+        either way, so nothing in the return value reveals which happened."""
+        store.create("s", content_type="application/json")
+        results = store.append_many(
+            "s", [(b'[{"id": 1}, {"id": 2}]', None), (b'{"id": 3}', None)]
+        )
+        assert len(results) == 2
+        assert all(r.message is not None for r in results)
+
+    def test_a_non_json_stream_takes_a_body_that_is_not_json(self, store):
+        """Only a stream declared `application/json` constrains its bodies.
+
+        The guard against over-correcting #214 into a store that parses every
+        payload: a `text/plain` batch of arbitrary bytes must still be written.
+        """
+        store.create("s", content_type="text/plain")
+        results = store.append_many("s", [(b"not json", None), (b"[]", None)])
+        assert all(r.message is not None for r in results)
+        messages, _ = store.read("s")
+        assert len(messages) == 2
 
     async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
         """An item the fence refuses is not written, so it cannot move

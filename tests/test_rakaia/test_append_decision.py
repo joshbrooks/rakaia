@@ -14,11 +14,18 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.append_decision import StreamFacts, decide_append, decide_append_batch
+from rakaia.append_decision import (
+    StreamFacts,
+    check_payload,
+    decide_append,
+    decide_append_batch,
+)
 from rakaia.types import (
     AppendOptions,
     ClosedBy,
     ContentTypeMismatch,
+    EmptyJsonArray,
+    InvalidJson,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerSequenceGap,
@@ -234,10 +241,14 @@ class TestOrdering:
             )
 
 
-def _decide_batch(facts=None, items=(), *, producer_states=None):
+def _decide_batch(facts=None, items=(), *, payloads=None, producer_states=None):
+    """`payloads` defaults to a valid JSON body per item, so a case about
+    admission does not have to restate one."""
+    items = list(items)
     return decide_append_batch(
         facts or StreamFacts(),
-        list(items),
+        items,
+        payloads=[b"{}"] * len(items) if payloads is None else list(payloads),
         producer_states=producer_states,
         now=NOW,
     )
@@ -389,3 +400,118 @@ class TestBatchAdmissibility:
             producer_states=states,
         )
         assert states == {"p": None}
+
+
+JSON = StreamFacts(content_type="application/json")
+
+
+class TestPayloadValidity:
+    """The body, as opposed to the options (#214).
+
+    A batch was all-or-nothing on a content-type or `Stream-Seq` conflict and
+    not on a body the stream could not hold, so the in-memory store persisted a
+    prefix behind an `InvalidJson` and the durable store took the bad body.
+    """
+
+    def test_a_valid_json_body_is_admitted(self):
+        assert check_payload("application/json", b'{"a": 1}') is None
+
+    def test_an_unparseable_body_is_refused(self):
+        with pytest.raises(InvalidJson):
+            check_payload("application/json", b"not json")
+
+    def test_an_empty_array_is_refused(self):
+        with pytest.raises(EmptyJsonArray):
+            check_payload("application/json", b"[]")
+
+    @pytest.mark.parametrize("content_type", ["text/plain", "application/octet-stream"])
+    def test_a_declared_non_json_content_type_takes_any_bytes(self, content_type):
+        assert check_payload(content_type, b"not json") is None
+
+    def test_no_declared_content_type_takes_any_bytes(self):
+        """The event-sourcing shape: the store parses if it can and keeps the
+        raw bytes if it cannot, so there is nothing here to refuse."""
+        assert check_payload(None, b"not json") is None
+
+    def test_a_charset_parameter_still_means_json(self):
+        """`application/json; charset=utf-8` is a JSON stream, so its bodies are
+        constrained — the check must normalise rather than compare literally."""
+        with pytest.raises(InvalidJson):
+            check_payload("application/json; charset=utf-8", b"not json")
+
+
+class TestBatchPayloadValidity:
+    """Where the payload check sits in the batch loop, which is the subtle part.
+
+    Every case here is about *ordering*: a pass over the payloads before the
+    admission scan, or after it, gets a different answer from a loop of
+    `append`.
+    """
+
+    def test_a_bad_body_refuses_the_whole_batch(self):
+        with pytest.raises(InvalidJson):
+            _decide_batch(
+                facts=JSON,
+                items=[AppendOptions(), AppendOptions()],
+                payloads=[b'{"a": 1}', b"not json"],
+            )
+
+    def test_the_payloads_must_match_the_items(self):
+        """A store that dropped an item while building one list and not the
+        other would otherwise check the wrong body against the wrong item."""
+        with pytest.raises(ValueError):
+            _decide_batch(
+                facts=JSON, items=[AppendOptions(), AppendOptions()], payloads=[b"{}"]
+            )
+
+    def test_a_closed_stream_is_reported_before_the_body_is_read(self):
+        """Closed outranks the body: a producer told "invalid JSON" would fix a
+        body whose write can never land."""
+        batch = _decide_batch(
+            facts=StreamFacts(closed=True, content_type="application/json"),
+            items=[AppendOptions()],
+            payloads=[b"not json"],
+        )
+        assert isinstance(batch.verdicts[0].producer_result, ProducerStreamClosed)
+
+    def test_a_body_after_a_close_inside_the_batch_is_not_read(self):
+        """The close takes effect for the items after it, so their bodies are
+        never parsed — the same rule, reached through the loop rather than
+        through the incoming facts."""
+        batch = _decide_batch(
+            facts=JSON,
+            items=[AppendOptions(close=True), AppendOptions()],
+            payloads=[b'{"a": 1}', b"not json"],
+        )
+        assert batch.verdicts[0].write is True
+        assert batch.verdicts[1].write is False
+
+    def test_a_body_the_fence_refuses_is_not_read(self):
+        """An item the fence rejects takes no write, so it takes no parse."""
+        batch = _decide_batch(
+            facts=JSON,
+            items=[AppendOptions(producer_id="p", producer_epoch=0, producer_seq=4)],
+            payloads=[b"not json"],
+        )
+        assert isinstance(batch.verdicts[0].producer_result, ProducerSequenceGap)
+
+    def test_a_content_type_conflict_is_raised_before_a_bad_body(self):
+        """Both are caller errors that raise; the options are decided first, so
+        the answer is the mismatch the item declared rather than a complaint
+        about a body that was never going to be stored."""
+        with pytest.raises(ContentTypeMismatch):
+            _decide_batch(
+                facts=JSON,
+                items=[AppendOptions(content_type="text/plain")],
+                payloads=[b"not json"],
+            )
+
+    def test_a_bad_body_is_raised_before_a_later_seq_conflict(self):
+        """And in the other direction across items: the loop reaches item one's
+        body before item two's options, exactly as a loop of `append` would."""
+        with pytest.raises(InvalidJson):
+            _decide_batch(
+                facts=StreamFacts(content_type="application/json", last_seq="5"),
+                items=[AppendOptions(), AppendOptions(seq="1")],
+                payloads=[b"not json", b"{}"],
+            )
