@@ -9,6 +9,24 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A renamed effect field no longer loses references in silence.** Substituting
+  a symbolic reference (`Ref`) used to work by trying three field names in turn —
+  `lookup`, `defaults`, `patch` — and asking each effect whether it had one. An
+  effect that did not answer to a name was skipped without a word, so renaming a
+  field, or adding a fifth kind of effect carrying a mapping the list had never
+  heard of, left references in it unresolved and wrote the placeholder object
+  itself to the database.
+
+  Each effect now names its own reference-bearing fields in code the type checker
+  reads, and the four kinds are matched exhaustively, so both cases are a
+  `just typecheck` failure instead of wrong data. Verified by mutation: renaming
+  `Retire.patch` produced **no** error inside the resolver before and produces two
+  now, and adding a fifth variant to `Effect` fails the exhaustiveness check.
+  `Retire.patch` and a `Delete`'s flat `Exclude` had no test coverage at all —
+  which is why those two renames were the silent ones — and now do. (#161 item 2)
+
 ### Added
 
 - **`DriftLedger` — one object that knows whether a rule's code has changed.**
