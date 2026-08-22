@@ -12,7 +12,11 @@ from django.contrib import admin
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString, mark_safe
 
-from django_rakaia.event_message import decode_payload, event_label
+from django_rakaia.event_message import (
+    decode_payload,
+    event_label,
+    event_label_display,
+)
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 
@@ -72,8 +76,57 @@ def _event_badge(event_type: str) -> SafeString:
         '<span style="background-color: {}; color: white; padding: 3px 8px; '
         'border-radius: 3px; font-size: 11px; font-weight: bold;">{}</span>',
         _BADGE_COLORS.get(label, "#6c757d"),
-        label.upper() or "—",
+        event_label_display(event_type).upper(),
     )
+
+
+class EventTypeFieldListFilter(admin.AllValuesFieldListFilter):
+    """The event-type sidebar filter, showing labels rather than the column.
+
+    `event_type` holds a sentinel for "a raw append, which carried no label", and
+    Django's own filter prints the column — so the sidebar said `append` beside a
+    badge that said the event had no label, one event described two ways on one
+    screen (#210).
+
+    This is a **display-name change and nothing else**, which is why it subclasses
+    the filter it replaces (`list_filter = ["event_type"]` resolves to
+    `AllValuesFieldListFilter`) and overrides only the text. A filter has to put
+    the *stored* value in the querystring and match on the stored column, or it
+    selects nothing; everything about which rows a link selects is inherited
+    rather than restated — the querystring key and value, the null choice, the
+    OR of a repeated parameter, and the fact that the choices for a related path
+    like ``event__event_type`` come from the event table without joining the
+    entries table to get them.
+
+    Written for a field path rather than as a `SimpleListFilter` for exactly that
+    reason: the hand-rolled version had to re-implement each of those, and got
+    two of them wrong — `?event_type=a&event_type=b` selected only `b`, and the
+    entries sidebar ran a `DISTINCT` over the fan-out table on every render.
+    """
+
+    def choices(self, changelist):
+        # Django yields "All" first, then one choice per non-null stored value in
+        # `lookup_choices` order, then the empty-value choice if some row is
+        # null. Only the middle group names a stored `event_type`, so only it is
+        # relabelled — and by position, so whatever Django put in the choice
+        # (query string, selected flag, and the " (N)" it appends when facet
+        # counts are on) is passed through untouched.
+        stored = [value for value in self.lookup_choices if value is not None]
+        # `or ()`: the stub types the base `choices()` as optional, because the
+        # abstract `ListFilter` declares it and returns nothing. This subclass's
+        # parent always yields.
+        for index, choice in enumerate(super().choices(changelist) or ()):
+            if 1 <= index <= len(stored):
+                value = str(stored[index - 1])
+                shown = str(choice["display"])
+                choice["display"] = event_label_display(value) + shown[len(value) :]
+            yield choice
+
+
+# `list_filter` entries: the field path stays the field path — this only changes
+# what the sidebar prints next to each link.
+_EVENT_TYPE_FILTER = ("event_type", EventTypeFieldListFilter)
+_ENTRY_EVENT_TYPE_FILTER = ("event__event_type", EventTypeFieldListFilter)
 
 
 def _event_data_preview(data: Any, payload_encoding: str | None) -> str:
@@ -115,7 +168,7 @@ class StreamEventAdmin(admin.ModelAdmin):
         "stream_count",
         "created_at",
     ]
-    list_filter = ["event_type", "created_at"]
+    list_filter = [_EVENT_TYPE_FILTER, "created_at"]
     search_fields = ["data"]
     readonly_fields = ["data", "event_type", "created_at", "streams_list"]
     ordering = ["-created_at"]
@@ -154,7 +207,7 @@ class StreamEntryAdmin(admin.ModelAdmin):
         "event_type_badge",
         "created_at",
     ]
-    list_filter = ["stream", "event__event_type", "created_at"]
+    list_filter = ["stream", _ENTRY_EVENT_TYPE_FILTER, "created_at"]
     search_fields = ["stream__stream_id", "event__data"]
     readonly_fields = ["stream", "event", "offset", "created_at"]
     ordering = ["-created_at"]
@@ -206,7 +259,7 @@ def register_stream_event_admin(event_model_class):
             "stream_count",
             "created_at",
         ]
-        list_filter = ["event_type", "created_at"]
+        list_filter = [_EVENT_TYPE_FILTER, "created_at"]
         search_fields = ["data"]
         readonly_fields = ["data", "event_type", "created_at", "streams_list"]
         ordering = ["-created_at"]

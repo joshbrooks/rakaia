@@ -8,6 +8,7 @@ short-data path), link builders, translation status, and the dynamic
 
 import pytest
 from django.contrib import admin as django_admin
+from django.test import RequestFactory
 
 from django_rakaia.admin import (
     StreamAdmin,
@@ -15,6 +16,7 @@ from django_rakaia.admin import (
     StreamEventAdmin,
     register_stream_event_admin,
 )
+from django_rakaia.event_message import NO_LABEL_DISPLAY
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 from tests.test_django_rakaia.models import AppStreamEvent
 
@@ -26,6 +28,49 @@ def _entry(stream_id: str, offset: int, event_type: str = "create", **data):
     event = StreamEvent.objects.create(event_type=event_type, data=data or {"k": "v"})
     entry = StreamEntry.objects.create(stream=stream, event=event, offset=offset)
     return stream, event, entry
+
+
+class _AdminUser:
+    """Enough of a staff user for `get_changelist_instance`, without a row.
+
+    Deliberately not a real `auth.User`: saving one fires the test app's
+    `post_save` receiver, which appends a `create` event — so the very screen
+    under test would gain rows, and its filter an extra choice.
+    """
+
+    is_active = True
+    is_staff = True
+    is_superuser = True
+
+    def has_perm(self, perm, obj=None) -> bool:  # noqa: ARG002
+        return True
+
+    def has_module_perms(self, app_label) -> bool:  # noqa: ARG002
+        return True
+
+
+def _changelist(model_admin, **query: str):
+    """The changelist a staff user's GET would build, filters and all."""
+    request = RequestFactory().get("/", query)
+    request.user = _AdminUser()  # type: ignore[assignment]
+    return request, model_admin.get_changelist_instance(request)
+
+
+def _filter_choices(model_admin, parameter_name: str, **query: str):
+    """`(display, query_string)` per choice of one filter, as the sidebar shows.
+
+    Goes through the real `ChangeList`, so it sees what the screen renders rather
+    than what a helper returns — the distinction that let #195 and #208 each fix
+    one surface and leave another printing the sentinel.
+    """
+    _, changelist = _changelist(model_admin, **query)
+    for spec in changelist.filter_specs:
+        if parameter_name in spec.expected_parameters():
+            return [
+                (str(choice["display"]), choice["query_string"])
+                for choice in spec.choices(changelist)
+            ]
+    raise AssertionError(f"no filter for {parameter_name!r} on {model_admin}")
 
 
 class TestStreamAdmin:
@@ -280,6 +325,21 @@ class TestEveryAdminScreenAgrees:
         assert "<br>" not in preview and "&nbsp;" not in preview
         assert '"a": 1' in preview
 
+    def test_the_smaller_surfaces_agree_with_the_badge(self) -> None:
+        # The two places #208 left behind, side by side with the badge that was
+        # fixed: the sidebar filter and the change-form header. All three
+        # describe one event, so all three must call it the same thing.
+        _, entry = self._appended()
+        event = entry.event
+
+        assert NO_LABEL_DISPLAY in StreamEventAdmin(
+            StreamEvent, django_admin.site
+        ).event_type_badge(event)
+        assert str(event) == f"Event #{event.id} ({NO_LABEL_DISPLAY})"
+        assert (NO_LABEL_DISPLAY, "?event_type=append") in _filter_choices(
+            StreamEventAdmin(StreamEvent, django_admin.site), "event_type"
+        )
+
     def test_all_three_screens_render_one_append_the_same_way(self) -> None:
         # The point of the shared helper: the next screen cannot disagree.
         _, entry = self._appended()
@@ -299,3 +359,209 @@ class TestEveryAdminScreenAgrees:
         subclass = self._subclass_admin()
         assert subclass.event_type_badge(same) == from_events.event_type_badge(event)
         assert subclass.data_preview(same) == from_events.data_preview(event)
+
+
+class TestTheTypeFilterShowsLabelsAndFiltersOnTheColumn:
+    """The sidebar beside the badge, and the header above the change form.
+
+    #208 fixed the badges and deliberately left these: a filter needs the
+    *stored* value to build its query, so the label can only be the text of the
+    link. That made the two disagree — one event read as an em-dash in the table
+    and `append` in the filter next to it (#210).
+
+    So each case asserts both halves: the display is the label, and the value in
+    the querystring is still the column's. Rendered through a real `ChangeList`,
+    because a test of the filter class in isolation is the shape that missed this
+    twice.
+    """
+
+    def _events(self):
+        """One labelless append and one labelled event, through the store."""
+        from django_rakaia.django_store import DjangoStreamStore
+        from rakaia import AppendOptions
+
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"n": 1}')
+        store.append("s", b'{"n": 2}', AppendOptions(label="create"))
+        appended, created = StreamEvent.objects.order_by("id")
+        return appended, created
+
+    def _event_admin(self):
+        return StreamEventAdmin(StreamEvent, django_admin.site)
+
+    def _entry_admin(self):
+        return StreamEntryAdmin(StreamEntry, django_admin.site)
+
+    def test_the_event_filter_shows_the_label_not_the_stored_type(self) -> None:
+        self._events()
+        assert _filter_choices(self._event_admin(), "event_type") == [
+            ("All", "?"),
+            (NO_LABEL_DISPLAY, "?event_type=append"),
+            ("create", "?event_type=create"),
+        ]
+
+    def test_the_entries_filter_shows_the_label_not_the_stored_type(self) -> None:
+        self._events()
+        assert _filter_choices(self._entry_admin(), "event__event_type") == [
+            ("All", "?"),
+            (NO_LABEL_DISPLAY, "?event__event_type=append"),
+            ("create", "?event__event_type=create"),
+        ]
+
+    def test_a_registered_event_models_filter_shows_the_label(self) -> None:
+        # The factory an app registers its own event model through: the copy
+        # #201 found still printing the sentinel after #195 fixed the built-in
+        # screens. Same mistake, same place to make it again.
+        AppStreamEvent.objects.create(event_type="append", data={"n": 1})
+        AppStreamEvent.objects.create(event_type="create", data={"n": 2})
+        admin = django_admin.site._registry[AppStreamEvent]
+
+        assert _filter_choices(admin, "event_type") == [
+            ("All", "?"),
+            (NO_LABEL_DISPLAY, "?event_type=append"),
+            ("create", "?event_type=create"),
+        ]
+
+    def test_the_querystring_is_exactly_what_the_plain_field_filter_built(
+        self,
+    ) -> None:
+        # The constraint from the issue: a display-name change, not a swap of the
+        # value. Proved against the filter that was there before — a throwaway
+        # admin with `list_filter = ["event_type"]`, i.e. Django's
+        # `AllValuesFieldListFilter` — so an existing bookmark still selects the
+        # same rows.
+        self._events()
+
+        class PlainFieldFilterAdmin(django_admin.ModelAdmin):
+            list_filter = ["event_type"]
+
+        before = _filter_choices(
+            PlainFieldFilterAdmin(StreamEvent, django_admin.site), "event_type"
+        )
+        after = _filter_choices(self._event_admin(), "event_type")
+
+        assert [q for _, q in before] == [q for _, q in after]
+        # And the display is the only thing that moved.
+        assert [d for d, _ in before] == ["All", "append", "create"]
+
+    def test_the_event_filter_still_selects_the_labelless_append(self) -> None:
+        appended, _ = self._events()
+        _, changelist = _changelist(self._event_admin(), event_type="append")
+        assert list(changelist.queryset) == [appended]
+
+    def test_the_event_filter_still_selects_a_labelled_event(self) -> None:
+        _, created = self._events()
+        _, changelist = _changelist(self._event_admin(), event_type="create")
+        assert list(changelist.queryset) == [created]
+
+    def test_the_event_filter_selects_everything_when_unset(self) -> None:
+        appended, created = self._events()
+        _, changelist = _changelist(self._event_admin())
+        assert set(changelist.queryset) == {appended, created}
+
+    def test_the_entries_filter_still_selects_the_labelless_append(self) -> None:
+        appended, _ = self._events()
+        _, changelist = _changelist(self._entry_admin(), event__event_type="append")
+        assert [entry.event for entry in changelist.queryset] == [appended]
+
+    def test_the_change_form_header_shows_the_label_not_the_stored_type(self) -> None:
+        appended, created = self._events()
+        # `StreamEvent.__str__` — the change-form header, and what a
+        # `readonly_fields` reference to an event renders. Exact equality: the
+        # sentinel is not a substring of the label here, so containment would
+        # pass against the raw column too.
+        assert str(appended) == f"Event #{appended.id} ({NO_LABEL_DISPLAY})"
+        assert str(created) == f"Event #{created.id} (create)"
+
+
+class TestRelabellingTheFilterChangedNothingElseAboutIt:
+    """Everything a link selects is Django's answer, not ours.
+
+    The first attempt at #210 rebuilt the filter as a `SimpleListFilter`, which
+    means re-implementing every behaviour of the one it replaced. Two came out
+    wrong: a repeated parameter — which Django ORs — selected only the last
+    value, and the entries sidebar listed its choices by joining the fan-out
+    table instead of reading the event table directly.
+
+    Each case here pins one of those against the plain field filter, which is
+    what the screens used before, so "display-only" is a tested claim rather
+    than an intention.
+    """
+
+    def _plain(self, model, list_filter):
+        class PlainFieldFilterAdmin(django_admin.ModelAdmin):
+            pass
+
+        PlainFieldFilterAdmin.list_filter = list_filter
+        return PlainFieldFilterAdmin(model, django_admin.site)
+
+    def _events(self):
+        for event_type in ("append", "create", "delete"):
+            event = StreamEvent.objects.create(event_type=event_type, data={})
+            if event_type != "delete":
+                # `delete` deliberately has no entry: the entries sidebar must
+                # still offer it, which is what says its choices come from the
+                # event table rather than a join.
+                StreamEntry.objects.create(
+                    stream=Stream.objects.get_or_create(stream_id="s")[0],
+                    event=event,
+                    offset=event.id,
+                )
+
+    def test_a_repeated_parameter_still_selects_both_types(self) -> None:
+        self._events()
+        query = "?event_type=append&event_type=create"
+        request = RequestFactory().get(f"/{query}")
+        request.user = _AdminUser()  # type: ignore[assignment]
+
+        admin = StreamEventAdmin(StreamEvent, django_admin.site)
+        changelist = admin.get_changelist_instance(request)
+        assert sorted(event.event_type for event in changelist.queryset) == [
+            "append",
+            "create",
+        ]
+
+    def test_a_repeated_parameter_selects_the_same_rows_as_before(self) -> None:
+        self._events()
+        query = "?event__event_type=append&event__event_type=create"
+        request = RequestFactory().get(f"/{query}")
+        request.user = _AdminUser()  # type: ignore[assignment]
+        other = RequestFactory().get(f"/{query}")
+        other.user = _AdminUser()  # type: ignore[assignment]
+
+        plain = self._plain(StreamEntry, ["event__event_type"])
+        admin = StreamEntryAdmin(StreamEntry, django_admin.site)
+        # Sorted: the two admins order their lists differently by design, and it
+        # is *which rows* the link selects that must not have moved.
+        now = sorted(e.pk for e in admin.get_changelist_instance(request).queryset)
+        before = sorted(e.pk for e in plain.get_changelist_instance(other).queryset)
+        assert now == before
+
+    def test_the_entries_sidebar_offers_a_type_no_entry_carries(self) -> None:
+        # Django's field filter reads the *event* table for a related path. A
+        # hand-rolled `lookups()` over the entries queryset both dropped this
+        # choice and made the sidebar scan the fan-out table.
+        self._events()
+        displays = [
+            display
+            for display, _ in _filter_choices(
+                StreamEntryAdmin(StreamEntry, django_admin.site), "event__event_type"
+            )
+        ]
+        assert displays == ["All", NO_LABEL_DISPLAY, "create", "delete"]
+
+    def test_facet_counts_survive_the_relabelling(self) -> None:
+        # With `?_facets=True` Django appends " (N)" to each choice. Relabelling
+        # replaces the value and keeps the count.
+        self._events()
+        assert _filter_choices(
+            StreamEventAdmin(StreamEvent, django_admin.site),
+            "event_type",
+            _facets="True",
+        ) == [
+            ("All", "?_facets=True"),
+            (f"{NO_LABEL_DISPLAY} (1)", "?_facets=True&event_type=append"),
+            ("create (1)", "?_facets=True&event_type=create"),
+            ("delete (1)", "?_facets=True&event_type=delete"),
+        ]
