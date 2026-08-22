@@ -46,6 +46,7 @@ FRAMEWORK = {
     "registration_log",
     "registry",
     "replay",
+    "seed",
     "source_hash",
 }
 
@@ -77,29 +78,47 @@ ALLOWED_CROSSINGS = {
     # `seed_stream` is a convenience whose whole contract is "omit the store and
     # get a fresh in-memory one". It already types its parameter as
     # `WritableStore`; the concrete import is the default value, not a
-    # dependency of the framework on the server. Classified separately from
-    # FRAMEWORK for that reason — see `test_the_tier_map_covers_every_module`.
+    # dependency of the framework on the server. `seed` stays in FRAMEWORK so
+    # the rest of its imports are still checked — an exemption is per crossing,
+    # not per module, or a module could escape the rule by being listed here.
     ("seed", "store"),
 }
 
 
-def _internal_imports(module: str) -> set[str]:
-    """Sibling modules `module` imports, including under `TYPE_CHECKING`.
+def _imports_in(source: str) -> set[str]:
+    """Sibling `rakaia` modules `source` imports, including under `TYPE_CHECKING`.
 
     Type-only imports count. The defect this file exists for was type-only: a
     `TYPE_CHECKING` import of the in-memory store, used in a public signature,
     which made the annotation wrong without creating any runtime coupling at all.
+
+    All four spellings of the same dependency are read, because a checker that
+    saw only the house style would be evaded by the first author who wrote one of
+    the others — and evaded silently, which is the one thing a fitness function
+    must not be.
     """
-    tree = ast.parse((SRC / f"{module}.py").read_text())
     found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
-            found.add(node.module.split(".")[0])
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 1 and node.module:  # from .store import X
+                found.add(node.module.split(".")[0])
+            elif node.level == 1 or node.module == "rakaia":
+                # `from . import store`, `from rakaia import store` — the module
+                # is the imported *name*. A name that is a function rather than a
+                # module can land here; the cost is a false positive, which is
+                # loud, rather than a miss, which is not.
+                found.update(alias.name for alias in node.names)
+            elif node.module and node.module.startswith("rakaia."):
+                found.add(node.module.split(".")[1])  # from rakaia.store import X
         elif isinstance(node, ast.Import):
-            for alias in node.names:
+            for alias in node.names:  # import rakaia.store
                 if alias.name.startswith("rakaia."):
                     found.add(alias.name.split(".")[1])
     return found
+
+
+def _internal_imports(module: str) -> set[str]:
+    return _imports_in((SRC / f"{module}.py").read_text())
 
 
 def _modules() -> set[str]:
@@ -113,16 +132,35 @@ def test_the_tier_map_covers_every_module() -> None:
     `src/rakaia/whatever.py` to neither set would leave its imports unexamined
     and the boundary would erode exactly where nobody looked.
     """
-    classified = (
-        FRAMEWORK | PROTOCOL_SERVER | SHARED | {m for m, _ in ALLOWED_CROSSINGS}
-    )
-    unclassified = _modules() - classified
+    unclassified = _modules() - (FRAMEWORK | PROTOCOL_SERVER | SHARED)
 
     assert not unclassified, (
         f"unclassified module(s): {sorted(unclassified)} — add each to FRAMEWORK, "
         "PROTOCOL_SERVER or SHARED in this file. Which tier a module belongs to "
         "is a design decision; leaving it out is not a way of deferring it."
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from .store import StreamStore",
+        "from . import store",
+        "from rakaia.store import StreamStore",
+        "from rakaia import store",
+        "import rakaia.store",
+        "if TYPE_CHECKING:\n    from .store import StreamStore",
+    ],
+)
+def test_the_reader_sees_every_way_of_spelling_a_dependency(source: str) -> None:
+    """The check below is only as good as this, so this is checked directly.
+
+    Every line here is the same dependency, and the repo happens to write only
+    the first. A reader that recognised just the house style would let the other
+    five through without failing — a boundary check with five undocumented ways
+    around it is worse than none, because it reports a boundary that is not there.
+    """
+    assert "store" in _imports_in(source)
 
 
 def test_the_tier_sets_do_not_overlap() -> None:
