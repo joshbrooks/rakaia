@@ -414,8 +414,16 @@ class DjangoStreamStore:
            above is a write that can fail.
 
         Callers pass what their own decision produced; a step whose argument is
-        absent is skipped, which is how `create` and a plain unfenced append
-        reach the same code as a fenced batch.
+        absent is skipped, which is how a plain unfenced append reaches the same
+        code as a fenced batch.
+
+        `create` is the one write path that does not come through here, and
+        deliberately: its `initial_data` cannot be fenced, sequenced or closing —
+        the stream did not exist to have a producer, a `Stream-Seq` or a close
+        against — and it stamps `last_activity_at` on the row it inserts, so
+        every step would be a no-op or a second write of what `create` just
+        wrote. It is in the routing test below as the exception, not as an
+        omission.
         """
         for result in producer_commits:
             self._commit_producer(stream, result)

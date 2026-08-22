@@ -88,6 +88,22 @@ class TestEveryWritePathRecordsThroughOneMethod:
 
         assert len(counted) == 1
 
+    def test_create_with_a_body_is_the_documented_exception(
+        self, counted: list[dict]
+    ) -> None:
+        """The one write path that does not come through it, asserted rather than
+        assumed: `create`'s `initial_data` has no producer, no `Stream-Seq` and
+        no close to record, and the row it inserts carries `last_activity_at`
+        already. Here so the docstring's exception is a checked claim — if
+        `create` ever grows one of those, this test is what says so."""
+        store = DjangoStreamStore()
+
+        store.create("s", content_type="application/json", initial_data=b'{"n": 1}')
+
+        assert counted == []
+        assert StreamEntry.objects.count() == 1
+        assert Stream.objects.get(stream_id="s").last_activity_at is not None
+
     def test_a_refused_write_records_nothing(self, counted: list[dict]) -> None:
         """Nothing landed, so there is nothing whose consequences to record —
         and advancing the producer here would reject the retry that legitimately
