@@ -265,6 +265,22 @@ runnable demo for each.
   `Retire.patch` and a `Delete`'s flat `Exclude` had no test coverage at all —
   which is why those two renames were the silent ones — and now do. (#161 item 2)
 
+### Documentation
+
+- **Recorded why stream positions stay a counted number.** The protocol allows a
+  time-based identifier instead, which would remove both the size limit we chose
+  by hand and the brief lock every write takes to hand out the next position. The
+  decision record works through that trade and declines it for now: the lock is
+  what makes a position record the order writes actually arrived in, and a clock
+  cannot give that back once it is gone.
+
+  Two of the three original arguments for switching had already been answered by
+  other work — the size limit now lives in one place and is a one-line change, and
+  the repeated table scan on every write is gone — which is most of why the answer
+  came out this way. The record also names three costs the original write-up
+  missed, including that our own server would currently reject a time-based
+  position as malformed. (ADR 0005, #138)
+
 ## [0.2.0] - 2026-08-15
 
 The first release that describes the library. `0.1.0` was the initial
