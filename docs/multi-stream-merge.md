@@ -114,6 +114,12 @@ single-stream baseline uses, so the only variable is the event source.
   a backdated append would renumber later rows. Key it by `(stream_path, offset)`,
   which is stable under merge. (This is the subtle interaction with the #12 history
   read-model.)
+- **Nothing is applied unless everything decodes.** A merge has to read every
+  stream before it knows the order, so a malformed event — or one missing the
+  order key — in any stream fails before the first handler runs. A single-stream
+  `replay()` over one pass is the other way round: it decodes as it goes, so the
+  events before the bad one are already applied. Neither is wrong; they differ
+  because a merge has no choice.
 - **Resume** — a merged replay's cursor is a **vector of per-stream offsets**, not a
   single number; incremental/tailing merge needs a watermark per stream — the
   tie-in to the change_id/watermark sync quick win.

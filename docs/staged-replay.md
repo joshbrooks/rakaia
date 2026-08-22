@@ -159,6 +159,12 @@ Two rules keep it honest:
 2. **`refs` is read-only.** It exposes queries over materialized rows, not
    writes. All writes still flow through `Effect`s and the executor.
 
+One consequence worth knowing: staging changes how far a failing replay gets. A
+single-stage replay decodes one event at a time, so a malformed event at offset N
+raises with the first N already applied. A staged replay has to see the whole
+range before stage 1 can start, so it decodes everything first and the same event
+applies nothing at all.
+
 ## Self-healing replaces backfills
 
 Because the link is *derived* on every replay, a late reference event heals

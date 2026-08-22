@@ -140,6 +140,28 @@ runnable demo for each.
 
 ### Changed
 
+- **A replay now says how far it gets before failing.** `replay` and
+  `merge_replay` share one staging pipeline, but `replay` kept a *second*
+  hand-written loop for its single-stage path, and the reason was real: it
+  decodes one event at a time, so a malformed event at offset N fails with the
+  first N already applied. `merge_replay` always read everything up front and
+  never said so. Nothing tested the difference, so the behaviour the second loop
+  existed to protect was uncovered.
+
+  That difference now has a name — `EventSource`, the events a replay will
+  dispatch, deliberately an `Iterable` rather than a `Sequence` — and one loop
+  serves both: `run_passes` consumes its source as it arrives when one pass will
+  do, and materialises it when it needs more than one. **No caller sees anything
+  different.** What changed is that the rule is written down: a single unstaged
+  pass applies the events before a malformed one; a staged replay or a merge
+  applies nothing, because more than one pass has to see every event and a merge
+  cannot know the order until every stream is read.
+
+  The pipeline tests used to import `build_pipeline` and `run_passes` and drive
+  them on a fabricated list of events. They now go through `replay` and
+  `merge_replay`, each shared behaviour run against both, since there is no
+  longer anything behind them worth reaching past (#189).
+
 - **A single append reads the stream row once, not twice.** Every
   `DjangoStreamStore.append` did two `SELECT`s of the same row: an unlocked one
   before the transaction opened, purely so that an expired stream would still be
