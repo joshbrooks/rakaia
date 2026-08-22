@@ -18,12 +18,11 @@ modelled now, and asserted here for both. What remains genuinely
 backend-specific is only the offset *format* (compound `{seq}_{byte}` vs
 zero-padded int) — the protocol mandates opacity, not one format (§6).
 
-One divergence is *open* rather than legitimate: whether `append_many` flattens
-a top-level JSON array (#214). It is recorded here, keyed on
-`append_many_flattens_json_arrays`, precisely so that it cannot drift while the
-question is undecided — both backends run the same test and each must state its
-answer. That flag and the tests reading it go away when #214 is settled; nothing
-else in this file is permitted a per-backend answer.
+Nothing in this file is permitted a per-backend answer. It briefly was: whether
+`append_many` flattens a top-level JSON array was recorded here as an open
+divergence, keyed on a flag each backend set for itself, so that neither could
+drift while #214 was undecided. #214 decided it — both flatten, matching
+`append` — so the flag is gone and the question is one assertion again.
 """
 
 from __future__ import annotations
@@ -595,59 +594,50 @@ class ServerStoreContract:
         assert len(messages) == 1, "the duplicate must not be written"
 
     # -------------------------------------------------------------------------
-    # CHARACTERISING: batch array flattening diverges (#214, undecided)
+    # Batch array flattening (#214)
     # -------------------------------------------------------------------------
-    #
-    # `append` flattens a top-level JSON array one level on both backends, and
-    # `test_a_json_array_append_flattens_into_separate_messages` below pins it.
-    # `append_many` does *not* agree: the in-memory store inherits the flatten
-    # by delegating to `append`, and the durable store declines it on the
-    # grounds that a batch item is one event whose payload may be a list.
-    #
-    # The tests below are **characterising, not normative**. They record what
-    # each backend does today so that neither can drift while the question is
-    # open; they assert nothing about which answer is right. When #214 is
-    # decided, delete `append_many_flattens_json_arrays`, fold these into one
-    # assertion, and move them out of this section.
 
-    append_many_flattens_json_arrays: bool
-    """Whether this backend's `append_many` flattens a top-level JSON array.
+    def test_append_many_flattens_a_json_array_like_append(self, store):
+        """A batch item whose body is a top-level JSON array becomes one message
+        per element, exactly as passing that body to `append` would.
 
-    Set per subclass because the two disagree and the disagreement is not yet
-    resolved. It is deliberately not defaulted: a new backend must state its
-    answer rather than inherit one.
-    """
-
-    def test_characterising_the_flattening_flag_has_no_default(self):
-        """CHARACTERISING (#214): the flag above must stay undefaulted.
-
-        Its docstring says so, and giving it a default left this whole suite
-        green on both backends — a third backend would then silently inherit an
-        answer to a question nobody has decided, which is the one thing
-        recording the divergence here was meant to prevent. An annotation with
-        no value creates no class attribute, so `vars` is what sees it.
+        The two backends used to disagree here (#214): the in-memory store
+        inherited the flatten by delegating to `append`, and the durable store
+        declined it, on the grounds that a batch item is one event whose payload
+        may be a list. Deciding for the flatten keeps `append_many` semantically
+        identical to a loop of `append` *within* each backend, which is what
+        both of them promise, and stops a list payload reaching `replay()`,
+        where it raises.
         """
-        assert "append_many_flattens_json_arrays" not in vars(ServerStoreContract)
+        import json
 
-    def test_characterising_batch_array_flattening_per_backend(self, store):
-        """CHARACTERISING (#214): how many messages one array-payload batch item
-        becomes. Records today's divergence; asserts neither is correct."""
         store.create("s", content_type="application/json")
         store.append_many("s", [(b'[{"id": 1}, {"id": 2}]', None)])
         messages, _ = store.read("s")
-        expected = 2 if self.append_many_flattens_json_arrays else 1
-        assert len(messages) == expected
+        assert [json.loads(m.data) for m in messages] == [{"id": 1}, {"id": 2}]
 
-    def test_characterising_a_batch_returns_one_result_per_item_regardless(self, store):
-        """CHARACTERISING (#214): the part both backends *do* agree on, and the
-        reason the divergence is easy to miss — one `AppendResult` per input item
-        either way, so nothing in the return value reveals which happened."""
+    def test_a_flattened_batch_item_still_returns_exactly_one_result(self, store):
+        """One `AppendResult` per input item, even for an item that wrote more
+        than one message — its result carries the last of them, which is the
+        offset a caller resumes from. This is why the old divergence was easy to
+        miss: nothing in the return value reveals how many messages an item
+        became."""
+        import json
+
         store.create("s", content_type="application/json")
         results = store.append_many(
             "s", [(b'[{"id": 1}, {"id": 2}]', None), (b'{"id": 3}', None)]
         )
         assert len(results) == 2
         assert all(r.message is not None for r in results)
+        messages, _ = store.read("s")
+        assert len(messages) == 3
+        # Parsed, not compared byte-for-byte: the two backends re-serialise a
+        # flattened element with different whitespace, which
+        # `test_a_json_array_append_flattens_into_separate_messages` already
+        # treats as immaterial.
+        assert json.loads(results[0].message.data) == {"id": 2}
+        assert json.loads(results[1].message.data) == {"id": 3}
 
     # =========================================================================
     # Close

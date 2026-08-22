@@ -216,9 +216,10 @@ def check_payload(content_type: str | None, data: bytes) -> None:
     the bytes as they come, so there is nothing to refuse.
 
     The parsed result is deliberately thrown away. Deciding validity is not the
-    same job as deciding *how many messages* a body becomes, and the two stores
-    still disagree on the second question (#214, unresolved) — so this answers
-    only the first, and each store splits the body its own way afterwards.
+    same job as deciding *how many messages* a body becomes — that is a split
+    each store performs on its own rows, through `process_json_append` either
+    way, so both reach the same answer (#214). What belongs here is only the
+    refusal, because only the refusal has to happen before anything is written.
     """
     if is_json_content_type(content_type):
         process_json_append(data)

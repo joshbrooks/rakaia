@@ -877,7 +877,11 @@ class DjangoStreamStore:
         that returns ``[]`` without touching the database (so it never raises
         for a missing stream). A non-empty batch raises ``StreamNotFound`` if
         the stream does not exist, like :meth:`append`, and returns one
-        ``AppendResult`` per item in input order.
+        ``AppendResult`` per item in input order — one per *item*, not per row:
+        in JSON mode an item whose body is a top-level array flattens into one
+        row per element, exactly as :meth:`append` flattens it, so a batch of N
+        items can write more than N rows and that item's result carries the last
+        of them (#214).
 
         The rest of :meth:`append`'s semantics hold per item too, because the
         same ``decide_append`` rule decides every item: a closed stream refuses
@@ -953,26 +957,39 @@ class DjangoStreamStore:
                     for v in verdicts
                 ]
 
-            # Mirror `append`'s per-event envelope mapping and payload encoding.
-            # `merge_provenance` is evaluated per item so ambient provenance is
-            # captured for each. Unlike `append`, a JSON array is *not* flattened
-            # here: this surface promises one result per input item, and an
-            # event-sourcing batch item is one event whose payload may well be a
-            # list.
-            encoded = [encode_payload(data, stream.content_type) for data, _ in written]
-            stream_events = [
-                StreamEvent(
-                    data=value,
-                    event_type=(getattr(options, "label", "") or "")
-                    or _APPEND_EVENT_TYPE,
-                    metadata=merge_provenance(getattr(options, "metadata", None)) or {},
-                    event_ts=getattr(options, "event_ts", None),
-                    payload_encoding=encoding,
+            # Mirror `append`'s per-event envelope mapping and payload split,
+            # through the same `_payloads_for` — so a JSON array flattens here
+            # exactly as it does there (#214). It used to decline the flatten,
+            # on the grounds that a batch item is one event whose payload may be
+            # a list; that made `append_many` stop being a loop of `append`
+            # within this backend, which is what both surfaces promise, and left
+            # a list in `StreamEvent.data` where `replay()` raises on it.
+            #
+            # So an item can write more than one row, and a batch of N items can
+            # write more than N. Each item keeps exactly one result, carrying the
+            # last of the messages it became — the offset a caller resumes from.
+            # `merge_provenance` stays per *item*, so the events one item
+            # flattens into share its ambient provenance.
+            groups: list[list[StreamEvent]] = []
+            for data, options in written:
+                metadata = merge_provenance(getattr(options, "metadata", None)) or {}
+                event_type = (getattr(options, "label", "") or "") or _APPEND_EVENT_TYPE
+                event_ts = getattr(options, "event_ts", None)
+                groups.append(
+                    [
+                        StreamEvent(
+                            data=value,
+                            event_type=event_type,
+                            metadata=metadata,
+                            event_ts=event_ts,
+                            payload_encoding=encoding,
+                        )
+                        for value, encoding in self._payloads_for(
+                            stream, data, is_initial_create=False
+                        )
+                    ]
                 )
-                for (_data, options), (value, encoding) in zip(
-                    written, encoded, strict=True
-                )
-            ]
+            stream_events = [event for group in groups for event in group]
             self._events().bulk_create(stream_events)
 
             start = stream.get_next_offset_block(len(stream_events))
@@ -1006,7 +1023,15 @@ class DjangoStreamStore:
             # refused keeps its slot with the outcome to report, rather than
             # vanishing from the results and shifting every later item's answer
             # onto the wrong input.
-            persisted = iter(entries)
+            # One entry group per written item, in the order the groups were
+            # flattened, so an item that became several messages takes several
+            # entries here and still yields one result.
+            grouped: list[list[StreamEntry]] = []
+            cursor = 0
+            for group in groups:
+                grouped.append(entries[cursor : cursor + len(group)])
+                cursor += len(group)
+            persisted = iter(grouped)
             results: list[AppendResult] = []
             for (_data, options), verdict in zip(items, verdicts, strict=True):
                 if not verdict.write:
@@ -1020,7 +1045,7 @@ class DjangoStreamStore:
                     continue
                 results.append(
                     AppendResult(
-                        message=message_of(next(persisted)),
+                        message=message_of(next(persisted)[-1]),
                         stream_closed=bool(getattr(options, "close", False)),
                         producer_result=verdict.producer_result,
                     )
