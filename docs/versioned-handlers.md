@@ -96,6 +96,7 @@ from rakaia import register_handler, register_upcaster
 # Upcaster: rename `repeaterContribution` -> `contributions` (v1 -> v2)
 # ---------------------------------------------------------------------------
 
+
 @register_upcaster(event_match="submissions:SF_1_2", from_version=1)
 def upcast_sf12_v1_to_v2(event: dict) -> dict:
     """Older SF_1_2 submissions used `repeaterContribution`. Normalise
@@ -111,6 +112,7 @@ def upcast_sf12_v1_to_v2(event: dict) -> dict:
 # Bug: did not include tax. Stays in source so historical events still
 # replay against the calculation that was correct at the time.
 # ---------------------------------------------------------------------------
+
 
 @register_handler(
     name="sf12_cost_sync",
@@ -131,6 +133,7 @@ def sf12_cost_sync_v1(event: dict) -> Upsert:
 # ---------------------------------------------------------------------------
 # Handler v2: same intent, applies tax. Active from seq 5000 onward.
 # ---------------------------------------------------------------------------
+
 
 @register_handler(
     name="sf12_cost_sync",
@@ -153,6 +156,7 @@ def sf12_cost_sync_v2(event: dict) -> Upsert:
 # Runs alongside sf12_cost_sync on every event. Writes a different
 # `defaults` key, so no EffectCollisionError.
 # ---------------------------------------------------------------------------
+
 
 @register_handler(
     name="sf12_project_status",
@@ -178,20 +182,23 @@ upcasters will normalise on read.
 
 ```python
 import json
-from rakaia import StreamStore   # or your durable store of choice
+from rakaia import StreamStore  # or your durable store of choice
 
-store: StreamStore = ...               # singleton
+store: StreamStore = ...  # singleton
+
 
 def emit_submission_event(submission):
     store.append(
         f"submissions:{submission.form_type}",
-        json.dumps({
-            "schema_version": 2,
-            "key": str(submission.key),
-            "form_type": submission.form_type,
-            "status": submission.status,
-            "fields": submission.fields,
-        }).encode("utf-8"),
+        json.dumps(
+            {
+                "schema_version": 2,
+                "key": str(submission.key),
+                "form_type": submission.form_type,
+                "status": submission.status,
+                "fields": submission.fields,
+            }
+        ).encode("utf-8"),
     )
 ```
 
@@ -232,7 +239,7 @@ all, you'd retire v1 and register a new version covering `[0, 5000)`:
     name="sf12_cost_sync",
     event_match="submissions:SF_1_2",
     effective_from=0,
-    effective_to=5000,    # would overlap v1 — must retire v1 first
+    effective_to=5000,  # would overlap v1 — must retire v1 first
 )
 def sf12_cost_sync_v1b(event): ...
 ```
@@ -274,7 +281,7 @@ has nowhere to report to; hand it a ledger to ask the same question:
 ```python
 from rakaia import DriftLedger, upcast
 
-ledger = DriftLedger()                 # or DriftLedger(on_drift="raise")
+ledger = DriftLedger()  # or DriftLedger(on_drift="raise")
 event = upcast(raw, "submissions", drift=ledger)
 if ledger.drifted:
     ...  # ledger.warnings holds the RAKAIA_DRIFT lines
@@ -337,6 +344,7 @@ bare decorators, call `reset_default_registries()` between tests:
 import pytest
 from rakaia import reset_default_registries
 
+
 @pytest.fixture(autouse=True)
 def _isolate_registries():
     reset_default_registries()
@@ -380,10 +388,11 @@ recompute everything when it is the whole stream:
 ```python
 from rakaia import register_reducer, reconcile_aggregate
 
+
 @register_reducer(name="balance", stage=1)
 def balance(reader, touched):
     sukus = {t.lookup["suku"] for t in touched if t.model_label == "ida.Line"}
-    groups = _recompute_totals(reader, only=sukus)      # only the touched groups
+    groups = _recompute_totals(reader, only=sukus)  # only the touched groups
     return reconcile_aggregate("ida.Balance", {}, "suku", groups)
 ```
 

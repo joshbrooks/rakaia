@@ -34,6 +34,7 @@ per append, and usable as a resume token. See #39.
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 
 import pytest
 
@@ -178,7 +179,7 @@ class StoreContract:
         offsets = [m.offset for m in store.read("s")[0]]
         assert offsets == sorted(offsets)
         assert len(set(offsets)) == len(offsets)  # no duplicates
-        assert all(a < b for a, b in zip(offsets, offsets[1:], strict=False))
+        assert all(a < b for a, b in pairwise(offsets))
 
     def test_offset_is_an_opaque_resume_token(self, store):
         # An offset round-trips as a resume token without any numeric parsing:
@@ -230,7 +231,7 @@ class StoreContract:
         assert bulk_msgs[2].event_ts == 1_600_000_000.5
         assert isinstance(bulk_msgs[0].event_ts, float)
         offsets = [m.offset for m in bulk_msgs]
-        assert all(a < b for a, b in zip(offsets, offsets[1:], strict=False))
+        assert all(a < b for a, b in pairwise(offsets))
 
     def test_append_many_empty_is_noop(self, store):
         store.create("s")

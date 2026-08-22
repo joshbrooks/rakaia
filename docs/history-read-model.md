@@ -62,7 +62,7 @@ effects = project_latest(
         "actor_id": msg.metadata.get("user"),
         "updated_at": msg.timestamp,
     },
-    tombstone_labels=("delete", "cancel"),      # default: ("delete",)
+    tombstone_labels=("delete", "cancel"),  # default: ("delete",)
 )
 ```
 
@@ -81,15 +81,17 @@ from django_rakaia import materialize_history
 from rakaia import label_marker, envelope_actor
 
 materialize_history(
-    store, "submissions", "audit.SubmissionHistory",
+    store,
+    "submissions",
+    "audit.SubmissionHistory",
     subject_of=lambda ev: ev["submission_id"],
     defaults_of=lambda msg, ev: {
-        "marker": label_marker(msg.label),          # + / ~ / -
-        "actor_id": envelope_actor(msg, ev),        # who edited it
+        "marker": label_marker(msg.label),  # + / ~ / -
+        "actor_id": envelope_actor(msg, ev),  # who edited it
         "ts": msg.timestamp,
-        "snapshot": ev["fields"],                   # the full snapshot
+        "snapshot": ev["fields"],  # the full snapshot
     },
-    version_of=lambda m: int(m.offset),             # stable, never-renumbered key
+    version_of=lambda m: int(m.offset),  # stable, never-renumbered key
 )
 ```
 

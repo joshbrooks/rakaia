@@ -237,8 +237,10 @@ class TestImportingTheDjangoPackageStaysCheap:
             [
                 sys.executable,
                 "-c",
-                "import sys, django_rakaia; "
-                "print('django_rakaia.models' in sys.modules)",
+                (
+                    "import sys, django_rakaia; "
+                    "print('django_rakaia.models' in sys.modules)"
+                ),
             ],
             capture_output=True,
             text=True,

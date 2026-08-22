@@ -43,12 +43,17 @@ def close_preconditions(suku, refs) -> list[str]:
     ...
     return reasons
 
-def cycle_close(event, refs):                       # stage 2
+
+def cycle_close(event, refs):  # stage 2
     reasons = close_preconditions(event["suku"], refs)
-    return Upsert(model_label=CYCLE_CLOSE,
-                  lookup={"suku": event["suku"]},
-                  defaults={"status": "ACCEPTED" if not reasons else "REJECTED",
-                            "reasons": reasons})
+    return Upsert(
+        model_label=CYCLE_CLOSE,
+        lookup={"suku": event["suku"]},
+        defaults={
+            "status": "ACCEPTED" if not reasons else "REJECTED",
+            "reasons": reasons,
+        },
+    )
 ```
 
 Because the verdict is derived, not stored, appending the missing facts and
@@ -63,14 +68,24 @@ doubles on re-replay). The fix is the aggregate analogue of `reconcile_children`
 idempotent upsert.
 
 ```python
-def balance_rollup(refs):                           # stage 1 reduce step
+def balance_rollup(refs):  # stage 1 reduce step
     effects = []
     for suku in distinct_sukus(refs):
         rows = refs.filter(FINANCE_LINE, suku=suku)
-        effects.append(Upsert(model_label=BALANCE,
-            lookup={"suku": suku},
-            defaults={"operational": sum(r.delta for r in rows if r.account == "operational"),
-                      "infrastructure": sum(r.delta for r in rows if r.account == "infrastructure")}))
+        effects.append(
+            Upsert(
+                model_label=BALANCE,
+                lookup={"suku": suku},
+                defaults={
+                    "operational": sum(
+                        r.delta for r in rows if r.account == "operational"
+                    ),
+                    "infrastructure": sum(
+                        r.delta for r in rows if r.account == "infrastructure"
+                    ),
+                },
+            )
+        )
     return effects
 ```
 

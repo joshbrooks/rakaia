@@ -138,7 +138,7 @@ def deny_database_access(*aliases: str) -> Iterator[None]:
     def _blocker(alias: str):
         # Django calls the wrapper positionally as
         # (execute, sql, params, many, context); only `sql` is used here.
-        def _wrap(_execute, sql, _params, _many, _context):  # noqa: ANN001
+        def _wrap(_execute, sql, _params, _many, _context):
             raise AmbientDatabaseAccess(
                 f"replay touched the {alias!r} database directly "
                 f"(SQL: {_preview(sql)}). A hermetic rebuild reads only through "

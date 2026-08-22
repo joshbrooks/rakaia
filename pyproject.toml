@@ -43,8 +43,15 @@ prod = [
     "whitenoise>=6.0",
 ]
 dev = [
-    "ruff>=0.8.0",
-    "pyright>=1.1.400",
+    # Floors sit at the versions CI resolves to, not at the oldest release that
+    # happens to work. A linter is a gate, and a gate whose rule set depends on
+    # who synced last is not one: ruff adds rules and changes fix behaviour every
+    # release, so an old ruff passes code that CI's ruff rejects. `uv.lock` pins
+    # the exact version for anyone using it; these floors are what stop a
+    # lock-less install from silently linting to a different standard. Bump them
+    # together with the lock.
+    "ruff>=0.16.4",
+    "pyright>=1.1.411",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
@@ -91,7 +98,15 @@ include = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+# No `target-version`: ruff reads `project.requires-python` above. Setting both
+# means two places to bump and one of them being wrong — the pyupgrade rules
+# would keep rewriting to a floor the package no longer claims.
+#
+# No path list either. `ruff check` and `ruff format` are run with no arguments
+# everywhere — CI, the justfile, an editor — so what gets linted is decided here
+# and cannot differ between them. It used to: CI linted `src/ tests/ examples/`
+# and `just lint` linted `src/ tests/`, so `just check` passed on a diff that
+# turned CI red, and `manage.py` and `runserver.py` were never linted by either.
 
 [tool.ruff.lint]
 select = [
@@ -104,13 +119,76 @@ select = [
     "UP",     # pyupgrade
     "ARG",    # flake8-unused-arguments
     "SIM",    # flake8-simplify
+    # Added together, each having been measured against the tree first rather
+    # than adopted on reputation. Most of these had *zero* violations here — they
+    # are regression gates on habits this codebase already keeps, which is the
+    # cheapest kind of rule to own.
+    "RUF",    # ruff's own rules
+    "ASYNC",  # flake8-async — this is an async server; blocking calls in async
+              # functions are the bug class it exists to catch
+    "DTZ",    # flake8-datetimez — naive datetimes, in a project whose whole job
+              # is ordering events by time
+    "LOG",    # flake8-logging
+    "G",      # flake8-logging-format
+    "PTH",    # flake8-use-pathlib
+    "PIE",    # flake8-pie
+    "PT",     # flake8-pytest-style
+    "RET",    # flake8-return
+    "RSE",    # flake8-raise
+    "TID",    # flake8-tidy-imports
+    "ISC",    # flake8-implicit-str-concat
+    "PERF",   # perflint
+    "FURB",   # refurb
+    "N",      # pep8-naming
+    "T20",    # flake8-print
+    "A",      # flake8-builtins
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
     "B008",   # do not perform function calls in argument defaults
     "B904",   # raise without from in except
     "SIM108", # use ternary operator
+    # --- deliberately not adopted, with the reason, so the next person does not
+    # --- re-litigate it from scratch ---
+    "RUF012", # mutable class attribute should be `ClassVar`. Wrong for Django:
+              # `list_display`, `Meta`, `fields` are all mutable class
+              # attributes by framework convention, and 133 of them are.
+    "N818",   # exception name should end in `Error`. `StreamNotFound`,
+              # `SequenceConflict`, `PreloadMismatch` are public API and the
+              # house style; renaming them is a breaking change to buy a suffix.
+    "PT018",  # break up a composite assertion. 44 sites where `assert a and b`
+              # reads as the one claim it is; splitting them would say less.
+    "PERF203", # `try`/`except` in a loop. The store contract tests need exactly
+              # that shape — one attempt per item, each allowed to fail.
+    "ISC001", # conflicts with the formatter, which owns string layout.
+    "RUF002", # ambiguous unicode in a docstring…
+    "RUF003", # …and in a comment. This project writes prose with real
+              # typography — em dashes, `×`, `∪` — and the homoglyph risk the
+              # rule guards against is about identifiers, not paragraphs.
+    "RUF022", # `__all__` is not sorted. Both `__all__` lists are grouped by
+              # subject with headings, which is documentation; alphabetising
+              # them would delete it.
+    "PT012",  # `pytest.raises()` block should be one statement. Several sites
+              # legitimately hold a second context manager (`transaction.atomic`)
+              # or must raise from inside the block being tested.
+    "PT011",  # broad `pytest.raises(ValueError)`…
+    "PT030",  # …and broad `pytest.warns(UserWarning)`. Every site binds the
+              # exception and then asserts on its message, which is what the
+              # rule is asking for and stricter than a `match=` regex — it says
+              # which substrings must appear and why.
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Printing *is* the interface here: `__main__.py` is a CLI, the examples are
+# runnable demos that narrate what they prove, and `scripts/` is developer
+# tooling. Keeping T20 selected everywhere else is what stops a debug `print`
+# reaching library code.
+"src/rakaia/__main__.py" = ["T201"]
+"examples/**" = ["T201", "T203"]
+"scripts/**" = ["T201"]
+# A Django `TestCase` in this example uses `assertEqual`/`assertRaises`, which is
+# the framework's own idiom rather than pytest's.
+"examples/formkit_submissions/**" = ["PT009", "PT027"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rakaia", "django_rakaia"]

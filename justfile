@@ -402,20 +402,31 @@ test-cov:
     uv run pytest --cov=src/rakaia --cov=src/django_rakaia --cov-report=term-missing
 
 # Lint
+#
+# No path arguments, here or in CI: what gets linted is decided by
+# `[tool.ruff]` in pyproject.toml, so the two cannot disagree. They did —
+# this recipe checked `src/ tests/` while CI checked `src/ tests/ examples/`,
+# so `just check` went green on a diff that turned CI red, and neither of them
+# ever looked at `manage.py` or `runserver.py`.
 lint:
-    uv run ruff check src/ tests/
+    uv run ruff check
 
 # Format check (no writes)
 fmt-check:
-    uv run ruff format --check src/ tests/
+    uv run ruff format --check
 
 # Format in place
 fmt:
-    uv run ruff format src/ tests/
+    uv run ruff format
 
 # Type check
+#
+# `PYRIGHT_PYTHON_FORCE_VERSION` is set to the version the lockfile pins, not to
+# `latest`. pyright-python nags when a newer release exists and suggests
+# `latest`, which silently typechecks against a different pyright than CI — the
+# one thing a gate must not do. Bump this with the `pyright` pin in pyproject.
 typecheck:
-    uv run pyright src/
+    PYRIGHT_PYTHON_FORCE_VERSION=1.1.411 uv run pyright src/
 
 # Regenerate docs/api-reference.md from what the packages actually export.
 # Commit the result; `api-reference-check` fails if it drifts.

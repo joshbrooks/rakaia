@@ -37,7 +37,7 @@ def project(event: dict) -> Effect:
     match_field="form_type",
     stage=1,
 )
-def task(event: dict, reader) -> Effect:  # noqa: ANN001 - reader is a ProjectionReader
+def task(event: dict, reader) -> Effect:
     """Stage 1: upsert the Task and link it to its Project by ``code``.
 
     A stage > 0 handler is called ``fn(event, reader)``. Because stage 0 has

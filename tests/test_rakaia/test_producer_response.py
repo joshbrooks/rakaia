@@ -73,7 +73,7 @@ class TestTheRefusalTable:
         )
 
     def test_an_invalid_epoch_opening_is_400(self):
-        status, body, headers = producer_response(
+        status, body, _headers = producer_response(
             ProducerInvalidEpochSeq(), producer_epoch=1
         )
         assert status == 400

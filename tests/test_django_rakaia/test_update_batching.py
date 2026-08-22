@@ -776,10 +776,10 @@ class TestASubclassIsNotItsBaseType:
 
     def test_a_str_subclass_that_lies_about_equality_is_not_gathered(self):
         class Sneaky(str):
-            def __eq__(self, other):  # noqa: D105
+            def __eq__(self, other):
                 return True  # "I am every string"
 
-            def __hash__(self):  # noqa: D105
+            def __hash__(self):
                 return 0
 
         FinanceLine.objects.create(submission_id="a", suku="", delta=0)

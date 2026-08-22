@@ -98,12 +98,36 @@ Emergent, and *doubly* so. In `rebuild_tf611.py` the whole precedence rule is fo
 consecutive statements:
 
 ```python
-result   = replay(store, TF611_STREAM,          executor, handler_registry=build_tf611_authoritative_registry(...), reader=reader)
+result = replay(
+    store,
+    TF611_STREAM,
+    executor,
+    handler_registry=build_tf611_authoritative_registry(...),
+    reader=reader,
+)
 if store.has(LOCATION_STREAM):
-             replay(store, LOCATION_STREAM,      executor, handler_registry=location_registry(),        reader=reader)
-status_result = replay(store, PROJECT_STATUS_STREAM, executor, handler_registry=project_status_registry(), reader=reader)
+    replay(
+        store,
+        LOCATION_STREAM,
+        executor,
+        handler_registry=location_registry(),
+        reader=reader,
+    )
+status_result = replay(
+    store,
+    PROJECT_STATUS_STREAM,
+    executor,
+    handler_registry=project_status_registry(),
+    reader=reader,
+)
 if store.has(STATUS_STREAM):
-             replay(store, STATUS_STREAM,        executor, handler_registry=status_registry(),          reader=reader)
+    replay(
+        store,
+        STATUS_STREAM,
+        executor,
+        handler_registry=status_registry(),
+        reader=reader,
+    )
 ```
 
 Two separate things are emergent here, and they should not be conflated:

@@ -79,7 +79,7 @@ anything that hands the result to the ORM breaks:
 
 ```python
 stream = store.get(path)
-entries = StreamEntry.objects.filter(stream=stream)   # <-- TypeError
+entries = StreamEntry.objects.filter(stream=stream)  # <-- TypeError
 ```
 
 ```

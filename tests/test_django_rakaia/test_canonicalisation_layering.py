@@ -324,7 +324,7 @@ class TestVerificationStillExportsWhatItDefines:
 
     def test_star_import_yields_every_exported_name(self):
         namespace: dict[str, object] = {}
-        exec("from django_rakaia.verification import *", namespace)  # noqa: S102
+        exec("from django_rakaia.verification import *", namespace)
 
         from django_rakaia import verification
 
@@ -358,7 +358,7 @@ class TestVerificationStillExportsWhatItDefines:
     @pytest.mark.parametrize("name", BACK_COMPAT_REEXPORTS)
     def test_a_reexported_name_survives_a_star_import(self, name):
         namespace: dict[str, object] = {}
-        exec("from django_rakaia.verification import *", namespace)  # noqa: S102
+        exec("from django_rakaia.verification import *", namespace)
         assert name in namespace
 
     @pytest.mark.parametrize("name", BACK_COMPAT_REEXPORTS)

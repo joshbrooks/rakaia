@@ -10,7 +10,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Import test settings as base FIRST
-from tests.test_django_rakaia.settings import *  # noqa: F401, F403, E402
+from tests.test_django_rakaia.settings import *  # noqa: F403, E402
 
 # Override for development
 DEBUG = True

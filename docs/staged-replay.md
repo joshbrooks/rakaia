@@ -17,20 +17,27 @@ from rakaia import replay
 from django_rakaia import DjangoExecutor
 from django_rakaia import DjangoProjectionReader
 
-@register_handler(name="project", event_match="TF_6_1_1",
-                  match_field="form_type", stage=0)
-def project(event):                         # stage 0: build the reference
-    return Upsert(model_label="ida.Project",
-                  lookup={"suku": event["suku"], "output": event["output"]},
-                  defaults={"name": event["project_name"]})
 
-@register_handler(name="sf12", event_match="SF_1_2",
-                  match_field="form_type", stage=1)
-def sf12(event, refs):                      # stage 1: resolve via the reader
+@register_handler(
+    name="project", event_match="TF_6_1_1", match_field="form_type", stage=0
+)
+def project(event):  # stage 0: build the reference
+    return Upsert(
+        model_label="ida.Project",
+        lookup={"suku": event["suku"], "output": event["output"]},
+        defaults={"name": event["project_name"]},
+    )
+
+
+@register_handler(name="sf12", event_match="SF_1_2", match_field="form_type", stage=1)
+def sf12(event, refs):  # stage 1: resolve via the reader
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Upsert(model_label="ida_forms.Sf_1_2",
-                  lookup={"submission_id": event["key"]},
-                  defaults={"project_id": project.pk if project else None})
+    return Upsert(
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_id": project.pk if project else None},
+    )
+
 
 replay(store, "submissions", DjangoExecutor(), reader=DjangoProjectionReader())
 ```
@@ -53,13 +60,15 @@ projections and returning idempotent Effects (typically via
 from rakaia import register_reducer
 from rakaia import reconcile_aggregate
 
+
 @register_reducer(name="balance", stage=1)
-def balance(reader):                         # runs once, after stage-1 handlers
+def balance(reader):  # runs once, after stage-1 handlers
     totals = {}
     for line in reader.query("ida.FinanceLine"):
         totals[line.suku] = totals.get(line.suku, 0) + line.amount
-    return reconcile_aggregate("ida.Balance", {}, "suku",
-                               {s: {"total": t} for s, t in totals.items()})
+    return reconcile_aggregate(
+        "ida.Balance", {}, "suku", {s: {"total": t} for s, t in totals.items()}
+    )
 ```
 
 Because it **recomputes** from the current rows on every replay, re-running is a
@@ -106,20 +115,27 @@ stage *N > 0* receives a read-only `refs` accessor over the projections that
 earlier stages materialized.
 
 ```python
-@register_handler(name="project_registry", event_match="TF_6_1_1",
-                  match_field="form_type", stage=0)
+@register_handler(
+    name="project_registry", event_match="TF_6_1_1", match_field="form_type", stage=0
+)
 def project_registry(event):
-    return Upsert(model_label="ida.Project",
-                  lookup={"suku": event["suku"], "output": event["output"]},
-                  defaults={"name": event["project_name"]})
+    return Upsert(
+        model_label="ida.Project",
+        lookup={"suku": event["suku"], "output": event["output"]},
+        defaults={"name": event["project_name"]},
+    )
 
-@register_handler(name="sf12_link", event_match="SF_1_2",
-                  match_field="form_type", stage=1)
+
+@register_handler(
+    name="sf12_link", event_match="SF_1_2", match_field="form_type", stage=1
+)
 def sf12_link(event, refs):
     project = refs.get("ida.Project", suku=event["suku"], output=event["output"])
-    return Upsert(model_label="ida_forms.Sf_1_2",
-                  lookup={"submission_id": event["key"]},
-                  defaults={"project_id": project.pk if project else None})
+    return Upsert(
+        model_label="ida_forms.Sf_1_2",
+        lookup={"submission_id": event["key"]},
+        defaults={"project_id": project.pk if project else None},
+    )
 ```
 
 Because **stage 0 is applied in full before stage 1 begins**, the entire project
