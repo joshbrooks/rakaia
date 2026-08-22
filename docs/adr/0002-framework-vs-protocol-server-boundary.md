@@ -1,6 +1,6 @@
 # ADR 0002 — Name the framework ↔ protocol-server boundary; formalize the framework seams
 
-- **Status:** Accepted (items 2 and 5 landed; see the update note below)
+- **Status:** Accepted (items 2 and 5 landed; boundary enforced 2026-08-21 — see the update notes below)
 - **Date:** 2026-07-21
 - **Deciders:** rakaia maintainers
 - **Related:** [`django-integration.md`](../django-integration.md),
@@ -71,6 +71,56 @@ Note the ADR's trigger condition was already met when it was written —
 protocol, recorded here only as "reportedly two HTTP protocol surfaces". With
 one implementation now able to run on either store, that duplicate is being
 removed rather than grown.
+
+## Update — 2026-08-21: the boundary is now enforced, and the split stays deferred
+
+The trigger this ADR set has fired, so #191 asked the question again. It was
+answered by measuring the coupling rather than arguing about it, and the answer is
+**keep the package together, but stop calling the boundary a convention.**
+
+What the measurement found, across both packages' internal import graphs:
+
+- **One wrong-direction dependency, and it was doing real damage.**
+  `rakaia.registry` — framework tier — imported the in-memory `StreamStore` to
+  annotate `HandlerRegistry(store=...)` and `UpcasterRegistry(store=...)`. The
+  import was `TYPE_CHECKING`-only, so it created no runtime coupling and nothing
+  in the suite could see it, but the *annotation* named one protocol-server
+  implementation where the parameter accepts any `WritableStore`. Consequence:
+  `HandlerRegistry(store=DjangoStreamStore())` was a pyright error — and a
+  durable meta-stream is precisely the case that parameter exists for, since the
+  docstring's promise is registrations surviving a *process* restart. Both
+  signatures now name `WritableStore`. This is item 2 of the decision below,
+  arriving late at the one seam that had been missed.
+- **Nothing else crosses.** No other framework module imports the protocol-server
+  tier. The single remaining crossing, `seed` → `store`, is a default value
+  (`seed_stream` promises "omit the store and get a fresh in-memory one") and its
+  parameter is already typed as the protocol.
+- **`django_rakaia` splits along the same line.** Eight modules depend only on
+  framework surfaces, `subscription` only on protocol-server ones, and
+  `django_store` is the one straddler — which is the tier boundary itself, and
+  crosses in the permitted direction.
+- **The shared vocabulary is four modules** — `types`, `protocols`, `json_mode`,
+  `offsets` — and none of them depends on either tier. That is the whole of what
+  a split would have to move, duplicate, or extract into a third package.
+
+So the tiers *are* separable, and the reason to defer is unchanged from the
+original alternatives table: a split buys clarity the enforcement now buys more
+cheaply, and costs a cross-package seam plus a second release cadence. The
+evidence #191 asked for is the four-module shared surface: while it stays that
+small and tier-independent, splitting remains a mechanical option that can be
+taken whenever there is a reason beyond tidiness.
+
+The consequence recorded below — "the boundary is a **convention** enforced by
+docs and layering discipline, not by the packaging" — no longer holds.
+`tests/test_rakaia/test_tier_boundary.py` asserts it: the tier map, the
+one-way rule, the crossing allowlist, and the tier-independence of the shared
+vocabulary. It reads type-only imports too, since that is the form the defect
+above took. A module added to neither tier fails the test rather than escaping
+it, so the next person cannot defer the classification by omission.
+
+This does not reopen or close #191; it replaces the guesswork in it with a
+measurement, and makes the cost of *not* splitting visible as a list of
+crossings that is currently one entry long.
 
 ## Decision
 

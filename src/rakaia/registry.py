@@ -19,18 +19,16 @@ import inspect
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 # `HandlerDriftError` is defined next to the rule that raises it, in
 # `rakaia.drift`, and re-exported here so `rakaia.registry.HandlerDriftError` —
 # where callers have always imported it from — keeps working.
 from .drift import DriftLedger
 from .drift import HandlerDriftError as HandlerDriftError
+from .protocols import WritableStore
 from .registration_log import RegistrationLog
 from .source_hash import hash_function_source, is_importable, unwrap_handler
-
-if TYPE_CHECKING:
-    from .store import StreamStore
 
 HANDLERS_META_STREAM = "__rakaia__:handlers"
 UPCASTERS_META_STREAM = "__rakaia__:upcasters"
@@ -482,15 +480,21 @@ class HandlerRegistry(_LogBackedRegistry):
     handlers with the same name but different patterns are treated as parallel
     series. Overlap detection runs at registration time within a series.
 
-    If a `StreamStore` is provided, registrations are appended to a reserved
-    meta-stream (`__rakaia__:handlers`). Identical re-registrations are no-ops
-    so registration is safe to call from module-import-time decorators across
+    If a store is provided, registrations are appended to a reserved meta-stream
+    (`__rakaia__:handlers`). Identical re-registrations are no-ops so
+    registration is safe to call from module-import-time decorators across
     process restarts.
+
+    Any `WritableStore` will do, which is the point: surviving a *process*
+    restart needs a durable meta-stream, so this is where a `DjangoStreamStore`
+    belongs. The parameter used to be annotated as the in-memory `StreamStore`
+    and pyright rejected exactly that call — a framework seam typed against one
+    protocol-server implementation instead of the protocol both satisfy.
     """
 
     def __init__(
         self,
-        store: StreamStore | None = None,
+        store: WritableStore | None = None,
         *,
         stream_path: str = HANDLERS_META_STREAM,
     ) -> None:
@@ -816,7 +820,7 @@ class UpcasterRegistry(_LogBackedRegistry):
 
     def __init__(
         self,
-        store: StreamStore | None = None,
+        store: WritableStore | None = None,
         *,
         stream_path: str = UPCASTERS_META_STREAM,
     ) -> None:
