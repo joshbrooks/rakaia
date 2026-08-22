@@ -12,7 +12,11 @@ from django.contrib import admin
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString, mark_safe
 
-from django_rakaia.event_message import decode_payload, event_label
+from django_rakaia.event_message import (
+    decode_payload,
+    event_label,
+    event_label_display,
+)
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 
@@ -72,8 +76,54 @@ def _event_badge(event_type: str) -> SafeString:
         '<span style="background-color: {}; color: white; padding: 3px 8px; '
         'border-radius: 3px; font-size: 11px; font-weight: bold;">{}</span>',
         _BADGE_COLORS.get(label, "#6c757d"),
-        label.upper() or "—",
+        event_label_display(event_type).upper(),
     )
+
+
+class EventTypeFilter(admin.SimpleListFilter):
+    """The event-type sidebar filter, showing labels rather than the column.
+
+    A *display-name* change, not a swap of the value. A filter has to put the
+    stored value in the querystring and match on the stored column, or it selects
+    nothing; only the text beside the link is presentational. So `lookups()`
+    pairs each stored `event_type` with what `event_label_display` says a reader
+    sees, and `queryset()` filters on the raw column.
+
+    Django's own `AllValuesFieldListFilter` — what `list_filter = ["event_type"]`
+    resolves to — prints the column, so the screen said `append` in the sidebar
+    while the badge one column over said "no label" for the same event (#210).
+    `parameter_name` is deliberately the field path, which is exactly the key
+    that filter used, so an existing bookmark or link keeps working.
+    """
+
+    title = "event type"
+    parameter_name = "event_type"
+
+    def lookups(self, request, model_admin):
+        stored = (
+            model_admin.get_queryset(request)
+            .order_by(self.parameter_name)
+            .values_list(self.parameter_name, flat=True)
+            .distinct()
+        )
+        return [(value, event_label_display(value)) for value in stored]
+
+    def queryset(self, request, queryset):  # noqa: ARG002 - Django's signature
+        value = self.value()
+        if value is None:
+            return queryset
+        return queryset.filter(**{self.parameter_name: value})
+
+
+class EntryEventTypeFilter(EventTypeFilter):
+    """`EventTypeFilter` for the entries list, which reaches its event.
+
+    Only the path differs, and it is one attribute because `parameter_name` is
+    both the querystring key and the ORM path — the same two roles Django's
+    field filter gives `field_path`.
+    """
+
+    parameter_name = "event__event_type"
 
 
 def _event_data_preview(data: Any, payload_encoding: str | None) -> str:
@@ -115,7 +165,7 @@ class StreamEventAdmin(admin.ModelAdmin):
         "stream_count",
         "created_at",
     ]
-    list_filter = ["event_type", "created_at"]
+    list_filter = [EventTypeFilter, "created_at"]
     search_fields = ["data"]
     readonly_fields = ["data", "event_type", "created_at", "streams_list"]
     ordering = ["-created_at"]
@@ -154,7 +204,7 @@ class StreamEntryAdmin(admin.ModelAdmin):
         "event_type_badge",
         "created_at",
     ]
-    list_filter = ["stream", "event__event_type", "created_at"]
+    list_filter = ["stream", EntryEventTypeFilter, "created_at"]
     search_fields = ["stream__stream_id", "event__data"]
     readonly_fields = ["stream", "event", "offset", "created_at"]
     ordering = ["-created_at"]
@@ -206,7 +256,7 @@ def register_stream_event_admin(event_model_class):
             "stream_count",
             "created_at",
         ]
-        list_filter = ["event_type", "created_at"]
+        list_filter = [EventTypeFilter, "created_at"]
         search_fields = ["data"]
         readonly_fields = ["data", "event_type", "created_at", "streams_list"]
         ordering = ["-created_at"]

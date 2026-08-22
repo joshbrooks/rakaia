@@ -13,6 +13,7 @@ from django.db.models import Max
 
 from rakaia.types import ClosedBy
 
+from .event_message import event_label_display
 from .offsets import format_offset
 
 if TYPE_CHECKING:
@@ -332,7 +333,11 @@ class StreamEvent(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
-        return f"Event #{self.id} ({self.event_type})"
+        # The label a reader sees, not the column: this is the change-form header
+        # and what any `readonly_fields` reference to an event renders, so
+        # printing the raw `event_type` said the label was `append` on a raw
+        # append that carried none (#210).
+        return f"Event #{self.id} ({event_label_display(self.event_type)})"
 
     def get_streams(self) -> list[str]:
         """Get all stream IDs this event appears in."""

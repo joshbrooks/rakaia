@@ -101,6 +101,29 @@ def event_label(event_type: str) -> str:
     return "" if event_type == APPEND_EVENT_TYPE else event_type
 
 
+# What a reader is shown where an event carried no label at all. The column
+# cannot hold "no label" — it holds `APPEND_EVENT_TYPE` — so every surface that
+# prints a label has to put *something* in its place: printing the sentinel says
+# the label was `append` (#153), and printing nothing reads as a rendering fault.
+NO_LABEL_DISPLAY = "—"
+
+
+def event_label_display(event_type: str) -> str:
+    """The envelope label for a stored ``event_type``, as text to *show*.
+
+    `event_label` answers what the label is — the empty string when there was
+    none, which is what a subscriber or an API consumer needs. A screen cannot
+    print the empty string, so this is the same answer with the labelless case
+    spelled out for a human.
+
+    One home for the placeholder because the admin has four surfaces that print
+    a label — the two badges, the two type filters and `StreamEvent.__str__` —
+    and #208 fixed only the badges. They must not be able to disagree about what
+    "no label" looks like.
+    """
+    return event_label(event_type) or NO_LABEL_DISPLAY
+
+
 def payload_fields(data: Any, payload_encoding: str | None) -> dict[str, Any]:
     """The stored payload as the `data`/`payload_encoding` pair a JSON wire carries.
 
