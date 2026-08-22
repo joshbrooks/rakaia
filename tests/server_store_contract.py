@@ -489,6 +489,18 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert len(messages) == 1
 
+    def test_a_non_json_stream_takes_a_body_that_is_not_json(self, store):
+        """Only a stream declared `application/json` constrains its bodies.
+
+        The guard against over-correcting #214 into a store that parses every
+        payload: a `text/plain` batch of arbitrary bytes must still be written.
+        """
+        store.create("s", content_type="text/plain")
+        results = store.append_many("s", [(b"not json", None), (b"[]", None)])
+        assert all(r.message is not None for r in results)
+        messages, _ = store.read("s")
+        assert len(messages) == 2
+
     # -------------------------------------------------------------------------
     # CHARACTERISING: batch array flattening diverges (#214, undecided)
     # -------------------------------------------------------------------------
@@ -532,18 +544,6 @@ class ServerStoreContract:
         )
         assert len(results) == 2
         assert all(r.message is not None for r in results)
-
-    def test_a_non_json_stream_takes_a_body_that_is_not_json(self, store):
-        """Only a stream declared `application/json` constrains its bodies.
-
-        The guard against over-correcting #214 into a store that parses every
-        payload: a `text/plain` batch of arbitrary bytes must still be written.
-        """
-        store.create("s", content_type="text/plain")
-        results = store.append_many("s", [(b"not json", None), (b"[]", None)])
-        assert all(r.message is not None for r in results)
-        messages, _ = store.read("s")
-        assert len(messages) == 2
 
     async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
         """An item the fence refuses is not written, so it cannot move

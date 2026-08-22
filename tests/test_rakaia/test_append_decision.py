@@ -515,3 +515,18 @@ class TestBatchPayloadValidity:
                 items=[AppendOptions(), AppendOptions(seq="1")],
                 payloads=[b"not json", b"{}"],
             )
+
+    def test_the_batch_rule_will_not_decide_without_the_bodies(self):
+        """`payloads` has no default, and that is the mechanism.
+
+        All-or-nothing on a bad body only holds if the bodies reach the rule, so
+        a new backend must not be able to get a verdict without handing them
+        over. Giving the parameter a default that skips the check left the whole
+        suite green, which is why this is asserted rather than only documented.
+        """
+        import inspect
+
+        parameter = inspect.signature(decide_append_batch).parameters["payloads"]
+        assert parameter.default is inspect.Parameter.empty
+        with pytest.raises(TypeError):
+            decide_append_batch(StreamFacts(), [AppendOptions()], now=NOW)
