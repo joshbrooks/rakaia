@@ -23,6 +23,7 @@ from rakaia.effects import (
     Delete,
     Effect,
     EffectCollisionError,
+    ExternalEffect,
     Ref,
     Retire,
     Transition,
@@ -66,6 +67,22 @@ class BatchRecorder:
     @property
     def flat(self) -> list[Effect]:
         return [e for b in self.batches for e in b]
+
+
+class FlippingExecutor(BatchRecorder):
+    """A `BatchRecorder` that also reports every opted-in retire as having
+    flipped one row, so `replay` has a transition to synthesise."""
+
+    def apply(self, effects) -> ApplyReport:
+        batch = list(effects)
+        super().apply(batch)
+        return ApplyReport(
+            retire_flips=[
+                (e, [dict(e.lookup)])
+                for e in batch
+                if isinstance(e, Retire) and e.transition is not None
+            ]
+        )
 
 
 @pytest.fixture
@@ -220,6 +237,37 @@ class TestWhatForcesAFlush:
         assert ex.sizes == [2, 1]
         assert isinstance(ex.batches[0][-1], Retire)
         assert isinstance(ex.batches[1][0], Upsert)
+
+    def test_a_transitions_notification_still_precedes_a_later_events_own(self, store):
+        """The ordering `ReplayResult.external` promises, and the only case the
+        transition flush is load-bearing for.
+
+        A retire's notifications are synthesised when its batch is applied, but
+        a handler's own external effect is recorded the moment the handler
+        returns. So if the retire were still sitting in the buffer while the
+        next event ran, that event's notification would be filed ahead of the
+        retire's — the list would come back in an order no handler produced.
+        Flushing on the retire is what keeps it honest.
+
+        Mutation: drop the `Transition` arm of `_StageBuffer.add` and the two
+        come back the other way round. The rank rule does not cover this — the
+        later event emits no database effect at all, so nothing forces a flush.
+        """
+        seed_stream("s", _events(2), store=store)
+
+        def fn(ev):
+            if ev["n"] == 0:
+                return Retire(
+                    "app.R",
+                    {"id": "x"},
+                    patch={"gone_at": "t"},
+                    transition=Transition(kind="resolved", key_fields=("id",)),
+                )
+            return ExternalEffect(kind="email", payload={"to": "later"})
+
+        result = _run(store, _registry(fn), FlippingExecutor())
+
+        assert [e.kind for e in result.external] == ["resolved", "email"]
 
     def test_an_events_own_colliding_effects_still_raise_on_their_own(self, store):
         """A bug inside one event stays that event's bug: it is reported, and the
