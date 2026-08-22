@@ -42,6 +42,21 @@ receives the `TouchedSubject`s the pass's handlers wrote, so one reducer can
 scope its recompute to what changed (incremental) or to everything (full
 rebuild). See `register_handler(stage=...)` and `register_reducer(...)`.
 
+**How far a replay gets before failing** follows from that, and is worth stating
+because it is observable and used not to be stated anywhere. A replay decodes
+ahead only as far as it must, so a malformed event partway through the range
+behaves differently in each shape:
+
+* a single unstaged pass over one stream decodes one event at a time, so the
+  events *before* the bad one are dispatched and applied;
+* a staged replay must see the whole range before its second pass starts, so it
+  decodes everything up front and applies nothing;
+* `merge_replay` cannot know the merged order until every stream is read, so it
+  too applies nothing — whether or not it is staged.
+
+Neither shape is wrong; the eager ones are eager because they have to be. See
+`EventSource`, which is the name that difference now has.
+
 Re-running the same range twice produces identical materialized state because
 every database effect is idempotent (an `Upsert` converges to the same row).
 """
@@ -50,7 +65,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -179,6 +194,23 @@ class _ReplayCtx:
 #: business, not the pipeline's.
 PipelineEvent = tuple[int, str, dict]
 
+#: Every event a replay will dispatch, in dispatch order.
+#:
+#: An `Iterable`, not a `Sequence`, because **how much of the range a replay
+#: decodes before the first handler runs is observable, and it is the one thing
+#: the entry points differ about.** A source consumed one event at a time leaves
+#: the events before a malformed one already applied; a source materialised in
+#: full applies nothing at all. Neither is more correct — but a caller can only
+#: predict which it gets if the difference has a name, and until this one did,
+#: `replay()` carried a second hand-written loop to keep its half and
+#: `merge_replay()` quietly did the other thing.
+#:
+#: `run_passes` decodes ahead only as far as it must, so what a caller hands over
+#: decides: `replay()` yields a generator, while `merge_replay()` has no choice
+#: but a list, because the merged order is not known until every stream has been
+#: read.
+EventSource = Iterable[PipelineEvent]
+
 
 def build_pipeline(
     *,
@@ -235,7 +267,7 @@ def require_reader(ctx: _ReplayCtx, what: str = "Replay") -> None:
 
 
 def run_passes(
-    ctx: _ReplayCtx, events: Sequence[PipelineEvent], *, what: str = "Replay"
+    ctx: _ReplayCtx, events: EventSource, *, what: str = "Replay"
 ) -> ReplayResult:
     """Run `events` through every stage, in order, and return the result.
 
@@ -244,18 +276,32 @@ def run_passes(
     shape with a single `None` pass — `_run_stage_reducers(ctx, None)` is a no-op
     when nothing is registered, so the two cases need no branch.
 
+    **Decodes ahead only as far as it must**, which is the whole of what the
+    entry points used to differ about (see `EventSource`). One pass consumes the
+    source as it arrives, so a lazy source dispatches everything up to a
+    malformed event before failing. More than one pass has to see every event
+    before the second one starts, so a staged replay materialises the source
+    first and a malformed event anywhere applies nothing.
+
+    `events_processed` is what a single pass dispatched, so it counts each event
+    once however many stages ran.
+
     The events are already decoded and upcasted. What differs between `replay()`
     and `merge_replay()` — reading one stream in order versus k-way-merging
     several by an order key — happens before this, in the source. This is the
     part that was written twice.
     """
     require_reader(ctx, what)
-    passes: list[int | None] = list(ctx.handlers.stages()) if is_staged(ctx) else [None]
+    staged = is_staged(ctx)
+    source: EventSource = list(events) if staged else events
+    passes: list[int | None] = list(ctx.handlers.stages()) if staged else [None]
     for stage in passes:
-        for seq, match_str, event in events:
+        dispatched = 0
+        for seq, match_str, event in source:
             _dispatch_event(ctx, seq, match_str, event, stage)
+            dispatched += 1
+        ctx.result.events_processed = dispatched
         _run_stage_reducers(ctx, stage)
-    ctx.result.events_processed = len(events)
     return ctx.result
 
 
@@ -449,6 +495,11 @@ def replay(
     `TouchedSubject`s the pass's handlers wrote — to recompute aggregates. With
     only stage 0 handlers and no reducers, replay is a single pass, exactly as
     before.
+
+    How far it gets before failing: a single pass decodes one event at a time, so
+    a malformed event at offset N raises `ValueError` with the first N already
+    applied. A staged replay needs the whole range before its second pass, so it
+    decodes up front and the same event applies nothing. See `EventSource`.
     """
     match_str = event_match if event_match is not None else stream_path
     messages, _ = store.read(stream_path)
@@ -461,41 +512,29 @@ def replay(
         on_drift=on_drift,
     )
 
-    def _decode_upcast(seq: int, data: bytes) -> dict:
-        # Target version is resolved per event so content-routed upcasters
-        # (match_field) can key off the event body, not just the stream path.
-        return ctx.upcasters.upcast_to_current(
-            _decode_event(data, stream_path, seq),
-            match_str,
-            drift=ctx.drift,
-        )
-
-    def _in_range(seq: int) -> bool:
-        return seq >= start_seq and (end_seq is None or seq < end_seq)
-
-    if not is_staged(ctx):
-        # Single stage keeps its own streaming loop rather than going through
-        # `run_passes`. Not a micro-optimisation: decoding lazily means a
-        # malformed event at offset N fails *after* the first N-1 have been
-        # dispatched, which is the partial-progress behaviour replay had before
-        # staging existed. Materialising first would move that failure earlier.
+    def _decoded() -> Iterator[PipelineEvent]:
+        # A lazy `EventSource`: one event decoded and upcasted at a time, so a
+        # single-pass replay dispatches the events before a malformed one rather
+        # than nothing. `run_passes` materialises this itself when it needs more
+        # than one pass, which is why there is no second loop here.
         for seq, msg in enumerate(messages):
             if end_seq is not None and seq >= end_seq:
                 break
-            if not _in_range(seq):
+            if seq < start_seq:
                 continue
-            _dispatch_event(ctx, seq, match_str, _decode_upcast(seq, msg.data), None)
-            ctx.result.events_processed += 1
-        return ctx.result
+            # Target version is resolved per event so content-routed upcasters
+            # (match_field) can key off the event body, not just the stream path.
+            yield (
+                seq,
+                match_str,
+                ctx.upcasters.upcast_to_current(
+                    _decode_event(msg.data, stream_path, seq),
+                    match_str,
+                    drift=ctx.drift,
+                ),
+            )
 
-    require_reader(ctx, "Replay")
-    decoded: list[PipelineEvent] = []
-    for seq, msg in enumerate(messages):
-        if end_seq is not None and seq >= end_seq:
-            break
-        if _in_range(seq):
-            decoded.append((seq, match_str, _decode_upcast(seq, msg.data)))
-    return run_passes(ctx, decoded, what="Replay")
+    return run_passes(ctx, _decoded(), what="Replay")
 
 
 def merge_replay(
@@ -555,6 +594,11 @@ def merge_replay(
     Raises `ValueError` on duplicate `stream_paths`, when an event lacks the
     requested order key (payload field, or `event_ts` under `ENVELOPE_TS`), or
     when the order-key values aren't mutually comparable across events.
+
+    How far it gets before failing: **nothing is applied unless everything
+    decodes.** Unlike a single-pass `replay()`, a merge has to read every stream
+    to know the order, so a malformed event — or a missing order key — in any
+    stream fails before the first handler runs. See `EventSource`.
     """
     if len(set(stream_paths)) != len(stream_paths):
         raise ValueError(
@@ -608,7 +652,10 @@ def merge_replay(
         ) from exc
 
     # seq is the event's position in the merged order, not its offset in any
-    # one stream — which is exactly why the pipeline takes seq per event.
+    # one stream — which is exactly why the pipeline takes seq per event. A list
+    # rather than a lazy `EventSource` is forced, not chosen: the sort above has
+    # already read every stream, so a merge cannot dispatch anything until all of
+    # it decodes.
     merged: list[PipelineEvent] = [
         (seq, m, ev) for seq, (_, m, ev) in enumerate(tagged)
     ]
