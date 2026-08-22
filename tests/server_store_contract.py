@@ -17,6 +17,13 @@ described there as concerns the durable store would never model. They are
 modelled now, and asserted here for both. What remains genuinely
 backend-specific is only the offset *format* (compound `{seq}_{byte}` vs
 zero-padded int) — the protocol mandates opacity, not one format (§6).
+
+One divergence is *open* rather than legitimate: whether `append_many` flattens
+a top-level JSON array (#214). It is recorded here, keyed on
+`append_many_flattens_json_arrays`, precisely so that it cannot drift while the
+question is undecided — both backends run the same test and each must state its
+answer. That flag and the tests reading it go away when #214 is settled; nothing
+else in this file is permitted a per-backend answer.
 """
 
 from __future__ import annotations
