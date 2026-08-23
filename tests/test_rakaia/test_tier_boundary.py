@@ -58,6 +58,7 @@ PROTOCOL_SERVER = {
     "append_decision",
     "cursor",
     "handler",
+    "jsonl_store",
     "producer",
     "read_decision",
     "store",
