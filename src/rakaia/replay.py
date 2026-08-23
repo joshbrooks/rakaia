@@ -86,6 +86,7 @@ from .effects import (
     Retire,
     Update,
     Upsert,
+    _WrittenFields,
 )
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
@@ -175,6 +176,10 @@ class _ReplayCtx:
     track_touched: bool = False
     touched: list[TouchedSubject] = field(default_factory=list)
     _touched_seen: set = field(default_factory=set)
+    # Set for the duration of a pass whose handlers take no reader, so that
+    # pass's effects can be batched. None means apply per event, which is what
+    # every reader-bearing pass and every reducer does. See `_StageBuffer`.
+    buffer: _StageBuffer | None = None
     # Carried so an event source can decode and upcast without re-deriving the
     # registry.
     upcasters: Any = None
@@ -296,11 +301,26 @@ def run_passes(
     source: EventSource = list(events) if staged else events
     passes: list[int | None] = list(ctx.handlers.stages()) if staged else [None]
     for stage in passes:
+        # Stage 0 handlers are called `fn(event)` with no reader, so nothing in
+        # the pass can observe a write that has not landed yet and the pass's
+        # effects can be batched. A stage > 0 handler *is* handed a reader, and
+        # both readers go straight to storage — a buffered write would be
+        # invisible to one, silently — so those passes keep applying per event.
+        ctx.buffer = _StageBuffer(ctx) if stage in (None, 0) else None
         dispatched = 0
-        for seq, match_str, event in source:
-            _dispatch_event(ctx, seq, match_str, event, stage)
-            dispatched += 1
+        try:
+            for seq, match_str, event in source:
+                _dispatch_event(ctx, seq, match_str, event, stage)
+                dispatched += 1
+        finally:
+            # In a `finally` because a lazy source that raises partway must
+            # still leave the events before it applied — the partial-progress
+            # behaviour `EventSource` exists to preserve. Without this, every
+            # buffered effect ahead of the bad event would be dropped.
+            _drain(ctx)
         ctx.result.events_processed = dispatched
+        # Reducers read the projections, so the stage's writes must have landed
+        # before the first one runs. `_drain` above is that boundary.
         _run_stage_reducers(ctx, stage)
     return ctx.result
 
@@ -384,6 +404,134 @@ def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
     return out
 
 
+def _write_order_rank(effect: Effect) -> int:
+    """Where `effect` lands in the order an executor applies a batch.
+
+    Every executor applies a batch in three passes — every write, then every
+    delete, then every retire — so that a reconcile batch converges regardless
+    of the order its handlers emitted. That is exactly why effects from two
+    different events cannot simply be poured into one batch: doing so would
+    hoist a later event's write above an earlier event's delete.
+    """
+    if isinstance(effect, (Upsert, Update)):
+        return 0
+    if isinstance(effect, Delete):
+        return 1
+    return 2
+
+
+def _self_collides(effects: list[Effect]) -> bool:
+    """Whether one event's own effects already write the same column twice.
+
+    That is a bug the executor reports, and it must keep reporting it *for that
+    event alone* — so a self-colliding group is applied on its own, leaving
+    earlier events' effects committed exactly as they were before buffering.
+    """
+    seen = _WrittenFields()
+    for idx, eff in enumerate(effects):
+        if seen.collides(eff) is not None:
+            return True
+        seen.record(eff, idx)
+    return False
+
+
+class _StageBuffer:
+    """Effects held back so a stage reaches the executor as few batches as
+    possible — flushed early the moment holding one back would change anything.
+
+    Replay used to call ``executor.apply()`` once per event, so a batch of one
+    was the norm and the contiguous-`Update` collapsing in the Django executor
+    could never engage: a run of one is never collapsed. Nine events also meant
+    nine ``transaction.atomic()`` blocks, measured at 18 of the 135 statements
+    one form save issues (#207).
+
+    **The whole design is in when it flushes.** Widening the batch is only free
+    if the executor cannot tell, so each of these forces a flush first:
+
+    * **A write behind a delete.** See `_write_order_rank` — a batch is applied
+      writes-then-deletes-then-retires, so an incoming effect that ranks below
+      anything pending would be reordered across an event boundary.
+    * **A second write to the same column of the same row.** Ordinary between
+      events (event 2 supersedes event 1) and an error within one batch, which
+      `check_disjoint_defaults` raises with nothing applied. Consulted through
+      the same `_WrittenFields` that check uses, so there is one rule.
+    * **A repeated ``produces=`` id.** Two producers of one correlation id in a
+      batch is `DuplicateProducesError`; in separate events it is normal.
+    * **A retire that asked for notifications.** Its transitions are synthesised
+      from the report of the call that applied it, and `ReplayResult.external`
+      is documented in handler-emission order. Flushing on one keeps that list
+      byte-identical. Opted-in retires are rare, so this costs almost nothing.
+
+    Two things it deliberately does *not* try to preserve, both widenings rather
+    than changes: a `Ref` may now bind to a ``produces=`` row from an earlier
+    event in the same stage (it used to raise, because refs do not cross an
+    ``apply()`` call), and the executor sees fewer, larger batches.
+    """
+
+    def __init__(self, ctx: _ReplayCtx) -> None:
+        self._ctx = ctx
+        self._pending: list[Effect] = []
+        self._written = _WrittenFields()
+        self._produces: set[str] = set()
+        self._max_rank = -1
+
+    def add(self, effects: list[Effect]) -> None:
+        """Buffer one event's effects, flushing first if they cannot join."""
+        if not effects:
+            return
+        alone = _self_collides(effects)
+        if self._pending and (alone or self._conflicts(effects)):
+            self.flush()
+        for eff in effects:
+            self._written.record(eff, len(self._pending))
+            self._pending.append(eff)
+            if isinstance(eff, Upsert) and eff.produces is not None:
+                self._produces.add(eff.produces)
+            self._max_rank = max(self._max_rank, _write_order_rank(eff))
+        if alone or any(
+            isinstance(e, Retire) and e.transition is not None for e in effects
+        ):
+            self.flush()
+
+    def _conflicts(self, effects: list[Effect]) -> bool:
+        """Whether adding `effects` to what is pending would change behaviour.
+
+        Checked for the group as a whole, against what is pending only — an
+        event's effects collide with *each other* under the same rules the
+        executor already applies to a batch, and that stays the executor's to
+        report.
+        """
+        if min(_write_order_rank(e) for e in effects) < self._max_rank:
+            return True
+        if any(self._written.collides(e) is not None for e in effects):
+            return True
+        return any(
+            isinstance(e, Upsert)
+            and e.produces is not None
+            and e.produces in self._produces
+            for e in effects
+        )
+
+    def flush(self) -> None:
+        """Apply what is buffered as one batch, and reset."""
+        if not self._pending:
+            return
+        batch = self._pending
+        self._pending = []
+        self._written = _WrittenFields()
+        self._produces = set()
+        self._max_rank = -1
+        report = self._ctx.executor.apply(batch)
+        self._ctx.result.external.extend(_synth_transitions(report))
+
+
+def _drain(ctx: _ReplayCtx) -> None:
+    """Apply whatever the pass buffered, and go back to per-event application."""
+    if ctx.buffer is not None:
+        buffer, ctx.buffer = ctx.buffer, None
+        buffer.flush()
+
+
 def _apply_effects(ctx: _ReplayCtx, effects: list[AnyEffect]) -> None:
     """Route a batch: external effects to the result, the rest to the executor.
 
@@ -398,8 +546,14 @@ def _apply_effects(ctx: _ReplayCtx, effects: list[AnyEffect]) -> None:
             to_apply.append(e)
     if not to_apply:
         return
-    report = ctx.executor.apply(to_apply)
     ctx.result.effects_applied += len(to_apply)
+    if ctx.buffer is not None:
+        # Counted above rather than at flush time, so the number reads the same
+        # whether or not this pass batches. The buffer applies the batch and
+        # collects any transitions itself.
+        ctx.buffer.add(to_apply)
+        return
+    report = ctx.executor.apply(to_apply)
     # A retire that flipped rows (a real machine resolution) yields external
     # transitions — collect them alongside the handler-emitted ones.
     ctx.result.external.extend(_synth_transitions(report))

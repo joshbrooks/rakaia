@@ -9,23 +9,6 @@ runnable demo for each.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A renamed effect field no longer loses references in silence.** Substituting
-  a symbolic reference (`Ref`) used to work by trying three field names in turn —
-  `lookup`, `defaults`, `patch` — and asking each effect whether it had one. An
-  effect that did not answer to a name was skipped without a word, so renaming a
-  field, or adding a fifth kind of effect carrying a mapping the list had never
-  heard of, left references in it unresolved and wrote the placeholder object
-  itself to the database.
-
-  Each effect now names its own reference-bearing fields in code the type checker
-  reads, and the four kinds are matched exhaustively, so both cases are a
-  `just typecheck` failure instead of wrong data. Verified by mutation: renaming
-  `Retire.patch` produced **no** error inside the resolver before and produces two
-  now, and adding a fifth variant to `Effect` fails the exhaustiveness check.
-  `Retire.patch` and a `Delete`'s flat `Exclude` had no test coverage at all —
-  which is why those two renames were the silent ones — and now do. (#161 item 2)
 
 ### Added
 
@@ -158,6 +141,23 @@ runnable demo for each.
 
 ### Changed
 
+- **A replay now hands the executor a whole stage's changes at once.** It used to
+  apply one event's worth at a time, so the batching added for a fanned-out
+  change could never do anything on the path that produces most of the changes —
+  a run of one is never collapsed. On the reported form save, nine events became
+  nine separate database transactions: eighteen of the hundred and thirty-five
+  statements the save issued were the opening and closing of those transactions.
+  Measured on the same shape, it is now one transaction and one statement.
+
+  Widening a batch is only safe if nothing can tell, so the batch is broken the
+  moment holding one more change back would alter the outcome: a write arriving
+  behind a delete, a second write to the same column of the same row, a repeated
+  correlation id, or a soft-delete that asked for notifications. Passes whose
+  handlers are handed a reader are left alone entirely — they can see the
+  database, so they keep applying event by event. One deliberate widening: a
+  reference to a row created by an earlier event in the same pass now resolves,
+  where it used to fail. (#207)
+
 - **A replay now says how far it gets before failing.** `replay` and
   `merge_replay` share one staging pipeline, but `replay` kept a *second*
   hand-written loop for its single-stage path, and the reason was real: it
@@ -246,6 +246,24 @@ runnable demo for each.
   surface (see `docs/public-api.md`), so this is a narrowing of what the log
   tolerates rather than a break. A consumer inserting its own rows should
   allocate through the stream.
+
+### Fixed
+
+- **A renamed effect field no longer loses references in silence.** Substituting
+  a symbolic reference (`Ref`) used to work by trying three field names in turn —
+  `lookup`, `defaults`, `patch` — and asking each effect whether it had one. An
+  effect that did not answer to a name was skipped without a word, so renaming a
+  field, or adding a fifth kind of effect carrying a mapping the list had never
+  heard of, left references in it unresolved and wrote the placeholder object
+  itself to the database.
+
+  Each effect now names its own reference-bearing fields in code the type checker
+  reads, and the four kinds are matched exhaustively, so both cases are a
+  `just typecheck` failure instead of wrong data. Verified by mutation: renaming
+  `Retire.patch` produced **no** error inside the resolver before and produces two
+  now, and adding a fifth variant to `Effect` fails the exhaustiveness check.
+  `Retire.patch` and a `Delete`'s flat `Exclude` had no test coverage at all —
+  which is why those two renames were the silent ones — and now do. (#161 item 2)
 
 ## [0.2.0] - 2026-08-15
 
