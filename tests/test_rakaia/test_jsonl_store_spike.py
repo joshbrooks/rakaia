@@ -200,3 +200,38 @@ async def test_the_protocol_server_runs_on_it(store):
         got = await ac.get("/s")
         assert got.status_code == 200
         assert json.loads(got.content) == [{"n": 1}]
+
+
+def test_a_stream_named_like_the_internal_directory_is_still_a_stream(root):
+    """Stream names come from the wire, so an internal name must be unreachable.
+
+    Directories are named `quote(path, safe="")`, which leaves a leading dot
+    alone — so while the watermark directory was called `.retired`, a stream
+    with that name was handed it to live in, and the two silently shared a
+    directory. The internal name now starts with `%`, which `quote` always
+    escapes, so no path can produce it.
+    """
+    store = JsonlStreamStore(root, segment_size=4)
+    for name in ("%retired", ".retired"):
+        store.create(name)
+        store.append(name, json.dumps({"name": name}).encode())
+
+    assert [json.loads(m.data) for m in store.read("%retired")[0]] == [
+        {"name": "%retired"}
+    ]
+    assert [json.loads(m.data) for m in store.read(".retired")[0]] == [
+        {"name": ".retired"}
+    ]
+    assert sorted(store.list_paths()) == ["%retired", ".retired"]
+
+
+def test_the_store_refuses_to_start_without_a_working_lock(root, monkeypatch):
+    """No lock, no store — a degraded mode would lose events silently.
+
+    Windows has no `fcntl`, and the tempting fallback (carry on unlocked) is
+    the worst one available: two writers issue the same offset and the loss is
+    invisible until someone reads the log back.
+    """
+    monkeypatch.setattr("rakaia.jsonl_store.fcntl", None)
+    with pytest.raises(RuntimeError, match="fcntl"):
+        JsonlStreamStore(root)

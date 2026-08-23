@@ -41,6 +41,7 @@ nav = [
         { "Preview a replay with no writes" = "dry-run-and-executors.md" },
         { "Build a projection" = "projection-cookbook.md" },
         { "Read a stream incrementally" = "subscriber-cursors.md" },
+        { "Store streams in files" = "store-streams-in-files.md" },
         { "Combine human and machine decisions" = "alerts-projection.md" },
         { "Deploy it" = "deployment.md" },
     ] },
