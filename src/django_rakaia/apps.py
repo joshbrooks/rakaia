@@ -1,5 +1,4 @@
 from django.apps import AppConfig
-from django.conf import settings
 
 
 class DjangoRakaiaConfig(AppConfig):
@@ -29,20 +28,12 @@ class DjangoRakaiaConfig(AppConfig):
     def _wire_sse_signals(self) -> None:
         """Import the Channels SSE signal handlers unless opted out / absent.
 
-        Gate (issue #41 — keep `channels` optional for framework-tier use):
-
-        * ``RAKAIA_ENABLE_SSE = False`` — never wire.
-        * ``RAKAIA_ENABLE_SSE = True`` — wire; if `channels` is missing, let the
-          ``ImportError`` propagate (the consumer asked for SSE but didn't
-          install the extra — a real misconfiguration, surfaced loudly).
-        * unset — auto-detect: wire if `channels` imports, skip silently if not
-          (a framework-only consumer that never installed the extra).
+        The gate itself (issue #41 — keep `channels` optional for framework-tier
+        use) lives in `sse_gate.sse_import`, which is also what `urls.py` asks
+        before adding the SSE route. It was written out here and nowhere else,
+        which is how the URL file came to import the SSE view unconditionally
+        and make `channels` a hard dependency of the polling API (#230).
         """
-        enabled = getattr(settings, "RAKAIA_ENABLE_SSE", None)
-        if enabled is False:
-            return
-        try:
-            import django_rakaia.channels_signals  # noqa: F401
-        except ImportError:
-            if enabled:
-                raise
+        from .sse_gate import sse_import
+
+        sse_import("django_rakaia.channels_signals")

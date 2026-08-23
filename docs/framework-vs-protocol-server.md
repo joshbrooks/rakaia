@@ -72,8 +72,9 @@ consumer can boot without `channels` installed:
 
 - **Framework tier** — handler/upcaster autodiscovery (`autodiscover()`) always
   runs and has no `channels` dependency.
-- **Protocol tier** — SSE signal wiring is gated by an optional
-  `RAKAIA_ENABLE_SSE` setting:
+- **Protocol tier** — SSE is gated by an optional `RAKAIA_ENABLE_SSE` setting.
+  The gate covers both places that reach for `channels`: the signal wiring in
+  `ready()`, and the SSE route in `django_rakaia/urls.py`.
 
 | `RAKAIA_ENABLE_SSE` | `channels` installed | Behaviour |
 |---|---|---|
@@ -82,9 +83,18 @@ consumer can boot without `channels` installed:
 | `True` | no | `ImportError` raised — you asked for SSE but didn't install the extra |
 | `False` | either | never wired |
 
-So framework-tier consumers get no `ModuleNotFoundError: channels` at app load,
-existing SSE consumers are unaffected, and a misconfiguration (opted into SSE
-without the dependency) still fails loudly.
+So framework-tier consumers get no `ModuleNotFoundError: channels`, existing SSE
+consumers are unaffected, and a misconfiguration (opted into SSE without the
+dependency) still fails loudly.
+
+The URL file used to be outside this gate, and that was a real hole rather than
+an oversight in the table: Django imports a URLconf as part of loading URLs, so
+`path("streams/", include("django_rakaia.urls"))` — the instruction in that
+file's own docstring — raised `ModuleNotFoundError` on a tier that never opens a
+socket, before any setting could be consulted. A polling-only consumer therefore
+had to install `channels`, and in production a Redis channel layer with it. Both
+callers now ask the same question through `django_rakaia.sse_gate.sse_import`,
+so the table above describes the whole package rather than only app startup.
 
 ## The store seams
 

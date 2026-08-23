@@ -7,6 +7,36 @@ All notable changes to Rakaia are documented here. The format is based on
 New here? The [guided tour](docs/whats-new.md) walks these capabilities with a
 runnable demo for each.
 
+## [Unreleased]
+
+### Fixed
+
+- **Polling no longer requires the live-updates library.** A consumer that only
+  reads a stream by polling still had to install `channels` — and on a production
+  tier a Redis channel layer with it — because `django_rakaia/urls.py` imported
+  the SSE view at module scope. `RAKAIA_ENABLE_SSE = False` could not help:
+  Django imports a URLconf while loading URLs, long before an `AppConfig` gets a
+  say, so following the `include("django_rakaia.urls")` instruction in that
+  file's own docstring raised `ModuleNotFoundError` on a tier that never opens a
+  socket. The route is now loaded through the same three-state gate `apps.py`
+  uses for its signal handlers, which has moved into `django_rakaia.sse_gate` so
+  the two cannot drift again. Opting *in* without the extra installed still
+  fails loudly. (#230)
+
+- **A stream whose name contains a slash can be addressed again.** Stream names
+  are the server's own business — the protocol says so, and rakaia puts no
+  restriction on them: `_scratch/fold` is one the library generates itself. The
+  shipped URL file routed them with Django's `str` converter, which matches
+  anything except a slash, so such a stream could be created, appended to and
+  read back through the store while the dashboard and the read API returned a
+  bare 404. The routes now use the `path` converter. (#231)
+
+  Note for anyone with their own copy of these routes: `path` is greedy where
+  `str` is not, so the catch-all stream-detail route has to be listed **last** or
+  it claims `api/streams/<name>/` as a stream called `api/streams/<name>` and the
+  read API starts returning HTML. Tests that reverse a URL name agree with that
+  mistake; the ones added here resolve real paths.
+
 ## [0.3.0] - 2026-08-23
 
 
