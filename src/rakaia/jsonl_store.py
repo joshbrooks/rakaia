@@ -1012,19 +1012,22 @@ class JsonlStreamStore:
         deadline = time.monotonic() + timeout_seconds
         entered = False
         while True:
-            meta = self._live_meta(path)
+            # Every tick's file access goes through a thread, for the same
+            # reason `run_sync` does: a poll that reads a large segment on the
+            # event loop stalls every other connection while it does.
+            meta = await asyncio.to_thread(self._live_meta, path)
             if meta is None:
                 if not entered:
                     raise StreamNotFound(f"Stream not found: {path}")
                 return [], True, False
             entered = True
 
-            messages = self._read_since(path, offset)
+            messages = await asyncio.to_thread(self._read_since, path, offset)
             if messages:
                 # Once, on the way out — not on every tick. Polling through
                 # `read` would rewrite the activity file twenty times a second
                 # for every waiter on a stream with a TTL.
-                self._touch(path, meta)
+                await asyncio.to_thread(self._touch, path, meta)
                 return messages, False, False
             if meta.closed:
                 return [], False, True
@@ -1035,13 +1038,22 @@ class JsonlStreamStore:
             await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
-        """File I/O has no async hostility to protect against, so call through.
+        """Run a synchronous store call for an async server, in a thread.
 
-        The durable store needs a thread here because Django refuses ORM access
-        from an async context. `open()` does not, and a thread hop per protocol
-        request would be pure cost.
+        The reason is not the durable store's reason. Django refuses ORM access
+        from an async context outright; `open()` does not, and this store's
+        first version called straight through on the grounds that file I/O is
+        allowed on the event loop.
+
+        Allowed, but not instant, and one call here is not I/O at all — it is
+        `flock`, which blocks for as long as *another process* holds the lock.
+        On the event loop that is not one slow request, it is every connection
+        the server is currently serving, stalled behind a writer it does not
+        know about. A batch commit or a fsync on a busy disk does the same thing
+        for shorter. The thread hop costs a few tens of microseconds and buys
+        back the property an async server exists for.
         """
-        return fn(*args, **kwargs)
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 class _Expired(Exception):
