@@ -498,3 +498,60 @@ async def test_the_protocol_server_serves_a_write_from_another_process(
 
     assert response.status_code == 200
     assert b"another process" in response.content
+
+
+@pytest.mark.asyncio
+async def test_a_write_blocked_on_the_lock_does_not_stall_the_event_loop(store, root):
+    """A server serving other connections while one writer waits for the lock.
+
+    `flock` blocks for as long as another writer holds it, and this store's
+    first version ran every sync call straight on the event loop on the grounds
+    that file I/O is permitted there. Permitted, but a blocked lock is not one
+    slow request — it is every connection the server currently has open, parked
+    behind a writer none of them know about.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+
+    def holder() -> None:
+        with store._locked(PATH) as (meta, buffer):
+            store._write(meta, buffer, b'{"holder": true}')
+            holding.set()
+            assert release.wait(timeout=10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert holding.wait(timeout=10)
+
+        ticks = 0
+        done = asyncio.Event()
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not done.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        async def blocked_writer() -> None:
+            other = JsonlStreamStore(root, segment_size=8)
+            # Let the ticker establish itself, then release the holder so this
+            # call blocks on the lock for a measurable, bounded time.
+            await asyncio.sleep(0.05)
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.3, release.set)
+            await other.run_sync(other.append, PATH, b'{"waiter": true}')
+            done.set()
+
+        tick_task = asyncio.create_task(ticker())
+        await asyncio.wait_for(blocked_writer(), timeout=15)
+        await tick_task
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+    assert ticks > 10, (
+        f"the event loop only ticked {ticks} times while a write waited on the "
+        "lock — the wait was taken on the loop instead of in a thread"
+    )
+    assert len(_offsets_on_disk(root)) == 2
