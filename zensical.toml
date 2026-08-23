@@ -56,6 +56,7 @@ nav = [
             { "ADR 0002 — Framework vs protocol-server boundary" = "adr/0002-framework-vs-protocol-server-boundary.md" },
             { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
             { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
+            { "ADR 0005 — Stream positions stay a counted offset" = "adr/0005-stream-positions-stay-a-counted-offset.md" },
         ] },
     ] },
     { "Look it up" = [
