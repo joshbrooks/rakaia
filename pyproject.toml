@@ -3,7 +3,7 @@
 # PyPI by an unrelated placeholder. The import name is unaffected:
 #   pip install rakaia-streams   ->   import rakaia
 name = "rakaia-streams"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python server implementation of the Durable Streams protocol"
 readme = "README.md"
 requires-python = ">=3.10"

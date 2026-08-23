@@ -11,11 +11,12 @@ of one is never collapsed.
 from __future__ import annotations
 
 import pytest
+from django.core.exceptions import FieldError
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
 from django_rakaia.effect_executor import DjangoExecutor
-from rakaia.effects import Update
+from rakaia.effects import Update, Upsert
 from rakaia.registry import HandlerRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
@@ -99,3 +100,44 @@ def test_the_rows_are_the_same_without_the_collapse_enabled():
 
     assert len(_statements(ctx, "UPDATE")) == 9
     assert set(FinanceLine.objects.values_list("delta", flat=True)) == {7}
+
+
+def test_a_failure_part_way_through_a_pass_discards_the_whole_batch():
+    """The consumer-visible cost of batching, and the reason it is in UPGRADING.
+
+    `DjangoExecutor` wraps each `apply()` in a transaction. One call per event
+    meant an earlier event's write survived a later event's failure; one call per
+    pass means it does not. Nothing is *wrong* either way — the exception still
+    propagates and the replay still fails — but per-event commit granularity
+    within a pass is no longer on offer, and a consumer could have leaned on it.
+
+    Measured both ways rather than asserted: with `ctx.buffer` forced to None the
+    surviving rows are `['good']`, and with batching they are `[]`. That contrast
+    is the whole content of the upgrade note.
+    """
+    store = StreamStore()
+    seed_stream("s", [{"id": "good"}, {"id": "bad"}], store=store)
+
+    registry = HandlerRegistry()
+    registry.register(
+        name="h",
+        event_match=MATCH,
+        effective_from=0,
+        stage=0,
+        # The second event writes a column that does not exist, so its write
+        # fails inside the batch the first event's write is also in.
+        fn=lambda ev: Upsert(
+            MODEL,
+            {"submission_id": ev["id"]},
+            {"suku": "s", "delta": 1} if ev["id"] == "good" else {"nope": 1},
+        ),
+    )
+
+    with pytest.raises(FieldError):
+        replay(
+            store, "s", DjangoExecutor(), handler_registry=registry, event_match=MATCH
+        )
+
+    assert list(FinanceLine.objects.values_list("submission_id", flat=True)) == [], (
+        "the earlier event's write is rolled back with the batch it shared"
+    )
