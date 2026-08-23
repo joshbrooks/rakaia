@@ -15,7 +15,45 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.3.0
+
+## A replay applies a whole pass of effects at once, not one event at a time
+
+`replay()` used to call `executor.apply()` once per event. It now buffers a pass's
+effects and hands them over in as few batches as it can, breaking the batch
+whenever holding one more back would change the outcome — a write arriving behind
+a delete, a second write to the same column of the same row, a repeated
+`produces=` id, or a retire that asked for notifications. Passes whose handlers
+receive a reader are not batched at all, because a buffered write would be
+invisible to them.
+
+**What changes for you.** For most consumers, only the transaction and statement
+count: on a nine-event save this went from nine `transaction.atomic()` blocks to
+one, and with `DjangoExecutor(batch_updates=True)` from nine `UPDATE`s to one. The
+rows written, and the order they are written in, are unchanged — there is a test
+that replays the same effects both ways and compares.
+
+Three cases are worth checking against your own code:
+
+- **A custom executor sees fewer, larger batches.** If yours does per-call work —
+  opens a connection, logs a line, counts calls in a test — the count drops. The
+  flat sequence of effects it receives is identical.
+- **A `Ref` to an earlier event's `produces=` row now resolves.** It used to raise
+  `UnresolvedRefError`, because refs do not cross an `apply()` call and each event
+  was its own call. Within one pass they can now be in the same batch. This is a
+  widening: code that worked still works, and code that was relying on the failure
+  was relying on a batch boundary that was never part of the contract. The
+  executor-level rule is unchanged — refs still do not resolve across two explicit
+  `apply()` calls, which `tests/executor_contract.py` pins.
+- **A failure part-way through a pass now rolls back more.** `DjangoExecutor`
+  wraps each `apply()` in a transaction, so a failing effect discards its whole
+  batch rather than just its own event's effects. Events dispatched before the
+  batch started are unaffected, and a malformed event still leaves everything
+  before it applied. If you were depending on per-event commit granularity within
+  a pass, you no longer have it.
+
+**If you never call `replay()` directly**, and reach it only through
+`django_rakaia.replay.replay_stream` or a rebuild, this needs no action.
 
 ## `poll` refuses a cursor from another store instead of reporting `rewound`
 
