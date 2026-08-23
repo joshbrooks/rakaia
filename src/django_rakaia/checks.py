@@ -8,8 +8,10 @@ anything.
 
 The one that matters is `rakaia.E001`: the setting is free-form text, so a
 misspelt backend used to select the in-memory store and lose every append on
-restart. `rakaia.W001` is softer — a correctly-spelt ``"memory"`` is legitimate
-for development but is worth flagging if `DEBUG` is off, because a production
+restart. `rakaia.E002` is the same idea for the file-backed store, which cannot
+be built without a root directory and must not be handed a guessed one.
+`rakaia.W001` is softer — a correctly-spelt ``"memory"`` is legitimate for
+development but is worth flagging if `DEBUG` is off, because a production
 deployment almost never means it.
 """
 
@@ -41,6 +43,19 @@ def check_store_backend(app_configs: Any, **kwargs: Any) -> list[Any]:  # noqa: 
                     "ImproperlyConfigured."
                 ),
                 id="rakaia.E001",
+            )
+        ]
+
+    if backend == "jsonl" and not getattr(settings, "RAKAIA_JSONL_ROOT", None):
+        return [
+            Error(
+                "RAKAIA_STORE is 'jsonl' but RAKAIA_JSONL_ROOT is not set.",
+                hint=(
+                    "Set RAKAIA_JSONL_ROOT to the directory the stream logs "
+                    "should live in. There is no default: until this is fixed "
+                    "every append raises ImproperlyConfigured."
+                ),
+                id="rakaia.E002",
             )
         ]
 

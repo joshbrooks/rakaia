@@ -22,6 +22,7 @@ RAKAIA_PUBLIC = {
     "create_app",
     # store
     "StreamStore",
+    "JsonlStreamStore",
     "seed_stream",
     # extension protocols
     "CursorStore",

@@ -44,6 +44,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "Reading and writing streams": (
         "Stream",
         "StreamStore",
+        "JsonlStreamStore",
         "DjangoStreamStore",
         "ReadableStore",
         "WritableStore",
