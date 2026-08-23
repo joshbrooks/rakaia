@@ -107,6 +107,15 @@ rather than one per event, which is what makes the default affordable for bulk
 writes. With `fsync` off, an append survives the death of the process that wrote
 it, because the page cache outlives the process, but not a power cut.
 
+**What it does not do.** The Django store broadcasts every append over channels
+as it writes it, so live consumers hear about an event the moment it lands. The
+file-backed store cannot: it lives in the framework-independent package and has
+no way to reach Django. Live consumers must poll instead — the protocol server's
+long-poll and SSE reads work normally over it, including for appends made by a
+different process. `manage.py check` warns (`rakaia.W002`) if you select this
+backend in a project that has channels installed, because consumers going quiet
+is otherwise a silent change.
+
 **Offsets.** This store issues the same plain, zero-padded entry-id offsets as
 the durable store. They are opaque tokens: pass one back to `read()` to resume,
 and do not parse it. Because both stores issue the same *format*, a cursor saved
