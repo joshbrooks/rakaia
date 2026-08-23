@@ -165,9 +165,29 @@ class _Meta:
 class JsonlStreamStore:
     """A `rakaia.StreamServerStore` over a directory of JSONL files."""
 
-    def __init__(self, root: str | Path, *, segment_size: int = _DEFAULT_SEGMENT_SIZE):
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        segment_size: int = _DEFAULT_SEGMENT_SIZE,
+        fsync: bool = True,
+    ):
+        """`fsync` on means an append that has returned has reached the disk.
+
+        On by default because that is what the store it is being measured
+        against does: a database commit is durable, and a backend that returned
+        from `append` with the record only in the page cache would be claiming
+        something weaker while looking the same. A power cut then loses writes
+        the caller was told had landed.
+
+        Turn it off for a root on tmpfs, where there is no disk to reach and the
+        syscall is pure cost, and for test fixtures. Process death is survived
+        either way — the page cache outlives the process — so this is a choice
+        about power loss and kernel panics, not about crashes.
+        """
         self.root = Path(root)
         self.segment_size = segment_size
+        self.fsync = fsync
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / ".retired").mkdir(exist_ok=True)
         self._producer_locks: dict[str, asyncio.Lock] = {}
@@ -228,7 +248,14 @@ class JsonlStreamStore:
         meta = _Meta.from_json(raw)
         if not raw:
             meta.head = self._scan_head(path)
-        meta.last_activity_at = self._load_activity(path, meta.created_at)
+        # Only a stream with a TTL has a sliding window, so only that stream
+        # pays the extra read. Loading it unconditionally cost an `open()` on
+        # every append to every stream, for a field nothing would consult.
+        meta.last_activity_at = (
+            self._load_activity(path, meta.created_at)
+            if meta.ttl_seconds is not None
+            else meta.created_at
+        )
         return meta
 
     def _load_activity(self, path: str, default: float) -> float:
@@ -256,8 +283,7 @@ class JsonlStreamStore:
     def _save_meta(self, path: str, meta: _Meta) -> None:
         self._replace(self._dir(path) / "meta.json", json.dumps(meta.to_json()))
 
-    @staticmethod
-    def _replace(target: Path, text: str) -> None:
+    def _replace(self, target: Path, text: str) -> None:
         """Write `text` to `target` atomically, via a temp file nobody shares.
 
         The temp name carries the pid and thread id. It used to be a fixed
@@ -269,8 +295,25 @@ class JsonlStreamStore:
         tmp = target.with_name(
             f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         )
-        tmp.write_text(text)
+        if self.fsync:
+            with tmp.open("w") as fh:
+                fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
+        else:
+            tmp.write_text(text)
         tmp.replace(target)
+        if self.fsync:
+            self._fsync_dir(target.parent)
+
+    @staticmethod
+    def _fsync_dir(directory: Path) -> None:
+        """Commit a directory entry — a rename is not durable without it."""
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     def _scan_head(self, path: str) -> int:
         """The highest entry id in the log, by reading the last segment.
@@ -326,9 +369,19 @@ class JsonlStreamStore:
             seg = self._segment(path, int(record["id"]))
             by_segment.setdefault(seg, []).append(json.dumps(record))
         for seg, lines in by_segment.items():
+            existed = seg.exists()
             with seg.open("a+b") as fh:
                 self._discard_torn_tail(fh)
                 fh.write("".join(line + "\n" for line in lines).encode("utf-8"))
+                if self.fsync:
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            if self.fsync and not existed:
+                # A new segment's *name* lives in the directory, and fsyncing
+                # the file does not commit the directory entry that points at
+                # it. Without this a roll-over can survive as data nothing can
+                # find.
+                self._fsync_dir(seg.parent)
 
     @staticmethod
     def _discard_torn_tail(fh: Any) -> None:
@@ -393,9 +446,34 @@ class JsonlStreamStore:
                 # Only ever the last line, and only after a crash.
                 continue
 
+    def _relevant_segments(self, path: str, after_id: int) -> list[Path]:
+        """The segments that can hold an id above `after_id`.
+
+        This is the file-backed answer to `entries.filter(offset__gt=...)`: a
+        resume read on a long stream must not pay for the segments it has
+        already consumed. A segment is skippable when the *next* one starts at
+        or below `after_id`, because every id it holds is then below that too.
+
+        Deliberately expressed against the next segment's start rather than
+        arithmetic on `self.segment_size`. The filenames record the boundaries
+        as they were when the records were written, and the store can be
+        reopened with a different `segment_size` — sizing is a constructor
+        argument, not a property of the data. Arithmetic against the current
+        size would skip a segment that a differently-sized past had filled.
+        """
+        segments = self._segments(path)
+        if after_id <= 0:
+            return segments
+        first = 0
+        for i in range(len(segments) - 1):
+            if int(segments[i + 1].stem) > after_id:
+                break
+            first = i + 1
+        return segments[first:]
+
     def _messages(self, path: str, after_id: int = 0) -> list[StreamMessage]:
         out: list[StreamMessage] = []
-        for segment in self._segments(path):
+        for segment in self._relevant_segments(path, after_id):
             for record in self._read_segment(segment):
                 if int(record["id"]) <= after_id:
                     continue
@@ -513,8 +591,21 @@ class JsonlStreamStore:
             # return it — the reap belongs to the next *read*, not to the
             # creation. Reload afterwards for the same reason `_require` cannot
             # be used here.
-            with self._locked(path, check_expiry=False) as (m, buffer):
-                self._write(m, buffer, initial_data, is_initial_create=True)
+            try:
+                with self._locked(path, check_expiry=False) as (m, buffer):
+                    self._write(m, buffer, initial_data, is_initial_create=True)
+            except Exception:
+                # A create whose body is refused must leave nothing behind, not
+                # an empty stream where the caller's failed one would be. The
+                # other two stores get this from unwinding before they register
+                # the stream at all; here the directory is already on disk, so
+                # the rollback has to be explicit. Without it a `create` that
+                # raised still reaped the expired stream it was replacing and
+                # then left its own replacement — visible to `ls`, absent from
+                # the API, and holding the path against a later create with a
+                # different content type.
+                self.delete(path)
+                raise
             meta = self._load_meta(path) or meta
         return self._as_stream(path, meta)
 

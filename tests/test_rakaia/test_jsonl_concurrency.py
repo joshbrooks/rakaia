@@ -47,7 +47,7 @@ def _run(*targets, timeout: float = 30) -> None:
         def inner() -> None:
             try:
                 fn()
-            except BaseException as exc:  # noqa: BLE001 - re-raised below
+            except BaseException as exc:
                 errors.append(exc)
 
         return inner
@@ -83,13 +83,15 @@ def _offsets_on_disk(root, path: str = PATH) -> list[str]:
     """
     out = []
     for segment in sorted((root / path).glob("*.jsonl")):
-        for line in segment.read_text().split("\n"):
-            if line:
-                out.append(json.loads(line)["offset"])
+        out.extend(
+            json.loads(line)["offset"]
+            for line in segment.read_text().split("\n")
+            if line
+        )
     return out
 
 
-def test_many_concurrent_writers_produce_no_duplicate_offsets(store, root):
+def test_many_concurrent_writers_produce_no_duplicate_offsets(store, root):  # noqa: ARG001
     """Four writers, one stream, forty events, forty distinct offsets.
 
     The realistic case. Without the lock two writers read the same head from
@@ -357,7 +359,11 @@ for i in range(count):
 """
 
 
-def test_separate_processes_append_to_one_log_without_collision(store, root, tmp_path):
+def test_separate_processes_append_to_one_log_without_collision(
+    store,  # noqa: ARG001 - creates the stream the children append to
+    root,
+    tmp_path,
+):
     """The cross-process claim, tested across real processes.
 
     Everything else in this file runs in one interpreter, where `flock` still
@@ -371,7 +377,7 @@ def test_separate_processes_append_to_one_log_without_collision(store, root, tmp
     gate.mkdir()
 
     procs = [
-        subprocess.Popen(  # noqa: S603
+        subprocess.Popen(
             [sys.executable, str(child), str(root), PATH, f"p{n}", "40", str(gate)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
