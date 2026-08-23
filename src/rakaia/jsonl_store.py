@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import fcntl
 import json
 import os
 import threading
@@ -51,6 +50,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl
+    # Not a soft failure with a degraded lock: without an exclusive lock two
+    # writers hand out the same offset, which loses events silently. The store
+    # refuses to be constructed instead, and `import rakaia` still works —
+    # this module is imported by the package `__init__`, so raising here would
+    # take the whole library down on a platform that merely cannot use one
+    # backend.
+    fcntl = None  # type: ignore[assignment]
 
 from .append_decision import StreamFacts, decide_append, decide_append_batch
 from .context import merge_provenance
@@ -79,6 +89,15 @@ from .types import (
 _POLL_INTERVAL_SECONDS = 0.05
 
 _DEFAULT_SEGMENT_SIZE = 10_000
+
+#: Where retired offset high-marks live, as a sibling of the stream directories.
+#:
+#: The leading ``%`` is load-bearing. Stream directories are named
+#: ``quote(path, safe="")``, and `quote` escapes ``%`` itself — so no stream path
+#: can ever produce this name, while a plainer choice could: ``.retired`` is what
+#: this was, and `quote` leaves a leading dot alone, so a stream *called*
+#: ``.retired`` would have been handed the watermark directory to live in.
+_RETIRED_DIR = "%retired"
 
 
 @dataclass
@@ -185,11 +204,19 @@ class JsonlStreamStore:
         either way — the page cache outlives the process — so this is a choice
         about power loss and kernel panics, not about crashes.
         """
+        if fcntl is None:  # pragma: no cover - Windows
+            raise RuntimeError(
+                "JsonlStreamStore needs fcntl.flock, which this platform does "
+                "not provide (Windows wants msvcrt.locking, unimplemented). "
+                "Without an exclusive lock two writers issue the same offset "
+                "and events are lost silently, so the store refuses to start "
+                "rather than run unlocked."
+            )
         self.root = Path(root)
         self.segment_size = segment_size
         self.fsync = fsync
         self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / ".retired").mkdir(exist_ok=True)
+        (self.root / _RETIRED_DIR).mkdir(exist_ok=True)
         self._producer_locks: dict[str, asyncio.Lock] = {}
 
     # =========================================================================
@@ -216,7 +243,7 @@ class JsonlStreamStore:
         return sorted(d.glob("*.jsonl"))
 
     def _retired_path(self, path: str) -> Path:
-        return self.root / ".retired" / quote(path, safe="")
+        return self.root / _RETIRED_DIR / quote(path, safe="")
 
     def _retired(self, path: str) -> int:
         f = self._retired_path(path)
@@ -342,6 +369,11 @@ class JsonlStreamStore:
         d = self._dir(path)
         if not d.is_dir():
             raise StreamNotFound(f"Stream not found: {path}")
+        # Narrowing, not defence: `__init__` refuses to build a store on a
+        # platform without `fcntl`, so by here it is always a module. Stated as
+        # an assert rather than an ignore comment, the way `store.py` states the
+        # same kind of guarantee about a producer verdict.
+        assert fcntl is not None
         with (d / ".lock").open("a+") as lockfile:
             fcntl.flock(lockfile, fcntl.LOCK_EX)
             try:
@@ -645,7 +677,7 @@ class JsonlStreamStore:
 
     def clear(self) -> None:
         for child in self.root.iterdir():
-            if child.is_dir() and child.name != ".retired":
+            if child.is_dir() and child.name != _RETIRED_DIR:
                 for f in child.iterdir():
                     f.unlink()
                 child.rmdir()
@@ -654,7 +686,7 @@ class JsonlStreamStore:
         return [
             unquote(d.name)
             for d in self.root.iterdir()
-            if d.is_dir() and d.name != ".retired"
+            if d.is_dir() and d.name != _RETIRED_DIR
         ]
 
     # =========================================================================
