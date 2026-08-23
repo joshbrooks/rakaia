@@ -48,6 +48,7 @@ from .history import (
     history_effects,
     label_marker,
 )
+from .jsonl_store import JsonlStreamStore
 from .offsets import ForeignOffset
 from .projections import (
     project_latest,
@@ -151,6 +152,7 @@ __all__ = [
     "app",
     # Store
     "StreamStore",
+    "JsonlStreamStore",
     "seed_stream",
     # Extension protocols (storage / projection seams)
     "ReadableStore",

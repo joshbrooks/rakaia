@@ -25,6 +25,7 @@ a cross-*process* claim.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -402,3 +403,98 @@ def test_separate_processes_append_to_one_log_without_collision(
     reader = JsonlStreamStore(root, segment_size=8)
     assert len(reader.read(PATH)[0]) == 160
     assert reader.get_current_offset(PATH) == offsets[-1]
+
+
+_WRITER = """
+import json, os, sys, time
+from rakaia.jsonl_store import JsonlStreamStore
+
+root, path, delay = sys.argv[1], sys.argv[2], float(sys.argv[3])
+time.sleep(delay)
+JsonlStreamStore(root).append(path, json.dumps({"from": "another process"}).encode())
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_long_poll_wakes_for_a_write_from_another_process(
+    store, root, tmp_path
+):
+    """The reason `wait_for_messages` polls instead of waiting on an event.
+
+    The in-memory store notifies its waiters with an `asyncio.Event`, which is
+    correct there and useless here: the append that a live subscriber is waiting
+    for comes from a worker, a management command, another web process. This is
+    that case, and nothing but the filesystem connects the two sides.
+    """
+    writer = tmp_path / "writer.py"
+    writer.write_text(_WRITER)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(writer),
+        str(root),
+        PATH,
+        "0.2",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        head = store.get_current_offset(PATH)
+        messages, timed_out, closed = await store.wait_for_messages(PATH, head, 10.0)
+    finally:
+        _out, err = await proc.communicate()
+        assert proc.returncode == 0, err.decode()
+
+    assert timed_out is False
+    assert closed is False
+    assert [json.loads(m.data) for m in messages] == [{"from": "another process"}]
+
+
+@pytest.mark.asyncio
+async def test_a_long_poll_still_times_out_when_nothing_writes(store):
+    """The other half: a waiter with no writer returns empty, not hung."""
+    head = store.get_current_offset(PATH)
+    messages, timed_out, closed = await store.wait_for_messages(PATH, head, 0.3)
+
+    assert (messages, timed_out, closed) == ([], True, False)
+
+
+@pytest.mark.asyncio
+async def test_the_protocol_server_serves_a_write_from_another_process(
+    store, root, tmp_path
+):
+    """The same claim one layer up, over HTTP.
+
+    A client long-polls the protocol server; the event it is waiting for is
+    written by a separate operating-system process. This is the live-tailing
+    path a deployment actually runs, and it is the one an in-memory store
+    cannot serve at all once there is more than one worker.
+    """
+    from tests.asgi_client import asgi_client
+
+    # The protocol server keys a stream by the request path as it arrives —
+    # leading slash included — so the writer has to name the stream the way the
+    # server will, not the way a direct store call would.
+    served = f"/{PATH}"
+    store.create(served)
+
+    writer = tmp_path / "writer.py"
+    writer.write_text(_WRITER)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(writer),
+        str(root),
+        served,
+        "0.3",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asgi_client(store, long_poll_timeout=10.0) as ac:
+            head = store.get_current_offset(served)
+            response = await ac.get(f"{served}?offset={head}&live=long-poll")
+    finally:
+        _out, err = await proc.communicate()
+        assert proc.returncode == 0, err.decode()
+
+    assert response.status_code == 200
+    assert b"another process" in response.content

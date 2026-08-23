@@ -19,7 +19,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.store import get_store
-from rakaia import StreamStore
+from rakaia import JsonlStreamStore, StreamStore
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +45,52 @@ class TestBackendSelection:
     def test_durable_selects_the_django_store(self, settings):
         settings.RAKAIA_STORE = "durable"
         assert isinstance(get_store(), DjangoStreamStore)
+
+    def test_jsonl_selects_the_file_backed_store(self, settings, tmp_path):
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path / "streams")
+        assert isinstance(get_store(), JsonlStreamStore)
+
+    def test_the_jsonl_root_is_the_one_configured(self, settings, tmp_path):
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path / "streams")
+        store = get_store()
+        store.create("s")
+        assert (tmp_path / "streams" / "s" / "meta.json").exists()
+
+
+class TestTheJsonlRootIsRequired:
+    """A file-backed store with no root must refuse, not guess.
+
+    The same failure `RAKAIA_STORE` itself has: a guessed root — a temp
+    directory, the working directory — accepts every append and puts the log
+    somewhere the next deployment does not look. That is the in-memory
+    silent-loss failure with extra steps.
+    """
+
+    def test_jsonl_without_a_root_raises(self, settings):
+        settings.RAKAIA_STORE = "jsonl"
+        if hasattr(settings, "RAKAIA_JSONL_ROOT"):
+            del settings.RAKAIA_JSONL_ROOT
+        with pytest.raises(ImproperlyConfigured, match="RAKAIA_JSONL_ROOT"):
+            get_store()
+
+    def test_the_check_reports_it_before_the_first_append(self, settings):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        if hasattr(settings, "RAKAIA_JSONL_ROOT"):
+            del settings.RAKAIA_JSONL_ROOT
+        errors = check_store_backend(None)
+        assert [e.id for e in errors] == ["rakaia.E002"]
+
+    def test_a_configured_root_is_silent(self, settings, tmp_path):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        settings.DEBUG = False
+        assert check_store_backend(None) == []
 
 
 class TestUnknownBackendIsRefused:
