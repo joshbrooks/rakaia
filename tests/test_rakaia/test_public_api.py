@@ -24,6 +24,10 @@ RAKAIA_PUBLIC = {
     "StreamStore",
     "JsonlStreamStore",
     "seed_stream",
+    # moving a log between backends
+    "Migration",
+    "migrate_all",
+    "migrate_stream",
     # extension protocols
     "CursorStore",
     "ProjectionReader",

@@ -59,6 +59,7 @@ PROTOCOL_SERVER = {
     "cursor",
     "handler",
     "jsonl_store",
+    "migrate",
     "producer",
     "read_decision",
     "store",

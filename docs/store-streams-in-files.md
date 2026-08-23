@@ -54,6 +54,46 @@ catching up from event 19,000 opens the last file and ignores the rest, so
 resuming costs what is new rather than what came before it. It also makes
 retention a matter of deleting whole files.
 
+## Moving a log between backends
+
+Changing the `RAKAIA_STORE` setting does not move anything. The application
+starts reading a different, empty log, while every consumer still holds a
+position that looks perfectly valid — so the move is a copy, and there is a
+function for it:
+
+```python
+from rakaia import migrate_stream, JsonlStreamStore
+from django_rakaia.django_store import DjangoStreamStore
+
+result = migrate_stream(DjangoStreamStore(), JsonlStreamStore("/var/lib/rakaia"), "submissions")
+```
+
+The copy carries the events, their labels and metadata, their logical
+timestamps, the content type, the expiry and whether the stream was closed. What
+it will not do is *promise* that saved consumer positions still work, because
+that depends on both stores numbering events the same way. Instead it copies
+first and then checks, and tells you:
+
+```python
+if result.cursors_valid:
+    ...                       # consumers resume where they left off
+else:
+    ...                       # reset consumers before starting them again
+for note in result.notes:
+    print(note)               # anything the copy could not carry
+```
+
+Between the database-backed and file-backed stores, positions normally survive:
+both number events one, two, three. Coming from the in-memory store they never
+do, because it counts bytes instead. `migrate_all` copies every stream a store
+can list.
+
+One rule surprises people. A stream that has been deleted can never get its old
+numbering back, even by copying the same events in again — a store must not
+reissue a position a consumer may already have read past. So exporting a log,
+deleting it, and importing it into the same place gives you the events but not
+the positions, and the report says exactly that.
+
 ## When to use which
 
 Use the **in-memory** store for tests and demos, where nothing needs to outlive
