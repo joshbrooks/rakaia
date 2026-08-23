@@ -49,6 +49,7 @@ from .history import (
     label_marker,
 )
 from .jsonl_store import JsonlStreamStore
+from .migrate import Migration, migrate_all, migrate_stream
 from .offsets import ForeignOffset
 from .projections import (
     project_latest,
@@ -154,6 +155,10 @@ __all__ = [
     "StreamStore",
     "JsonlStreamStore",
     "seed_stream",
+    # Moving a log between backends
+    "migrate_stream",
+    "migrate_all",
+    "Migration",
     # Extension protocols (storage / projection seams)
     "ReadableStore",
     "WritableStore",

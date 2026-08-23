@@ -154,7 +154,6 @@ class TestUnknownBackendIsRefused:
         assert isinstance(get_store(), StreamStore)
 
 
-<<<<<<< HEAD
 class TestTheCacheAndItsReset:
     """`reset_store_cache()` replaces the private-dict poke this file used to do.
 
