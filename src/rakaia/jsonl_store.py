@@ -42,6 +42,7 @@ import base64
 import fcntl
 import json
 import os
+import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -103,12 +104,13 @@ class _Meta:
     """The highest entry id issued. Also the numeric part of the head offset."""
 
     def to_json(self) -> dict[str, Any]:
+        # `last_activity_at` is deliberately absent: it lives in its own file.
+        # See `JsonlStreamStore._save_activity`.
         return {
             "content_type": self.content_type,
             "ttl_seconds": self.ttl_seconds,
             "expires_at": self.expires_at,
             "created_at": self.created_at,
-            "last_activity_at": self.last_activity_at,
             "last_seq": self.last_seq,
             "closed": self.closed,
             "closed_by": (
@@ -139,7 +141,6 @@ class _Meta:
             ttl_seconds=raw.get("ttl_seconds"),
             expires_at=raw.get("expires_at"),
             created_at=raw.get("created_at", 0.0),
-            last_activity_at=raw.get("last_activity_at", 0.0),
             last_seq=raw.get("last_seq"),
             closed=raw.get("closed", False),
             closed_by=(
@@ -227,13 +228,49 @@ class JsonlStreamStore:
         meta = _Meta.from_json(raw)
         if not raw:
             meta.head = self._scan_head(path)
+        meta.last_activity_at = self._load_activity(path, meta.created_at)
         return meta
 
+    def _load_activity(self, path: str, default: float) -> float:
+        try:
+            return float((self._dir(path) / "activity").read_text())
+        except (OSError, ValueError):
+            return default
+
+    def _save_activity(self, path: str, when: float) -> None:
+        """Write the TTL sliding-window anchor, and nothing else.
+
+        This is the one field a *reader* writes, and it is in its own file for
+        exactly that reason. `DjangoStreamStore._touch` extends the window with
+        ``save(update_fields=["last_activity_at"])`` — a single-column update
+        that cannot disturb a concurrent writer's columns. Metadata here is a
+        file replaced whole, so keeping the window inside it would have a reader
+        write back a stale head over every append that landed while it was
+        reading, and the next append would reissue offsets that already exist.
+        A separate file is what buys back the column-level isolation; it also
+        means the touch needs no lock, since last-write-wins on a timestamp is
+        the correct answer.
+        """
+        self._replace(self._dir(path) / "activity", str(when))
+
     def _save_meta(self, path: str, meta: _Meta) -> None:
-        d = self._dir(path)
-        tmp = d / "meta.json.tmp"
-        tmp.write_text(json.dumps(meta.to_json()))
-        tmp.replace(d / "meta.json")
+        self._replace(self._dir(path) / "meta.json", json.dumps(meta.to_json()))
+
+    @staticmethod
+    def _replace(target: Path, text: str) -> None:
+        """Write `text` to `target` atomically, via a temp file nobody shares.
+
+        The temp name carries the pid and thread id. It used to be a fixed
+        ``.tmp``, which two writers raced for: one replaced the file the other
+        was still writing, and the loser's `replace` failed with `FileNotFound`
+        on a path it had itself created. A shared scratch name is a lock by
+        accident, and a broken one.
+        """
+        tmp = target.with_name(
+            f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        tmp.write_text(text)
+        tmp.replace(target)
 
     def _scan_head(self, path: str) -> int:
         """The highest entry id in the log, by reading the last segment.
@@ -413,17 +450,17 @@ class JsonlStreamStore:
             raise StreamNotFound(f"Stream not found: {path}")
         return meta
 
-    @staticmethod
-    def _touch(meta: _Meta) -> None:
-        if meta.ttl_seconds is not None:
-            meta.last_activity_at = time.time()
+    def _touch(self, path: str, meta: _Meta) -> None:
+        """Extend the sliding TTL window. No-op for a stream without a TTL."""
+        if meta.ttl_seconds is None:
+            return
+        meta.last_activity_at = time.time()
+        self._save_activity(path, meta.last_activity_at)
 
     def touch(self, path: str) -> None:
         meta = self._live_meta(path)
-        if meta is None or meta.ttl_seconds is None:
-            return
-        self._touch(meta)
-        self._save_meta(path, meta)
+        if meta is not None:
+            self._touch(path, meta)
 
     # =========================================================================
     # Lifecycle
@@ -468,6 +505,7 @@ class JsonlStreamStore:
             head=self._retired(path),
         )
         self._save_meta(path, meta)
+        self._save_activity(path, now)
 
         if initial_data:
             # `check_expiry=False`: a stream created with `ttl_seconds=0` is
@@ -621,7 +659,7 @@ class JsonlStreamStore:
                     metadata=merge_provenance(opts.metadata),
                     event_ts=opts.event_ts,
                 )
-                self._touch(meta)
+                self._touch(path, meta)
                 self._commit_producer(meta, verdict.producer_result)
                 if opts.seq is not None:
                     meta.last_seq = opts.seq
@@ -716,7 +754,7 @@ class JsonlStreamStore:
                         )
                     )
                 if batch.writes_anything:
-                    self._touch(meta)
+                    self._touch(path, meta)
                 for accepted in batch.producer_commits.values():
                     self._commit_producer(meta, accepted)
                 if batch.last_seq is not None:
@@ -754,7 +792,7 @@ class JsonlStreamStore:
             with self._locked(path) as (meta, _buffer):
                 already = meta.closed
                 meta.closed = True
-                self._touch(meta)
+                self._touch(path, meta)
                 return CloseResult(
                     final_offset=PLAIN.render(meta.head), already_closed=already
                 )
@@ -791,7 +829,7 @@ class JsonlStreamStore:
                     meta.closed_by = ClosedBy(
                         producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
                     )
-                    self._touch(meta)
+                    self._touch(path, meta)
                     return CloseResult(
                         final_offset=PLAIN.render(meta.head),
                         already_closed=False,
@@ -809,14 +847,22 @@ class JsonlStreamStore:
         self, path: str, offset: str | None = None
     ) -> tuple[list[StreamMessage], bool]:
         meta = self._require(path)
-        self._touch(meta)
-        self._save_meta(path, meta)
+        self._touch(path, meta)
+        return self._read_since(path, offset), True
+
+    def _read_since(self, path: str, offset: str | None) -> list[StreamMessage]:
+        """The messages after `offset`, without extending the TTL window.
+
+        Split out from `read` for the same reason as
+        `DjangoStreamStore._read_since`: long-poll checks for new messages on
+        every tick and must not write the activity file on every tick with it.
+        """
         if not offset or offset == "-1":
-            return self._messages(path), True
+            return self._messages(path)
         # `PLAIN.key` is the strict parse: it raises `ForeignOffset` for the
         # in-memory store's compound token rather than letting `int()` read the
         # underscore as a digit separator and return a plausible wrong window.
-        return self._messages(path, after_id=PLAIN.key(offset)[0]), True
+        return self._messages(path, after_id=PLAIN.key(offset)[0])
 
     def get_current_offset(self, path: str) -> str | None:
         meta = self._live_meta(path)
@@ -850,8 +896,12 @@ class JsonlStreamStore:
                 return [], True, False
             entered = True
 
-            messages, _ = self.read(path, offset)
+            messages = self._read_since(path, offset)
             if messages:
+                # Once, on the way out — not on every tick. Polling through
+                # `read` would rewrite the activity file twenty times a second
+                # for every waiter on a stream with a TTL.
+                self._touch(path, meta)
                 return messages, False, False
             if meta.closed:
                 return [], False, True
