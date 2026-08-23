@@ -87,13 +87,16 @@ class TestTheJsonlRootIsRequired:
         errors = check_store_backend(None)
         assert [e.id for e in errors] == ["rakaia.E002"]
 
-    def test_a_configured_root_is_silent(self, settings, tmp_path):
+    def test_a_configured_root_raises_no_error(self, settings, tmp_path):
         from django_rakaia.checks import check_store_backend
 
         settings.RAKAIA_STORE = "jsonl"
         settings.RAKAIA_JSONL_ROOT = str(tmp_path)
         settings.DEBUG = False
-        assert check_store_backend(None) == []
+        # Errors only: a configured root may still draw the W002 warning about
+        # live subscribers, which is a different subject and has its own test.
+        errors = [m for m in check_store_backend(None) if m.id.startswith("rakaia.E")]
+        assert errors == []
 
 
 class TestUnknownBackendIsRefused:
@@ -151,6 +154,7 @@ class TestUnknownBackendIsRefused:
         assert isinstance(get_store(), StreamStore)
 
 
+<<<<<<< HEAD
 class TestTheCacheAndItsReset:
     """`reset_store_cache()` replaces the private-dict poke this file used to do.
 
@@ -172,6 +176,31 @@ class TestTheCacheAndItsReset:
     def test_reset_is_safe_on_an_empty_cache(self):
         reset_store_cache()
         reset_store_cache()
+
+
+class TestTheJsonlStoreDoesNotBroadcast:
+    """A capability the durable store has and this one cannot.
+
+    `DjangoStreamStore` publishes every append over channels as it writes it.
+    `JsonlStreamStore` lives in the framework-independent package and has no way
+    to reach Django, so a deployment that switches backends and has live
+    consumers would find them going quietly silent. A warning at
+    `manage.py check` is where this repo puts that kind of surprise.
+    """
+
+    def test_jsonl_with_channels_installed_warns(self, settings, tmp_path):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        warnings = check_store_backend(None)
+        assert [w.id for w in warnings] == ["rakaia.W002"]
+
+    def test_the_durable_store_is_silent_about_broadcasting(self, settings):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "durable"
+        assert [w.id for w in check_store_backend(None)] == []
 
 
 class TestInMemoryInProductionIsFlagged:
