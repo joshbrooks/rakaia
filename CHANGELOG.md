@@ -7,7 +7,7 @@ All notable changes to Rakaia are documented here. The format is based on
 New here? The [guided tour](docs/whats-new.md) walks these capabilities with a
 runnable demo for each.
 
-## [Unreleased]
+## [0.3.1] - 2026-08-24
 
 ### Fixed
 
