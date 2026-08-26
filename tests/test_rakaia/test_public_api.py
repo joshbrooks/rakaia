@@ -202,6 +202,129 @@ class TestRakaiaSurface:
         assert [n for n in rakaia.__all__ if n.startswith("_")] == ["__version__"]
 
 
+class TestTheLazyRootResolvesOnce:
+    """`__getattr__` caches into `globals()`, and that caching is the contract.
+
+    Deleting the cache line left the whole suite green while making every
+    `rakaia.app` access mint a fresh app and a fresh `StreamStore` — so the
+    property the module root is *for* had no test at all. These are those tests.
+    """
+
+    def test_a_resolved_name_becomes_a_real_module_attribute(self):
+        """The cache is what makes the *second* access free, and identity alone
+        cannot see it.
+
+        `rakaia.StreamStore is rakaia.StreamStore` passes with the caching line
+        deleted — re-resolving imports an already-imported module and returns
+        the same class object, so the assertion is satisfied by `importlib`
+        being idempotent rather than by anything this module does. What the
+        cache actually promises is that the name stops going through
+        `__getattr__` at all, which is visible in the module dict and nowhere
+        else.
+
+        A subprocess because the check is about the transition from absent to
+        present, and any earlier test in the session may already have resolved
+        the name.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        program = textwrap.dedent("""
+            import rakaia
+            print("before" if "StreamStore" not in vars(rakaia) else "PRESENT")
+            rakaia.StreamStore
+            print("after" if "StreamStore" in vars(rakaia) else "MISSING")
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", program], capture_output=True, text=True, timeout=60
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["before", "after"], result.stdout
+
+    def test_a_resolved_name_is_the_submodule_s_own_object(self):
+        """Lazy resolution must hand back the real thing, not a copy or proxy."""
+        from rakaia import store
+
+        assert rakaia.StreamStore is store.StreamStore
+
+    def test_the_app_is_built_once(self):
+        assert rakaia.app is rakaia.app
+
+    def test_the_app_is_built_once_under_concurrent_first_touch(self):
+        """The regression this guards is invisible after the first access.
+
+        `app` is *constructed*, not imported, so before the lock every thread
+        that raced past the cache check built its own — 16 threads gave 16
+        stores, 15 of them orphaned and holding their own log. The eager
+        `app = create_app()` this replaced was serialised by the import lock, so
+        this asserts a property that used to come for free.
+
+        A fresh interpreter per run, because `app` is cached after first touch
+        and the race exists only on the way in.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        program = textwrap.dedent("""
+            import threading
+            import rakaia
+
+            start = threading.Barrier(16)
+            seen = []
+
+            def touch():
+                start.wait()
+                seen.append(id(rakaia.app))
+
+            threads = [threading.Thread(target=touch) for _ in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            print(len(set(seen)))
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", program], capture_output=True, text=True, timeout=60
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "1", (
+            f"16 threads saw {result.stdout.strip()} distinct apps; each extra "
+            "one is an orphaned StreamStore holding its own log"
+        )
+
+
+class TestTheLazyRootRefusesWhatItDoesNotExport:
+    """A module `__getattr__` that returns instead of raising makes `hasattr`
+    unconditionally true, which is worse than a missing name — it turns a typo
+    into `None` at the call site rather than an error at the import."""
+
+    def test_an_unknown_name_raises(self):
+        with pytest.raises(AttributeError):
+            rakaia.not_a_real_export  # noqa: B018
+
+    def test_the_error_names_the_module_and_the_attribute(self):
+        with pytest.raises(AttributeError) as exc:
+            rakaia.not_a_real_export  # noqa: B018
+
+        assert "rakaia" in str(exc.value)
+        assert "not_a_real_export" in str(exc.value)
+
+    def test_hasattr_is_false_for_a_name_that_is_not_exported(self):
+        assert not hasattr(rakaia, "not_a_real_export")
+
+    # Deliberately not asserted: that an unexported *submodule* — `read_decision`
+    # and friends — is unreachable as `rakaia.<name>`. It is reachable, once
+    # anything in the process has imported it, because the import system binds a
+    # submodule onto its parent package. That is ordinary Python and is true of
+    # the eager version too (checked on both), so an assertion here would pin
+    # import order rather than this module's surface, and would pass or fail
+    # depending on what else the test session had touched.
+
+
 class TestTheLazyRootAndItsTypeCheckingBlockAgree:
     """The package root resolves exports lazily, so it carries the same list
     twice: `_EXPORTS`, which the runtime uses, and a `TYPE_CHECKING` block, which

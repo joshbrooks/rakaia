@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 # =============================================================================
@@ -49,6 +50,14 @@ if TYPE_CHECKING:
     # Re-exported for type checkers only: the runtime path is `__getattr__`
     # below, which pyright cannot follow. Every name here is in `_EXPORTS`, and
     # `test_public_api.py` fails if the two ever disagree.
+
+    # The two names `__getattr__` computes rather than imports. Declared as bare
+    # annotations — the standard way to tell a checker that a PEP 562 module
+    # provides a name — because `__all__` listing something with no binding is
+    # `reportUnsupportedDunderAll` otherwise.
+    app: Any
+    __version__: str
+
     from .append import append_if_changed, snapshots_equal
     from .context import get_provenance, provenance
     from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
@@ -309,24 +318,44 @@ def _installed_version() -> str:
         return "0.0.0+unknown"
 
 
+#: Guards the one-time construction of `app`. See `__getattr__`.
+_app_lock = threading.Lock()
+
+
 def __getattr__(name: str) -> Any:
     """Resolve a public name on first use (PEP 562).
 
     The resolved value is cached in `globals()`, so this runs once per name and
-    every later access is an ordinary module attribute. That matters most for
-    `app`: `uvicorn rakaia:app` must get the *same* object every time, and a
-    factory called per access would hand out a new store to each caller.
+    every later access is an ordinary module attribute.
+
+    Only `app` needs the lock. A mapped name resolves through
+    `importlib.import_module`, which is itself serialised and idempotent, so two
+    threads racing for one get the same object either way; the worst case is a
+    duplicated `getattr`. `app` is *constructed* here, and construction is not
+    idempotent — it allocates a `StreamStore`. Without the lock, every thread
+    that got past the cache check built its own, and all but the last were
+    orphaned: live, holding their own log, and unreachable through
+    `rakaia.app`. Measured at 16 threads: 16 stores, 15 of them lost. The eager
+    `app = create_app()` this replaced was serialised by the import lock, so the
+    lock is restoring a property that used to come for free rather than adding
+    one.
     """
     if name == "app":
         # The default ASGI app, for `uvicorn rakaia:app`. Built here rather than
         # at module scope so that importing the framework does not allocate a
         # server's worth of state — this is the singleton the eager version
         # created in every process.
-        from .handler import create_app
+        with _app_lock:
+            # Re-checked inside the lock: a thread that waited here while
+            # another built it must take that one, not build a second.
+            if "app" not in globals():
+                from .handler import create_app
 
-        value: Any = create_app()
-    elif name == "__version__":
-        value = _installed_version()
+                globals()["app"] = create_app()
+            return globals()["app"]
+
+    if name == "__version__":
+        value: Any = _installed_version()
     else:
         module = _EXPORTS.get(name)
         if module is None:
