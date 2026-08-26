@@ -65,8 +65,8 @@ class ForeignOffset(InvalidOffset):
     """An offset was used where its format does not belong — passed to a store
     that did not issue it, or compared against one from another store.
 
-    Subclasses `InvalidOffset` on purpose: both stores already raised that for a
-    token they did not recognise, so every existing ``except InvalidOffset``
+    Subclasses `InvalidOffset` on purpose: every store already raised that for a
+    token it did not recognise, so every existing ``except InvalidOffset``
     still catches this.
     """
 
@@ -95,8 +95,14 @@ class OffsetFormat:
         filter. Clients send unpadded offsets — the dashboard's ``?after=42`` is
         one — and both regexes this replaced accepted them, so tightening to
         ``\\d{20}`` here would reject requests that work today. What the shape
-        does settle is the only question `owns` is asked: which of the two stores
-        a token belongs to, one field against two.
+        does settle is the only question `owns` is asked: which *format* a token
+        belongs to, one field against two.
+
+        A format, not a store — those stopped being the same thing when
+        `JsonlStreamStore` began issuing `PLAIN` alongside `DjangoStreamStore`.
+        Two stores sharing a format are indistinguishable here, and deliberately
+        so, since it is what lets a copy between them preserve every offset. See
+        `docs/adr/0006-changing-backends-is-a-copy.md`, which cites this rule.
         """
         return re.compile("^" + "_".join(r"\d+" for _ in self.widths) + "$")
 
