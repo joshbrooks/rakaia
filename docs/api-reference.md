@@ -34,6 +34,7 @@ page is the contract.
 |---|---|---|---|
 | `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `() -> 'None'` | In-memory store for durable streams. |
+| `JsonlStreamStore` | `rakaia` | `(root: 'str \| Path', *, segment_size: 'int' = 10000, fsync: 'bool' = True)` | A `rakaia.StreamServerStore` over a directory of JSONL files. |
 | `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
 | `ReadableStore` | `rakaia` | `(*args, **kwargs)` | A store `replay()` can read events from. |
 | `WritableStore` | `rakaia` | `(*args, **kwargs)` | A store the event-sourcing framework both writes to and reads from. |
@@ -41,6 +42,9 @@ page is the contract.
 | `append_event` | `django_rakaia` | `(store: 'WritableStore', stream_path: 'str', payload: 'dict[str, Any]', *, label: 'str', actor: 'Any' = None, event_ts: 'float \| None' = None) -> 'None'` | Append one enveloped event to ``stream_path``, creating the stream if absent. |
 | `append_if_changed` | `rakaia` | `(store: 'Any', path: 'str', data: 'bytes', *, current: 'Any', options: 'Any' = None, snapshot_of: 'Callable[[dict[str, Any]], Any] \| None' = None) -> 'bool'` | Append `data` to `path` only if its snapshot differs from `current`. |
 | `seed_stream` | `rakaia` | `(path: 'str', events: 'Iterable[SeedEvent]' = (), *, store: '_S \| None' = None, encoder: 'type[json.JSONEncoder] \| None' = None) -> '_S \| StreamStore'` | Create ``path`` and append ``events`` to it, in list order. |
+| `migrate_stream` | `rakaia` | `(source: 'ReadableStore', target: 'WritableStore', path: 'str', *, batch_size: 'int' = 500) -> 'Migration'` | Copy `path` from `source` to `target`, returning what survived. |
+| `migrate_all` | `rakaia` | `(source: 'ReadableStore', target: 'WritableStore', *, batch_size: 'int' = 500) -> 'list[Migration]'` | Copy every stream `source` can list, in listing order. |
+| `Migration` | `rakaia` | `(path: 'str', events: 'int', offsets_preserved: 'bool', head_preserved: 'bool', notes: 'tuple[str, ...]' = <factory>) -> None` | What one stream's copy achieved, and what it could not carry. |
 | `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str, using: str \| None = None) -> django_rakaia.models.StreamEvent` | Create a stream event for the given model instance. |
 | `AppendOptions` | `rakaia` | `(seq: 'str \| None' = None, content_type: 'str \| None' = None, producer_id: 'str \| None' = None, producer_epoch: 'int \| None' = None, producer_seq: 'int \| None' = None, close: 'bool' = False, label: 'str' = '', metadata: 'dict \| None' = None, event_ts: 'float \| None' = None) -> None` | Options for append operations. |
 | `AppendResult` | `rakaia` | `(message: 'StreamMessage \| None' = None, producer_result: 'ProducerValidationResult \| None' = None, stream_closed: 'bool' = False) -> None` | Result of an append operation. |
@@ -230,6 +234,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-139 exported names across 14 sections. 123 carry a docstring; 16 do not and show `—` above.
+143 exported names across 14 sections. 127 carry a docstring; 16 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

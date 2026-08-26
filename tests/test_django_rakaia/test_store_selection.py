@@ -19,7 +19,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.store import get_store, reset_store_cache
-from rakaia import StreamStore
+from rakaia import JsonlStreamStore, StreamStore
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +48,55 @@ class TestBackendSelection:
     def test_durable_selects_the_django_store(self, settings):
         settings.RAKAIA_STORE = "durable"
         assert isinstance(get_store(), DjangoStreamStore)
+
+    def test_jsonl_selects_the_file_backed_store(self, settings, tmp_path):
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path / "streams")
+        assert isinstance(get_store(), JsonlStreamStore)
+
+    def test_the_jsonl_root_is_the_one_configured(self, settings, tmp_path):
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path / "streams")
+        store = get_store()
+        store.create("s")
+        assert (tmp_path / "streams" / "s" / "meta.json").exists()
+
+
+class TestTheJsonlRootIsRequired:
+    """A file-backed store with no root must refuse, not guess.
+
+    The same failure `RAKAIA_STORE` itself has: a guessed root — a temp
+    directory, the working directory — accepts every append and puts the log
+    somewhere the next deployment does not look. That is the in-memory
+    silent-loss failure with extra steps.
+    """
+
+    def test_jsonl_without_a_root_raises(self, settings):
+        settings.RAKAIA_STORE = "jsonl"
+        if hasattr(settings, "RAKAIA_JSONL_ROOT"):
+            del settings.RAKAIA_JSONL_ROOT
+        with pytest.raises(ImproperlyConfigured, match="RAKAIA_JSONL_ROOT"):
+            get_store()
+
+    def test_the_check_reports_it_before_the_first_append(self, settings):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        if hasattr(settings, "RAKAIA_JSONL_ROOT"):
+            del settings.RAKAIA_JSONL_ROOT
+        errors = check_store_backend(None)
+        assert [e.id for e in errors] == ["rakaia.E002"]
+
+    def test_a_configured_root_raises_no_error(self, settings, tmp_path):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        settings.DEBUG = False
+        # Errors only: a configured root may still draw the W002 warning about
+        # live subscribers, which is a different subject and has its own test.
+        errors = [m for m in check_store_backend(None) if m.id.startswith("rakaia.E")]
+        assert errors == []
 
 
 class TestUnknownBackendIsRefused:
@@ -126,6 +175,60 @@ class TestTheCacheAndItsReset:
     def test_reset_is_safe_on_an_empty_cache(self):
         reset_store_cache()
         reset_store_cache()
+
+
+class TestTheJsonlStoreDoesNotBroadcast:
+    """A capability the durable store has and this one cannot.
+
+    `DjangoStreamStore` publishes every append over channels as it writes it.
+    `JsonlStreamStore` lives in the framework-independent package and has no way
+    to reach Django, so a deployment that switches backends and has live
+    consumers would find them going quietly silent. A warning at
+    `manage.py check` is where this repo puts that kind of surprise.
+    """
+
+    def test_jsonl_with_channels_installed_warns(self, settings, tmp_path):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        warnings = check_store_backend(None)
+        assert [w.id for w in warnings] == ["rakaia.W002"]
+
+    def test_the_durable_store_is_silent_about_broadcasting(self, settings):
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "durable"
+        assert [w.id for w in check_store_backend(None)] == []
+
+    def test_jsonl_without_channels_is_silent(self, settings, tmp_path, monkeypatch):
+        """The other direction, which nothing held.
+
+        Only the positive case was asserted, so a check that warned whatever was
+        installed would ship — and a warning every deployment sees is a warning
+        every deployment silences.
+
+        The stub goes on `apps.is_installed`, the dependency *underneath*
+        `_channels_is_installed`, not on that helper itself. Patching the helper
+        tests the patch: stubbing it out here left `_channels_is_installed`
+        mutable to a bare `return True` with this test still green, which is the
+        failure this whole file exists to refuse.
+        """
+        from django.apps import apps
+
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        settings.DEBUG = False
+        original = apps.is_installed
+        monkeypatch.setattr(
+            apps,
+            "is_installed",
+            lambda label: False if label == "channels" else original(label),
+        )
+
+        assert check_store_backend(None) == []
 
 
 class TestInMemoryInProductionIsFlagged:

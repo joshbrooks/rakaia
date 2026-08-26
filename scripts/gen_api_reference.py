@@ -44,6 +44,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "Reading and writing streams": (
         "Stream",
         "StreamStore",
+        "JsonlStreamStore",
         "DjangoStreamStore",
         "ReadableStore",
         "WritableStore",
@@ -51,6 +52,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "append_event",
         "append_if_changed",
         "seed_stream",
+        "migrate_stream",
+        "migrate_all",
+        "Migration",
         "create_stream_event",
         "AppendOptions",
         "AppendResult",
