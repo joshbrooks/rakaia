@@ -48,12 +48,12 @@ import base64
 from dataclasses import dataclass, field
 
 from .json_mode import is_json_content_type
+from .offsets import is_syntactically_valid
 from .types import (
     SSE_CLOSED_FIELD,
     SSE_CURSOR_FIELD,
     SSE_OFFSET_FIELD,
     SSE_UP_TO_DATE_FIELD,
-    VALID_OFFSET_PATTERN,
 )
 
 # Response header names, title-cased by HTTP convention. `rakaia.types` holds
@@ -180,8 +180,8 @@ def read_param_error(
             return 400, b"Empty offset parameter"
         if offset_count > 1:
             return 400, b"Multiple offset parameters not allowed"
-        if not VALID_OFFSET_PATTERN.match(offset):
-            return 400, b"Invalid offset format"
+        if not is_syntactically_valid(offset):
+            return 400, b"Invalid offset"
 
     # Long-poll and SSE both require an explicit offset: without one there is no
     # position to wait from.

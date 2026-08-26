@@ -211,10 +211,10 @@ async def _send_producer_response(
 
 # The response header names live in `.read_decision`, the module that decides
 # what a read's headers are; they are imported above and used by the write paths
-# here too. `VALID_OFFSET_PATTERN` lives in `.types` (the single source of truth,
-# #41) and is now read only by `read_decision.read_param_error`. It is a
-# syntactic guard only — an offset's meaning belongs to the store that issued it,
-# and the two stores use different formats.
+# here too. Offset validity lives in `.offsets` with the rest of a position's
+# rules (#206, #226) and is read only by `read_decision.read_param_error`. It is
+# a syntactic guard only — it refuses what a URL cannot carry, and nothing about
+# shape, because an offset's meaning belongs to the store that issued it.
 
 # Strict integer pattern for producer headers
 STRICT_INTEGER_PATTERN = re.compile(r"^\d+$")

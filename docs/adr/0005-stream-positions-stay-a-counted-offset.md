@@ -98,11 +98,15 @@ backwards would violate the protocol's own MUST.
 
 Three further costs are concrete, and two of them were not in the issue:
 
-1. **Our own server would reject a ULID.** `VALID_OFFSET_PATTERN`
-   (`src/rakaia/types.py:66`) is `^(-1|now|\d+(_\d+)?)$` — digits only — and
-   `read_decision.py:183` guards every client-supplied offset with it. It is also
-   the one position rule #206 did not move into `rakaia.offsets`, so it is the
-   first thing any ULID work has to relocate and widen.
+1. **Our own server would reject a ULID.** `VALID_OFFSET_PATTERN` (then in
+   `rakaia.types`) was `^(-1|now|\d+(_\d+)?)$` — digits only — and guarded every
+   client-supplied offset. It was also the one position rule #206 did not move
+   into `rakaia.offsets`, so it was named here as the first thing any ULID work
+   would have to relocate and widen. **Done, 2026-08-26 (#226):** it is
+   `offsets.is_syntactically_valid`, and it now implements §6's actual rule — no
+   forbidden characters, no whitespace, under 256 — rather than enumerating
+   rakaia's own formats. This cost is retired, and it was worth paying whether or
+   not we ever mint a ULID, which is decision 3 below.
 2. **Block allocation is a genuine density dependence.** The bulk-append path
    reserves one contiguous integer block and assigns `start + i`
    (`src/django_rakaia/django_store.py:975-978`). Nothing depends on offsets being
@@ -158,6 +162,13 @@ It is a position rule living outside `rakaia.offsets`, and it is digits-only, so
 would reject a conforming third-party offset a client legitimately holds. Moving
 and widening it is worth doing on its own merits and does not commit us to minting
 ULIDs. Tracked separately rather than folded in here.
+
+> **Done 2026-08-26 (#226).** `offsets.is_syntactically_valid` replaces it and
+> implements §6 rather than an enumeration of our two formats. The guard now
+> refuses only what a URL cannot carry; a token that is merely not *this* store's
+> is refused by the store, with the same 400. Both parts of the claim above held:
+> it did belong in `rakaia.offsets`, and widening it committed us to nothing —
+> the decision to keep counted offsets is unchanged.
 
 ## Alternatives considered
 

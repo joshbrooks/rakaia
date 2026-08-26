@@ -37,9 +37,9 @@ from .types import (
 )
 
 # This module neither renders nor validates the offset format itself: both are
-# `COMPOUND`'s job (`rakaia.offsets`). It still does not import
-# `VALID_OFFSET_PATTERN` — that is the protocol server's syntactic guard on what
-# a *client* may send, and it accepts both stores' shapes by design (#41), so it
+# `COMPOUND`'s job (`rakaia.offsets`). It still does not use
+# `offsets.is_syntactically_valid` — that is the protocol server's guard on what
+# a *client* may send, and it refuses only what no store could have issued, so it
 # cannot tell a foreign offset from one of ours.
 
 _log = logging.getLogger("rakaia.store")
@@ -705,7 +705,7 @@ class StreamStore:
         store emits, so a resume read returns nothing and the client is told it
         is up to date, having skipped the whole stream. The protocol makes
         offsets opaque rather than uniform (§6), so only the issuing store can
-        judge — `VALID_OFFSET_PATTERN` accepts both formats by design.
+        judge — the server's guard refuses only what no store could have issued.
         """
         COMPOUND.require(offset)
 

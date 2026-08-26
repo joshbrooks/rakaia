@@ -7,7 +7,6 @@ and protocol constants.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -46,24 +45,11 @@ SSE_CLOSED_FIELD = "streamClosed"
 # Offset format: zero-padded 16-digit numbers separated by underscore
 INITIAL_OFFSET = "0000000000000000_0000000000000000"
 
-# Canonical offset-validation pattern: an opaque digit token — `{digits}` or
-# `{digits}_{digits}` — or the sentinels `-1` (stream start) / `now` (current
-# tail).
-#
-# Both documented offset formats must pass: the in-memory `StreamStore` emits
-# the compound `{seq}_{byte}` form, the durable `DjangoStreamStore` a
-# zero-padded integer. The pattern previously accepted only the compound form,
-# which was invisible while the server could only ever be handed the in-memory
-# store — the moment the durable store backed it, every resume read (`GET
-# ?offset=…`) 400'd on an offset the server itself had just issued.
-#
-# This is a syntactic guard against junk in a URL, nothing more. The protocol
-# mandates that offsets are opaque, not that they share one format (§6), so
-# meaning belongs to the store that issued it (#49, #41). Accepting both formats
-# therefore means a store *will* be handed the other's: each rejects one it did
-# not issue with `InvalidOffset`, rather than reading from whichever position it
-# happens to parse to.
-VALID_OFFSET_PATTERN = re.compile(r"^(-1|now|\d+(_\d+)?)$")
+# `VALID_OFFSET_PATTERN` used to live here. It enumerated rakaia's own two
+# formats, which made it a *format* check wearing a *syntax* check's docstring,
+# and it is now `rakaia.offsets.is_syntactically_valid` — the last of a stream
+# position's rules to move there (#206, #226). Nothing in this module decides
+# what an offset may look like any more.
 
 # Default port for standalone servers
 DEFAULT_PORT = 4437
@@ -119,11 +105,12 @@ class EmptyJsonArray(StreamError, ValueError):
 class InvalidOffset(StreamError, ValueError):
     """An offset is syntactically valid but not one this store can read.
 
-    `VALID_OFFSET_PATTERN` is a syntactic guard shared by every server; it
+    `offsets.is_syntactically_valid` is the guard shared by every server; it
     cannot tell whether a given token is an offset *this* store issued, because
-    the protocol makes offsets opaque rather than uniform (§6). A store that
-    cannot interpret the token must say so, rather than parse it into some
-    other position and read the wrong window.
+    the protocol makes offsets opaque rather than uniform (§6) — it only refuses
+    what no store could have issued. A store that cannot interpret the token
+    must say so, rather than parse it into some other position and read the
+    wrong window.
     """
 
 

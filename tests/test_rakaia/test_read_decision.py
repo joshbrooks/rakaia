@@ -189,10 +189,16 @@ class TestTheParameterRefusals:
             b"Multiple offset parameters not allowed",
         )
 
-    def test_an_unparseable_offset_is_400(self):
+    def test_an_offset_no_store_could_have_issued_is_400(self):
+        """The body says `Invalid offset`, not `Invalid offset format`.
+
+        The guard no longer knows anything about *format* — it refuses only what
+        a URL cannot carry (#226), here a space. A token that is merely not this
+        store's is refused by the store, with the same status.
+        """
         assert read_param_error(offset="not an offset!", live=None) == (
             400,
-            b"Invalid offset format",
+            b"Invalid offset",
         )
 
     @pytest.mark.parametrize(
