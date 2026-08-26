@@ -124,8 +124,8 @@ class TestBugsTheDeletedImplementationHad:
     ) -> None:
         """Not the wrong window, and not a 500.
 
-        `VALID_OFFSET_PATTERN` accepts both stores' formats — it has to, since
-        the protocol makes offsets opaque rather than uniform (§6) — so the
+        The server's guard accepts any shape a store might issue — it has to,
+        since the protocol makes offsets opaque rather than uniform (§6) — so the
         compound `{seq}_{byte}` form reaches a durable-backed server looking
         perfectly valid. Python's `int()` would even parse it, treating the
         underscore as a digit separator, and read from an unrelated position:

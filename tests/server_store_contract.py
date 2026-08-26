@@ -1065,11 +1065,11 @@ class ServerStoreContract:
         """An offset this store did not issue must fail, not resolve to some
         other position.
 
-        `VALID_OFFSET_PATTERN` is a shared *syntactic* guard and cannot tell
-        whose offset a token is — the protocol makes them opaque, not uniform
-        (§6). A store that parses one leniently silently returns the wrong
-        window: `int("0_5")` is 5 in Python, so the in-memory store's compound
-        offset reads as an unrelated position rather than an error.
+        The server's syntactic guard cannot tell whose offset a token is — the
+        protocol makes them opaque, not uniform (§6). A store that parses one
+        leniently silently returns the wrong window: `int("0_5")` is 5 in
+        Python, so the in-memory store's compound offset reads as an unrelated
+        position rather than an error.
         """
         from rakaia.types import InvalidOffset
 

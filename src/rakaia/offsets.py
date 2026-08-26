@@ -1,9 +1,9 @@
-"""What a stream position is, per store — all five rules in one place each.
+"""What a stream position is — the per-store rules, and the one that is not.
 
-An offset has about five rules: what the first one is, how wide it is, how to
-make the next one, how to tell a valid one, and how to compare two. Both stores
-implement the same idea in different bytes, so there is a real shared shape here;
-it had simply never been written down. Before this module:
+An offset has about five rules *per format*: what the first one is, how wide it
+is, how to make the next one, how to tell one of its own, and how to compare two.
+Every store implements the same idea in different bytes, so there is a real
+shared shape here; it had simply never been written down. Before this module:
 
 * the durable store kept four of its five in `django_rakaia/offsets.py`;
 * the in-memory store had them spread across `types.py` and `store.py`, with the
@@ -41,6 +41,15 @@ that builds a cursor with the wrong store, and a saved cursor that has been
 corrupted or hand-edited. Refusing turns both into an error naming the offset
 instead of a `rewound` result, which claims the log was rebuilt and tells the
 consumer to discard its derived state.
+
+**The sixth rule belongs to no format, and lives here anyway.**
+`is_syntactically_valid` is the protocol server's guard on what a *client* may
+send, and it deliberately knows nothing about shape — it refuses only what a URL
+cannot carry, because §6 makes offsets opaque and a third-party store's format is
+as valid as ours. It is here rather than in `types.py`, where it used to sit
+enumerating our own two formats, because this is where a position's rules live
+(#226); it is not a sixth member of `OffsetFormat`, because it is the one
+question that must be answerable *without* knowing which store issued the token.
 """
 
 from __future__ import annotations
@@ -53,12 +62,60 @@ from .types import InvalidOffset
 __all__ = [
     "COMPOUND",
     "FORMATS",
+    "MAX_OFFSET_LENGTH",
     "PLAIN",
     "ForeignOffset",
     "OffsetFormat",
     "after",
     "format_of",
+    "is_syntactically_valid",
 ]
+
+#: The longest offset a URL should carry, from `docs/protocol.md` §6 ("Servers
+#: **SHOULD** keep offsets reasonably short (under 256 characters) since they
+#: appear in every request URL").
+MAX_OFFSET_LENGTH = 256
+
+#: The characters §6 forbids outright, because they collide with query-string
+#: syntax and would split one offset into several parameters.
+_FORBIDDEN_IN_OFFSET = frozenset(",&=?/")
+
+
+def is_syntactically_valid(token: str) -> bool:
+    """Whether `token` could be *any* store's offset — not whether it is ours.
+
+    This is the guard a protocol server puts in front of a client-supplied
+    offset, and the whole of what it may check. `docs/protocol.md` §6 gives the
+    rule verbatim: offsets are opaque, case-sensitive single tokens; they **MUST
+    NOT** contain ``,`` ``&`` ``=`` ``?`` ``/``; they **SHOULD** be URL-safe and
+    under 256 characters. Everything past that is the issuing store's business.
+
+    It used to enumerate rakaia's own two formats — a *format* check wearing a
+    *syntax* check's docstring — and that had already failed once. The pattern
+    accepted only the compound form, which was invisible while the server could
+    only be handed the in-memory store; the moment the durable store could back
+    it, every resume 400'd on an offset the server had just issued. Widening it
+    by one format fixed the instance and left the rule. A third-party store
+    minting ULIDs is a supported deployment (`StreamServerStore` is a documented
+    seam with its own conformance suite) and would have hit the same wall.
+
+    **Nothing is let through that was not already refused one layer down.** A
+    token this accepts is handed to the store, and a store rejects one it did
+    not issue — `OffsetFormat.require` raises `ForeignOffset`, which is an
+    `InvalidOffset`, which the handler maps to the same 400. What changes is
+    which layer decides, and the store is the layer the design already names as
+    the authority. What that costs is a store call instead of a regex match for
+    junk, which is real and negligible.
+
+    Whitespace is refused even though §6 does not name it: the spec asks for
+    URL-safe characters, and a token with a space in it is far more likely to be
+    a mangled request than a store's considered choice of format.
+    """
+    if not token or len(token) >= MAX_OFFSET_LENGTH:
+        return False
+    if any(c in _FORBIDDEN_IN_OFFSET for c in token):
+        return False
+    return not any(c.isspace() for c in token)
 
 
 class ForeignOffset(InvalidOffset):
@@ -110,11 +167,12 @@ class OffsetFormat:
         """Whether `token` is one this format issues.
 
         Only a format can answer this, which is why the check cannot be shared
-        across stores as a single syntactic guard. `types.VALID_OFFSET_PATTERN`
-        deliberately accepts **both** shapes — it is the protocol server's guard
-        on what a client may send — so it cannot tell a durable offset from an
-        in-memory one. Nor can `int()`: it reads ``_`` as a digit separator, so
-        the in-memory ``{seq}_{byte}`` parses cleanly into an unrelated number.
+        across stores as a single syntactic guard. `is_syntactically_valid` in
+        this module accepts **any** shape a store might issue — it is the
+        protocol server's guard on what a client may send — so it cannot tell a
+        durable offset from an in-memory one, and does not try. Nor can `int()`:
+        it reads ``_`` as a digit separator, so the in-memory ``{seq}_{byte}``
+        parses cleanly into an unrelated number.
         """
         return bool(self.pattern.match(token))
 
