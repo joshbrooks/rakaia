@@ -202,6 +202,70 @@ class TestRakaiaSurface:
         assert [n for n in rakaia.__all__ if n.startswith("_")] == ["__version__"]
 
 
+class TestTheLazyRootAndItsTypeCheckingBlockAgree:
+    """The package root resolves exports lazily, so it carries the same list
+    twice: `_EXPORTS`, which the runtime uses, and a `TYPE_CHECKING` block, which
+    is the only thing pyright can follow. Two lists drift.
+
+    Drift here is silent in the worst way. A name missing from the block still
+    *works* — `__getattr__` returns it — but pyright types it as `Any`, so every
+    annotation checked against it stops being checked and nothing goes red. That
+    is also what `pyproject.toml`'s `F401` exemption for this file leans on: ruff
+    can no longer see the block's imports as used, so this is what keeps them
+    honest instead.
+    """
+
+    @staticmethod
+    def _type_checking_imports() -> set[str]:
+        import ast
+        import pathlib
+
+        source = pathlib.Path(rakaia.__file__).read_text()
+        for node in ast.walk(ast.parse(source)):
+            is_guard = (
+                isinstance(node, ast.If)
+                and isinstance(node.test, ast.Name)
+                and node.test.id == "TYPE_CHECKING"
+            )
+            if not is_guard:
+                continue
+            return {
+                alias.asname or alias.name
+                for child in ast.walk(node)
+                if isinstance(child, ast.ImportFrom)
+                for alias in child.names
+            }
+        raise AssertionError("no `if TYPE_CHECKING:` block in rakaia/__init__.py")
+
+    def test_the_block_covers_every_lazily_resolved_name(self):
+        lazily_resolved = set(rakaia._EXPORTS) - {"replay"}
+
+        missing = lazily_resolved - self._type_checking_imports()
+
+        assert not missing, (
+            f"in `_EXPORTS` but not the TYPE_CHECKING block: {sorted(missing)}. "
+            "These still import at runtime, and pyright silently types them "
+            "`Any` — add them to the block."
+        )
+
+    def test_the_block_imports_nothing_that_is_not_exported(self):
+        """The other direction, which ruff used to catch and no longer can."""
+        extra = self._type_checking_imports() - set(rakaia._EXPORTS)
+
+        assert not extra, (
+            f"imported for type checkers but not exported: {sorted(extra)}. "
+            "An unused import in that block is invisible to ruff now that the "
+            "file is F401-exempt."
+        )
+
+    def test_replay_is_bound_eagerly_rather_than_listed_in_the_block(self):
+        """`replay` is the one name that cannot be lazy, so it must not be in
+        the block: it is imported unconditionally, and a second import under
+        `TYPE_CHECKING` would be a redefinition that hides which one wins."""
+        assert "replay" not in self._type_checking_imports()
+        assert "replay" in rakaia._EXPORTS
+
+
 class TestDjangoRakaiaSurface:
     def test_all_is_exactly_the_pinned_set(self):
         import django_rakaia
