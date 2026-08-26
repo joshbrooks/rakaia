@@ -1,9 +1,9 @@
-"""What a stream position is, per store — all five rules in one place each.
+"""What a stream position is — the per-store rules, and the one that is not.
 
-An offset has about five rules: what the first one is, how wide it is, how to
-make the next one, how to tell a valid one, and how to compare two. Both stores
-implement the same idea in different bytes, so there is a real shared shape here;
-it had simply never been written down. Before this module:
+An offset has about five rules *per format*: what the first one is, how wide it
+is, how to make the next one, how to tell one of its own, and how to compare two.
+Every store implements the same idea in different bytes, so there is a real
+shared shape here; it had simply never been written down. Before this module:
 
 * the durable store kept four of its five in `django_rakaia/offsets.py`;
 * the in-memory store had them spread across `types.py` and `store.py`, with the
@@ -41,6 +41,15 @@ that builds a cursor with the wrong store, and a saved cursor that has been
 corrupted or hand-edited. Refusing turns both into an error naming the offset
 instead of a `rewound` result, which claims the log was rebuilt and tells the
 consumer to discard its derived state.
+
+**The sixth rule belongs to no format, and lives here anyway.**
+`is_syntactically_valid` is the protocol server's guard on what a *client* may
+send, and it deliberately knows nothing about shape — it refuses only what a URL
+cannot carry, because §6 makes offsets opaque and a third-party store's format is
+as valid as ours. It is here rather than in `types.py`, where it used to sit
+enumerating our own two formats, because this is where a position's rules live
+(#226); it is not a sixth member of `OffsetFormat`, because it is the one
+question that must be answerable *without* knowing which store issued the token.
 """
 
 from __future__ import annotations
