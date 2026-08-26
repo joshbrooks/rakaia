@@ -234,6 +234,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-142 exported names across 14 sections. 126 carry a docstring; 16 do not and show `—` above.
+143 exported names across 14 sections. 127 carry a docstring; 16 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

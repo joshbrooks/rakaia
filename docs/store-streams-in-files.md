@@ -65,7 +65,9 @@ function for it:
 from rakaia import migrate_stream, JsonlStreamStore
 from django_rakaia.django_store import DjangoStreamStore
 
-result = migrate_stream(DjangoStreamStore(), JsonlStreamStore("/var/lib/rakaia"), "submissions")
+result = migrate_stream(
+    DjangoStreamStore(), JsonlStreamStore("/var/lib/rakaia"), "submissions"
+)
 ```
 
 The copy carries the events, their labels and metadata, their logical
@@ -76,11 +78,11 @@ first and then checks, and tells you:
 
 ```python
 if result.cursors_valid:
-    ...                       # consumers resume where they left off
+    ...  # consumers resume where they left off
 else:
-    ...                       # reset consumers before starting them again
+    ...  # reset consumers before starting them again
 for note in result.notes:
-    print(note)               # anything the copy could not carry
+    print(note)  # anything the copy could not carry
 ```
 
 Between the database-backed and file-backed stores, positions normally survive:
