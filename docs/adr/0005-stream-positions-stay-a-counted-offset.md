@@ -25,15 +25,18 @@ declared in one place since #206 (`src/rakaia/offsets.py`):
 | `COMPOUND` | `{read_seq:016d}_{byte_offset:016d}` | in-memory `StreamStore` |
 | `PLAIN` | `{entry_id:020d}` | `DjangoStreamStore` **and** `JsonlStreamStore` |
 
-> **Amended 2026-08-26 (#233).** The third row is the amendment. When this was
-> written there were two stores and two formats, one each, and the table read as a
-> one-to-one mapping. `JsonlStreamStore` (#229) reuses `PLAIN` — deliberately, since
-> it counts entries exactly as the durable store does, which is what lets a copy
-> between the two preserve offsets exactly.
+> **Amended 2026-08-26 (#233).** The amendment is the second store on the `PLAIN`
+> row — not a new row, and that is the whole point. When this was written there were
+> two stores and two formats, one each, and the table read as a one-to-one mapping
+> between them. It is still two formats; it is no longer two stores.
+> `JsonlStreamStore` (#229) reuses `PLAIN` — deliberately, since it counts entries
+> exactly as the durable store does, which is what lets a copy between the two
+> preserve offsets exactly.
 >
-> The consequence the two-row version could not state: **two backends now issue the
-> same format, so `offsets.after` can no longer tell a foreign cursor from a local
-> one.** Every cross-store cursor used to be refused by accident of shape; that now
+> The consequence a one-store-per-format table could not state: **two backends now
+> issue the same format, so `offsets.after` can no longer tell a foreign cursor from
+> a local one.** Every cross-store cursor used to be refused by accident of shape;
+> that now
 > holds for two of the three pairs. A `DjangoStreamStore` cursor is accepted by
 > `JsonlStreamStore` and vice versa — silently, and wrongly, when it sits at or below
 > the other store's head. [#232](https://github.com/joshbrooks/rakaia/issues/232)

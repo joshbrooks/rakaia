@@ -1,6 +1,6 @@
 """What a saved position does when it meets the wrong store (ADR 0006, #233).
 
-ADR 0006 states a three-row table: which pairs of stores refuse each other's
+ADR 0006 states a two-row table: which pairs of stores refuse each other's
 cursors, and which pair accepts them silently. That table is the whole reason
 the ADR exists — the rule it decides ("changing a backend is a copy") follows
 from the one row that fails without saying so.
@@ -61,8 +61,9 @@ class TestTheFormatsEachStoreIssues:
 
 
 class TestAcrossFormatsACursorIsRefused:
-    """The two loud rows. Byte-compatible or not, a format that belongs to
-    another store is refused rather than resolved to a position of its own."""
+    """The loud row, both directions of it. Byte-compatible or not, a format
+    that belongs to another store is refused rather than resolved to a position
+    of its own."""
 
     def test_a_file_cursor_is_refused_by_the_in_memory_store(self, memory, files):
         cursor = poll(files, PATH, None).cursor
