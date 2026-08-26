@@ -16,6 +16,7 @@ threaded through rather than dropped.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 
 import httpx
@@ -100,8 +101,14 @@ class TestOptionsAreThreadedThrough:
     async def test_a_supplied_option_reaches_the_app(
         self, given_store: StreamStore
     ) -> None:
-        """A long poll at the tail waits out the server's window, so a short one
-        is observable: on the 3.0s default this would exceed the timeout below.
+        """A long poll at the tail waits out the server's own window, so a short
+        one is observable *as elapsed time* and only as that.
+
+        The obvious form of this test — pass `timeout=` to the client and assert
+        a status — proves nothing: `httpx.ASGITransport` calls the app in-process
+        with no network layer, so it never enforces a client timeout. Dropping
+        `options=options` from the call below leaves that version green, merely
+        60x slower. Hence the wall clock.
         """
         options = ServerOptions()
         options.long_poll_timeout = 0.05
@@ -109,6 +116,11 @@ class TestOptionsAreThreadedThrough:
         app = get_asgi_app(options=options, store=given_store)
         async with _client(app) as client:
             await client.put("/s", headers=JSON)
-            read = await client.get("/s?offset=now&live=long-poll", timeout=1.0)
+            started = time.monotonic()
+            read = await client.get("/s?offset=now&live=long-poll")
+            elapsed = time.monotonic() - started
 
         assert read.status_code in (200, 204)
+        # Generous against the 0.05s asked for, decisive against the 3.0s
+        # default a dropped `options` would fall back to.
+        assert elapsed < 1.0, f"long poll waited {elapsed:.2f}s; option not applied"

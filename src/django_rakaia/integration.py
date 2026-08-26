@@ -1,12 +1,11 @@
-from typing import Any
-
 from rakaia import ServerOptions, create_app
+from rakaia.protocols import StreamServerStore
 
 from .store import get_store
 
 
 def get_asgi_app(
-    options: ServerOptions | None = None, store: Any | None = None
+    options: ServerOptions | None = None, store: StreamServerStore | None = None
 ) -> object:
     """
     Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names.

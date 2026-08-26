@@ -14,8 +14,14 @@ DEFAULT_BACKEND = "memory"
 
 # One cached store instance per backend name. Keeping the in-memory store a
 # process-wide singleton is essential — it holds all stream state in memory —
-# so we never rebuild or replace it. The durable store is stateless (state
-# lives in the DB) but is cached for symmetry.
+# so nothing on the serving path rebuilds or replaces it. The durable store is
+# stateless (state lives in the DB) but is cached for symmetry.
+#
+# `reset_store_cache` below is the one thing that drops an entry, and it exists
+# for tests. Calling it against a live in-memory store orphans every stream it
+# holds, and any app already built keeps the old object — so the process ends up
+# serving two stores. That is why the way to *drive* a caller with a store of
+# your own is to pass one (`get_asgi_app(store=...)`), not to reset the cache.
 _stores: dict[str, Any] = {}
 _store_lock = threading.Lock()
 

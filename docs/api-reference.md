@@ -23,7 +23,7 @@ page is the contract.
 |---|---|---|---|
 | `app` | `rakaia` | `(scope: 'Scope', receive: 'Receive', send: 'Send') -> 'None'` | — |
 | `create_app` | `rakaia` | `(store: 'StreamServerStore \| None' = None, options: 'ServerOptions \| None' = None) -> 'Any'` | Create a plain ASGI application implementing the Durable Streams protocol. |
-| `get_asgi_app` | `django_rakaia` | `(options: rakaia.handler.ServerOptions \| None = None, store: typing.Any \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
+| `get_asgi_app` | `django_rakaia` | `(options: rakaia.handler.ServerOptions \| None = None, store: rakaia.protocols.StreamServerStore \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
 | `ServerOptions` | `rakaia` | `(long_poll_timeout: 'float' = 3.0, cursor_options: 'CursorOptions' = <factory>, enable_fault_injection: 'bool' = <factory>) -> None` | Configuration for the ASGI handler. |
 | `get_store` | `django_rakaia` | `() -> Any` | Get the configured stream store. |
 | `reset_store_cache` | `django_rakaia` | `() -> None` | Drop every memoised store, so the next `get_store()` rebuilds. |
