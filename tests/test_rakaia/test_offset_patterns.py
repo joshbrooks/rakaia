@@ -50,6 +50,17 @@ class TestAnOffsetNoStoreCouldHaveIssuedIsRefused:
         considered choice of format."""
         assert not is_syntactically_valid(value)
 
+    def test_the_ceiling_is_the_one_the_spec_names(self) -> None:
+        """The literal, not the constant.
+
+        Asserting the guard against `MAX_OFFSET_LENGTH` only proves the two
+        agree; the constant could be moved to 40 or 1024 and every other case
+        here would still pass. 40 would refuse exactly the conforming
+        third-party offset this change exists to admit, so the number is the
+        thing worth pinning.
+        """
+        assert MAX_OFFSET_LENGTH == 256, "docs/protocol.md §6: 'under 256'"
+
     def test_the_length_ceiling(self) -> None:
         assert is_syntactically_valid("9" * (MAX_OFFSET_LENGTH - 1))
         assert not is_syntactically_valid("9" * MAX_OFFSET_LENGTH)
