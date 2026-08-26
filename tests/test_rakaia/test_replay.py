@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -1422,3 +1423,30 @@ class TestSynthTransitions:
 
     def test_none_report_yields_nothing(self):
         assert _synth_transitions(None) == []
+
+    def test_the_payload_is_the_one_defined_beside_transition(self, monkeypatch):
+        """The shape is *owned* by `effects.transition_payload`, not re-invented
+        here.
+
+        Asserting the value cannot show this — an inline
+        ``{**patch, "key": …, "state": "resolved"}`` builds an equal dict, so
+        every other assertion in this class passes either way. Substituting the
+        shared definition is what distinguishes them: if the orchestrator went
+        back to assembling its own, the substitution would have no effect.
+
+        The patch goes through `sys.modules`, not the dotted string form.
+        ``monkeypatch.setattr("rakaia.replay.transition_payload", …)`` would
+        resolve `rakaia.replay` to the *function* — see this module's docstring
+        and item 1 of #161 — and silently patch nothing, which is the exact trap
+        that once produced a wrong measurement.
+        """
+        replay_module = sys.modules["rakaia.replay"]
+        monkeypatch.setattr(
+            replay_module, "transition_payload", lambda *_: {"sentinel": 1}
+        )
+
+        rows = [{"stream_key": "s", "alert_type": "a"}]
+        (t,) = _synth_transitions(
+            ApplyReport(retire_flips=[(self._retire({"resolved_at": "t2"}), rows)])
+        )
+        assert t.payload == {"sentinel": 1}

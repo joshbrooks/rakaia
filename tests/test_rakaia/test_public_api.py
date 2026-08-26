@@ -176,6 +176,7 @@ DJANGO_RAKAIA_PUBLIC = {
     "materialize_history",
     "poll_consumer",
     "rebuild_and_verify",
+    "reset_store_cache",
     "register_stream_event_admin",
     "replay_stream",
     "stream_model",

@@ -87,6 +87,7 @@ from .effects import (
     Update,
     Upsert,
     _WrittenFields,
+    transition_payload,
 )
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
@@ -391,14 +392,9 @@ def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
         # a generator body is a scope of its own.
         kind = eff.transition.kind
         out.extend(
-            ExternalEffect(
-                kind=kind,
-                # Spread patch first so the orchestrator's own `key`/`state`
-                # always win: reconcile_by_key is a generic primitive, and a
-                # patch column named `key` or `state` must not clobber the
-                # row identity or the transition state.
-                payload={**patch, "key": dict(identity), "state": "resolved"},
-            )
+            # The payload shape is defined beside `Transition`, which requests
+            # it — not here, which is only where it happens to be assembled.
+            ExternalEffect(kind=kind, payload=transition_payload(patch, identity))
             for identity in rows
         )
     return out

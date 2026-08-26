@@ -27,7 +27,7 @@ it lives inside ``Transition``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
@@ -136,6 +136,35 @@ class Transition:
                 "Transition has empty key_fields; it must name at least one "
                 "column identifying each flipped row."
             )
+
+
+#: The ``state`` every synthesised transition payload carries. A transition is
+#: emitted only for a row whose liveness sentinel actually flipped, so there is
+#: no other value it could take — there is no "still open" transition.
+TRANSITION_RESOLVED = "resolved"
+
+
+def transition_payload(
+    patch: Mapping[str, Any] | None, identity: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Build the payload a :class:`Transition` notification carries.
+
+    This is the shape a *consumer* actually receives, so it belongs next to the
+    `Transition` that requests it rather than at the one call site that happens
+    to assemble it. It used to be built inline in the replay orchestrator with
+    ``"resolved"`` written as a bare literal, which put the request and the
+    thing delivered against it in two different modules.
+
+    ``patch`` is spread first so the orchestrator's own ``key`` and ``state``
+    always win: ``reconcile_by_key`` is a generic primitive, and a patch column
+    named ``key`` or ``state`` must not clobber the row identity or the
+    transition state.
+    """
+    return {
+        **(patch or {}),
+        "key": dict(identity),
+        "state": TRANSITION_RESOLVED,
+    }
 
 
 # =============================================================================

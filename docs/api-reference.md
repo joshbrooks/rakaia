@@ -23,9 +23,10 @@ page is the contract.
 |---|---|---|---|
 | `app` | `rakaia` | `(scope: 'Scope', receive: 'Receive', send: 'Send') -> 'None'` | — |
 | `create_app` | `rakaia` | `(store: 'StreamServerStore \| None' = None, options: 'ServerOptions \| None' = None) -> 'Any'` | Create a plain ASGI application implementing the Durable Streams protocol. |
-| `get_asgi_app` | `django_rakaia` | `(options: rakaia.handler.ServerOptions \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
+| `get_asgi_app` | `django_rakaia` | `(options: rakaia.handler.ServerOptions \| None = None, store: typing.Any \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
 | `ServerOptions` | `rakaia` | `(long_poll_timeout: 'float' = 3.0, cursor_options: 'CursorOptions' = <factory>, enable_fault_injection: 'bool' = <factory>) -> None` | Configuration for the ASGI handler. |
 | `get_store` | `django_rakaia` | `() -> Any` | Get the configured stream store. |
+| `reset_store_cache` | `django_rakaia` | `() -> None` | Drop every memoised store, so the next `get_store()` rebuilds. |
 
 ## Reading and writing streams
 
@@ -229,6 +230,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-138 exported names across 14 sections. 122 carry a docstring; 16 do not and show `—` above.
+139 exported names across 14 sections. 123 carry a docstring; 16 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

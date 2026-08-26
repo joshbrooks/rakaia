@@ -65,3 +65,21 @@ def get_store() -> Any:
             # behind: correcting the setting works without restarting.
             _stores[backend] = _build_store(backend)
     return _stores[backend]
+
+
+def reset_store_cache() -> None:
+    """Drop every memoised store, so the next `get_store()` rebuilds.
+
+    **For tests.** `get_store()` memoises per backend name, which is what makes
+    the in-memory store a process-wide singleton — correct in production, and
+    exactly what leaks between tests that vary ``RAKAIA_STORE``. Without this,
+    the only way to clear the cache was to reach in and mutate the private
+    ``_stores`` dict, which is the one place the suite reached past an interface
+    by design.
+
+    Not a way to *swap* the configured store: to drive a caller with a store of
+    your own, pass one to `get_asgi_app(store=...)` or
+    `django_rakaia.replay(store=...)` rather than reconfiguring a global.
+    """
+    with _store_lock:
+        _stores.clear()

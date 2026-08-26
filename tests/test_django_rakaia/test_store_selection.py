@@ -18,19 +18,22 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 
 from django_rakaia.django_store import DjangoStreamStore
-from django_rakaia.store import get_store
+from django_rakaia.store import get_store, reset_store_cache
 from rakaia import StreamStore
 
 
 @pytest.fixture(autouse=True)
 def _clear_store_cache():
     """`get_store()` memoises per backend name; drop the cache around each test
-    so one test's selection can't satisfy the next one's lookup."""
-    from django_rakaia import store as store_module
+    so one test's selection can't satisfy the next one's lookup.
 
-    store_module._stores.clear()
+    This goes through `reset_store_cache()` rather than mutating the private
+    `_stores` dict, which is what this file used to do — the one place in the
+    suite that reached past an interface by design.
+    """
+    reset_store_cache()
     yield
-    store_module._stores.clear()
+    reset_store_cache()
 
 
 class TestBackendSelection:
@@ -86,16 +89,43 @@ class TestUnknownBackendIsRefused:
 
     def test_a_refused_backend_is_not_cached(self, settings):
         """A failed selection must not poison the cache — fixing the setting
-        without restarting the process has to work."""
-        from django_rakaia import store as store_module
+        without restarting the process has to work.
 
+        Asserted through behaviour rather than by inspecting the cache dict: if
+        the refusal had left an entry behind, the second call would hand it back
+        instead of raising again.
+        """
         settings.RAKAIA_STORE = "durrable"
         with pytest.raises(ImproperlyConfigured):
             get_store()
-        assert "durrable" not in store_module._stores
+        with pytest.raises(ImproperlyConfigured):
+            get_store()
 
         settings.RAKAIA_STORE = "memory"
         assert isinstance(get_store(), StreamStore)
+
+
+class TestTheCacheAndItsReset:
+    """`reset_store_cache()` replaces the private-dict poke this file used to do.
+
+    Both halves are asserted, because a no-op reset would pass a test that only
+    checked the second: memoisation has to be real for dropping it to mean
+    anything.
+    """
+
+    def test_the_same_backend_is_memoised(self, settings):
+        settings.RAKAIA_STORE = "memory"
+        assert get_store() is get_store()
+
+    def test_reset_forces_a_rebuild(self, settings):
+        settings.RAKAIA_STORE = "memory"
+        first = get_store()
+        reset_store_cache()
+        assert get_store() is not first
+
+    def test_reset_is_safe_on_an_empty_cache(self):
+        reset_store_cache()
+        reset_store_cache()
 
 
 class TestInMemoryInProductionIsFlagged:
