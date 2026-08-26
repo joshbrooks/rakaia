@@ -28,12 +28,15 @@ valid.
 What happens next depends on a detail nobody would think to check — whether the two
 stores issue the same offset *format*:
 
-| Old store → new store | What a resumed consumer gets |
+| Store pair | What a resumed consumer gets |
 |---|---|
-| in-memory → either other | `ForeignOffset`. Loud, immediate, correct. |
+| in-memory ↔ either other | `ForeignOffset`. Loud, immediate, correct. |
 | `DjangoStreamStore` ↔ `JsonlStreamStore` | **Accepted.** Both issue `PLAIN`. |
 
-The second row is new. Until `JsonlStreamStore` existed, every pair of stores
+Both are symmetric — a format is refused in whichever direction it is carried,
+and accepted in whichever direction too.
+
+The second entry is new. Until `JsonlStreamStore` existed, every pair of stores
 disagreed about format, so every cross-store cursor was refused by accident of
 shape. That protection is gone for one pair of three, and it was never a designed
 guarantee — `rakaia.offsets` refuses a cursor whose format it can see belongs to

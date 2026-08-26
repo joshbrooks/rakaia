@@ -1,9 +1,15 @@
 """What a saved position does when it meets the wrong store (ADR 0006, #233).
 
-ADR 0006 states a two-row table: which pairs of stores refuse each other's
-cursors, and which pair accepts them silently. That table is the whole reason
-the ADR exists — the rule it decides ("changing a backend is a copy") follows
-from the one row that fails without saying so.
+ADR 0006 states which pairs of stores refuse each other's cursors and which
+pair accepts them silently. That table is the whole reason the ADR exists — the
+rule it decides ("changing a backend is a copy") follows entirely from the pair
+that fails without saying so.
+
+Nothing below refers to a row by its position. Three successive drafts of these
+docstrings miscounted the table — a store added to a cell called a new row, two
+directions of one pair called two rows — so the numbering is simply not used.
+Each case is named by what it does instead, which cannot fall out of step with
+a table someone reorders.
 
 A table in a Markdown file rots. This pins it where it is decided, the way
 `test_producer_fencing_table.py` pins the fencing outcomes (#176). If someone
@@ -49,7 +55,8 @@ def files(tmp_path):
 
 
 class TestTheFormatsEachStoreIssues:
-    """Row one of the table: which store mints which format."""
+    """Which store mints which format — the fact the table is derived from,
+    rather than a row of it."""
 
     def test_the_in_memory_store_issues_compound(self, memory):
         assert format_of(memory.get_current_offset(PATH)) is COMPOUND
@@ -61,9 +68,9 @@ class TestTheFormatsEachStoreIssues:
 
 
 class TestAcrossFormatsACursorIsRefused:
-    """The loud row, both directions of it. Byte-compatible or not, a format
-    that belongs to another store is refused rather than resolved to a position
-    of its own."""
+    """Across two *different* formats, both directions. Byte-compatible or not,
+    a format that belongs to another store is refused rather than resolved to a
+    position of its own."""
 
     def test_a_file_cursor_is_refused_by_the_in_memory_store(self, memory, files):
         cursor = poll(files, PATH, None).cursor
@@ -77,7 +84,8 @@ class TestAcrossFormatsACursorIsRefused:
 
 
 class TestWithinOneFormatACursorIsAccepted:
-    """The silent row, and the reason ADR 0006 is a decision rather than a note.
+    """The case that fails silently, and the reason ADR 0006 is a decision
+    rather than a note.
 
     Two stores issuing the same format are indistinguishable to `offsets.after`,
     so a cursor crosses between them unchallenged. Both directions are pinned
