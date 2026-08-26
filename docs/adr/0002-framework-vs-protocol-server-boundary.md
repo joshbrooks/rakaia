@@ -1,6 +1,7 @@
 # ADR 0002 — Name the framework ↔ protocol-server boundary; formalize the framework seams
 
-- **Status:** Accepted (items 2 and 5 landed; boundary enforced 2026-08-21 — see the update notes below)
+- **Status:** Accepted (items 2 and 5 landed; boundary enforced 2026-08-21; the
+  package split declined and #191 closed 2026-08-26 — see the update notes below)
 - **Date:** 2026-07-21
 - **Deciders:** rakaia maintainers
 - **Related:** [`django-integration.md`](../django-integration.md),
@@ -122,6 +123,71 @@ This does not reopen or close #191; it replaces the guesswork in it with a
 measurement, and makes the cost of *not* splitting visible as a list of
 crossings that is currently one entry long.
 
+## Update — 2026-08-26: the split question is answered, and #191 closes
+
+The previous update deliberately left #191 open. It is closed now, not because
+the question got less interesting but because it has been measured twice with
+the same answer and there is nothing left to learn by asking a third time. **The
+tiers stay in one distribution.** What changed is that the last argument *for*
+splitting has been removed without splitting.
+
+**The boundary held through the largest change since it was written.** #229 added
+`JsonlStreamStore` and `migrate` — 1,405 lines of protocol-server code, a third
+store, and a tool that reads one store and writes another. The crossing list is
+still one entry. That is not luck: `test_the_tier_map_covers_every_module` fails
+on an unclassified module, so both new modules had to be placed in a tier as they
+landed, and the one-way rule was checked against them from their first commit.
+
+**Separability is now demonstrated rather than inferred.** Deleting the entire
+protocol-server tier from a copy of the tree and importing each framework module
+in turn: **11 of 12 import cleanly.** The single failure is `seed`, which is
+exactly the documented `ALLOWED_CROSSINGS` entry. The claim "a split would be
+mechanical" is no longer an argument from the import graph; it is a thing that
+was run.
+
+**The largest consumer would not benefit.** `django_rakaia`'s imports of `rakaia`
+are **16 framework, 3 protocol-server, 14 shared** — it is overwhelmingly a
+framework consumer that happens to serve the protocol. A framework/server split
+would leave it depending on all three resulting packages, so the biggest
+downstream gains no isolation and pays a three-way version matrix for it.
+
+**The one measurable cost of not splitting is gone.** The honest argument for a
+split was never install weight — the core has no runtime dependencies, so a
+framework consumer already installs nothing extra. It was that `import rakaia`
+eagerly loaded all ten protocol-server modules and *constructed an in-memory
+store*, because `app = create_app()` ran at module scope. Measured at 80ms and
+one unwanted store per process. Resolving the root's exports lazily (PEP 562, as
+`django_rakaia` already did) drops a framework consumer to **3ms and zero
+protocol-server modules**. A consumer now pays for the tier it uses, which is the
+benefit a split was being considered for.
+
+`replay` is the one export that cannot be lazy, and it is worth recording as a
+property of *this* seam rather than an implementation note: it is both a public
+name and a submodule, so importing the submodule binds the module over the
+function and `__getattr__` is never consulted. Left lazy, `from rakaia import
+replay` would return a function or a module depending on what else the process
+had imported — order-dependent, and worse than the shadowing described in #161
+item 1. It stays bound eagerly.
+
+### What would reopen this
+
+The trigger is no longer "the durable store grows into a protocol server"; that
+fired and was answered. The new ones, each a thing that would make a split buy
+something it does not buy today:
+
+- **The crossing list grows past one**, or an entry appears that is not a default
+  value. That is the tiers actually fusing, and the allowlist is where it shows.
+- **The shared vocabulary stops being tier-independent.** Four modules — `types`,
+  `protocols`, `json_mode`, `offsets` — currently depend on neither tier. A
+  shared module that needs one of them is the point where a third package stops
+  being optional.
+- **A consumer wants one tier without the other badly enough to say so.** Not
+  hypothetically: an actual report that installing the framework brings something
+  unwanted. Import cost no longer counts, since it has been paid down.
+- **The two tiers need different release cadences.** A protocol-conformance fix
+  that cannot ship because the framework half is mid-change is the cost a shared
+  distribution actually imposes, and nothing so far has hit it.
+
 ## Decision
 
 **Name the boundary and bring the framework-tier seams up to the protocol tier's
@@ -156,14 +222,17 @@ standard — without (yet) splitting the package.**
 | Option | Effort | Boundary clarity | Fixes consumer traps | Verdict |
 |---|---|---|---|---|
 | **Explicit boundary + formalize framework seams in place (chosen)** | Medium | High | Yes | **Chosen** |
-| Full package split (`rakaia-streams` + `rakaia-projections`) | High | Highest | Yes | Deferred — high churn; the tiers still share `StreamMessage`/store; revisit if divergence grows |
+| Full package split (`rakaia-streams` + `rakaia-projections`) | High | Highest | Yes | **Declined 2026-08-26** (#191) — separability demonstrated, but a split buys nothing left to buy; see the update above for the new triggers |
 | Boundary as docs only (no protocol formalization) | Low | Medium | No | Insufficient — the store/executor/reader seams need real, exported, conformance-tested protocols, not prose |
 | Status quo (leave fused, undocumented) | None | None | No | Rejected — the fusion traps keep reaching consumers |
 
-- **Full split** is the "correct" end-state but premature: the tiers genuinely
-  share types and the store object today, so splitting now trades one set of seams
-  for a harder cross-package one. This ADR keeps it on the table (item revisited
-  when/if the durable store grows a real protocol-server implementation).
+- **Full split** was recorded here as the "correct" end-state, deferred as
+  premature. Revisited twice (2026-08-21, 2026-08-26) and now declined: the tiers
+  are separable — demonstrated by deleting one and importing the other — but the
+  reasons to split have been answered without splitting, and the largest
+  consumer, `django_rakaia`, depends mostly on the framework and so would gain no
+  isolation from it. "Correct end-state" overstated it; a shared distribution
+  with an asserted boundary is a fine end-state.
 - **Docs-only** was rejected because the highest-impact issue (#36) is a *missing
   protocol + conformance suite*, which prose cannot substitute for.
 
