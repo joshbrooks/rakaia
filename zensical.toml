@@ -58,6 +58,7 @@ nav = [
             { "ADR 0003 — Handler hermeticity" = "adr/0003-handler-hermeticity.md" },
             { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
             { "ADR 0005 — Stream positions stay a counted offset" = "adr/0005-stream-positions-stay-a-counted-offset.md" },
+            { "ADR 0006 — Changing a backend is a copy" = "adr/0006-changing-backends-is-a-copy.md" },
         ] },
     ] },
     { "Look it up" = [

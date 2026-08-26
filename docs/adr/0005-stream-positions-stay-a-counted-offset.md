@@ -7,6 +7,8 @@
   vs protocol-server boundary); `docs/protocol.md` § *Strictly Increasing*;
   `src/rakaia/offsets.py`, `src/django_rakaia/offsets.py`,
   `src/django_rakaia/models.py`, `src/rakaia/types.py`.
+  [ADR 0006](./0006-changing-backends-is-a-copy.md) (changing a backend is a copy —
+  amends the format table below).
   Issues: [#138](https://github.com/joshbrooks/rakaia/issues/138) (this decision),
   #206 / #182 / #178 (one home for the five position rules — landed),
   #34 (global monotonicity — closed, and the reason the watermark exists),
@@ -21,7 +23,26 @@ declared in one place since #206 (`src/rakaia/offsets.py`):
 | Format | Shape | Store |
 |---|---|---|
 | `COMPOUND` | `{read_seq:016d}_{byte_offset:016d}` | in-memory `StreamStore` |
-| `PLAIN` | `{entry_id:020d}` | `DjangoStreamStore` |
+| `PLAIN` | `{entry_id:020d}` | `DjangoStreamStore` **and** `JsonlStreamStore` |
+
+> **Amended 2026-08-26 (#233).** The third row is the amendment. When this was
+> written there were two stores and two formats, one each, and the table read as a
+> one-to-one mapping. `JsonlStreamStore` (#229) reuses `PLAIN` — deliberately, since
+> it counts entries exactly as the durable store does, which is what lets a copy
+> between the two preserve offsets exactly.
+>
+> The consequence the two-row version could not state: **two backends now issue the
+> same format, so `offsets.after` can no longer tell a foreign cursor from a local
+> one.** Every cross-store cursor used to be refused by accident of shape; that now
+> holds for two of the three pairs. A `DjangoStreamStore` cursor is accepted by
+> `JsonlStreamStore` and vice versa — silently, and wrongly, when it sits at or below
+> the other store's head. [#232](https://github.com/joshbrooks/rakaia/issues/232)
+> proposes recording the issuing store beside the position;
+> [ADR 0006](./0006-changing-backends-is-a-copy.md) documents the rule that keeps a
+> deployment out of that state in the meantime.
+>
+> Nothing in the decision below changes. The widths, the lock and the ULID answer are
+> unaffected — this is the table catching up with a store that arrived after it.
 
 Both widths were chosen by hand — sixteen because the in-memory store's byte
 offset cannot exceed process memory, twenty because it covers a `BigAutoField`.
