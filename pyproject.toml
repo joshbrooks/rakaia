@@ -189,6 +189,17 @@ ignore = [
 # A Django `TestCase` in this example uses `assertEqual`/`assertRaises`, which is
 # the framework's own idiom rather than pytest's.
 "examples/formkit_submissions/**" = ["PT009", "PT027"]
+# The package root resolves its exports lazily (PEP 562), so its `__all__` is
+# built from a dict rather than written as a literal. Ruff cannot see through
+# that, and reads the `TYPE_CHECKING` block — which exists only so pyright can
+# follow names `__getattr__` provides at runtime — as ~100 unused imports.
+#
+# The alternative ruff accepts is the redundant-alias form, `from .x import y as
+# y` on every line. That silences it and is unreadable at this size, which is
+# the whole reason the block is written as ordinary imports. The names are still
+# checked: `test_public_api.py` asserts the block and `_EXPORTS` agree, and that
+# every exported name resolves — a real unused import here fails there.
+"src/rakaia/__init__.py" = ["F401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rakaia", "django_rakaia"]
