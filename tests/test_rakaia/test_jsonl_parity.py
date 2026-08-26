@@ -209,6 +209,36 @@ class TestExpiryReaping:
 
         assert not (root / PATH).exists()
 
+    def test_a_read_extends_the_window_and_keeps_the_stream_alive(self, root):
+        """The TTL slides on read, as it does for the durable store.
+
+        A stream read more often than its TTL must never expire; without the
+        `_touch` in `read` it expires on the wall clock regardless of traffic,
+        which silently deletes a stream someone is actively consuming. Deleting
+        that call left the whole suite green, so this is the test named for it.
+        """
+        store = JsonlStreamStore(root, fsync=False)
+        store.create(PATH, ttl_seconds=1)
+        store.append(PATH, b'{"n": 1}')
+
+        # Four reads across more than one whole TTL window.
+        for _ in range(4):
+            time.sleep(0.3)
+            assert store.read(PATH)[0], "a stream being read was reaped"
+
+        assert store.get(PATH) is not None
+
+    def test_a_stream_nobody_reads_still_expires(self, root):
+        """The control for the test above: the window slides on traffic, not
+        merely on being asked, or a TTL would never expire at all."""
+        store = JsonlStreamStore(root, fsync=False)
+        store.create(PATH, ttl_seconds=1)
+        store.append(PATH, b'{"n": 1}')
+
+        time.sleep(1.2)
+
+        assert store.get(PATH) is None
+
     def test_a_reaped_stream_does_not_reissue_its_offsets(self, root):
         """Reaping must retire the high mark, or a recreate hands out offsets a
         subscriber has already consumed."""

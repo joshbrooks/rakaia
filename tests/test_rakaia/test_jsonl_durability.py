@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -30,14 +31,31 @@ def root(tmp_path):
     return tmp_path / "streams"
 
 
+class _Fsyncs(list):
+    """The fds fsynced, plus how many of them were *directories*.
+
+    The split matters: the store syncs a directory from two places — after a
+    roll-over names a new segment, and inside every `_replace`. Both are the
+    same directory, so counting fsyncs, or even matching the inode, cannot tell
+    one from the other. Counting the directory syncs can, since removing either
+    site takes the total down by exactly one.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dirs: list[int] = []
+
+
 @pytest.fixture
 def fsyncs(monkeypatch):
-    """Every `os.fsync` the store issues."""
-    seen: list[int] = []
+    """Every `os.fsync` the store issues, directories tracked separately."""
+    seen = _Fsyncs()
     original = os.fsync
 
     def counting(fd):
         seen.append(fd)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            seen.dirs.append(fd)
         return original(fd)
 
     monkeypatch.setattr("rakaia.jsonl_store.os.fsync", counting)
@@ -130,20 +148,39 @@ def test_fsync_can_be_turned_off_for_a_root_with_no_disk_behind_it(root, fsyncs)
     assert fsyncs == []
 
 
+def _dir_syncs_for_append(store, fsyncs, payload):
+    """Directory syncs issued by one append, in isolation."""
+    fsyncs.clear()
+    fsyncs.dirs.clear()
+    store.append(PATH, payload)
+    return len(fsyncs.dirs)
+
+
 def test_a_new_segment_syncs_its_directory_entry(root, fsyncs):
     """A roll-over creates a file, and fsyncing a file does not commit the name
     that points at it. Without the directory sync a segment can survive a power
-    cut as data nothing can find."""
+    cut as data nothing can find.
+
+    Measured as the *difference* between a rolling and a non-rolling append,
+    not as a total. Every append already syncs this same directory once when
+    `_replace` swaps `meta.json` in, so a total — `len(fsyncs) >= 2`, which is
+    what this asserted first — is satisfied by that alone and stays green with
+    the roll-over sync deleted. The difference can only come from the roll-over.
+    """
     store = JsonlStreamStore(root, segment_size=4)
     store.create(PATH)
-    for i in range(3):
+    for i in range(2):
         store.append(PATH, json.dumps({"n": i}).encode())
 
-    fsyncs.clear()
-    store.append(PATH, b'{"n": 3}')  # rolls into a new segment
+    # Third append: segment 0 already exists, so nothing new is named.
+    steady = _dir_syncs_for_append(store, fsyncs, b'{"n": 2}')
+    # Fourth append: rolls into a segment whose name did not exist before.
+    rolling = _dir_syncs_for_append(store, fsyncs, b'{"n": 3}')
 
-    assert len(fsyncs) >= 2, (
-        "a roll-over synced the file but not the directory entry naming it"
+    assert steady >= 1, "an append should sync the directory when replacing meta"
+    assert rolling == steady + 1, (
+        f"a roll-over synced the directory {rolling} times and a steady append "
+        f"{steady}: the new segment's directory entry was not committed"
     )
 
 

@@ -236,6 +236,47 @@ class TestWhenTheOffsetsCannotLineUp:
         assert result.offsets_preserved is False
         assert result.cursors_valid is False
 
+    def test_a_target_that_cannot_report_its_head_is_not_assumed_preserved(self, files):
+        """The conservative branch, which is the one that must never say `True`.
+
+        `WritableStore` does not require `get_current_offset`, so a legitimate
+        target may be unable to answer. Unanswerable is not the same as equal:
+        reporting `cursors_valid` on a head nobody checked is precisely the
+        silent data-loss trap this report exists to prevent, and a consumer
+        would resume against it. Mutating the guard to `return True` left the
+        whole suite green, because every in-repo store has the method.
+        """
+        _seed(files, n=3)
+
+        class WriteOnly:
+            """A `WritableStore` and nothing more — legal, and unable to say
+            where its head is."""
+
+            def __init__(self) -> None:
+                self.written: list[bytes] = []
+
+            def has(self, path):  # noqa: ARG002
+                return False
+
+            def read(self, path, offset=None):  # noqa: ARG002
+                return [], True
+
+            def create(self, path, **kwargs):  # noqa: ARG002
+                return None
+
+            def append(self, path, data, options=None):  # noqa: ARG002
+                self.written.append(data)
+                return
+
+            def append_many(self, path, items):  # noqa: ARG002
+                self.written.extend(data for data, _ in items)
+                return
+
+        result = migrate_stream(files, WriteOnly(), PATH)
+
+        assert result.head_preserved is False
+        assert result.cursors_valid is False
+
 
 class TestRefusals:
     def test_an_absent_source_stream_raises(self, files, other_files):

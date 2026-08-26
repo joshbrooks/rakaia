@@ -10,10 +10,16 @@ So this file is the JSONL counterpart of `test_concurrent_appends.py` and
 the mechanism it holds, and has been shown to fail when that mechanism is
 removed.** A test that passes either way is not evidence, and does not belong.
 
-Two mechanisms are under test, not one. Five tests hold the `flock` in
+Three mechanisms are under test, not one. Five tests hold the `flock` in
 `_locked`. One holds the *separation* of the TTL window into its own file,
 which is what stops a reader clobbering a writer — the durable store gets that
-from `save(update_fields=[...])` and this store has to construct it.
+from `save(update_fields=[...])` and this store has to construct it. One holds
+the *uniqueness of the scratch name* every atomic replace writes through, which
+is what stops two of those unlocked window writes destroying each other.
+
+The last two are forced interleaves rather than races, and that is the point:
+both reproduce a handful of times in tens of thousands of operations when run
+flat out, so a test that needs luck to see them will not see them.
 
 Threads rather than processes for most of it, and that is not a weaker test:
 `flock` is associated with the *open file description*, not the process, so two
@@ -27,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -35,7 +42,7 @@ import time
 import pytest
 
 from rakaia.jsonl_store import JsonlStreamStore
-from rakaia.types import AppendOptions
+from rakaia.types import AppendOptions, StreamNotFound
 
 PATH = "s"
 
@@ -217,6 +224,58 @@ def test_a_reader_does_not_lose_a_concurrent_writers_head(root, monkeypatch):
     result = fresh.append(PATH, b'{"n": 6}')
     assert result.message is not None
     assert result.message.offset not in offsets, "an existing offset was reissued"
+
+
+def test_two_writers_do_not_race_for_one_scratch_file(root, monkeypatch):
+    """Every atomic replace writes to a scratch name nobody else shares.
+
+    `_replace` writes a temp file and renames it over the target. When that temp
+    name was a fixed ``.tmp``, two callers racing for it destroyed each other:
+    the first `replace` moved the shared file away, and the second failed with
+    `FileNotFoundError` on a path it had itself just created. A shared scratch
+    name is a lock by accident, and a broken one.
+
+    Two readers, not two writers, because the touch that extends the TTL window
+    runs *outside* the flock — deliberately, since last-write-wins on a
+    timestamp is the correct answer — so nothing serialises these two.
+
+    The interleave is forced, for the reason the test above is: raced flat out
+    this reproduces a handful of times in tens of thousands of reads. Both
+    threads are held at the fsync inside `_replace`, which is after the scratch
+    file is written and before it is renamed, so both are guaranteed to be
+    holding a scratch file at once.
+    """
+    reader_store = JsonlStreamStore(root, segment_size=8)
+    reader_store.create(PATH, ttl_seconds=3600)
+    reader_store.append(PATH, b'{"n": 0}')
+
+    barrier = threading.Barrier(2, timeout=10)
+    paused = threading.local()
+    original_fsync = os.fsync
+
+    def pausing_fsync(fd):
+        # The first fsync of each thread's `_replace` is the scratch file, which
+        # is exactly where both need to be at once.
+        if not getattr(paused, "done", False):
+            paused.done = True
+            barrier.wait()
+        return original_fsync(fd)
+
+    monkeypatch.setattr("rakaia.jsonl_store.os.fsync", pausing_fsync)
+
+    def reader() -> None:
+        JsonlStreamStore(root, segment_size=8).read(PATH)
+
+    # `_run` re-raises whatever a thread raised, so the shared-name failure —
+    # `FileNotFoundError` on the loser's own scratch path — surfaces here.
+    _run(reader, reader)
+
+    monkeypatch.undo()  # the barrier would catch the main thread's own fsync
+
+    # Both replaces landed, and neither left its scratch file behind.
+    assert (root / PATH / "activity").exists()
+    assert [p.name for p in (root / PATH).glob("*.tmp")] == []
+    assert JsonlStreamStore(root, segment_size=8).read(PATH)[0]
 
 
 def test_an_append_cannot_overtake_a_committed_close(store, root):
@@ -454,6 +513,36 @@ async def test_a_long_poll_still_times_out_when_nothing_writes(store):
     """The other half: a waiter with no writer returns empty, not hung."""
     head = store.get_current_offset(PATH)
     messages, timed_out, closed = await store.wait_for_messages(PATH, head, 0.3)
+
+    assert (messages, timed_out, closed) == ([], True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_long_poll_on_a_stream_that_never_existed_raises(root):
+    """The first of the two asymmetries `wait_for_messages` documents.
+
+    An absent stream on the *first* pass is a `StreamNotFound`, because the
+    client asked to wait on something that is not there — it must become a 404,
+    not a 204 after the full timeout. Only the mid-wait half of the pair was
+    covered, so dropping this branch left the suite green.
+    """
+    store = JsonlStreamStore(root, segment_size=8)
+
+    with pytest.raises(StreamNotFound):
+        await store.wait_for_messages("never-created", "0" * 20, 0.3)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_expires_mid_wait_times_out_instead(root):
+    """The second asymmetry, and the control for the first: once the waiter has
+    seen the stream, its disappearance is an ordinary timeout rather than a 404.
+    Without both, one branch can be deleted and the other still passes."""
+    store = JsonlStreamStore(root, segment_size=8, fsync=False)
+    store.create(PATH, ttl_seconds=1)
+    store.append(PATH, b'{"n": 0}')
+    head = store.get_current_offset(PATH)
+
+    messages, timed_out, closed = await store.wait_for_messages(PATH, head, 3.0)
 
     assert (messages, timed_out, closed) == ([], True, False)
 

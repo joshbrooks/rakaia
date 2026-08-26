@@ -201,6 +201,35 @@ class TestTheJsonlStoreDoesNotBroadcast:
         settings.RAKAIA_STORE = "durable"
         assert [w.id for w in check_store_backend(None)] == []
 
+    def test_jsonl_without_channels_is_silent(self, settings, tmp_path, monkeypatch):
+        """The other direction, which nothing held.
+
+        Only the positive case was asserted, so a check that warned whatever was
+        installed would ship — and a warning every deployment sees is a warning
+        every deployment silences.
+
+        The stub goes on `apps.is_installed`, the dependency *underneath*
+        `_channels_is_installed`, not on that helper itself. Patching the helper
+        tests the patch: stubbing it out here left `_channels_is_installed`
+        mutable to a bare `return True` with this test still green, which is the
+        failure this whole file exists to refuse.
+        """
+        from django.apps import apps
+
+        from django_rakaia.checks import check_store_backend
+
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path)
+        settings.DEBUG = False
+        original = apps.is_installed
+        monkeypatch.setattr(
+            apps,
+            "is_installed",
+            lambda label: False if label == "channels" else original(label),
+        )
+
+        assert check_store_backend(None) == []
+
 
 class TestInMemoryInProductionIsFlagged:
     """A correctly-spelt `"memory"` is legitimate in development and almost

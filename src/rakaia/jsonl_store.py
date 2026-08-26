@@ -29,10 +29,19 @@ What the spike does implement, because they are the parts that were uncertain:
 * **`append_many` is one buffer and one `write()`** under that lock, so a batch
   cannot leave a prefix behind (#214, #222).
 
-What it deliberately does not do: Windows (`fcntl` only), fsync durability,
-segment-skipping reads (it scans), or any attempt to make readers lock-free
-correctly. Those are the questions for the real implementation, not for the
-question this spike is asking.
+What it deliberately does not do, as shipped: **Windows** (`fcntl` only — the
+import is optional so `import rakaia` still works there, and the store refuses
+to be constructed rather than run unlocked), **NFS** (`flock` is not reliable
+across it), **readers do not take the lock**, and **appends are not broadcast**
+to live subscribers the way `DjangoStreamStore` broadcasts over channels, since
+this store cannot reach Django. `django_rakaia.checks` reports that last one as
+``rakaia.W002`` rather than leaving it to be discovered.
+
+Two things this list used to name are now implemented, and the note is kept
+because their absence was a documented limitation: **fsync durability** is on by
+default (a batch pays one sync per segment, and a new segment also syncs the
+directory entry naming it), and **reads skip segments** by filename index rather
+than scanning the whole log.
 """
 
 from __future__ import annotations
