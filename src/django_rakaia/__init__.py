@@ -65,6 +65,7 @@ _EXPORTS: dict[str, str] = {
     "SCRATCH_PATH": "django_rakaia.envelope",
     # -- stores -------------------------------------------------------------
     "get_store": "django_rakaia.store",
+    "reset_store_cache": "django_rakaia.store",
     "DjangoStreamStore": "django_rakaia.django_store",
     # -- replaying ----------------------------------------------------------
     "DjangoExecutor": "django_rakaia.effect_executor",

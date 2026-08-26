@@ -1,11 +1,20 @@
 from rakaia import ServerOptions, create_app
+from rakaia.protocols import StreamServerStore
 
 from .store import get_store
 
 
-def get_asgi_app(options: ServerOptions | None = None) -> object:
+def get_asgi_app(
+    options: ServerOptions | None = None, store: StreamServerStore | None = None
+) -> object:
     """
     Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names.
+
+    Pass `store` to supply one directly and skip the setting entirely. This
+    exists so the function can be *driven*: resolving the store internally left
+    the only way to exercise this entry point being to reconfigure a
+    process-wide cache, which is why it previously had no test coverage at all.
+    `django_rakaia.replay` takes the same argument for the same reason.
 
     A raw ASGI app, not a Django view: mount it in `asgi.py` by dispatching on
     the path and stripping the prefix — `URLRouter`/`path("streams/", …)` does
@@ -26,4 +35,6 @@ def get_asgi_app(options: ServerOptions | None = None) -> object:
                 return await protocol_app(scope, receive, send)
             return await django_app(scope, receive, send)
     """
-    return create_app(store=get_store(), options=options)
+    return create_app(
+        store=store if store is not None else get_store(), options=options
+    )

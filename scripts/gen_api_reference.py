@@ -39,6 +39,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "get_asgi_app",
         "ServerOptions",
         "get_store",
+        "reset_store_cache",
     ),
     "Reading and writing streams": (
         "Stream",

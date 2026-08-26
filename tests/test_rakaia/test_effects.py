@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from rakaia.effects import (
+    TRANSITION_RESOLVED,
     Delete,
     EffectCollisionError,
     Exclude,
@@ -18,6 +19,7 @@ from rakaia.effects import (
     Update,
     Upsert,
     check_disjoint_defaults,
+    transition_payload,
 )
 
 
@@ -142,6 +144,45 @@ class TestTransition:
         t = Transition(kind="k", key_fields=("a",))
         with pytest.raises(FrozenInstanceError):
             t.kind = "other"  # type: ignore[misc]
+
+
+class TestTransitionPayload:
+    """The payload a consumer receives, defined beside the request for it.
+
+    This used to be assembled inline in `replay._synth_transitions` with
+    ``"resolved"`` as a bare literal, so the `Transition` that *requests* a
+    notification and the shape actually *delivered* against it lived in two
+    modules. These pin the shape here; `test_replay.py` pins that the
+    orchestrator is what calls this.
+    """
+
+    def test_carries_identity_and_resolved_state(self):
+        payload = transition_payload({"note": "n"}, {"alert_type": "a", "id": 1})
+        assert payload == {
+            "note": "n",
+            "key": {"alert_type": "a", "id": 1},
+            "state": TRANSITION_RESOLVED,
+        }
+
+    def test_state_is_resolved(self):
+        assert TRANSITION_RESOLVED == "resolved"
+        assert transition_payload(None, {"id": 1})["state"] == "resolved"
+
+    def test_a_missing_patch_is_the_same_as_an_empty_one(self):
+        assert transition_payload(None, {"id": 1}) == transition_payload({}, {"id": 1})
+
+    @pytest.mark.parametrize("clobber", ["key", "state"])
+    def test_a_patch_cannot_clobber_key_or_state(self, clobber):
+        """`reconcile_by_key` is generic, so a patch column may genuinely be
+        named `key` or `state`. Row identity and transition state still win."""
+        payload = transition_payload({clobber: "from-patch"}, {"id": 1})
+        assert payload[clobber] != "from-patch"
+
+    def test_the_identity_is_copied_not_aliased(self):
+        identity = {"id": 1}
+        payload = transition_payload({}, identity)
+        identity["id"] = 2
+        assert payload["key"] == {"id": 1}
 
 
 class TestCheckDisjointDefaults:
