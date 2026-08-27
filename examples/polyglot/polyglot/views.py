@@ -2,15 +2,16 @@
 
 Visiting `/?lang=<code>` renders the marketing page using Translatable rows.
 The right-hand pane is an editor — saving a row triggers a post_save
-signal (see signals.py) that emits a StreamEvent into
-`translations:{langcode}`. Browsers tuned to that langcode update in
-place.
+signal (see signals.py) that appends a JSON record to
+`/translations/{langcode}`. Browsers tuned to that langcode update in
+place, over SSE served by the protocol server mounted in asgi.py.
 
 First request seeds the catalog so the page is never blank.
 """
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -18,6 +19,7 @@ from django.views.decorators.http import require_http_methods
 
 from polyglot.models import Translatable
 
+from .signals import ensure_stream, stream_path
 from .strings import CATALOG, DEFAULT_LANG, LANGUAGES
 
 
@@ -50,6 +52,12 @@ def landing(request: HttpRequest) -> HttpResponse:
     if langcode not in {code for code, _ in LANGUAGES}:
         langcode = DEFAULT_LANG
 
+    # The seeding above appends, which creates the stream on a fresh checkout.
+    # This covers the other order: rows already in the database and the stream
+    # directory deleted, where the page would otherwise render against an
+    # endpoint that 404s until someone saves.
+    ensure_stream(stream_path(langcode))
+
     strings = _strings_for(langcode)
     ids = _ids_for(langcode)
     entries = [
@@ -66,7 +74,8 @@ def landing(request: HttpRequest) -> HttpResponse:
             "languages": LANGUAGES,
             "entries": entries,
             "t": by_msgid,
-            "stream_id": f"translations:{langcode}",
+            "stream_id": stream_path(langcode),
+            "protocol_prefix": settings.POLYGLOT_PROTOCOL_PREFIX,
         },
     )
 
@@ -77,7 +86,7 @@ def update_translation(request: HttpRequest, pk: int) -> HttpResponse:
     obj = Translatable.objects.filter(pk=pk).first()
     if obj is not None:
         obj.msgstr = msgstr
-        obj.save()  # post_save → SSE update event
+        obj.save()  # post_save → append to the log → SSE update event
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return HttpResponse(status=204)
     return redirect(

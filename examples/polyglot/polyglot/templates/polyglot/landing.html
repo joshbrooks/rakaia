@@ -195,7 +195,7 @@
             </div>
         </header>
         <p style="color: var(--muted); font-size: 0.85em; font-family: system-ui, sans-serif;">
-            Stream: <code>{{ stream_id }}</code> — edits broadcast over SSE.
+            Stream: <code>{{ stream_id }}</code> — edits land in the log and are tailed over SSE.
         </p>
         <form id="editor-form" onsubmit="return false;">
             {% csrf_token %}
@@ -289,8 +289,18 @@
         // later refresh then logs "connection interrupted while page was
         // loading" because, as far as the browser is concerned, the page
         // never finished loading. Opening after `load` sidesteps that.
+        // The stream id IS the URL path the protocol server routes on, so it
+        // is appended to the mount point rather than encoded into a parameter.
+        // `live=sse` selects SSE, and `offset` is mandatory with it — there is
+        // no position to wait from otherwise, and the server answers a request
+        // without one with a 400. `offset=0` replays the whole log before
+        // blocking for more, which is what makes a reconnect converge: an
+        // EventSource reopens the same URL, and replaying every record in order
+        // leaves the preview holding the current value of each string.
+        // `offset=now` would be cheaper and would silently keep whatever the
+        // pane was showing when the connection dropped.
         const streamId = "{{ stream_id|escapejs }}";
-        const url = `/streams/api/streams/${encodeURIComponent(streamId)}/sse/`;
+        const url = `{{ protocol_prefix|escapejs }}${streamId}?live=sse&offset=0`;
         const liveEl = document.getElementById("live");
         const previewRoot = document.querySelector("section.preview");
         let es = null;
@@ -299,20 +309,27 @@
             es = new EventSource(url);
             es.onopen = () => liveEl.classList.remove("disconnected");
             es.onerror = () => liveEl.classList.add("disconnected");
-            es.onmessage = (msg) => {
-                let payload;
-                try { payload = JSON.parse(msg.data); } catch { return; }
-                const event = payload.event || payload;
-                const data = event.data || {};
-                const msgid = data.msgid;
-                if (!msgid) return;
-                // SSE only writes into the preview pane. Editor inputs are
-                // locally controlled — letting SSE replays touch them would
-                // resurrect stale values on every reconnect.
-                previewRoot
-                    .querySelectorAll(`[data-msgid="${CSS.escape(msgid)}"]`)
-                    .forEach(el => { el.textContent = data.msgstr || ""; });
-            };
+            // Named events, not `onmessage`. The protocol server emits an
+            // `event: data` frame per record and pairs each with an
+            // `event: control` frame carrying the offset and whether we are
+            // caught up; an unnamed `message` never arrives, so `onmessage`
+            // would sit silent forever.
+            es.addEventListener("data", (msg) => {
+                let records;
+                try { records = JSON.parse(msg.data); } catch { return; }
+                // The stream's content type is application/json, so the server
+                // frames a range as a JSON array — here always of one record.
+                for (const data of records) {
+                    const msgid = data.msgid;
+                    if (!msgid) continue;
+                    // SSE only writes into the preview pane. Editor inputs are
+                    // locally controlled — letting SSE replays touch them would
+                    // resurrect stale values on every reconnect.
+                    previewRoot
+                        .querySelectorAll(`[data-msgid="${CSS.escape(msgid)}"]`)
+                        .forEach(el => { el.textContent = data.msgstr || ""; });
+                }
+            });
         }
 
         function closeStream() {
