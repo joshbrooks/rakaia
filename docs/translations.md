@@ -24,10 +24,13 @@ icon: lucide/languages
 demonstration of the part rakaia actually provides: **one row changes, every
 connected browser sees it**, without polling.
 
-- A `post_save` receiver calls `create_stream_event` to fan the change out to a
-  per-language stream (`translations:tet`, `translations:pt`, …), so a client
-  subscribes to just the language it is showing.
-- The SSE endpoint delivers those events to the browser.
+- A `post_save` receiver appends the change to a per-language stream
+  (`/translations/tet`, `/translations/pt`, …), so a client subscribes to just
+  the language it is showing.
+- The log is a folder of files rather than database rows — the example runs on
+  the [file-backed store](store-streams-in-files.md) — and live delivery comes
+  from rakaia's protocol server, mounted alongside Django, tailing that folder.
+  No channel layer and no message broker are involved.
 - The model itself mirrors the `gettext` family (`gettext`, `ngettext`,
   `pgettext`, `npgettext`) with a database-backed manager, so a translation can
   be edited without a deploy.

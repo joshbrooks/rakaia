@@ -1,9 +1,13 @@
 # Polyglot — live-editable translations over SSE
 
 A marketing landing page where every visible string is a `Translatable`
-row. The right pane is a translation editor; saving a string broadcasts
-a StreamEvent over `translations:{langcode}` and every browser pinned to
+row. The right pane is a translation editor; saving a string appends a
+JSON record to `/translations/{langcode}` and every browser pinned to
 that language updates in place.
+
+The log is not in the database. It is a folder of ordinary JSON-lines
+files under `examples/polyglot/streams/`, which you can `tail -f` while
+the demo runs.
 
 ## Run
 
@@ -33,54 +37,48 @@ and pushes an event down every open EventSource. Leave a tab open at
 `/?lang=tet` and watch the left pane thrash. Originals are restored when
 the run ends (or on Ctrl-C) unless you pass `--no-restore`.
 
-The saves are POSTed to the running server, the same request the Save
-button makes — deliberately, because live delivery goes through the
-channel layer and `just polyglot-dev` uses `InMemoryChannelLayer`, which
-is in-memory to *one process*. `--direct` writes via the ORM with no
-server running; the events are still durable and replay on the next
-connect, but nothing arrives live under an in-memory layer.
+The saves are POSTed to the running server by default, the same request
+the Save button makes. `--direct` writes via the ORM instead, from a
+process of its own — and open browsers still update, because readers tail
+the log through the filesystem rather than waiting on a channel layer.
+That used to be the one thing `--direct` could not do.
 
 ### What limits it
 
 Numbers below are 400 `--direct` saves on one laptop — indicative, not a
-benchmark. Each save is ~10 queries: the row `UPDATE`, then an event, an
-offset allocation and a stream entry.
+benchmark. Each save is now two writes to two places: the `Translatable`
+row `UPDATE` in SQLite, and one line appended to a file.
 
-| | 1 writer | 12 writers, 1 stream | 12 writers, 3 streams |
-|---|---|---|---|
-| SQLite, stock pragmas | 41/s | *"database is locked"* | *"database is locked"* |
-| SQLite, WAL (what this app now uses) | 374/s | 220/s | 241/s |
-| Postgres 16 (container, loopback) | 85/s | 176/s | 363/s |
+| | 1 writer | 12 writers, 1 stream |
+|---|---|---|
+| log on disk, fsync on (the default) | 73/s | 84/s |
+| log on disk, fsync off | 195/s | — |
+| log on `/dev/shm`, fsync off | 242/s | 232/s |
 
-Three things that turned out to matter, in order:
+Two things about that shape:
 
-1. **SQLite's default `journal_mode=delete` + `synchronous=FULL`.** Two
-   fsyncs per save — the row `UPDATE` autocommits, then the event append
-   opens its own transaction — for ~24ms of the ~26ms. WAL plus
-   `synchronous=NORMAL` is a 9x win and is now set in `settings.py`.
-2. **Concurrent writers used to fail outright**, instantly, not after
-   `timeout`: a deferred transaction that reads before it writes cannot
-   upgrade to a write lock, and SQLite does not retry the upgrade. Fixed
-   with `transaction_mode: "IMMEDIATE"`.
-3. **Appends to one stream path serialize on that path's offset
-   high-water**, by design — offsets per path are a gapless ordered
-   sequence, so allocating one takes a row lock. On Postgres that is the
-   *only* thing serializing, which is why spreading the same 12 writers
-   across three langcodes doubles throughput. On SQLite it is moot: one
-   writer at a time for the whole file, so splitting streams buys nothing.
+1. **Concurrency buys almost nothing.** Writers to one stream take an
+   exclusive `flock` on that stream's directory for the whole
+   check-then-write, so appends to a path serialize — the same property
+   the database-backed store gets from `select_for_update()` on the
+   stream row. Spreading writers across langcodes would help; twelve
+   writers on one will not.
+2. **The default is slower than the database-backed store was**, which
+   managed 374/s here. That is not a like-for-like comparison: SQLite in
+   WAL with `synchronous=NORMAL` does not fsync on commit, so those
+   events survived a crashed process but not a power cut. This store
+   fsyncs every append by default and so survives both. Turn it off with
+   `POLYGLOT_STREAM_FSYNC=0` and the gap mostly closes.
 
-So Postgres is worse at one writer (85/s — ten network round trips beat
-ten in-process ones) and better the moment there is more than one, with
-the ceiling set by how many distinct stream paths you are writing to.
-To try it:
+To move the log somewhere else, or into memory:
 
 ```sh
-just pg-up
-export POLYGLOT_DB=postgres PGHOST=127.0.0.1 PGPORT=55432 \
-       PGUSER=postgres PGPASSWORD=postgres PGDATABASE=postgres
-uv run python manage.py migrate
-uv run python manage.py stress_translations --direct -c 8
+POLYGLOT_STREAM_ROOT=/dev/shm/polyglot POLYGLOT_STREAM_FSYNC=0 just polyglot-dev
 ```
+
+`POLYGLOT_DB=postgres` still switches the database (see `settings.py`),
+but it now only moves the `Translatable` row — the log stays in files
+wherever `POLYGLOT_STREAM_ROOT` points.
 
 The HTTP path (the default, no `--direct`) tops out around 137/s and is
 flat in `--concurrency`: `urllib` opens a fresh connection per request,
@@ -93,11 +91,23 @@ rather the point of running the stress command with a tab open.
 * `polyglot/strings.py` — the catalog of msgids the page renders, plus
   default translations per language. The view seeds rows on first hit.
 * `polyglot/signals.py` — `post_save` / `post_delete` on `Translatable`
-  call `create_stream_event(stream_paths=[f"translations:{langcode}"], …)`.
-  No decorator on the library model — the demo wires its own signal so
-  the library stays unopinionated.
-* `polyglot/templates/polyglot/landing.html` — split layout, EventSource
-  subscribed to the per-langcode stream, DOM updates by `data-msgid`.
+  append a JSON record to `/translations/{langcode}` through
+  `get_store()`, which `RAKAIA_STORE = "jsonl"` resolves to the
+  file-backed store. Not `create_stream_event`: that writes `StreamEvent`
+  rows directly and never consults the setting. No decorator on the
+  library model either — the demo wires its own signal so the library
+  stays unopinionated.
+* `polyglot_project/asgi.py` — Django, plus rakaia's protocol server
+  mounted on `/protocol/` over the same folder. This is what serves SSE.
+  Django's own SSE endpoint replays from `StreamEntry` rows and waits on
+  the channel layer, and neither exists here; the protocol server reads
+  through the store interface and blocks in `wait_for_messages`, which
+  the file-backed store answers by watching the directory.
+* `polyglot/templates/polyglot/landing.html` — split layout, an
+  `EventSource` on `/protocol/translations/{lang}?live=sse&offset=0`,
+  DOM updates by `data-msgid`. The frames are the protocol server's
+  named `data` / `control` pair, not the single unnamed frame Django's
+  endpoint sends.
 
 ## Production-style run
 
@@ -105,6 +115,14 @@ rather the point of running the stress command with a tab open.
 just polyglot-serve workers=4
 ```
 
-Uses `polyglot_project.settings_prod` (DEBUG=False, channels-redis,
-WhiteNoise CompressedManifest). Redis is started via podman by the
-`redis-up` recipe.
+Uses `polyglot_project.settings_prod` (DEBUG=False, WhiteNoise
+CompressedManifest). Four workers all serve live updates from one log
+with no message broker between them: writers coordinate with `flock` on
+the stream directory and readers tail the files. Redis is still started
+by the `redis-up` recipe and the channel layer is still configured, but
+nothing in this demo rides on it any more.
+
+That works because every worker is on one machine. `flock` is not
+dependable over NFS or another network filesystem, so this arrangement
+does not stretch across hosts — that is what the database-backed store
+is for.

@@ -5,22 +5,19 @@ A human editing the right-hand pane produces one event every few seconds. That
 tells you the wiring is connected; it tells you nothing about what happens when
 events arrive faster than a browser can paint. This command is the other end of
 that range: N saves as fast as the stack will take them, every one of them a
-`StreamEvent` fanned out to `translations:{langcode}` and pushed down every open
+record appended to `/translations/{langcode}` and tailed down every open
 EventSource.
 
 By default the saves go through the running server's `update_translation` view
-over HTTP, exactly as the editor pane does. That matters more than it looks:
-live delivery happens through the channel layer, and under `just polyglot-dev`
-that layer is `InMemoryChannelLayer` — in-memory to *one process*. A management
-command that wrote to the database directly would append perfectly good events
-that no connected browser would ever see, because the runserver process never
-hears about them. Posting to the server puts the save inside the process the
-browsers are attached to, so the demo works under `polyglot-dev` (in-memory) and
-`polyglot-serve` (channels-redis) alike.
+over HTTP, exactly as the editor pane does.
 
-`--direct` is the escape hatch: save via the ORM, no server required. The events
-are still durable, so a browser that connects afterwards replays them from
-`Last-Event-ID` — but nothing arrives live under an in-memory channel layer.
+`--direct` skips the server and saves via the ORM. It used to be an escape hatch
+whose events no browser ever saw live: delivery went through the channel layer,
+and under `just polyglot-dev` that layer was `InMemoryChannelLayer` — in-memory
+to *one process*, so a save made anywhere but inside the runserver process was
+invisible until a reconnect. That is no longer true. The log is a folder of
+files and live readers tail it through the filesystem, so `--direct` reaches
+every open browser from a completely separate process.
 
 Usage:
 
@@ -176,8 +173,9 @@ class Command(BaseCommand):
             action="store_true",
             help=(
                 "Save via the ORM instead of posting to the server. No server "
-                "needed, but under an in-memory channel layer no connected "
-                "browser sees the events live."
+                "needed to write, and open browsers still see the events live: "
+                "readers tail the log through the filesystem, not the channel "
+                "layer."
             ),
         )
         parser.add_argument(
@@ -307,7 +305,7 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"{done} saves in {elapsed:.1f}s "
                 f"({done / max(elapsed, 1e-9):.0f}/s), "
-                f"{done} events appended to translations:{langcode}."
+                f"{done} events appended to /translations/{langcode}."
             )
         )
         if failures:

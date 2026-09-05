@@ -71,7 +71,7 @@ Real-time demos — run the server, open the URL, watch events stream in.
 | Example | Proves | Run |
 |---|---|---|
 | [`chat`](https://github.com/joshbrooks/rakaia/tree/main/examples/chat) | `@stream_model`, multi-stream events per save, live SSE fan-out | `just dev` → `http://localhost:8000` |
-| [`polyglot`](https://github.com/joshbrooks/rakaia/tree/main/examples/polyglot) | Language-scoped streams, live-editable translations over SSE | `just polyglot-dev` → `http://localhost:8001` |
+| [`polyglot`](https://github.com/joshbrooks/rakaia/tree/main/examples/polyglot) | Language-scoped streams, live-editable translations over SSE, served from the file-backed store with no database log and no channel layer | `just polyglot-dev` → `http://localhost:8001` |
 
 ### Headless event-sourcing (Django, scripted)
 
@@ -160,9 +160,10 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 | Concept | Demonstrated by |
 |---|---|
-| `@stream_model`, `create_stream_event`, multi-stream events | `chat`, `polyglot` |
-| Live SSE broadcast (Channels) | `chat`, `polyglot` |
+| `@stream_model`, `create_stream_event`, multi-stream events | `chat` |
+| Live SSE broadcast (Channels) | `chat` |
 | Durable `DjangoStreamStore` (log persisted in the DB) | `formkit_submissions` (stream) |
+| File-backed `JsonlStreamStore` under Django, with the protocol server mounted alongside it for live SSE | `polyglot` |
 
 ### Known gaps
 
@@ -181,7 +182,8 @@ No example exercises these yet — a good place to contribute a demo:
 Django project:
 
 - `<name>_project/settings.py` — `INSTALLED_APPS` includes `django_rakaia` and
-  the example app; `RAKAIA_STORE` selects the in-memory or durable store.
+  the example app; `RAKAIA_STORE` selects the in-memory, durable or
+  file-backed store.
 - `<app>/models.py` — the projection tables (the *derived* state).
 - `<app>/handlers.py` — the pure `event → Effect` handlers, registered with
   `@register_handler` / `@register_simple` / `@register_reducer`.

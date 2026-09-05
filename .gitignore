@@ -42,6 +42,10 @@ htmlcov/
 django_rakaia_dev.db
 db.sqlite3
 
+# The polyglot sample's event log: a folder of JSON-lines files, written at
+# runtime the way db.sqlite3 above is.
+examples/polyglot/streams/
+
 # Collected static files (chat sample → WhiteNoise)
 examples/chat/staticfiles/
 
@@ -57,3 +61,4 @@ conformance-server.log
 
 # Agent worktrees — transient checkouts, never part of the tree
 .claude/worktrees/
+.gstack/
