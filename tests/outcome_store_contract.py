@@ -197,6 +197,28 @@ class OutcomeStoreContract:
 
     # --- what a clean run looks like ---------------------------------------
 
+    def test_the_order_does_not_depend_on_when_things_were_recorded(self, outcomes):
+        """Refusals share the "no offset" sort position, so without a further term
+        the order is whatever the storage happened to do. Mutation: drop `subject`
+        from the sort key — dicts preserve insertion order and a stable sort keeps
+        it, so this comes back reversed."""
+        for subject in ("row-3", "row-1", "row-2"):
+            outcomes.record(refused(subject))
+        assert [o.subject for o in outcomes.latest("c", "s")] == [
+            "row-1",
+            "row-2",
+            "row-3",
+        ]
+
+    def test_re_recording_an_attempt_replaces_it(self, outcomes):
+        """Two outcomes for one subject at the same attempt is a caller error either
+        way; last-write-wins is the less surprising of the two answers, and `>` versus
+        `>=` is otherwise invisible."""
+        outcomes.record(project("0000000001", reasons=("first",), attempt=2))
+        outcomes.record(project("0000000001", reasons=("corrected",), attempt=2))
+        [got] = outcomes.latest("c", "s")
+        assert got.reasons == ("corrected",)
+
     def test_a_clean_run_records_nothing(self, outcomes):
         """The property the exceptions-only design rests on.
 
