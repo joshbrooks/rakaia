@@ -58,6 +58,7 @@ PROTOCOL_SERVER = {
     "append_decision",
     "cursor",
     "handler",
+    "jsonl_outcomes",
     "jsonl_store",
     "migrate",
     "producer",
