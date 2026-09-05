@@ -88,12 +88,25 @@ turns "absence of a record" from an assumption into a question with an answer. T
 alternative — a row per applied event — is a durable write on the hot path for the
 case that is fine, and the append cost tests exist to catch exactly that.
 
-**4. A failed append and a failed projection are different records.** `stage="append"`
-means the event was never written: the fact is gone, its offset is null, and recovering
-it means re-producing from whatever the consumer derived it from. `stage="project"`
-means the event is safe in the log and merely unapplied, and replay recovers it. One
-field, because a re-drive built on the assumption that every row is replayable would
-be wrong for half of them.
+**4. Where the event is decides how it is recovered, and replay is only one of the
+answers.** `stage` says whether the event reached the log; `status` says what happened to
+it. Together they name the recovery, and a re-drive that assumed every recorded outcome
+was replayable would take the wrong action on most of them.
+
+| `stage` | `status` | Where the fact is | Recovery |
+|---|---|---|---|
+| `project` | `failed` | Safe in the log, unapplied | Replay it |
+| `append` | `failed` | **Gone.** The append was attempted and lost | Re-produce from whatever the consumer derived it from |
+| `append` | `refused` | Safe upstream, deliberately not logged | Fix the data upstream and let it be produced again |
+| either | `skipped` | Wherever it was | None wanted — not applying it *was* the decision |
+
+The third row is the one worth spelling out, because it looks like the second and is not.
+A consumer that gates its events refuses some of them *on purpose* — the log is the
+system of record, so it must not carry a row the consumer declined to accept — and the
+fact is not lost at all, it is sitting in whatever the consumer produced the event from.
+Nothing is missing; something was rejected. Treating that as a lost append would send a
+re-drive hunting for a fact that is exactly where it should be, and treating it as an
+unapplied projection would send a replay looking for an event that was never written.
 
 **5. The failure policy is a parameter with per-mode defaults, never inferred.**
 `on_error="skip"` when consuming continuously, `on_error="halt"` when rebuilding. The
@@ -112,6 +125,43 @@ Rakaia does not yet refuse an event whose sequence has an unresolved failure; th
 exists so that adding it later does not require re-deriving groupings a consumer has
 already decided. Named here because recording a key nothing reads is otherwise the sort
 of thing a later reader deletes as dead weight.
+
+## A worked example, and the thing it exposes
+
+The consumer that motivated this decision gates its events per row. Traced through its
+live path, one refused repeater on a progress form does this:
+
+1. The document is split. Every row exists as a derived row, including the bad one.
+2. Every row is checked — the gate deliberately does not short-circuit, so the whole
+   failure set is reported in one pass rather than one row per attempt.
+3. Policy for this form is *refuse the row, keep its siblings*. The refused row's event
+   is dropped from the batch: **neither appended nor projected**, on the stated
+   principle that the log must not carry a row the consumer declined to accept.
+4. An outcome is recorded against the refused row; the clean rows record success.
+5. The user sees a partial failure naming the offending row.
+
+Under this ADR that is `stage="append"`, `status="refused"`, `sequence_key` = the row —
+the third table row above, and the design handles it correctly. The siblings are
+genuinely independent, so parking the row and nothing else is the right answer.
+
+**Then a stage-2 reducer runs, and the containment stops.** It recomputes a field on a
+*different* form by reading the latest progress row per project **out of the projection**.
+The refused row was never written, so the reducer cannot see it, takes the previous
+period's figure instead, and *writes* the resulting value. Not stale by omission —
+actively written from an input with a hole in it, with nothing linking that write back to
+the refusal.
+
+That is not a defect this decision introduces; the consumer measured it when it chose the
+policy, and chose it because refusing the row moves fewer of those derived values than
+refusing the whole document would. What matters here is narrower and is a limit of *this*
+design: **a sequence key protects ordering within a sequence, and a reducer reads across
+sequences.** The gap check does not catch it either — there is no offset below the cursor
+carrying no outcome, because there is no offset at all.
+
+So the record says "this row was refused" and stays silent on "that derived value is now
+computed from an incomplete population". Recorded here as a known limit rather than
+closed, because closing it is a decision about reducers, not about outcomes — see *What
+would reopen this*.
 
 ## Alternatives considered
 
@@ -176,6 +226,12 @@ that is the point of it.
 - **Sequencing is a field and a promise.** Decision 7 records a key nothing acts on. If
   the enforcement never lands, this is a column carrying a consumer's private grouping
   for no benefit rakaia delivers.
+- **A sequence key does not reach a reducer.** The worked example above is the case: a
+  stage-2 construct reads committed projections across sequences, so an event parked in
+  one sequence silently changes a value derived in another, and no outcome says so.
+  Nothing in this decision detects it, and the gap check cannot — an event that was never
+  appended has no offset to be missing at. This is the largest thing the design leaves
+  open, and it is a property of reducers reading projections, not of the record.
 - **The admin registration breaks a local pattern.** `ConsumerCursor`,
   `StreamOffsetWatermark` and `StreamProducer` have no admin; operational bookkeeping is
   not browsed. A dead-letter table is argued as the exception because looking at it *is*
@@ -198,5 +254,13 @@ that is the point of it.
 - **Sequencing enforcement.** Refusing an event whose sequence has an unresolved failure
   changes live behaviour and needs its own argument. If it is declined for good, Decision
   7's field should go with it.
+- **An answer to the reducer gap.** Three shapes, none obviously right, and the choice
+  between them is a decision about reducers rather than about outcomes:
+  *(a)* extend parking to reducers, so one refuses to run over a population with an
+  unresolved outcome — correct, changes live behaviour, needs the gates;
+  *(b)* record a derived outcome against the affected row when a reducer's input has a
+  hole — purely additive, but a second kind of outcome with different provenance;
+  *(c)* leave the behaviour alone and make the affected population queryable.
+  Whichever lands, `stage`/`status` from Decision 4 is what it will key off.
 - **A fourth store.** The contract suite is where that is absorbed; if a store cannot
   implement `OutcomeStore` cheaply, the protocol is wrong rather than the store.
