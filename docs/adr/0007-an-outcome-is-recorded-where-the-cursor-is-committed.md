@@ -329,8 +329,10 @@ that is the point of it.
   with an outcome. That count belongs to the consumer, which has it; worth saying because
   the obvious reading of `latest` is that it is enough on its own, and it is not.
 - **The reason codes are available; the parameters beside them are not, on one path.** The
-  consumer's refusal object already carries a string-to-string map, so that path fits without
-  change. Its flag path does not: the structured detail is flattened into a sentence before
+  consumer's refusal object carries a string-to-string map — built in one place, by a helper
+  that renders every value on the way in — so that path fits without change. (The verdict it
+  is built *from* is typed as holding anything, and at least one caller puts a number there;
+  it is the rendering step that makes the refusal safe, not the source.) Its flag path does not: the structured detail is flattened into a sentence before
   it is stored, so anything populating parameters from a flag has only prose to read back and
   must re-derive them. Decision 6 asks for the opposite of what that path does today.
 - **Nothing here is exported.** `Outcome`, `OutcomeStore` and the two backends are absent

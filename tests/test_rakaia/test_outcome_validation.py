@@ -6,6 +6,8 @@ These had no tests at all: every `raise` in `__post_init__` could be turned into
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from rakaia.outcomes import Outcome
@@ -109,3 +111,27 @@ def test_reasons_must_be_codes_given_as_strings(reason):
         Outcome(
             **BASE, offset=None, stage="append", status="refused", reasons=(reason,)
         )
+
+
+@pytest.mark.parametrize(
+    "field", ["consumer", "stream_path", "subject", "sequence_key"]
+)
+@pytest.mark.parametrize("value", [uuid.uuid4(), 42, ("a", "b"), None])
+def test_the_name_fields_must_be_strings(field, value):
+    """The fifth instance of a defect four rounds closed one field at a time.
+
+    These are declared `str` and nothing made them so. A UUID subject is the case
+    that matters — the field is required, consumer-supplied, and documented as
+    opaque, which invites a model key — and it records in memory then raises on
+    write, so the two backends disagree about whether the record exists.
+    """
+    with pytest.raises(ValueError, match="must be strings"):
+        Outcome(**{**BASE, field: value}, offset=None, stage="append", status="refused")
+
+
+@pytest.mark.parametrize("value", [42, ("a", "b"), uuid.uuid4()])
+def test_an_offset_must_be_a_string_when_there_is_one(value):
+    """An offset is an opaque token, never a number — parsing one is already
+    forbidden, and storing a non-string is the same coupling from the other end."""
+    with pytest.raises(ValueError, match="must be strings"):
+        Outcome(**BASE, offset=value, stage="project", status="failed")

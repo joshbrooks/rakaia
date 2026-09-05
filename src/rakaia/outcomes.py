@@ -146,6 +146,24 @@ class Outcome:
         # tuple of the same codes are the same outcome, and only one of them
         # survives being written out.
         object.__setattr__(self, "reasons", tuple(self.reasons))
+        # The same defect as the two container fields, one level out: these are
+        # declared `str` and nothing made them so. A UUID subject — which the
+        # "opaque here" wording positively invites — records in memory and raises
+        # on write, so the backends disagree about whether the record exists at all.
+        # Four rounds closed this one field at a time; checking them together is
+        # what stops a fifth.
+        wrong = sorted(
+            name
+            for name in ("consumer", "stream_path", "subject", "sequence_key")
+            if not isinstance(getattr(self, name), str)
+        )
+        if self.offset is not None and not isinstance(self.offset, str):
+            wrong.append("offset")
+        if wrong:
+            raise ValueError(
+                f"{', '.join(wrong)} must be strings — an offset is an opaque token and the "
+                f"rest are names, so anything else survives in memory and fails on write."
+            )
         if not self.subject:
             raise ValueError(
                 "An outcome needs a subject — what it is about — and got an empty one."
