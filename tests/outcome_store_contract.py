@@ -114,6 +114,23 @@ class OutcomeStoreContract:
         [got] = outcomes.latest("c", "s")
         assert got.params == {"row": "3", "budget": "500"}
 
+    def test_a_recorded_outcome_does_not_change_when_the_caller_mutates_its_params(
+        self, outcomes
+    ):
+        """`frozen=True` freezes the binding, not the dict behind it.
+
+        A contract rather than a per-backend test because the two disagreed: a
+        backend that serialises escaped this by accident and one that keeps the
+        object did not. This is the field whose whole purpose is that field values
+        never reach it, so a caller adding one afterwards must not land.
+        """
+        params = {"row": "3"}
+        outcomes.record(project("0000000001", params=params))
+        params["national_id"] = "1234-LEAK"
+
+        [got] = outcomes.latest("c", "s")
+        assert got.params == {"row": "3"}
+
     def test_an_append_stage_outcome_has_no_offset(self, outcomes):
         outcomes.record(refused("row-1", reasons=("declined_upstream",)))
         [got] = outcomes.latest("c", "s")
@@ -175,7 +192,7 @@ class OutcomeStoreContract:
         [got] = outcomes.latest("c", "s")
         assert got.reasons == ("second",)
 
-    def test_latest_returns_one_row_per_offset(self, outcomes):
+    def test_latest_returns_one_row_per_subject(self, outcomes):
         for offset in ("0000000001", "0000000002", "0000000003"):
             outcomes.record(project(offset, attempt=1))
             outcomes.record(project(offset, attempt=2))

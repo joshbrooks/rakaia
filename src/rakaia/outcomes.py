@@ -3,8 +3,8 @@
 A cursor says how far a consumer got. It says nothing about whether it got there
 cleanly, so an event that was skipped, refused or lost is indistinguishable from
 one applied without incident: **absence of a record reads as success**. This
-module is the record that closes that gap, and `subscription.consume` is where it
-is written.
+module is the record that closes that gap, and The loop that writes it is not in
+this change; ADR 0007 Decision 2 describes where it goes.
 
 Two things follow from where it is written, and both are load-bearing.
 
@@ -128,10 +128,18 @@ class Outcome:
 
     attempt: int = 1
     """Which try this was, from 1. The natural key is
-    ``(consumer, stream_path, offset, attempt)``, so history accumulates instead
-    of overwriting itself."""
+    ``(consumer, stream_path, subject, attempt)`` — subject rather than offset,
+    because a refused event has no offset — so history accumulates instead of
+    overwriting itself."""
 
     def __post_init__(self) -> None:
+        # `frozen=True` freezes the *binding*, not the dict behind it: a caller that
+        # keeps its own reference can add a key after recording and the stored
+        # outcome changes with it. Copying here is what makes immutability real, and
+        # it matters most for this field — the one whose entire purpose is that
+        # field values do not reach it. Backends that serialise (JSONL) escaped this
+        # by accident; the in-memory one did not, so the two disagreed.
+        object.__setattr__(self, "params", dict(self.params))
         if not self.subject:
             raise ValueError(
                 "An outcome needs a subject — what it is about — and got an empty one."

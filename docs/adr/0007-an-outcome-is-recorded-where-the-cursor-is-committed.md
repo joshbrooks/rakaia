@@ -64,7 +64,7 @@ Meanwhile `docs/framework-vs-protocol-server.md` lists cursors **twice** — *"S
 cursors … Python stdlib only"* (`:33`) and *"Durable subscriber cursors — persisted
 watermarks … Django (ORM)"* (`:39`). That split is the template. `poll` is stdlib
 because the decision is store-agnostic; only the place to keep the answer is Django.
-An outcome keyed by `(consumer, stream_path, offset)` is store-agnostic in exactly the
+An outcome keyed by `(consumer, stream_path, subject)` is store-agnostic in exactly the
 same way, and there are now three stores.
 
 ## Decision
@@ -149,7 +149,9 @@ decision exists to keep.
 **The codes are opaque to rakaia, and are not a closed set anywhere yet.** An earlier draft
 said a consumer could borrow one it already had. Checked against that consumer: the field
 those codes come from is a bare 64-character text column with no constrained values, and one
-can be minted over HTTP by a reviewer resolving a flag. It is a vocabulary by convention and a
+can be minted over HTTP by creating or editing a flag, both of which bypass the internal
+guard that checks a code was declared. (Resolving one does not — it writes only the
+resolution.) It is a vocabulary by convention and a
 static scan, not by construction. Borrowing it is still right — it is what people already say
 — but closing it is work the consumer has to do, and this decision should not be read as
 saying it is done.
@@ -322,6 +324,15 @@ that is the point of it.
   versus "some did" needs to know how many there were, and `latest` returns only the ones
   with an outcome. That count belongs to the consumer, which has it; worth saying because
   the obvious reading of `latest` is that it is enough on its own, and it is not.
+- **Nothing here is exported.** `Outcome`, `OutcomeStore` and the two backends are absent
+  from `rakaia.__all__`, so a consumer adopting this today is importing below the stable
+  surface. Deliberate while the decision is Proposed — exporting is a stability promise, and
+  making one for a design still under review is how a bad shape becomes permanent — but it
+  means "usable" and "supported" are not yet the same thing here. Exporting is the last step
+  before this is Accepted, not an oversight.
+- **`Outcome` is a name the motivating consumer already uses** for an unrelated pass/fail
+  enum, at roughly twenty sites. Nothing breaks, but `from rakaia import Outcome` would
+  shadow it there, so that consumer will want a qualified import.
 - **Everything rests on the cursor meaning what it says.** A consumer that commits before
   applying — which `poll`'s docstring warns against and nothing prevents — silently
   converts "unapplied" into "succeeded", because success is the absence of a record. The

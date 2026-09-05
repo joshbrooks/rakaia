@@ -161,3 +161,51 @@ class TestJsonlOutcomeStoreDurability:
             )
 
         assert [o.subject for o in store.latest("c", "s")] == ["row-1", "row-2"]
+
+    def test_a_line_missing_a_required_field_is_skipped_not_fatal(self, tmp_path: Path):
+        """The other half of "a field added by a later version, or one removed".
+
+        The unknown-key half is held by the field filter, so narrowing the `except`
+        back to `ValueError` alone left the suite green and the `TypeError` arm
+        looked dead. It is not: a line written before a field existed is missing a
+        required argument, and building it raises `TypeError`, which without this
+        arm takes the whole report down.
+        """
+        import json
+
+        from rakaia.outcomes import Outcome
+
+        root = tmp_path / "outcomes"
+        store = JsonlOutcomeStore(root, fsync=False)
+        store.record(
+            Outcome(
+                consumer="c",
+                stream_path="s",
+                subject="row-1",
+                offset="0000000001",
+                sequence_key="seq",
+                stage="project",
+                status="failed",
+            )
+        )
+        target = next(root.rglob("*.jsonl"))
+        with target.open("a", encoding="utf-8") as fh:
+            # No `sequence_key` — written by a version predating the field.
+            fh.write(
+                json.dumps(
+                    {
+                        "consumer": "c",
+                        "stream_path": "s",
+                        "subject": "row-2",
+                        "offset": "0000000002",
+                        "stage": "project",
+                        "status": "failed",
+                        "reasons": [],
+                        "params": {},
+                        "attempt": 1,
+                    }
+                )
+                + "\n"
+            )
+
+        assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
