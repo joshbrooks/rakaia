@@ -174,9 +174,11 @@ of thing a later reader deletes as dead weight.
 **It is computed per refusal, not looked up per form.** The obvious source is a consumer's
 existing per-form refusal scope — group under the document where a partial write yields a
 wrong total, per row otherwise — and that is not sufficient on its own. Measured against the
-motivating consumer: an unclassified form silently falls back to per-row, and a blocked *root*
-row refuses the whole document whatever the form's scope says, because every child's typed
-record points at the root's. A key derived from the form alone is wrong in both cases.
+motivating consumer: the lookup falls back to per-row for a form nobody classified — held
+total by a fitness test that forbids the omission rather than by the lookup itself, so the
+scope is complete only as long as that test is — and a blocked *root* row refuses the whole
+document whatever the form's scope says, because every child's typed record points at the
+root's. A key derived from the form alone is wrong in the second case regardless.
 
 This is why `subject` is a separate field rather than the same one. The subject is the single
 thing an outcome is about; the sequence key is what that particular refusal actually parked.

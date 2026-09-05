@@ -76,3 +76,22 @@ def test_params_names_the_offending_keys():
             status="refused",
             params={"a": "fine", "b": 1, "c": None},
         )
+
+
+@pytest.mark.parametrize("key", [1, None, True, ("a", "b")])
+def test_params_refuses_a_key_that_is_not_a_string(key):
+    """The hole the values check left, found one round later.
+
+    A non-string key does not fail loudly, it makes the backends disagree: an
+    integer key survives in memory and comes back as a string from anything that
+    serialises, and a key that is hashable but not a primitive records in memory
+    and raises on write. Both halves have to be strings for the two to agree.
+    """
+    with pytest.raises(ValueError, match="keys must be strings"):
+        Outcome(
+            **BASE,
+            offset=None,
+            stage="append",
+            status="refused",
+            params={key: "x"},
+        )

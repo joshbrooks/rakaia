@@ -3,7 +3,7 @@
 A cursor says how far a consumer got. It says nothing about whether it got there
 cleanly, so an event that was skipped, refused or lost is indistinguishable from
 one applied without incident: **absence of a record reads as success**. This
-module is the record that closes that gap, and The loop that writes it is not in
+module is the record that closes that gap. The loop that writes it is not part of
 this change; ADR 0007 Decision 2 describes where it goes.
 
 Two things follow from where it is written, and both are load-bearing.
@@ -144,6 +144,14 @@ class Outcome:
             raise ValueError(
                 "An outcome needs a subject — what it is about — and got an empty one."
             )
+        # Keys as well as values. Checking only the values left the same divergence
+        # one round later: an integer key survives in memory and comes back a string
+        # from anything that serialises, and a key that is hashable but not a
+        # primitive records in memory and raises on write. Both halves have to be
+        # strings for the two to agree.
+        bad_keys = sorted(repr(k) for k in self.params if not isinstance(k, str))
+        if bad_keys:
+            raise ValueError(f"params keys must be strings; {bad_keys} are not.")
         bad = sorted(k for k, v in self.params.items() if not isinstance(v, str))
         if bad:
             raise ValueError(
