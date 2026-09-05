@@ -95,3 +95,17 @@ def test_params_refuses_a_key_that_is_not_a_string(key):
             status="refused",
             params={key: "x"},
         )
+
+
+@pytest.mark.parametrize("reason", [1, None, object(), ("nested",)])
+def test_reasons_must_be_codes_given_as_strings(reason):
+    """Same class as the params checks, and the field the pattern pointed at.
+
+    Rounds fixed `params` values, then `params` keys; `reasons` had both problems
+    and neither check. A non-string element records in memory and raises on write,
+    so the backends disagree about whether the outcome exists at all.
+    """
+    with pytest.raises(ValueError, match="reasons must be codes"):
+        Outcome(
+            **BASE, offset=None, stage="append", status="refused", reasons=(reason,)
+        )

@@ -131,6 +131,23 @@ class OutcomeStoreContract:
         [got] = outcomes.latest("c", "s")
         assert got.params == {"row": "3"}
 
+    def test_a_recorded_outcome_does_not_change_when_the_caller_mutates_its_reasons(
+        self, outcomes
+    ):
+        """The twin of the params test, missing for three rounds.
+
+        `reasons` is declared a tuple and nothing made it one, so a caller passing
+        a list kept a live handle on what had already been recorded — and the two
+        backends then disagreed, because one serialises and one does not. Both
+        container fields need the same guarantee or neither has it.
+        """
+        reasons = ["missing_total"]
+        outcomes.record(project("0000000001", reasons=reasons))
+        reasons.append("LEAKED_AFTER_RECORD")
+
+        [got] = outcomes.latest("c", "s")
+        assert got.reasons == ("missing_total",)
+
     def test_an_append_stage_outcome_has_no_offset(self, outcomes):
         outcomes.record(refused("row-1", reasons=("declined_upstream",)))
         [got] = outcomes.latest("c", "s")

@@ -135,8 +135,10 @@ path serving two operations with opposite invariants is how a guard ends up corr
 one mode and silently wrong in the other.
 
 **6. An outcome carries reason codes and bounded parameters, never a message.**
-`reasons` is a tuple of codes; `params` is a flat string map whose values are *checked* to
-be strings rather than assumed to be. An
+`reasons` is a tuple of codes; `params` is a flat map. Codes, keys and values are all
+*checked* to be strings rather than assumed to be, and both containers are copied on the way
+in — each of those was a separate round's finding, and each had let the backends disagree
+about what had been recorded. An
 interpolated message is where field values leak, and this library is used on submissions
 carrying personal and financial data. It also makes outcomes countable — "how many failed
 for this reason" is a query rather than a grep.
@@ -326,14 +328,20 @@ that is the point of it.
   versus "some did" needs to know how many there were, and `latest` returns only the ones
   with an outcome. That count belongs to the consumer, which has it; worth saying because
   the obvious reading of `latest` is that it is enough on its own, and it is not.
+- **The reason codes are available; the parameters beside them are not, on one path.** The
+  consumer's refusal object already carries a string-to-string map, so that path fits without
+  change. Its flag path does not: the structured detail is flattened into a sentence before
+  it is stored, so anything populating parameters from a flag has only prose to read back and
+  must re-derive them. Decision 6 asks for the opposite of what that path does today.
 - **Nothing here is exported.** `Outcome`, `OutcomeStore` and the two backends are absent
   from `rakaia.__all__`, so a consumer adopting this today is importing below the stable
   surface. Deliberate while the decision is Proposed — exporting is a stability promise, and
   making one for a design still under review is how a bad shape becomes permanent — but it
   means "usable" and "supported" are not yet the same thing here. Exporting is the last step
   before this is Accepted, not an oversight.
-- **`Outcome` is a name the motivating consumer already uses** for an unrelated pass/fail
-  enum, at roughly twenty sites. Nothing breaks, but `from rakaia import Outcome` would
+- **`Outcome` is a name the motivating consumer already uses** for an unrelated four-member
+  verdict enum — pass, fail, not-applicable, indeterminate — imported in twenty-odd modules
+  and referred to a few hundred times. Nothing breaks, but `from rakaia import Outcome` would
   shadow it there, so that consumer will want a qualified import.
 - **Everything rests on the cursor meaning what it says.** A consumer that commits before
   applying — which `poll`'s docstring warns against and nothing prevents — silently

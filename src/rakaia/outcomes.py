@@ -140,6 +140,12 @@ class Outcome:
         # field values do not reach it. Backends that serialise (JSONL) escaped this
         # by accident; the in-memory one did not, so the two disagreed.
         object.__setattr__(self, "params", dict(self.params))
+        # `reasons` is the same shape of problem and was missed twice: it is
+        # declared a tuple but nothing made it one, so a caller passing a list kept
+        # a live handle on it. Coercing here also settles the type — a list and a
+        # tuple of the same codes are the same outcome, and only one of them
+        # survives being written out.
+        object.__setattr__(self, "reasons", tuple(self.reasons))
         if not self.subject:
             raise ValueError(
                 "An outcome needs a subject — what it is about — and got an empty one."
@@ -149,6 +155,11 @@ class Outcome:
         # from anything that serialises, and a key that is hashable but not a
         # primitive records in memory and raises on write. Both halves have to be
         # strings for the two to agree.
+        bad_reasons = sorted(repr(r) for r in self.reasons if not isinstance(r, str))
+        if bad_reasons:
+            raise ValueError(
+                f"reasons must be codes, given as strings; {bad_reasons} are not."
+            )
         bad_keys = sorted(repr(k) for k in self.params if not isinstance(k, str))
         if bad_keys:
             raise ValueError(f"params keys must be strings; {bad_keys} are not.")

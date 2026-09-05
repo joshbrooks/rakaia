@@ -47,7 +47,7 @@ class TestJsonlOutcomeStoreDurability:
         [got] = JsonlOutcomeStore(root, fsync=False).latest("c", "submission/tf611")
         assert got.reasons == ("bad_total",)
 
-    @pytest.mark.parametrize("hostile", ["a/b", "../escape", "..", "a%2Fb"])
+    @pytest.mark.parametrize("hostile", ["a/b", "../escape", "..", "a%2Fb", ""])
     @pytest.mark.parametrize("field", ["consumer", "stream_path"])
     def test_every_file_stays_directly_under_the_root(
         self, tmp_path: Path, field: str, hostile: str
