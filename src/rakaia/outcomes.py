@@ -74,6 +74,20 @@ class Outcome:
     """The stream the event belongs to. A plain string, not a reference, so an
     outcome outlives the stream it describes."""
 
+    subject: str
+    """What this outcome is *about*, as the consumer identifies it. Opaque here.
+
+    Required, and not defaulted to the offset, because an event that never reached
+    the log has no offset — and those are the ones a consumer most needs to tell
+    apart. Keying on the offset alone collapsed every refusal on a stream into a
+    single row and reported the first as though it spoke for the rest, which is
+    the same defect as one bad row making a whole form look fine.
+
+    Distinct from `sequence_key`: the subject is the one thing this outcome
+    concerns, the sequence key is what it is *ordered within*. They are often the
+    same value, and are not when one decision refuses several subjects together.
+    """
+
     offset: str | None
     """The event's position, opaque and store-issued — or ``None`` when
     ``stage="append"``, because an event that never reached the log has no
@@ -104,8 +118,13 @@ class Outcome:
     """
 
     params: dict[str, str] = field(default_factory=dict)
-    """Bounded context for the reasons: identifiers, counts, verdicts. Values are
-    strings by construction, so a payload cannot be put here by accident."""
+    """Bounded context for the reasons: identifiers, counts, verdicts.
+
+    Values must be strings, and that is checked rather than asserted — the
+    docstring used to claim "by construction" while a nested dict of personal data
+    went in and came back out unchanged. Not leaking field values is this field's
+    whole reason for existing instead of a rendered message, so it refuses.
+    """
 
     attempt: int = 1
     """Which try this was, from 1. The natural key is
@@ -113,6 +132,16 @@ class Outcome:
     of overwriting itself."""
 
     def __post_init__(self) -> None:
+        if not self.subject:
+            raise ValueError(
+                "An outcome needs a subject — what it is about — and got an empty one."
+            )
+        bad = sorted(k for k, v in self.params.items() if not isinstance(v, str))
+        if bad:
+            raise ValueError(
+                f"params values must be strings so a payload cannot be put here by accident; "
+                f"{bad} are not. Render them, or leave them out."
+            )
         if self.stage == "append" and self.offset is not None:
             raise ValueError(
                 f"An outcome at stage='append' has no offset — the event never reached the log — "
@@ -124,6 +153,11 @@ class Outcome:
             )
         if self.attempt < 1:
             raise ValueError(f"attempt counts from 1, got {self.attempt}.")
+
+
+def _order(outcome: Outcome) -> tuple[bool, str, str]:
+    """Sort key shared by every backend, so `latest` returns one order."""
+    return (outcome.offset is None, outcome.offset or "", outcome.subject)
 
 
 class InMemoryOutcomeStore:
@@ -145,16 +179,17 @@ class InMemoryOutcomeStore:
         self._recorded.append(outcome)
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
-        best: dict[str | None, Outcome] = {}
+        best: dict[str, Outcome] = {}
         for outcome in self._recorded:
             if outcome.consumer != consumer or outcome.stream_path != stream_path:
                 continue
-            held = best.get(outcome.offset)
-            if held is None or outcome.attempt > held.attempt:
-                best[outcome.offset] = outcome
+            held = best.get(outcome.subject)
+            # `>=` so re-recording an attempt replaces it. A tie is a caller
+            # error either way, and last-write-wins is the less surprising of the
+            # two answers.
+            if held is None or outcome.attempt >= held.attempt:
+                best[outcome.subject] = outcome
         # Offsets sort as the opaque strings they are; the append-stage entries
-        # have none and go last rather than being compared against one.
-        return sorted(
-            best.values(),
-            key=lambda o: (o.offset is None, o.offset or ""),
-        )
+        # have none and go last rather than being compared against one. Subject
+        # breaks the remaining ties so the order does not depend on insertion.
+        return sorted(best.values(), key=_order)

@@ -288,12 +288,17 @@ class OutcomeStore(Protocol):
         ...
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
-        """The most recent outcome per offset, newest attempt winning.
+        """The most recent outcome per **subject**, newest attempt winning.
 
-        This is how "what is still failing?" is asked. An offset whose latest
+        This is how "what is still failing?" is asked. A subject whose latest
         outcome is `skipped` is not failing; one with no outcome at all never
-        failed. Ordered by offset, with `stage="append"` entries (which have
-        none) last.
+        failed. Ordered by offset — `stage="append"` entries have none and come
+        last — then by subject, so the order is total rather than insertion-order.
+
+        Per subject and not per offset, because the outcomes that matter most are
+        exactly the ones with no offset to key on: a refused event never reached
+        the log. Keying on the offset made every refusal on a stream collapse into
+        one row.
         """
         ...
 

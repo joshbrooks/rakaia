@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 from urllib.parse import quote
 
-from .outcomes import Outcome
+from .outcomes import Outcome, _order
+
+_FIELDS = {f.name for f in fields(Outcome)}
 
 try:  # pragma: no cover - platform dependent
     import fcntl
@@ -111,15 +113,12 @@ class JsonlOutcomeStore:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
-        best: dict[str | None, Outcome] = {}
+        best: dict[str, Outcome] = {}
         for record in self._read(consumer, stream_path):
-            held = best.get(record.offset)
-            if held is None or record.attempt > held.attempt:
-                best[record.offset] = record
-        # Offsets are opaque tokens and sort as the strings they are; the
-        # append-stage entries have none and go last rather than being compared
-        # against one.
-        return sorted(best.values(), key=lambda o: (o.offset is None, o.offset or ""))
+            held = best.get(record.subject)
+            if held is None or record.attempt >= held.attempt:
+                best[record.subject] = record
+        return sorted(best.values(), key=_order)
 
     def _read(self, consumer: str, stream_path: str) -> list[Outcome]:
         target = self._file(consumer, stream_path)
@@ -136,5 +135,16 @@ class JsonlOutcomeStore:
                 # loses one outcome; failing the read would lose the report.
                 continue
             payload["reasons"] = tuple(payload.get("reasons", ()))
-            out.append(Outcome(**payload))
+            try:
+                out.append(
+                    Outcome(**{k: v for k, v in payload.items() if k in _FIELDS})
+                )
+            except (TypeError, ValueError):
+                # A line this version cannot build: a field added by a later
+                # version, or one removed. Unknown keys are dropped rather than
+                # passed through, because `Outcome(**payload)` raises on an extra
+                # one — and a single such line would otherwise take the whole
+                # report down, which is exactly what the torn-line handling above
+                # exists to prevent.
+                continue
         return out

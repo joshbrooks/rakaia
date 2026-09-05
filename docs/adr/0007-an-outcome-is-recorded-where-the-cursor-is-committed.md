@@ -135,7 +135,8 @@ path serving two operations with opposite invariants is how a guard ends up corr
 one mode and silently wrong in the other.
 
 **6. An outcome carries reason codes and bounded parameters, never a message.**
-`reasons` is a tuple drawn from a closed vocabulary; `params` is a flat string map. An
+`reasons` is a tuple of codes; `params` is a flat string map whose values are *checked* to
+be strings rather than assumed to be. An
 interpolated message is where field values leak, and this library is used on submissions
 carrying personal and financial data. It also makes outcomes countable — "how many failed
 for this reason" is a query rather than a grep.
@@ -144,6 +145,14 @@ Plural, not singular, because one event can fail several rules at once and the c
 that motivated this already collects them as a tuple before flattening them with a
 `", ".join(...)` for display. Storing the join would re-lose exactly the structure this
 decision exists to keep.
+
+**The codes are opaque to rakaia, and are not a closed set anywhere yet.** An earlier draft
+said a consumer could borrow one it already had. Checked against that consumer: the field
+those codes come from is a bare 64-character text column with no constrained values, and one
+can be minted over HTTP by a reviewer resolving a flag. It is a vocabulary by convention and a
+static scan, not by construction. Borrowing it is still right — it is what people already say
+— but closing it is work the consumer has to do, and this decision should not be read as
+saying it is done.
 
 **6a. An outcome is immutable; nothing is resolved on it.** An earlier draft gave the
 record a `resolved_at`. That is wrong wherever the reason codes come from a consumer's own
@@ -159,6 +168,18 @@ Rakaia does not yet refuse an event whose sequence has an unresolved failure; th
 exists so that adding it later does not require re-deriving groupings a consumer has
 already decided. Named here because recording a key nothing reads is otherwise the sort
 of thing a later reader deletes as dead weight.
+
+**It is computed per refusal, not looked up per form.** The obvious source is a consumer's
+existing per-form refusal scope — group under the document where a partial write yields a
+wrong total, per row otherwise — and that is not sufficient on its own. Measured against the
+motivating consumer: an unclassified form silently falls back to per-row, and a blocked *root*
+row refuses the whole document whatever the form's scope says, because every child's typed
+record points at the root's. A key derived from the form alone is wrong in both cases.
+
+This is why `subject` is a separate field rather than the same one. The subject is the single
+thing an outcome is about; the sequence key is what that particular refusal actually parked.
+They coincide often enough to be mistaken for one field, and the cases where they do not are
+the ones that matter.
 
 ## Observations, refusals, and the record that one happened
 
@@ -202,7 +223,10 @@ live path, one refused repeater on a progress form does this:
    failure set is reported in one pass rather than one row per attempt.
 3. Policy for this form is *refuse the row, keep its siblings*. The refused row's event
    is dropped from the batch: **neither appended nor projected**, on the stated
-   principle that the log must not carry a row the consumer declined to accept.
+   principle that the log must not carry a row the consumer declined to accept. Its
+   siblings in the same call *are* appended and do get real offsets — "never appended"
+   is true of the refused row, not of the save. (Refuse the root instead and the whole
+   document is declined without the append being attempted at all.)
 4. An outcome is recorded against the refused row; the clean rows record success.
 5. The user sees a partial failure naming the offending row.
 
@@ -211,11 +235,13 @@ the third table row above, and the design handles it correctly. The siblings are
 genuinely independent, so parking the row and nothing else is the right answer.
 
 **Then a stage-2 reducer runs, and the containment stops.** It recomputes a field on a
-*different* form by reading the latest progress row per project **out of the projection**.
-The refused row was never written, so the reducer cannot see it, takes the previous
-period's figure instead, and *writes* the resulting value. Not stale by omission —
-actively written from an input with a hole in it, with nothing linking that write back to
-the refusal.
+*different* form by reading progress rows **out of the projection** and taking the one
+latest by *reporting period* — not by when it was filed, so a late correction for an earlier
+month cannot reset the answer. The refused row was never written, so the reducer cannot see
+it, takes the previous period's figure instead, and writes the resulting value. It updates
+rows that exist and never inserts one, so nothing is fabricated; what is wrong is the number.
+Not stale by omission — actively written from an input with a hole in it, with nothing
+linking that write back to the refusal.
 
 That is not a defect this decision introduces; the consumer measured it when it chose the
 policy, and chose it because refusing the row moves fewer of those derived values than
@@ -283,6 +309,19 @@ that is the point of it.
 - **Nothing enforces that the loop is used.** A consumer keeping its hand-written
   `poll`/`commit` records nothing, and its stream looks identical to a clean one. This
   decision adds a supported path; it does not close the unsupported one.
+- **A consumer that is not cursor-driven cannot adopt this.** Decision 3 makes absence of a
+  record mean success. The motivating consumer's existing surface means the exact opposite:
+  it writes a record on success *and* on failure precisely so that no record at all can be
+  read as "this never went through the pipeline", which is how it detects rows a bulk write
+  skipped. Both are coherent, and they are inverses — absence cannot mean both. The
+  reconciliation is the cursor: once a consumer polls and commits, "never processed" is
+  visible as the cursor not having reached it, and the extra row per success stops earning
+  its keep. Until then the two cannot be mixed, and a consumer part-way through the change
+  has one surface saying absence is fine and another saying it is a defect.
+- **A verdict over a group needs a denominator this does not supply.** "All rows failed"
+  versus "some did" needs to know how many there were, and `latest` returns only the ones
+  with an outcome. That count belongs to the consumer, which has it; worth saying because
+  the obvious reading of `latest` is that it is enough on its own, and it is not.
 - **Everything rests on the cursor meaning what it says.** A consumer that commits before
   applying — which `poll`'s docstring warns against and nothing prevents — silently
   converts "unapplied" into "succeeded", because success is the absence of a record. The

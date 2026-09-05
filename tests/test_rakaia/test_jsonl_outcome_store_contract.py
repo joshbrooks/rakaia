@@ -36,6 +36,7 @@ class TestJsonlOutcomeStoreDurability:
             Outcome(
                 consumer="c",
                 stream_path="submission/tf611",
+                subject="row-1",
                 offset="0000000001",
                 sequence_key="seq",
                 stage="project",
@@ -68,6 +69,7 @@ class TestJsonlOutcomeStoreDurability:
         store.record(
             Outcome(
                 **{**fixed, field: hostile},
+                subject="row-1",
                 offset="0000000001",
                 sequence_key="seq",
                 stage="project",
@@ -97,6 +99,7 @@ class TestJsonlOutcomeStoreDurability:
             Outcome(
                 consumer="c",
                 stream_path="s",
+                subject="row-1",
                 offset="0000000001",
                 sequence_key="seq",
                 stage="project",
@@ -108,3 +111,53 @@ class TestJsonlOutcomeStoreDurability:
             fh.write('{"consumer": "c", "stream_pa')
 
         assert [o.offset for o in store.latest("c", "s")] == ["0000000001"]
+
+    def test_a_line_this_version_cannot_build_is_skipped_not_fatal(
+        self, tmp_path: Path
+    ):
+        """A field added by a later version must not take the report down.
+
+        `Outcome(**payload)` raises `TypeError` on an unknown key, and the read
+        caught only `ValueError` — so one line written by a newer version lost
+        every outcome in the file. The ADR forecasts exactly this key: "#232
+        lands… an outcome should name its issuing store".
+        """
+        import json
+
+        from rakaia.outcomes import Outcome
+
+        root = tmp_path / "outcomes"
+        store = JsonlOutcomeStore(root, fsync=False)
+        store.record(
+            Outcome(
+                consumer="c",
+                stream_path="s",
+                subject="row-1",
+                offset="0000000001",
+                sequence_key="seq",
+                stage="project",
+                status="failed",
+            )
+        )
+        target = next(root.rglob("*.jsonl"))
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "consumer": "c",
+                        "stream_path": "s",
+                        "subject": "row-2",
+                        "offset": "0000000002",
+                        "sequence_key": "seq",
+                        "stage": "project",
+                        "status": "failed",
+                        "reasons": [],
+                        "params": {},
+                        "attempt": 1,
+                        "store": "from-a-later-version",
+                    }
+                )
+                + "\n"
+            )
+
+        assert [o.subject for o in store.latest("c", "s")] == ["row-1", "row-2"]

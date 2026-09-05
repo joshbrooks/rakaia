@@ -36,8 +36,23 @@ def project(offset: str, *, consumer: str = "c", path: str = "s", **kw) -> Outco
     """A projection-stage outcome, the common case in these tests."""
     kw.setdefault("sequence_key", "seq")
     kw.setdefault("status", "failed")
+    kw.setdefault("subject", offset)
     return Outcome(
         consumer=consumer, stream_path=path, offset=offset, stage="project", **kw
+    )
+
+
+def refused(subject: str, *, consumer: str = "c", path: str = "s", **kw) -> Outcome:
+    """An append-stage refusal — no offset, because it never reached the log."""
+    kw.setdefault("sequence_key", subject)
+    kw.setdefault("status", "refused")
+    return Outcome(
+        consumer=consumer,
+        stream_path=path,
+        offset=None,
+        subject=subject,
+        stage="append",
+        **kw,
     )
 
 
@@ -100,32 +115,53 @@ class OutcomeStoreContract:
         assert got.params == {"row": "3", "budget": "500"}
 
     def test_an_append_stage_outcome_has_no_offset(self, outcomes):
-        outcomes.record(
-            Outcome(
-                consumer="c",
-                stream_path="s",
-                offset=None,
-                sequence_key="seq",
-                stage="append",
-                status="refused",
-                reasons=("declined_upstream",),
-            )
-        )
+        outcomes.record(refused("row-1", reasons=("declined_upstream",)))
         [got] = outcomes.latest("c", "s")
         assert got.offset is None and got.stage == "append"
 
     # --- immutability and attempts ------------------------------------------
 
-    def test_a_second_attempt_does_not_overwrite_the_first(self, outcomes):
-        """The record is append-only: history accumulates rather than being edited.
+    def test_a_later_attempt_is_what_latest_reports(self, outcomes):
+        """Renamed from a claim it could not keep.
 
-        `latest` collapses it for reading, so this is asserted on the store's own
-        terms — a second attempt must not *replace* the first row.
+        It used to say it proved the store never *replaces* a row, while reading
+        only through `latest()` — which collapses attempts, so an in-place
+        overwrite is invisible to it. Mutation that proved it vacuous: make
+        `record` delete the matching row before appending; this test stayed green.
+        Append-only storage is not observable through this interface, so the name
+        now claims only what the assertion can see.
         """
         outcomes.record(project("0000000001", reasons=("first",), attempt=1))
         outcomes.record(project("0000000001", reasons=("second",), attempt=2))
         [got] = outcomes.latest("c", "s")
         assert got.reasons == ("second",) and got.attempt == 2
+
+    def test_every_refused_subject_is_reported_separately(self, outcomes):
+        """The case the design exists for, and the one it originally lost.
+
+        Refusals never reach the log, so they have no offset. Keyed on offset they
+        all collapsed to a single row and the first was reported as though it spoke
+        for the rest — one bad row making a whole form look accounted for, which is
+        the defect this record is meant to expose.
+        """
+        for i in (1, 2, 3):
+            outcomes.record(refused(f"row-{i}", reasons=(f"rule_{i}",)))
+
+        got = outcomes.latest("c", "s")
+        assert [(o.subject, o.reasons) for o in got] == [
+            ("row-1", ("rule_1",)),
+            ("row-2", ("rule_2",)),
+            ("row-3", ("rule_3",)),
+        ]
+
+    def test_a_refusal_and_a_projection_failure_coexist(self, outcomes):
+        """One with an offset, one without, both about different subjects."""
+        outcomes.record(project("0000000001"))
+        outcomes.record(refused("row-9"))
+        assert [(o.subject, o.offset) for o in outcomes.latest("c", "s")] == [
+            ("0000000001", "0000000001"),
+            ("row-9", None),
+        ]
 
     def test_latest_takes_the_highest_attempt_not_the_last_written(self, outcomes):
         """Out-of-order writes must not decide the answer.
@@ -151,16 +187,7 @@ class OutcomeStoreContract:
 
     def test_latest_orders_by_offset_with_append_stage_last(self, outcomes):
         outcomes.record(project("0000000002"))
-        outcomes.record(
-            Outcome(
-                consumer="c",
-                stream_path="s",
-                offset=None,
-                sequence_key="seq",
-                stage="append",
-                status="refused",
-            )
-        )
+        outcomes.record(refused("row-1"))
         outcomes.record(project("0000000001"))
         assert [o.offset for o in outcomes.latest("c", "s")] == [
             "0000000001",
