@@ -114,17 +114,63 @@ same shape as `on_drift` (`src/rakaia/drift.py:41`), and for the same reason: on
 path serving two operations with opposite invariants is how a guard ends up correct in
 one mode and silently wrong in the other.
 
-**6. An outcome carries a reason code and bounded parameters, never a message.**
-`reason` is a closed vocabulary; `params` is a flat string map. An interpolated message
-is where field values leak, and this library is used on submissions carrying personal
-and financial data. It also makes outcomes countable — "how many failed for this
-reason" is a query rather than a grep.
+**6. An outcome carries reason codes and bounded parameters, never a message.**
+`reasons` is a tuple drawn from a closed vocabulary; `params` is a flat string map. An
+interpolated message is where field values leak, and this library is used on submissions
+carrying personal and financial data. It also makes outcomes countable — "how many failed
+for this reason" is a query rather than a grep.
+
+Plural, not singular, because one event can fail several rules at once and the consumer
+that motivated this already collects them as a tuple before flattening them with a
+`", ".join(...)` for display. Storing the join would re-lose exactly the structure this
+decision exists to keep.
+
+**6a. An outcome is immutable; nothing is resolved on it.** An earlier draft gave the
+record a `resolved_at`. That is wrong wherever the reason codes come from a consumer's own
+observations, because those observations already carry a resolution lifecycle — the
+motivating consumer's flags have `resolved_at`, `resolved_by`, `assigned_to` and an
+auto-resolve sweep. A second place to mark the same fact fixed is a second answer that
+will eventually disagree with the first. So outcomes are append-only and attempt-numbered,
+and "is this still failing?" is the latest outcome for the key, not a column. `unresolved`
+is therefore a derived query, not stored state.
 
 **7. Sequencing is recorded, not enforced.** An outcome carries a `sequence_key`.
 Rakaia does not yet refuse an event whose sequence has an unresolved failure; the field
 exists so that adding it later does not require re-deriving groupings a consumer has
 already decided. Named here because recording a key nothing reads is otherwise the sort
 of thing a later reader deletes as dead weight.
+
+## Observations, refusals, and the record that one happened
+
+Consumers already separate two of these three carefully, and the motivating one says so in
+its own vocabulary file: *"a gate is a **refusal**; a flag is an *observation* — do not use
+the words interchangeably."* An outcome is the third, and it is neither.
+
+| | What it is | Who owns it | Lifecycle |
+|---|---|---|---|
+| **Observation** | A rule noticed something about the data | The consumer's rules layer | Raised, assigned, resolved |
+| **Refusal** | The pipeline declined to accept a row | The consumer's policy | Decided per save |
+| **Outcome** | The record that a refusal (or a failure) happened | This decision | **Immutable** |
+
+One refusal produces several observations and exactly one outcome. The outcome's `reasons`
+are a *snapshot of the observations that were open at the moment it was refused* — in the
+motivating consumer, literally read back from its unresolved flags — which is why the
+outcome does not carry a resolution of its own (Decision 6a): resolving the observation is
+what fixes the underlying problem, and the next attempt records the next outcome.
+
+Two consequences worth stating before someone infers the opposite:
+
+- **rakaia does not define the vocabulary.** `reasons` is opaque to it. Which codes exist,
+  what they mean, and when they are resolved are the consumer's, exactly as
+  `ConsumerCursor` holds an offset whose meaning is the store's.
+- **An outcome is not a verification result.** The parity commands that also get called
+  gates — the ones that refuse to pass unless a replay matches live rows — are a different
+  thing again, and Decision 3's `gaps()` is deliberately a *report* rather than an input to
+  one. A consumer's own gate command warns about this directly, of its coverage counter:
+  it "belongs in a coverage verdict and would be wrong as a write blocker", and "a future
+  apply must derive its own predicate from the report rather than reuse this verdict."
+  Outcomes make such a residual explainable — *this row is missing and here is the record
+  saying why* — and must not become the thing that decides whether it passes.
 
 ## A worked example, and the thing it exposes
 
