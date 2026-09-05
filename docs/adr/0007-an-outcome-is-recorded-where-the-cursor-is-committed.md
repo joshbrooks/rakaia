@@ -83,10 +83,30 @@ recorded from inside an `Effect`, an executor, or a handler.
 
 **3. Only exceptions are recorded; the cursor is the success record.** Everything
 below the cursor succeeded unless an outcome says otherwise, and anything the cursor
-never reached is visibly unprocessed. A `gaps()` query over that difference is what
-turns "absence of a record" from an assumption into a question with an answer. The
-alternative — a row per applied event — is a durable write on the hot path for the
-case that is fine, and the append cost tests exist to catch exactly that.
+never reached is visibly unprocessed. The alternative — a row per applied event — is a
+durable write on the hot path for the case that is fine, and the append cost tests exist
+to catch exactly that.
+
+There is deliberately **no gap query**, and an earlier draft of this decision was wrong to
+promise one. It proposed reporting "offsets below the cursor with no outcome recorded",
+which under this very decision is *every event that worked*: success writes nothing, so
+absence of a record is not a gap, it is the normal case. The two halves contradicted each
+other and the contradiction was only visible once a contract test had to state an expected
+value.
+
+What the model actually gives, and it is enough:
+
+- **Lag** is the head against the cursor. No outcomes required.
+- **Below the cursor**, an outcome means it failed, was refused or was skipped; no outcome
+  means it succeeded. By construction, with no third state.
+- An event below the cursor that neither succeeded nor recorded is a **defect in the loop**,
+  not a data condition. A test pins the loop; no runtime query can distinguish it, because
+  the design deliberately left no trace of success to look for.
+
+The class this was reaching for — a bulk write bypassing the pipeline, leaving derived rows
+missing and no record saying so — is answered structurally instead. A write that does not go
+through the loop does not advance the cursor, so the events are still pending and are still
+delivered. The bypass stops being a thing to detect.
 
 **4. Where the event is decides how it is recovered, and replay is only one of the
 answers.** `stage` says whether the event reached the log; `status` says what happened to
@@ -165,8 +185,8 @@ Two consequences worth stating before someone infers the opposite:
   `ConsumerCursor` holds an offset whose meaning is the store's.
 - **An outcome is not a verification result.** The parity commands that also get called
   gates — the ones that refuse to pass unless a replay matches live rows — are a different
-  thing again, and Decision 3's `gaps()` is deliberately a *report* rather than an input to
-  one. A consumer's own gate command warns about this directly, of its coverage counter:
+  thing again, and what this decision exposes — lag, and which events failed — is
+  deliberately a *report* rather than an input to one. A consumer's own gate command warns about this directly, of its coverage counter:
   it "belongs in a coverage verdict and would be wrong as a write blocker", and "a future
   apply must derive its own predicate from the report rather than reuse this verdict."
   Outcomes make such a residual explainable — *this row is missing and here is the record
@@ -201,8 +221,8 @@ That is not a defect this decision introduces; the consumer measured it when it 
 policy, and chose it because refusing the row moves fewer of those derived values than
 refusing the whole document would. What matters here is narrower and is a limit of *this*
 design: **a sequence key protects ordering within a sequence, and a reducer reads across
-sequences.** The gap check does not catch it either — there is no offset below the cursor
-carrying no outcome, because there is no offset at all.
+sequences.** Nothing else catches it either: the refused event has no offset, so it is
+absent from every view keyed on one.
 
 So the record says "this row was refused" and stays silent on "that derived value is now
 computed from an incomplete population". Recorded here as a known limit rather than
@@ -227,7 +247,8 @@ coupling, and it would need undoing to reach the shape this ADR describes. `enve
 is not.
 
 **Record every applied event, not only the exceptions.** It answers the completeness
-question directly and needs no `gaps()` query. Rejected on cost and on precedent: it is
+question directly, with no reliance on the cursor meaning what it says. Rejected on cost
+and on precedent: it is
 one durable write per event on the success path, in a codebase that has a test file
 asserting the *set of SQL statements* an append issues
 (`tests/test_django_rakaia/test_append_query_cost.py`) because #202 found three
@@ -260,11 +281,13 @@ that is the point of it.
 ### Negative, and named rather than waved away
 
 - **Nothing enforces that the loop is used.** A consumer keeping its hand-written
-  `poll`/`commit` records nothing, and its gaps look identical to a clean run. This
+  `poll`/`commit` records nothing, and its stream looks identical to a clean one. This
   decision adds a supported path; it does not close the unsupported one.
-- **`gaps()` is only as good as the cursor.** A consumer that commits before applying —
-  which `poll`'s docstring warns against but nothing prevents — reports no gap for an
-  event it never applied. The gap check inherits every weakness of the watermark.
+- **Everything rests on the cursor meaning what it says.** A consumer that commits before
+  applying — which `poll`'s docstring warns against and nothing prevents — silently
+  converts "unapplied" into "succeeded", because success is the absence of a record. The
+  alternative design, a row per applied event, does not have this weakness, and giving it
+  up is the price of not writing on the hot path.
 - **An outcome inherits #232 exactly.** `DjangoStreamStore` and `JsonlStreamStore` both
   issue `PLAIN`, so an outcome's `(stream_path, offset)` cannot say which store's offset
   it is any more than a cursor's can. Two backends at the same path produce outcomes that
@@ -275,8 +298,8 @@ that is the point of it.
 - **A sequence key does not reach a reducer.** The worked example above is the case: a
   stage-2 construct reads committed projections across sequences, so an event parked in
   one sequence silently changes a value derived in another, and no outcome says so.
-  Nothing in this decision detects it, and the gap check cannot — an event that was never
-  appended has no offset to be missing at. This is the largest thing the design leaves
+  Nothing in this decision detects it, and nothing keyed on an offset can — an event that
+  was never appended has no offset to be found at. This is the largest thing the design leaves
   open, and it is a property of reducers reading projections, not of the record.
 - **The admin registration breaks a local pattern.** `ConsumerCursor`,
   `StreamOffsetWatermark` and `StreamProducer` have no admin; operational bookkeeping is
