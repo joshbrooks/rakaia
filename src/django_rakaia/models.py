@@ -412,3 +412,7 @@ class ConsumerCursor(models.Model):
 
     def __str__(self) -> str:
         return f"{self.consumer_id}@{self.stream_path}={self.offset}"
+
+
+# SPIKE — see models_outcomes.py
+from django_rakaia.models_outcomes import EventOutcome  # noqa: E402,F401
