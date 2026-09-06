@@ -7,6 +7,10 @@ class Migration(migrations.Migration):
     A record of what happened to an event a consumer could not apply, kept beside
     the cursor that says how far it got. Empty for a consumer that never fails —
     only exceptions are recorded — so the cost of having it is the table itself.
+
+    ``payload`` is the record. The ``_key`` columns are a percent-encoded index
+    over it, cut to the width, so no consumer-supplied name can be a value the
+    column refuses; see the model for why a cut key is still a correct index.
     """
 
     dependencies = [
@@ -26,11 +30,10 @@ class Migration(migrations.Migration):
                         verbose_name="ID",
                     ),
                 ),
-                ("consumer", models.CharField(max_length=128)),
-                ("stream_path", models.CharField(max_length=255)),
-                ("subject", models.CharField(max_length=255)),
-                ("offset", models.CharField(blank=True, max_length=64, null=True)),
-                ("attempt", models.PositiveIntegerField()),
+                ("consumer_key", models.CharField(max_length=128)),
+                ("stream_path_key", models.CharField(max_length=255)),
+                ("subject_key", models.CharField(max_length=255)),
+                ("offset_key", models.CharField(blank=True, max_length=64, null=True)),
                 ("payload", models.TextField()),
                 ("recorded_at", models.DateTimeField(auto_now_add=True)),
             ],
@@ -38,7 +41,7 @@ class Migration(migrations.Migration):
                 "db_table": "rakaia_consumeroutcome",
                 "indexes": [
                     models.Index(
-                        fields=["consumer", "stream_path"],
+                        fields=["consumer_key", "stream_path_key"],
                         name="rakaia_outcome_scope_idx",
                     )
                 ],

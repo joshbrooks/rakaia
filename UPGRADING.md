@@ -30,14 +30,17 @@ puts a row in it. A consumer that never fails, or never uses the store, carries 
 empty table and nothing else; outcomes record exceptions only, so there is no row
 per applied event.
 
-One thing to know before you point a consumer at it. Four of the values are kept
-in bounded columns, at the same widths `ConsumerCursor` already uses — the
-consumer name at 128 characters, the stream path and the subject at 255, the
-offset at 64 — and the store refuses an outcome whose name is longer rather than
-shortening it, because a shortened subject is a different subject. Everything
-else an outcome carries is unbounded. If your names can run longer than that,
-they will not fit, and you will see the refusal when the outcome is recorded
-rather than when it is read back.
+Recording never refuses. Whatever your consumer names its streams and subjects —
+any length, any character — the record is kept whole, so a bad name cannot turn
+into a failed write on the path whose job is to record that something already went
+wrong.
+
+The one thing to know if you plan to read the table directly rather than through
+the store. The `payload` column is the record: it holds the whole outcome as text,
+and `rakaia.outcomes.decode` turns it back into one. The columns ending in `_key`
+are an index over that text, not a copy of it — each holds a percent-encoded,
+possibly shortened form of the value, so `stream_path_key` for `submission/tf611`
+reads `submission%2Ftf611`. Query them to find rows; read the payload for values.
 
 One more thing to know if you wrap your own consuming in a transaction. By
 default the store writes on whichever connection is already open, so a record

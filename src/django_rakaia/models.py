@@ -420,45 +420,62 @@ class ConsumerOutcome(models.Model):
     The table behind `django_rakaia.outcomes.DjangoOutcomeStore`, and the third
     place an outcome can be kept after the in-memory reference and the JSONL
     files. It sits beside `ConsumerCursor` and is scoped the same way: a cursor
-    says how far a consumer got, a row here says what went wrong on the way, and
-    ``(consumer, stream_path)`` addresses both.
+    says how far a consumer got, a row here says what went wrong on the way.
 
-    ``payload`` holds the whole outcome as `rakaia.outcomes.encode` rendered it,
-    which is the same text the other two stores keep — ADR 0007 Decision 6b. The
-    columns beside it are not a second copy of the record; they are the four
-    values `latest` has to filter, group and order by, lifted out so that work
-    happens in the database rather than over every decoded row. Everything else
-    an outcome carries — the reasons, the parameters, the sequence key, the stage
-    and the status — is in the payload only, so a field added to `Outcome` needs
-    no migration here.
+    ``payload`` is the record. It holds the whole outcome as
+    `rakaia.outcomes.encode` rendered it, which is the same text the other two
+    stores keep — ADR 0007 Decision 6b — and `decode` is the only way back out of
+    it.
+
+    **The ``_key`` columns are an index over the payload, not a second copy of
+    it.** Each holds `urllib.parse.quote(value, safe="")`, cut to the column
+    width. That is the JSONL store's answer to the same question, borrowed: it
+    already had to turn an arbitrary consumer-supplied string into something a
+    filesystem would accept as one path segment, and making a string acceptable
+    to a filesystem and making it acceptable to a ``varchar`` are the same
+    problem. Percent-encoded ASCII is the total answer to both — no NUL, no
+    control bytes, no encoding a database can refuse, and injective, so two
+    different names never collide.
+
+    They are named ``_key`` rather than ``consumer``/``subject`` because reading
+    one and expecting the value the consumer passed is the mistake the shape
+    invites. ``stream_path_key`` for ``submission/tf611`` is
+    ``submission%2Ftf611``. The value is in the payload.
+
+    Cutting to the width is safe for the same reason: a prefix of an index is
+    still an index. Two names sharing a prefix land on one key and the query
+    returns both, and the payload comparison in `latest` drops the one that does
+    not belong. It costs selectivity and never correctness — which is why the
+    widths below are a prefix length, not a capacity, and why nothing here can
+    refuse a name for being too long.
 
     There is no unique constraint, deliberately. Outcomes are append-only
     (Decision 6a): a second attempt is a new row, and even a repeat of an attempt
     already recorded is appended rather than overwritten, with `latest` taking the
     last one written. A constraint would turn an append into an error on the one
     path whose whole job is to record that something already went wrong.
+
+    ``attempt`` is not a column at all. It is a counter rather than a name,
+    nothing queries it — `latest` reads it from the payload — and as an
+    ``int4`` it was the one field a database could still refuse.
     """
 
-    consumer = models.CharField(max_length=128)
-    """Who this is about. Pairs with ``ConsumerCursor.consumer_id`` and is the
-    same width, so a consumer that can hold a cursor can hold an outcome."""
+    consumer_key = models.CharField(max_length=128)
+    """Quoted `Outcome.consumer`, cut to `ConsumerCursor.consumer_id`'s width."""
 
-    stream_path = models.CharField(max_length=255)
-    """The stream the event belongs to, at ``ConsumerCursor.stream_path``'s width."""
+    stream_path_key = models.CharField(max_length=255)
+    """Quoted `Outcome.stream_path`, at `ConsumerCursor.stream_path`'s width."""
 
-    subject = models.CharField(max_length=255)
-    """What the outcome is about, as the consumer names it. A name of the same
-    order as a stream path, so it gets the same width."""
+    subject_key = models.CharField(max_length=255)
+    """Quoted `Outcome.subject`. A name of the same order as a stream path, so it
+    gets the same prefix length."""
 
-    offset = models.CharField(max_length=64, null=True, blank=True)
-    """The event's position, or NULL for an append-stage outcome — an event that
-    never reached the log has none. ``ConsumerCursor.offset``'s width."""
-
-    attempt = models.PositiveIntegerField()
-    """Which try this was, from 1. Highest wins in `latest`."""
+    offset_key = models.CharField(max_length=64, null=True, blank=True)
+    """Quoted `Outcome.offset`, or NULL for an append-stage outcome — an event
+    that never reached the log has no position. `ConsumerCursor.offset`'s width."""
 
     payload = models.TextField()
-    """The whole outcome, as `rakaia.outcomes.encode` wrote it."""
+    """The whole outcome, as `rakaia.outcomes.encode` wrote it. The record."""
 
     recorded_at = models.DateTimeField(auto_now_add=True)
 
@@ -466,10 +483,10 @@ class ConsumerOutcome(models.Model):
         db_table = "rakaia_consumeroutcome"
         indexes = [
             models.Index(
-                fields=["consumer", "stream_path"],
+                fields=["consumer_key", "stream_path_key"],
                 name="rakaia_outcome_scope_idx",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.consumer}@{self.stream_path}/{self.subject}#{self.attempt}"
+        return f"{self.consumer_key}@{self.stream_path_key}/{self.subject_key}"
