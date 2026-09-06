@@ -84,7 +84,15 @@ build-backend = "hatchling.build"
 # once carried a few hundred lines of unrelated dependency-marker churn purely
 # because CI ran a newer uv than the author (#118). CI pins the same version in
 # every workflow; this is the local half, and it refuses rather than rewrites.
-required-version = ">=0.11.32,<0.12"
+#
+# The range needs revisiting when uv moves a minor, and the failure mode is
+# quiet: package managers carry only the latest uv, so a stale ceiling stops
+# being installable at all rather than failing loudly. That is what happened to
+# `<0.12` — `brew install uv` could no longer produce anything satisfying it.
+# Bumping is a coordinated edit of this line and the five workflow pins; check
+# first that the new version leaves `uv.lock` untouched (0.11.32 and 0.12.10
+# were verified to emit byte-identical lockfiles, both at `revision = 3`).
+required-version = ">=0.12.10,<0.13"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rakaia", "src/django_rakaia"]

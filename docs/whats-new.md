@@ -452,6 +452,152 @@ suite in CI. It passes the full protocol surface today except the stream
 
 ---
 
+## 14. A rebuild that checks its own work
+
+**The problem.** "Can this log rebuild my tables, and do the rows match?" is the
+question that decides whether event sourcing is actually working for you. Asking
+it by hand meant composing six interfaces in the right order — move the log off
+the database being guarded, arm the write guard outside and the read guard
+inside, record effects while still applying them, replay, build a reader, diff —
+and then remembering the part written down nowhere: *a pass means nothing unless
+the guards were actually armed*. A green result with the guard unwired looks
+exactly like a green result.
+
+**What rakaia does.** `rebuild_and_verify()` does the composition and checks its
+own work. It trips the read guard on purpose and raises `GuardNotArmed` if
+nothing happens, so a clean verdict cannot be obtained with the guard off.
+
+```python
+from django_rakaia import rebuild_and_verify
+
+from forms.models import Submission
+
+report = rebuild_and_verify(
+    "submissions",
+    into="scratch",  # a disposable database alias
+    live_models=[Submission],  # required, not defaulted
+)
+print(report.verdict)  # GREEN, or VACUOUS when nothing was actually compared
+```
+
+`live_models` is required rather than defaulted to empty, because defaulting it
+would disarm the write guard without saying so. It also refuses a from-scratch
+claim it cannot honour, raising `ScratchAliasNotEmpty` when the disposable alias
+still holds rows from an earlier run.
+
+Read `verdict`, not `ok`. `ok` answers "did anything disagree?", which is
+vacuously true when nothing was compared — an empty effect list from a store on
+the wrong backend or a stream path that was renamed prints a clean bill of health
+with nothing behind it. `verdict` separates `GREEN` from `VACUOUS`, and
+`raise_if_diff()` refuses to certify a zero population.
+
+→ Deep dive: [Dry-run & executors](dry-run-and-executors.md) · Demo: `just cookbook-demo`
+
+## 15. `DriftLedger` — one object that knows whether a rule changed
+
+**The problem.** Warning that the code behind a stored handler, reducer or
+upcaster has been edited since it was registered used to be three near-identical
+checks. The entry point into the third took two options that had to agree: pass
+the report callback without the hash memo and every event re-read the source;
+pass the memo without the callback and the check was skipped in silence.
+
+**What rakaia does.** One object owns all three questions — has this rule
+drifted, have I already said so, what have I hashed — so there is one check
+reached three ways and one option to pass.
+
+`ReplayResult.warnings` and `.drift_detected` read the same as before, but they
+are now views onto `ReplayResult.drift` rather than lists of their own, so the
+result and the log cannot disagree. Constructing a `ReplayResult` with
+`warnings=` or `drift_detected=` is no longer accepted — pass
+`drift=DriftLedger(...)`. `upcast()`, which normalises one event on read outside
+a replay, takes a `drift=` ledger too and is silent without one.
+
+→ Deep dive: [Versioned handlers](versioned-handlers.md) · Demo: `just orders-demo`
+
+## 16. A replay applies a whole pass at once
+
+**The problem.** A replay applied effects one event at a time, so rebuilding a
+projection over a large log issued one statement per event per table, most of
+them identical in shape.
+
+**What rakaia does.** A replay now hands the executor a whole stage's changes at
+once, and `DjangoExecutor(batch_updates=True)` collapses a fanned-out `Update`
+into a single statement where it is provably safe to do so.
+
+**Off by default.** The rows come out the same either way, and that is checked by
+running the same effects down both paths and comparing every column. But the rule
+deciding what may collapse was wrong four times during development, and each time
+it wrote wrong data rather than raising — so a consumer opts in knowingly, and a
+suspected write anomaly stays bisectable against the flag. Anything the rule
+cannot prove safe (an `F()` expression, a composite lookup, a `NULL` match, a
+`Decimal`, a date) is applied one statement at a time exactly as before.
+Declining costs a statement, never a wrong row.
+
+→ Deep dive: [Dry-run & executors](dry-run-and-executors.md)
+
+## 17. Streams in plain files — no database, no broker
+
+**The problem.** The in-memory store loses the log on restart, and the durable
+one needs a database. Between them there was nothing for a consumer who wants the
+log to survive a restart without running Postgres for it.
+
+**What rakaia does.** `JsonlStreamStore` keeps a stream as a directory of
+JSON-lines segments — one line per event, nothing involved but the filesystem.
+
+```python
+# settings.py
+RAKAIA_STORE = "jsonl"
+RAKAIA_JSONL_ROOT = BASE_DIR / "streams"
+RAKAIA_JSONL_FSYNC = True  # off trades durability for speed
+```
+
+It holds the same store contract the other two do, including concurrent appends
+from several processes and `wait_for_messages`, which it implements by watching
+the directory. That last part is what makes **live updates work across processes
+with no broker at all** — the `polyglot` example now runs four workers off one
+log, serving SSE from rakaia's own protocol server, with no Redis between them.
+
+**Changing `RAKAIA_STORE` does not move your log.** Restarting against a
+different backend brings the app up on an empty one while every saved consumer
+position is still syntactically valid, so consumers resume into silence rather
+than failing loudly. Moving a log is a copy, and there is a call for it:
+
+```python
+from rakaia import migrate_stream
+
+result = migrate_stream(source_store, target_store, "submissions")
+print(result.offsets_preserved, result.head_preserved, result.notes)
+```
+
+`migrate_all` does the same for every stream the source can list.
+
+→ Deep dive: [Store streams in files](store-streams-in-files.md) ·
+[ADR 0006](adr/0006-changing-backends-is-a-copy.md) ·
+Demo: `just polyglot-dev` → http://localhost:8001
+
+## 18. Importing the framework no longer starts a server
+
+**The problem.** `import rakaia` pulled in all ten protocol-server modules, and
+`app = create_app()` at module scope built an in-memory store in every process
+that imported the package — whether it ever served a request or not. Measured at
+80 ms and one unwanted store, against 37 ms for the framework alone.
+
+**What rakaia does.** Names resolve on first use. A framework consumer loads no
+server module at all and pays 3 ms; a server consumer loads the seven it needs.
+`uvicorn rakaia:app` still gets one object, built under a lock so concurrent
+first access cannot produce several stores.
+
+Nothing changes at your call sites — every public name still imports from
+`rakaia` exactly as before. This is also what settled the long-open question of
+whether to split the two halves into separate distributions: the last argument
+for splitting was that importing one dragged in the other, and that is now fixed,
+so the halves stay in one package.
+
+→ Deep dive: [Framework vs. protocol server](framework-vs-protocol-server.md) ·
+[ADR 0002](adr/0002-framework-vs-protocol-server-boundary.md)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)
