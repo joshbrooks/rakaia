@@ -7,6 +7,110 @@ All notable changes to Rakaia are documented here. The format is based on
 New here? The [guided tour](docs/whats-new.md) walks these capabilities with a
 runnable demo for each.
 
+## [Unreleased]
+
+### Added
+
+- **`JsonlStreamStore` — keep a log in plain text files instead of a database.**
+  A stream is a directory of JSON-lines segments; an event is a line. Nothing but
+  the filesystem is involved, so a consumer who wants durability without running
+  Postgres now has a third option beside the in-memory store (which loses the log
+  on restart) and the database-backed one. Select it from Django with
+  `RAKAIA_STORE = "jsonl"` and `RAKAIA_JSONL_ROOT` pointing at the directory;
+  `RAKAIA_JSONL_SEGMENT_SIZE` (default 10,000 events per segment) and
+  `RAKAIA_JSONL_FSYNC` (default on) tune the trade between durability and speed.
+
+  It holds the same store contract the other two do, including cross-process
+  concurrent appends and `wait_for_messages`, which it implements by watching the
+  directory — so live updates work across processes with no broker. A Django
+  system check fails startup if `RAKAIA_STORE` is `"jsonl"` without a root set.
+  See `docs/store-streams-in-files.md`. (#238)
+
+- **`migrate_stream`, `migrate_all` and `Migration` — move a log between
+  backends.** Changing `RAKAIA_STORE` and restarting does not move anything: the
+  app comes up against an empty log while every saved position is still
+  syntactically valid, so consumers resume into silence rather than failing.
+  Moving a log is a copy, and now there is a call that performs one and reports
+  what it could not carry — whether offsets and the head position survived, in
+  `Migration.notes`. ADR 0006 records the reasoning. (#238, #239)
+
+- **`get_asgi_app()` and `reset_store_cache()` in `django_rakaia`.** The ASGI
+  entry point resolved its store internally, so the only way to drive it was to
+  reconfigure a process-wide cache — which is why it had no tests. It accepts a
+  store now, as the replay entry point already did, and the store cache has a
+  documented way to be dropped instead of tests reaching into a private
+  dict. (#237)
+
+- **A record of what happened to an event a consumer tried to apply.** A cursor
+  says how far a consumer got, not whether it got there cleanly, so an event that
+  was skipped, refused or lost looks exactly like one that worked. ADR 0007
+  proposes what to record instead, and this adds the record, the seam a backend
+  implements, and two backends held to one shared suite.
+
+  **Deliberately partial and not exported.** The loop that would write these
+  records, a database-backed place to keep them, and retrying a failure are all
+  absent, and the ADR marks which of its parts describe code and which it only
+  proposes. Adopting it today means importing below the stable surface on
+  purpose. (#243)
+
+### Changed
+
+- **Importing `rakaia` no longer builds a server or a store.** The package root
+  imported everything eagerly, so reaching for the event-sourcing half pulled in
+  all ten protocol-server modules, and `app = create_app()` at module scope built
+  an in-memory store in every process that imported the package — served a
+  request or not. Measured at 80 ms and one unwanted store, against 37 ms for the
+  framework alone.
+
+  Names resolve on first use now (PEP 562), the way the Django package already
+  did. A framework consumer loads no server module and pays 3 ms; a server
+  consumer loads the seven it needs; `uvicorn rakaia:app` still gets one object,
+  built under a lock so concurrent first access cannot produce several. Every
+  public name still imports from `rakaia` exactly as before. One exception is
+  deliberate: `replay` is both an export and a submodule, so it stays bound
+  eagerly rather than resolving to a function or a module depending on import
+  order. (#240)
+
+- **The server no longer decides what another store's positions look like.** The
+  check in front of the protocol server was described as a guard against junk in
+  a web address and was really a list of rakaia's own two position formats —
+  so anyone plugging their own storage in behind the same server, which this
+  library invites, had positions refused before their storage was ever asked.
+  This had already happened in-house once, when the database-backed store could
+  sit behind the server and every resume failed on a position the server had
+  itself just issued.
+
+  The rule now says what the specification says: a position is a single opaque
+  token, must not contain the five characters that would split it across query
+  parameters, and should be short and URL-safe. Nothing about shape. Widening it
+  lets nothing through that was not already refused one layer down — a store
+  still rejects a position it did not issue, with the same status. (#241)
+
+- **A resolved-item notification has one definition.** The payload was invented
+  in the replay orchestrator with its state written as a bare literal, while the
+  `Transition` that requests one is defined elsewhere. It now has a single
+  definition beside that request. (#237)
+
+- **The polyglot example keeps its log in files and serves live updates from
+  rakaia's own protocol server**, mounted alongside Django rather than going
+  through the channel layer. A save from any process now reaches every open
+  browser, so the stress command's `--direct` mode is no longer live-blind, and
+  the example runs multi-worker off one log with no broker between the
+  workers. (#242)
+
+- **Two stores now issue the same position format**, so a position can no longer
+  be told apart by its shape. That was never a designed guarantee, only an
+  accident of the two formats having differed; ADR 0005 now says so, and which
+  pairs of formats refuse each other is pinned by tests rather than left as
+  prose. (#239, #241)
+
+- **The framework/protocol-server split question is settled: the two halves stay
+  in one distribution.** ADR 0002's trigger fired, and the question has now been
+  measured twice with the same answer. The last argument for splitting was that
+  importing the framework dragged the whole server in, and that is fixed, so a
+  consumer already pays only for the half it uses. The spent trigger is replaced
+  with four that would each make a split buy something. (#240)
+
 ## [0.3.1] - 2026-08-24
 
 ### Fixed
