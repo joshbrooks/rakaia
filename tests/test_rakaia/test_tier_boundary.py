@@ -58,6 +58,7 @@ PROTOCOL_SERVER = {
     "append_decision",
     "cursor",
     "handler",
+    "jsonl_outcomes",
     "jsonl_store",
     "migrate",
     "producer",
@@ -71,7 +72,7 @@ PROTOCOL_SERVER = {
 #: format rules (`json_mode`, `offsets`) both tiers must agree on. ADR 0002 calls
 #: these out as the reason the tiers "genuinely share types today" — they are the
 #: substance of the split question, so a change here is the thing to look at.
-SHARED = {"types", "protocols", "json_mode", "offsets"}
+SHARED = {"types", "protocols", "json_mode", "offsets", "outcomes"}
 
 #: Deliberate, documented crossings. Keep this empty if you can; every entry is a
 #: thing a package split would have to resolve, so the list is the running cost

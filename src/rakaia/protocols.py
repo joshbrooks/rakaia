@@ -12,7 +12,9 @@ Producers and the meta-stream registry additionally *write*, captured by
 
 All store-facing protocols live here so they read as one coherent seam:
 `ReadableStore` (read), `WritableStore` (+ create/append/has), `CursorStore`
-(+ get_current_offset).
+(+ get_current_offset). `OutcomeStore` keeps what a cursor cannot say — which
+events a consumer failed to apply (ADR 0007) — and is separate because a backend
+may hold outcomes somewhere other than its events.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
+from .outcomes import Outcome
 from .types import Stream as StreamMetadata
 from .types import StreamMessage
 
@@ -266,6 +269,37 @@ class CursorStore(ReadableStore, Protocol):
 
     def get_current_offset(self, path: str) -> str | None:
         """The offset after the last message, or None if the stream is absent."""
+        ...
+
+
+@runtime_checkable
+class OutcomeStore(Protocol):
+    """Somewhere durable to keep outcomes.
+
+    Sits beside `CursorStore` for the same reason: the decision about what to
+    record is store-agnostic, and only the keeping of it is backend-shaped. A
+    backend may implement this on the same object as its stream store or on a
+    separate one; nothing here assumes either.
+    """
+
+    def record(self, outcome: Outcome) -> None:
+        """Append `outcome`. Never updates an existing row — a repeat is a new
+        `attempt`."""
+        ...
+
+    def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
+        """The most recent outcome per **subject**, newest attempt winning.
+
+        This is how "what is still failing?" is asked. A subject whose latest
+        outcome is `skipped` is not failing; one with no outcome at all never
+        failed. Ordered by offset — `stage="append"` entries have none and come
+        last — then by subject, so the order is total rather than insertion-order.
+
+        Per subject and not per offset, because the outcomes that matter most are
+        exactly the ones with no offset to key on: a refused event never reached
+        the log. Keying on the offset made every refusal on a stream collapse into
+        one row.
+        """
         ...
 
 
