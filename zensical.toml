@@ -59,6 +59,7 @@ nav = [
             { "ADR 0004 — Handler types & fold order" = "adr/0004-handler-types-and-fold-order.md" },
             { "ADR 0005 — Stream positions stay a counted offset" = "adr/0005-stream-positions-stay-a-counted-offset.md" },
             { "ADR 0006 — Changing a backend is a copy" = "adr/0006-changing-backends-is-a-copy.md" },
+            { "ADR 0007 — Where an outcome is recorded" = "adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md" },
         ] },
     ] },
     { "Look it up" = [
