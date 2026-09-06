@@ -47,49 +47,10 @@ class TestJsonlOutcomeStoreDurability:
         [got] = JsonlOutcomeStore(root, fsync=False).latest("c", "submission/tf611")
         assert got.reasons == ("bad_total",)
 
-    # The empty string used to be here. It is now refused at construction — an empty
-    # name collides with whatever else escapes to the same path segment — so the case
-    # this file covered moved to `test_the_names_cannot_be_empty`.
-    @pytest.mark.parametrize("hostile", ["a/b", "../escape", "..", "a%2Fb"])
-    @pytest.mark.parametrize("field", ["consumer", "stream_path"])
-    def test_every_file_stays_directly_under_the_root(
-        self, tmp_path: Path, field: str, hostile: str
-    ):
-        """A consumer id and a stream path are names, not paths.
-
-        Asserted as *containment*, not as a round trip. Leaving either component
-        unencoded still round-trips — `a/b` reads back from `root/a/b/…` exactly as
-        it was written — so a read-what-you-wrote test passes while `../escape`
-        writes outside the root entirely. The property worth holding is the layout:
-        one directory per consumer, one file per stream, nothing deeper and nothing
-        above.
-        """
-        from rakaia.outcomes import Outcome
-
-        root = tmp_path / "outcomes"
-        store = JsonlOutcomeStore(root, fsync=False)
-        fixed = {"consumer": "c", "stream_path": "s"}
-        store.record(
-            Outcome(
-                **{**fixed, field: hostile},
-                subject="row-1",
-                offset="0000000001",
-                sequence_key="seq",
-                stage="project",
-                status="failed",
-                reasons=(hostile,),
-            )
-        )
-
-        written = list(root.rglob("*.jsonl"))
-        assert len(written) == 1
-        assert written[0].parent.parent == root, "a name became a directory tree"
-        assert not list(tmp_path.glob("*.jsonl")), "a name escaped the root"
-
-        scope = {**fixed, field: hostile}
-        assert [
-            o.reasons for o in store.latest(scope["consumer"], scope["stream_path"])
-        ] == [(hostile,)]
+    # Containment — every file directly under the root, whatever the consumer id
+    # or stream path is called — lives in `test_jsonl_containment.py`, with the
+    # stream store beside it, because the two share one rule and it is the rule
+    # under test rather than either store's use of it (#246).
 
     def test_a_torn_trailing_line_is_skipped_not_fatal(self, tmp_path: Path):
         """A crash mid-append leaves half a line. Skipping it loses one outcome;
