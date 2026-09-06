@@ -412,3 +412,64 @@ class ConsumerCursor(models.Model):
 
     def __str__(self) -> str:
         return f"{self.consumer_id}@{self.stream_path}={self.offset}"
+
+
+class ConsumerOutcome(models.Model):
+    """A durable record of one event a consumer could not apply cleanly.
+
+    The table behind `django_rakaia.outcomes.DjangoOutcomeStore`, and the third
+    place an outcome can be kept after the in-memory reference and the JSONL
+    files. It sits beside `ConsumerCursor` and is scoped the same way: a cursor
+    says how far a consumer got, a row here says what went wrong on the way, and
+    ``(consumer, stream_path)`` addresses both.
+
+    ``payload`` holds the whole outcome as `rakaia.outcomes.encode` rendered it,
+    which is the same text the other two stores keep — ADR 0007 Decision 6b. The
+    columns beside it are not a second copy of the record; they are the four
+    values `latest` has to filter, group and order by, lifted out so that work
+    happens in the database rather than over every decoded row. Everything else
+    an outcome carries — the reasons, the parameters, the sequence key, the stage
+    and the status — is in the payload only, so a field added to `Outcome` needs
+    no migration here.
+
+    There is no unique constraint, deliberately. Outcomes are append-only
+    (Decision 6a): a second attempt is a new row, and even a repeat of an attempt
+    already recorded is appended rather than overwritten, with `latest` taking the
+    last one written. A constraint would turn an append into an error on the one
+    path whose whole job is to record that something already went wrong.
+    """
+
+    consumer = models.CharField(max_length=128)
+    """Who this is about. Pairs with ``ConsumerCursor.consumer_id`` and is the
+    same width, so a consumer that can hold a cursor can hold an outcome."""
+
+    stream_path = models.CharField(max_length=255)
+    """The stream the event belongs to, at ``ConsumerCursor.stream_path``'s width."""
+
+    subject = models.CharField(max_length=255)
+    """What the outcome is about, as the consumer names it. A name of the same
+    order as a stream path, so it gets the same width."""
+
+    offset = models.CharField(max_length=64, null=True, blank=True)
+    """The event's position, or NULL for an append-stage outcome — an event that
+    never reached the log has none. ``ConsumerCursor.offset``'s width."""
+
+    attempt = models.PositiveIntegerField()
+    """Which try this was, from 1. Highest wins in `latest`."""
+
+    payload = models.TextField()
+    """The whole outcome, as `rakaia.outcomes.encode` wrote it."""
+
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "rakaia_consumeroutcome"
+        indexes = [
+            models.Index(
+                fields=["consumer", "stream_path"],
+                name="rakaia_outcome_scope_idx",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.consumer}@{self.stream_path}/{self.subject}#{self.attempt}"

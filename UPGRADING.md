@@ -15,6 +15,32 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## A new table for the outcomes a consumer records
+
+There is a new migration, `django_rakaia` `0010`, adding one table:
+`rakaia_consumeroutcome`. Run `manage.py migrate django_rakaia` when you upgrade.
+
+Nothing existing changes and nothing writes to the table on its own. It is where
+`django_rakaia.outcomes.DjangoOutcomeStore` keeps a record of an event a consumer
+could not apply — the third place outcomes can be kept, after the in-memory
+reference and the JSONL files — and only a consumer that asks for that store ever
+puts a row in it. A consumer that never fails, or never uses the store, carries an
+empty table and nothing else; outcomes record exceptions only, so there is no row
+per applied event.
+
+One thing to know before you point a consumer at it. Four of the values are kept
+in bounded columns, at the same widths `ConsumerCursor` already uses — the
+consumer name at 128 characters, the stream path and the subject at 255, the
+offset at 64 — and the store refuses an outcome whose name is longer rather than
+shortening it, because a shortened subject is a different subject. Everything
+else an outcome carries is unbounded. If your names can run longer than that,
+they will not fit, and you will see the refusal when the outcome is recorded
+rather than when it is read back.
+
+---
+
 # 0.3.0
 
 ## A replay applies a whole pass of effects at once, not one event at a time
