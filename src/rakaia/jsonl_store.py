@@ -121,6 +121,48 @@ def _discard_torn_tail(fh: Any) -> None:
     fh.truncate(cut)
 
 
+def _contained(root: Path, name: str, suffix: str = "") -> Path:
+    """The path `name` maps to, *proven* to sit directly under `root`.
+
+    A caller-supplied name — a stream path, a consumer id — becomes exactly one
+    child of `root`. `quote(safe="")` does the mapping, because a stream path
+    contains slashes and a stream is one directory rather than a tree: `/a/b`
+    and `/a%2Fb` must not collide, and percent-encoding is the one mapping
+    `list_paths` can reverse.
+
+    What makes it safe is not the encoding, though. `quote` leaves a dot alone,
+    so a stream called `..` used to resolve *above* the root and write outside
+    the store entirely. The tempting repair is to extend the escaping until
+    every dangerous name is covered, and that is the losing move: the bad set is
+    open-ended, and the next encoding nobody thought of walks straight through.
+    So the rule here is the structural one instead — build the path,
+    canonicalise it, and check it really is a child of the root. Escaping the
+    dots is only the repair attempted when the check says no; the check, not a
+    list of known-bad names, is what decides. A name that still escapes after
+    the repair is refused rather than written.
+
+    Purely lexical, deliberately: the encoded name can never contain a
+    separator, so `normpath` collapsing `.` and `..` is the whole of the
+    canonicalisation, and no filesystem has to be touched on a path this hot.
+
+    Found by a containment test rather than by review, which is the part worth
+    remembering: an unencoded name still *round-trips*, so reading back what was
+    written passes while the file sits somewhere it should never have been.
+    """
+    base = Path(os.path.normpath(root))
+    encoded = quote(name, safe="")
+    candidate = Path(os.path.normpath(base / (encoded + suffix)))
+    if candidate.parent == base:
+        return candidate
+    # Outside, so re-encode and re-check. `%00` covers the empty name, which
+    # would otherwise collapse a level away rather than escape one.
+    encoded = encoded.replace(".", "%2E") or "%00"
+    candidate = Path(os.path.normpath(base / (encoded + suffix)))
+    if candidate.parent == base:
+        return candidate
+    raise ValueError(f"name {name!r} does not map to a path under {root}")
+
+
 #: Where retired offset high-marks live, as a sibling of the stream directories.
 #:
 #: The leading ``%`` is load-bearing. Stream directories are named
@@ -255,13 +297,8 @@ class JsonlStreamStore:
     # =========================================================================
 
     def _dir(self, path: str) -> Path:
-        """The directory for `path`.
-
-        `quote(safe="")` because a stream path contains slashes and a stream is
-        one directory, not a tree: `/a/b` and `/a%2Fb` must not collide, and
-        percent-encoding is the one mapping that is reversible for `list_paths`.
-        """
-        return self.root / quote(path, safe="")
+        """The directory for `path`, which `_contained` guarantees is under the root."""
+        return _contained(self.root, path)
 
     def _segment(self, path: str, entry_id: int) -> Path:
         start = (entry_id // self.segment_size) * self.segment_size
@@ -274,7 +311,7 @@ class JsonlStreamStore:
         return sorted(d.glob("*.jsonl"))
 
     def _retired_path(self, path: str) -> Path:
-        return self.root / _RETIRED_DIR / quote(path, safe="")
+        return _contained(self.root / _RETIRED_DIR, path)
 
     def _retired(self, path: str) -> int:
         f = self._retired_path(path)
