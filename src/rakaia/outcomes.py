@@ -149,16 +149,25 @@ class Outcome:
         # some other input already uses. Refusing here is cheaper than making every
         # store's naming injective, and an outcome about nothing is meaningless
         # anyway.
-        names = ("consumer", "stream_path", "subject")
-        # These three become path segments and dictionary keys, so they carry a
-        # constraint the payload does not: they must be writable text. A number is
-        # stored happily by anything keeping JSON and raises in a file store's path
-        # escaping; a lone surrogate is text by every type check and no path can
-        # carry it. Both reach the store and fail there — inside the loop whose job
-        # is recording that something failed. One rule, because it is one reason.
+        # The fields a *store* reasons about, as opposed to merely carries. These
+        # four become path segments, dictionary keys and sort keys, so they have to
+        # be writable text — and for reasons the payload rule cannot see:
+        #
+        #   a number stored as a name raises in a file store's path escaping;
+        #   a lone surrogate is text by every type check and no path can carry it;
+        #   a number stored as an offset is kept identically by every store and then
+        #     makes `latest` raise the moment a text offset sits beside it, because
+        #     the two cannot be compared.
+        #
+        # Everything else an outcome holds is settled by `encode` actually storing
+        # it. This list is short because it is not a description of the type system;
+        # it is the set of values the machinery touches.
+        handled = ("consumer", "stream_path", "subject", "offset")
         unwritable = []
-        for name in names:
+        for name in handled:
             value = getattr(self, name)
+            if value is None and name == "offset":
+                continue  # an event that never reached the log has no position
             if type(value) is not str:
                 unwritable.append(name)
                 continue
@@ -168,8 +177,10 @@ class Outcome:
                 unwritable.append(name)
         if unwritable:
             raise ValueError(
-                f"A name has to be writable text, and {', '.join(sorted(unwritable))} cannot be encoded."
+                f"A store sorts and names by these, so they have to be writable text: "
+                f"{', '.join(sorted(unwritable))}."
             )
+        names = ("consumer", "stream_path", "subject")
         empty = sorted(n for n in names if not getattr(self, n))
         if empty:
             raise ValueError(

@@ -30,13 +30,52 @@ def test_the_names_cannot_be_empty(field):
         Outcome(**{**BASE, field: ""}, offset=None, stage="append", status="refused")
 
 
+@pytest.mark.parametrize("field", ["consumer", "stream_path", "subject", "offset"])
+@pytest.mark.parametrize(
+    "value", [42, uuid.uuid4(), ("a", "b")], ids=lambda v: type(v).__name__
+)
+def test_what_a_store_sorts_and_names_by_has_to_be_text(field, value):
+    """Not a type rule for its own sake — a rule about four specific fields.
+
+    A number stored as a name raises in a file store's path escaping. A number
+    stored as an *offset* is kept identically by every store and then makes
+    `latest` raise the moment a text offset sits beside it, because the two cannot
+    be compared: consistent, and still broken. Everything an outcome merely carries
+    is settled by storing it instead.
+    """
+    kw = {**BASE, "offset": None, "stage": "append", "status": "refused"}
+    if field == "offset":
+        kw |= {"offset": value, "stage": "project", "status": "failed"}
+    else:
+        kw[field] = value
+    with pytest.raises(ValueError, match="writable text"):
+        Outcome(**kw)
+
+
+def test_a_text_offset_and_a_missing_one_sort_together():
+    """The failure the rule above prevents, as the read path sees it."""
+    from rakaia.outcomes import InMemoryOutcomeStore
+
+    store = InMemoryOutcomeStore()
+    store.record(Outcome(**BASE, offset="0000000001", stage="project", status="failed"))
+    store.record(
+        Outcome(
+            **{**BASE, "subject": "row-2"},
+            offset=None,
+            stage="append",
+            status="refused",
+        )
+    )
+    assert [o.offset for o in store.latest("c", "s")] == ["0000000001", None]
+
+
 @pytest.mark.parametrize("field", ["consumer", "stream_path", "subject"])
 def test_a_name_that_cannot_be_written_is_refused(field):
     """A lone surrogate is text by every type check and no path can carry it, so it
     passes construction and raises inside the store — in the loop whose job is
     recording that something failed. The one storage constraint the codec cannot
     reach, because it is about the name rather than the payload."""
-    with pytest.raises(ValueError, match="cannot be encoded"):
+    with pytest.raises(ValueError, match="writable text"):
         Outcome(
             **{**BASE, field: "x\ud800"}, offset=None, stage="append", status="refused"
         )
