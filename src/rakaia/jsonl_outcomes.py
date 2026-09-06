@@ -91,8 +91,16 @@ class JsonlOutcomeStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         # No `sort_keys`: `encode` already settles the order, and a second sorter
         # here would be a second answer to the same question — the shape of defect
-        # this codec exists to remove. It also made the codec unobservable from this
-        # side, so reverting it looked harmless.
+        # this codec exists to remove.
+        #
+        # Worth being straight about what that does and does not buy. On this side
+        # the codec is not load-bearing: `__post_init__` already refuses anything
+        # unstorable, so bypassing `encode` here and sorting some other way produces
+        # the same bytes, and a review confirmed the suite stays green if you do. It
+        # is here so there is one definition of the stored shape rather than two that
+        # can drift, which is a claim about maintenance, not one a test can make. The
+        # store where it *is* load-bearing is the in-memory one, which otherwise
+        # normalises nothing at all.
         line = json.dumps(encode(outcome)) + "\n"
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert

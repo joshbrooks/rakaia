@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Hashable
 from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -23,10 +24,32 @@ import pytest
 from rakaia.jsonl_outcomes import JsonlOutcomeStore
 from rakaia.outcomes import InMemoryOutcomeStore, Outcome
 
+
 #: Values that are *not* text. Each was a real finding, or the next one predicted:
 #: rounds fixed a map's values, then its keys, then the list beside it, then the
 #: plain fields. A store must refuse all of them, and refuse them identically.
-NOT_TEXT = [uuid.uuid4(), 42, None, ("a", "b"), Decimal("1.5"), b"bytes", {"k": "v"}]
+class _StrSubclass(str, Enum):
+    """A `str` subclass, which is the shape that defeats every equality check.
+
+    It compares equal to its own text and reads back from storage as plain text
+    with a different type — so `==` cannot see the difference and only a type check
+    can. A `StrEnum` is the one that turns up in real consumers.
+    """
+
+    APPEND = "append"
+
+
+NOT_TEXT = [
+    uuid.uuid4(),
+    42,
+    None,
+    ("a", "b"),
+    Decimal("1.5"),
+    b"bytes",
+    {"k": "v"},
+    _StrSubclass.APPEND,
+    "\ud800",  # a lone surrogate: a str that cannot be encoded
+]
 
 
 def backends(tmp_path: Path):
@@ -104,7 +127,12 @@ def test_the_backends_agree_on_ordering(tmp_path: Path):
 
 @pytest.mark.parametrize("value", NOT_TEXT, ids=lambda v: type(v).__name__)
 @pytest.mark.parametrize(
-    "field", ["subject", "sequence_key", "consumer", "stream_path"]
+    # `stage` and `status` are in the list deliberately. They are the two fields
+    # declared as a small set of strings, and a value-equality check lets a `str`
+    # subclass through where every other field's type check catches it — so they
+    # were the only two the codec did not protect.
+    "field",
+    ["subject", "sequence_key", "consumer", "stream_path", "stage", "status"],
 )
 def test_no_backend_accepts_what_another_would_refuse(
     tmp_path: Path, field: str, value

@@ -151,9 +151,18 @@ class Outcome:
         # some other input already uses. Refusing here is cheaper than making every
         # store's naming injective, and an outcome about nothing is meaningless
         # anyway.
-        empty = sorted(
-            n for n in ("consumer", "stream_path", "subject") if not getattr(self, n)
-        )
+        names = ("consumer", "stream_path", "subject")
+        # A lone surrogate is a `str` and is not text anything can write: a
+        # file-backed store raises out of its path escaping before recording
+        # anything — inside the very loop whose job is recording that something
+        # failed. Refused for the same reason an empty name is: a store cannot turn
+        # it into a name, and the declared type cannot tell it apart.
+        unwritable = sorted(n for n in names if not _encodable(getattr(self, n)))
+        if unwritable:
+            raise ValueError(
+                f"A name has to be writable text, and {', '.join(unwritable)} cannot be encoded."
+            )
+        empty = sorted(n for n in names if not getattr(self, n))
         if empty:
             raise ValueError(
                 f"A name saying what this outcome belongs to cannot be empty: {', '.join(empty)}."
@@ -186,6 +195,21 @@ def _declared() -> dict[str, Any]:
     return get_type_hints(Outcome)
 
 
+def _encodable(value: Any) -> bool:
+    """Whether this text can actually be written out.
+
+    A lone surrogate satisfies every type check and still cannot be encoded, so it
+    passes construction and fails inside a store instead.
+    """
+    if type(value) is not str:
+        return True  # a wrong type is a different complaint, reported elsewhere
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _matches(value: Any, hint: Any) -> bool:
     """Whether `value` is what `hint` says it is, as JSON would keep it.
 
@@ -202,7 +226,11 @@ def _matches(value: Any, hint: Any) -> bool:
     """
     origin = get_origin(hint)
     if origin is Literal:
-        return value in get_args(hint)
+        # `in` is equality, and equality is exactly what a `str` subclass passes —
+        # so the two fields declared as a small set of strings were the only ones
+        # this function did not protect, which is the case its own docstring names.
+        # A member has to be the same type as the alternative it matches.
+        return any(value == a and type(value) is type(a) for a in get_args(hint))
     if origin in (UnionType, Union):
         return any(_matches(value, arg) for arg in get_args(hint))
     if hint is type(None):
