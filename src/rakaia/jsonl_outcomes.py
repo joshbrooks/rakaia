@@ -28,7 +28,6 @@ because a partial outcome is not worth failing a whole report over.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from urllib.parse import quote
@@ -89,19 +88,7 @@ class JsonlOutcomeStore:
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        # No `sort_keys`: `encode` already settles the order, and a second sorter
-        # here would be a second answer to the same question — the shape of defect
-        # this codec exists to remove.
-        #
-        # Worth being straight about what that does and does not buy. On this side
-        # the codec is not load-bearing: `__post_init__` already refuses anything
-        # unstorable, so bypassing `encode` here and sorting some other way produces
-        # the same bytes, and a review confirmed the suite stays green if you do. It
-        # is here so there is one definition of the stored shape rather than two that
-        # can drift, which is a claim about maintenance, not one a test can make. The
-        # store where it *is* load-bearing is the in-memory one, which otherwise
-        # normalises nothing at all.
-        line = json.dumps(encode(outcome)) + "\n"
+        line = encode(outcome) + "\n"
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert
         # rather than an ignore comment, the way `jsonl_store.py` states the same
@@ -137,16 +124,11 @@ class JsonlOutcomeStore:
         for line in target.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                # A torn trailing line from a crash mid-append. Skipping it
-                # loses one outcome; failing the read would lose the report.
-                continue
-            # `decode` answers "can this version build it", including both
-            # version-skew cases — a field added later, or one since removed. A
-            # line it cannot build costs that line, never the report.
-            outcome = decode(payload)
+            # `decode` takes the stored text directly — the same text `encode`
+            # produced and the same text the in-memory store keeps. A torn line
+            # from a crash mid-append, and a line this version cannot rebuild,
+            # are the same case to it: that line is lost, never the report.
+            outcome = decode(line)
             if outcome is not None:
                 out.append(outcome)
         return out

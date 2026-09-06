@@ -31,12 +31,10 @@ observation about the data nor a verification result.
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from functools import lru_cache
-from types import UnionType
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -152,15 +150,25 @@ class Outcome:
         # store's naming injective, and an outcome about nothing is meaningless
         # anyway.
         names = ("consumer", "stream_path", "subject")
-        # A lone surrogate is a `str` and is not text anything can write: a
-        # file-backed store raises out of its path escaping before recording
-        # anything — inside the very loop whose job is recording that something
-        # failed. Refused for the same reason an empty name is: a store cannot turn
-        # it into a name, and the declared type cannot tell it apart.
-        unwritable = sorted(n for n in names if not _encodable(getattr(self, n)))
+        # These three become path segments and dictionary keys, so they carry a
+        # constraint the payload does not: they must be writable text. A number is
+        # stored happily by anything keeping JSON and raises in a file store's path
+        # escaping; a lone surrogate is text by every type check and no path can
+        # carry it. Both reach the store and fail there — inside the loop whose job
+        # is recording that something failed. One rule, because it is one reason.
+        unwritable = []
+        for name in names:
+            value = getattr(self, name)
+            if type(value) is not str:
+                unwritable.append(name)
+                continue
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                unwritable.append(name)
         if unwritable:
             raise ValueError(
-                f"A name has to be writable text, and {', '.join(unwritable)} cannot be encoded."
+                f"A name has to be writable text, and {', '.join(sorted(unwritable))} cannot be encoded."
             )
         empty = sorted(n for n in names if not getattr(self, n))
         if empty:
@@ -189,111 +197,36 @@ class Outcome:
         encode(self)
 
 
-@lru_cache(maxsize=1)
-def _declared() -> dict[str, Any]:
-    """Each field's declared type, resolved once."""
-    return get_type_hints(Outcome)
+def encode(outcome: Outcome) -> str:
+    """The one translation from an outcome to the text a store keeps.
 
+    Returns **text**, not a dict, and that is the whole design. Every store keeps
+    this exact string, so there is only one representation of a stored outcome and
+    nothing for two backends to disagree about. The in-memory store is then the
+    file-backed store without the file, rather than a second implementation that
+    happens to behave the same.
 
-def _encodable(value: Any) -> bool:
-    """Whether this text can actually be written out.
+    That matters because the previous approach did not work. It validated each
+    field against its declared type, and five review rounds plus two more found
+    values that satisfy a type and still do not survive storage: a `str` subclass
+    that flattens, a lone surrogate a path cannot carry, a string longer than a
+    column allows. The set is open-ended, so approximating "survives storage" with
+    type rules leaks by construction — the check has to *be* the storing.
 
-    A lone surrogate satisfies every type check and still cannot be encoded, so it
-    passes construction and fails inside a store instead.
+    Refuses by raising, because `json.dumps` already refuses everything it cannot
+    represent. Nothing here re-states which types those are.
     """
-    if type(value) is not str:
-        return True  # a wrong type is a different complaint, reported elsewhere
     try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
-def _matches(value: Any, hint: Any) -> bool:
-    """Whether `value` is what `hint` says it is, as JSON would keep it.
-
-    `type(...) is` rather than `isinstance`, deliberately. A `str` subclass — a
-    `StrEnum` member is the one that turns up — passes `isinstance`, compares equal
-    to its own text, and comes back from storage as plain text with a different type
-    and repr. `bool` under `int` is the same trap the other way. Equality cannot see
-    either, which is why this asks about the type.
-
-    Reading the declaration rather than a list of fields is the whole point. Five
-    review rounds each added the field it had just been bitten by, and the list was
-    never more complete than the last bug; a field added tomorrow is covered by this
-    without anyone remembering it exists.
-    """
-    origin = get_origin(hint)
-    if origin is Literal:
-        # `in` is equality, and equality is exactly what a `str` subclass passes —
-        # so the two fields declared as a small set of strings were the only ones
-        # this function did not protect, which is the case its own docstring names.
-        # A member has to be the same type as the alternative it matches.
-        return any(value == a and type(value) is type(a) for a in get_args(hint))
-    if origin in (UnionType, Union):
-        return any(_matches(value, arg) for arg in get_args(hint))
-    if hint is type(None):
-        return value is None
-    if origin in (tuple, list):
-        member = get_args(hint)[0]
-        return type(value) is list and all(_matches(v, member) for v in value)
-    if origin is dict:
-        key, val = get_args(hint)
-        return type(value) is dict and all(
-            _matches(k, key) and _matches(v, val) for k, v in value.items()
+        return json.dumps(
+            {f.name: getattr(outcome, f.name) for f in fields(outcome)}, sort_keys=True
         )
-    return type(value) is hint
-
-
-def encode(outcome: Outcome) -> dict[str, Any]:
-    """The one translation from an outcome to the shape a store keeps.
-
-    Every backend goes through this, **including the in-memory one**. That is the
-    point of it rather than an implementation detail: the in-memory store used to
-    keep the object as handed to it while the durable ones had to render it, so it
-    accepted values they refused and the two disagreed about what had been
-    recorded. A reference implementation more permissive than the real ones makes a
-    passing test a weaker promise than production, which is the defect this module
-    spent five review rounds on, one field at a time.
-
-    The check walks the fields rather than naming them. Naming them is how it took
-    five rounds: each round added the field it had just been bitten by, and the list
-    was only ever as complete as the last bug. A field added to `Outcome` tomorrow
-    is covered by this without anyone remembering to add it.
-
-    Refuses rather than renders. Rendering here would make a store disagree with its
-    caller instead of with another store — quieter, and worse.
-    """
-    payload: dict[str, Any] = {}
-    for f in fields(outcome):
-        value = getattr(outcome, f.name)
-        if type(value) is tuple:
-            value = list(value)
-        elif type(value) is dict:
-            # Sorted so the two stores cannot disagree about order: one of them
-            # writes JSON with sorted keys and the other kept insertion order, and
-            # `==` on dicts hides the difference while anything comparing their
-            # rendered form does not.
-            value = dict(sorted(value.items()))
-        payload[f.name] = value
-
-    declared = _declared()
-    unstorable = sorted(
-        f"{name}={value!r}"
-        for name, value in payload.items()
-        if not _matches(value, declared[name])
-    )
-    if unstorable:
+    except (TypeError, ValueError) as exc:
         raise ValueError(
-            "An outcome is kept as text, so every part of it has to be text already: "
-            + ", ".join(unstorable)
-            + ". Render it, or leave it out."
-        )
-    return payload
+            f"An outcome has to be storable as text and this one is not: {exc}. Render it, or leave it out."
+        ) from exc
 
 
-def decode(payload: Mapping[str, Any]) -> Outcome | None:
+def decode(stored: str) -> Outcome | None:
     """The inverse of `encode`, or ``None`` if this version cannot build it.
 
     ``None`` rather than an exception because the caller is usually reading a whole
@@ -307,6 +240,7 @@ def decode(payload: Mapping[str, Any]) -> Outcome | None:
     """
     known = {f.name for f in fields(Outcome)}
     try:
+        payload = json.loads(stored)
         return Outcome(**{k: v for k, v in payload.items() if k in known})
     except (TypeError, ValueError) as exc:
         logger.warning(
@@ -333,18 +267,18 @@ class InMemoryOutcomeStore:
     """
 
     def __init__(self) -> None:
-        self._recorded: list[dict[str, Any]] = []
+        self._recorded: list[str] = []
 
     def record(self, outcome: Outcome) -> None:
-        # Through the codec, not straight into the list. Keeping the object was
-        # what made this store more permissive than every real one, so "passes in
-        # memory" stopped meaning "will store".
+        # The encoded *text*, not the object and not a dict. This store is then the
+        # file-backed one without the file, so the two cannot disagree about what
+        # was stored — which is the disagreement seven review findings were about.
         self._recorded.append(encode(outcome))
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
         best: dict[str, Outcome] = {}
-        for payload in self._recorded:
-            outcome = decode(payload)
+        for stored in self._recorded:
+            outcome = decode(stored)
             if (
                 outcome is None
                 or outcome.consumer != consumer

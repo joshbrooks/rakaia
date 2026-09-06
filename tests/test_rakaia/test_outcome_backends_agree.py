@@ -179,7 +179,7 @@ def test_the_backends_agree_about_a_bad_reason_or_param(tmp_path: Path, value):
 
 
 def test_every_store_keeps_the_encoded_form_not_the_object():
-    """The redesign's own change, pinned.
+    """The design's central claim, pinned.
 
     A review found that reverting the in-memory store to keeping the object left
     the entire suite green: construction validates, so nothing downstream noticed
@@ -191,10 +191,10 @@ def test_every_store_keeps_the_encoded_form_not_the_object():
     store = InMemoryOutcomeStore()
     store.record(an_outcome())
     [held] = store._recorded
-    assert isinstance(held, dict), (
-        f"the store kept a {type(held).__name__}, not the encoded form"
+    assert isinstance(held, str), (
+        f"the store kept a {type(held).__name__}, not the encoded text"
     )
-    assert held["subject"] == "row-1"
+    assert '"subject": "row-1"' in held
 
 
 def test_the_stores_agree_on_the_order_of_params(tmp_path: Path):
