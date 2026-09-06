@@ -35,7 +35,10 @@ to be constructed rather than run unlocked), **NFS** (`flock` is not reliable
 across it), **readers do not take the lock**, and **appends are not broadcast**
 to live subscribers the way `DjangoStreamStore` broadcasts over channels, since
 this store cannot reach Django. `django_rakaia.checks` reports that last one as
-``rakaia.W002`` rather than leaving it to be discovered.
+``rakaia.W002`` rather than leaving it to be discovered. One more, added when
+it was found rather than left implied: a **symlink inside the root** still leads
+a write out of the store, because `_contained` checks containment lexically and
+a lexical check cannot see one. See its docstring for why that trade was taken.
 
 Two things this list used to name are now implemented, and the note is kept
 because their absence was a documented limitation: **fsync durability** is on by
@@ -141,9 +144,19 @@ def _contained(root: Path, name: str, suffix: str = "") -> Path:
     list of known-bad names, is what decides. A name that still escapes after
     the repair is refused rather than written.
 
-    Purely lexical, deliberately: the encoded name can never contain a
-    separator, so `normpath` collapsing `.` and `..` is the whole of the
-    canonicalisation, and no filesystem has to be touched on a path this hot.
+    The containment is *lexical*, and that is a real limit rather than a
+    detail. The encoded name can never contain a separator, so `normpath`
+    collapsing `.` and `..` covers every spelling a caller can put in a name —
+    but it cannot see a symlink, and a symlink planted inside the root still
+    leads a write out of the store. `Path.resolve()` would catch it — the name
+    would be refused rather than misplaced — at the cost of a filesystem walk on
+    a path taken on every single append. The trade
+    was taken because the two sides are not comparable threats: a name is
+    supplied by whoever calls the store, while the contents of the root are the
+    deployer's, and anyone who can create a directory entry inside the root can
+    write outside it whatever this function does. Named rather than glossed
+    over, and pinned by a strict `xfail` in `test_jsonl_containment.py` so the
+    limit is found deliberately instead of discovered.
 
     Found by a containment test rather than by review, which is the part worth
     remembering: an unencoded name still *round-trips*, so reading back what was

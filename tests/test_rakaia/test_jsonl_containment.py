@@ -8,10 +8,15 @@ hostile name in, then look at where the bytes actually went.
 
 Both stores are asked, because the rule they share (`_contained`) is the thing
 under test, not either store's copy of it.
+
+The last test in the file is the other half of honesty about that rule: it names
+the case the rule does *not* cover — a symlink planted inside the root — as a
+strict `xfail`, so the limit is read here rather than found in production.
 """
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -147,3 +152,39 @@ def test_a_contained_name_still_says_which_stream_it_was(tmp_path: Path):
         store.create(name)
 
     assert sorted(store.list_paths()) == sorted(names)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known limit, named rather than discovered (#246 review): `_contained` "
+        "checks containment lexically, and a lexical check cannot see a symlink. "
+        "A symlink planted inside the root therefore still leads a write out of "
+        "the store. `Path.resolve()` would catch it — refusing the name rather "
+        "than misplacing it — at the cost of a filesystem walk on every append, "
+        "while the root's contents are the deployer's rather than a caller's, so "
+        "the trade was taken deliberately. Strict, so the day someone resolves "
+        "instead this reports XPASS and the marker comes off."
+    ),
+)
+def test_a_symlink_inside_the_root_does_not_lead_a_write_out_of_it(tmp_path: Path):
+    """The strong reading of containment, which the lexical check does not hold.
+
+    Distinct from every case above: the hostile input there is the *name*, which
+    a caller supplies. Here the name is ordinary and the *root* has been prepared,
+    which takes an actor who can already write inside the store.
+    """
+    root = tmp_path / "streams"
+    root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (root / "link").symlink_to(outside)
+
+    store = JsonlStreamStore(root, fsync=False)
+    # Refusing the name is as good an answer as containing it, so a `ValueError`
+    # counts as holding the property rather than as failing to reach the check.
+    with contextlib.suppress(ValueError):
+        store.create("link")
+        store.append("link", b'{"n": 1}', AppendOptions())
+
+    assert not list(outside.iterdir()), "a symlink in the root led the write outside"
