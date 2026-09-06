@@ -58,7 +58,7 @@ def test_params_refuses_anything_that_is_not_a_string(value):
     values must not reach it. That was a docstring claim and nothing else: a
     nested dict of personal data went in and came back out of storage unchanged.
     """
-    with pytest.raises(ValueError, match="must be strings"):
+    with pytest.raises(ValueError, match="has to be text"):
         Outcome(
             **BASE,
             offset=None,
@@ -70,7 +70,7 @@ def test_params_refuses_anything_that_is_not_a_string(value):
 
 def test_params_names_the_offending_keys():
     """A refusal that does not say which key is a refusal someone works around."""
-    with pytest.raises(ValueError, match=r"\['b', 'c'\]"):
+    with pytest.raises(ValueError, match=r"params\['b'\]"):
         Outcome(
             **BASE,
             offset=None,
@@ -89,7 +89,7 @@ def test_params_refuses_a_key_that_is_not_a_string(key):
     serialises, and a key that is hashable but not a primitive records in memory
     and raises on write. Both halves have to be strings for the two to agree.
     """
-    with pytest.raises(ValueError, match="keys must be strings"):
+    with pytest.raises(ValueError, match="has to be text"):
         Outcome(
             **BASE,
             offset=None,
@@ -107,7 +107,7 @@ def test_reasons_must_be_codes_given_as_strings(reason):
     and neither check. A non-string element records in memory and raises on write,
     so the backends disagree about whether the outcome exists at all.
     """
-    with pytest.raises(ValueError, match="reasons must be codes"):
+    with pytest.raises(ValueError, match="has to be text"):
         Outcome(
             **BASE, offset=None, stage="append", status="refused", reasons=(reason,)
         )
@@ -125,7 +125,12 @@ def test_the_name_fields_must_be_strings(field, value):
     opaque, which invites a model key — and it records in memory then raises on
     write, so the two backends disagree about whether the record exists.
     """
-    with pytest.raises(ValueError, match="must be strings"):
+    # Two refusals are correct here and which one fires depends on the field:
+    # `subject=None` is caught as an *empty* subject before anything asks whether it
+    # is text, and that is the better message for it. The test pins that one of them
+    # happens, not which — naming a single message would make it pass for the wrong
+    # reason on that one case.
+    with pytest.raises(ValueError, match=r"has to be text|needs a subject"):
         Outcome(**{**BASE, field: value}, offset=None, stage="append", status="refused")
 
 
@@ -133,5 +138,32 @@ def test_the_name_fields_must_be_strings(field, value):
 def test_an_offset_must_be_a_string_when_there_is_one(value):
     """An offset is an opaque token, never a number — parsing one is already
     forbidden, and storing a non-string is the same coupling from the other end."""
-    with pytest.raises(ValueError, match="must be strings"):
+    with pytest.raises(ValueError, match="has to be text"):
         Outcome(**BASE, offset=value, stage="project", status="failed")
+
+
+def test_an_outcome_does_not_change_when_the_caller_mutates_what_it_was_built_from():
+    """`frozen=True` freezes the binding, not the containers behind it.
+
+    Asserted on the object with no store involved, deliberately. The codec copies
+    on the way into storage, so every store is safe whether or not this holds — and
+    that is exactly why it needs its own test: without one, the copy here is
+    unpinned and reads as redundant, while the promise `frozen=True` makes to
+    anyone holding an outcome quietly stops being true.
+    """
+    reasons = ["missing_total"]
+    params = {"row": "3"}
+    outcome = Outcome(
+        **BASE,
+        offset=None,
+        stage="append",
+        status="refused",
+        reasons=reasons,
+        params=params,
+    )
+
+    reasons.append("LEAKED")
+    params["national_id"] = "1234-LEAK"
+
+    assert outcome.reasons == ("missing_total",)
+    assert outcome.params == {"row": "3"}

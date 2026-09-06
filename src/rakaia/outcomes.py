@@ -31,8 +31,9 @@ observation about the data nor a verification result.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 Stage = Literal["append", "project"]
 """How far the event got before something went wrong.
@@ -133,59 +134,16 @@ class Outcome:
     overwriting itself."""
 
     def __post_init__(self) -> None:
-        # `frozen=True` freezes the *binding*, not the dict behind it: a caller that
-        # keeps its own reference can add a key after recording and the stored
-        # outcome changes with it. Copying here is what makes immutability real, and
-        # it matters most for this field — the one whose entire purpose is that
-        # field values do not reach it. Backends that serialise (JSONL) escaped this
-        # by accident; the in-memory one did not, so the two disagreed.
+        # Copy the two containers so `frozen=True` means what it says: it freezes
+        # the binding, not the dict or list behind it, and a caller keeping its own
+        # reference could otherwise change what had already been recorded.
         object.__setattr__(self, "params", dict(self.params))
-        # `reasons` is the same shape of problem and was missed twice: it is
-        # declared a tuple but nothing made it one, so a caller passing a list kept
-        # a live handle on it. Coercing here also settles the type — a list and a
-        # tuple of the same codes are the same outcome, and only one of them
-        # survives being written out.
         object.__setattr__(self, "reasons", tuple(self.reasons))
-        # The same defect as the two container fields, one level out: these are
-        # declared `str` and nothing made them so. A UUID subject — which the
-        # "opaque here" wording positively invites — records in memory and raises
-        # on write, so the backends disagree about whether the record exists at all.
-        # Four rounds closed this one field at a time; checking them together is
-        # what stops a fifth.
-        wrong = sorted(
-            name
-            for name in ("consumer", "stream_path", "subject", "sequence_key")
-            if not isinstance(getattr(self, name), str)
-        )
-        if self.offset is not None and not isinstance(self.offset, str):
-            wrong.append("offset")
-        if wrong:
-            raise ValueError(
-                f"{', '.join(wrong)} must be strings — an offset is an opaque token and the "
-                f"rest are names, so anything else survives in memory and fails on write."
-            )
+
+        # Structural invariants — about what an outcome *means*, not how it is kept.
         if not self.subject:
             raise ValueError(
                 "An outcome needs a subject — what it is about — and got an empty one."
-            )
-        # Keys as well as values. Checking only the values left the same divergence
-        # one round later: an integer key survives in memory and comes back a string
-        # from anything that serialises, and a key that is hashable but not a
-        # primitive records in memory and raises on write. Both halves have to be
-        # strings for the two to agree.
-        bad_reasons = sorted(repr(r) for r in self.reasons if not isinstance(r, str))
-        if bad_reasons:
-            raise ValueError(
-                f"reasons must be codes, given as strings; {bad_reasons} are not."
-            )
-        bad_keys = sorted(repr(k) for k in self.params if not isinstance(k, str))
-        if bad_keys:
-            raise ValueError(f"params keys must be strings; {bad_keys} are not.")
-        bad = sorted(k for k, v in self.params.items() if not isinstance(v, str))
-        if bad:
-            raise ValueError(
-                f"params values must be strings so a payload cannot be put here by accident; "
-                f"{bad} are not. Render them, or leave them out."
             )
         if self.stage == "append" and self.offset is not None:
             raise ValueError(
@@ -198,6 +156,97 @@ class Outcome:
             )
         if self.attempt < 1:
             raise ValueError(f"attempt counts from 1, got {self.attempt}.")
+
+        # Storability is one rule and `encode` is where it lives, so this asks the
+        # same question a store will ask rather than keeping a second copy of the
+        # answer. Five rounds of review closed this one field at a time — values of
+        # one map, then its keys, then the list beside it, then the plain fields —
+        # because each check was written where the defect was found instead of where
+        # the rule belongs. Calling it here only moves *when* the caller hears about
+        # it; the rule itself has one home.
+        encode(self)
+
+
+#: The fields a stored outcome carries. Anything else in a payload came from a
+#: different version and is not this record's business.
+_FIELDS = (
+    "consumer",
+    "stream_path",
+    "subject",
+    "offset",
+    "sequence_key",
+    "stage",
+    "status",
+    "reasons",
+    "params",
+    "attempt",
+)
+
+
+def encode(outcome: Outcome) -> dict[str, Any]:
+    """The one translation from an outcome to the shape a store keeps.
+
+    Every backend goes through this, **including the in-memory one**. That is the
+    point of it rather than an implementation detail: the in-memory store used to
+    keep the object as handed to it while the durable ones had to render it, so it
+    accepted values they refused and the two disagreed about what had been
+    recorded. A reference implementation that is more permissive than the real ones
+    makes a passing test a weaker promise than production, which is the shape of
+    defect this module spent five review rounds on, one field at a time.
+
+    Refuses rather than coerces. Rendering a value here would make the store
+    disagree with the caller instead of with another store — quieter, and worse.
+    """
+    wrong = sorted(
+        f"{name}={getattr(outcome, name)!r}"
+        for name in ("consumer", "stream_path", "subject", "sequence_key")
+        if not isinstance(getattr(outcome, name), str)
+    )
+    if outcome.offset is not None and not isinstance(outcome.offset, str):
+        wrong.append(f"offset={outcome.offset!r}")
+    wrong += [
+        f"reasons[{i}]={r!r}"
+        for i, r in enumerate(outcome.reasons)
+        if not isinstance(r, str)
+    ]
+    wrong += [f"params key {k!r}" for k in outcome.params if not isinstance(k, str)]
+    wrong += [
+        f"params[{k!r}]={v!r}"
+        for k, v in outcome.params.items()
+        if not isinstance(v, str)
+    ]
+    if wrong:
+        raise ValueError(
+            "An outcome is kept as text, so every part of it has to be text already: "
+            + ", ".join(wrong)
+            + ". Render it, or leave it out."
+        )
+    return {
+        "consumer": outcome.consumer,
+        "stream_path": outcome.stream_path,
+        "subject": outcome.subject,
+        "offset": outcome.offset,
+        "sequence_key": outcome.sequence_key,
+        "stage": outcome.stage,
+        "status": outcome.status,
+        "reasons": list(outcome.reasons),
+        "params": dict(outcome.params),
+        "attempt": outcome.attempt,
+    }
+
+
+def decode(payload: Mapping[str, Any]) -> Outcome | None:
+    """The inverse of `encode`, or ``None`` if this version cannot build it.
+
+    ``None`` rather than an exception because the caller is usually reading a whole
+    file: a line written by a version that added a field, or predating one, must
+    cost that line and not the report. Unknown keys are dropped and a missing
+    required one gives ``None``.
+    """
+    try:
+        return Outcome(**{k: v for k, v in payload.items() if k in _FIELDS})
+    except (TypeError, ValueError):
+        return None
 
 
 def _order(outcome: Outcome) -> tuple[bool, str, str]:
@@ -218,15 +267,23 @@ class InMemoryOutcomeStore:
     """
 
     def __init__(self) -> None:
-        self._recorded: list[Outcome] = []
+        self._recorded: list[dict[str, Any]] = []
 
     def record(self, outcome: Outcome) -> None:
-        self._recorded.append(outcome)
+        # Through the codec, not straight into the list. Keeping the object was
+        # what made this store more permissive than every real one, so "passes in
+        # memory" stopped meaning "will store".
+        self._recorded.append(encode(outcome))
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
         best: dict[str, Outcome] = {}
-        for outcome in self._recorded:
-            if outcome.consumer != consumer or outcome.stream_path != stream_path:
+        for payload in self._recorded:
+            outcome = decode(payload)
+            if (
+                outcome is None
+                or outcome.consumer != consumer
+                or outcome.stream_path != stream_path
+            ):
                 continue
             held = best.get(outcome.subject)
             # `>=` so re-recording an attempt replaces it. A tie is a caller

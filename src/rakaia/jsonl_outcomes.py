@@ -30,13 +30,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, fields
 from pathlib import Path
 from urllib.parse import quote
 
-from .outcomes import Outcome, _order
-
-_FIELDS = {f.name for f in fields(Outcome)}
+from .outcomes import Outcome, _order, decode, encode
 
 try:  # pragma: no cover - platform dependent
     import fcntl
@@ -92,7 +89,7 @@ class JsonlOutcomeStore:
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(asdict(outcome), sort_keys=True) + "\n"
+        line = json.dumps(encode(outcome), sort_keys=True) + "\n"
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert
         # rather than an ignore comment, the way `jsonl_store.py` states the same
@@ -134,17 +131,10 @@ class JsonlOutcomeStore:
                 # A torn trailing line from a crash mid-append. Skipping it
                 # loses one outcome; failing the read would lose the report.
                 continue
-            payload["reasons"] = tuple(payload.get("reasons", ()))
-            try:
-                out.append(
-                    Outcome(**{k: v for k, v in payload.items() if k in _FIELDS})
-                )
-            except (TypeError, ValueError):
-                # A line this version cannot build: a field added by a later
-                # version, or one removed. Unknown keys are dropped rather than
-                # passed through, because `Outcome(**payload)` raises on an extra
-                # one — and a single such line would otherwise take the whole
-                # report down, which is exactly what the torn-line handling above
-                # exists to prevent.
-                continue
+            # `decode` answers "can this version build it", including both
+            # version-skew cases — a field added later, or one since removed. A
+            # line it cannot build costs that line, never the report.
+            outcome = decode(payload)
+            if outcome is not None:
+                out.append(outcome)
         return out
