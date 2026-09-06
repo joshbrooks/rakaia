@@ -29,11 +29,13 @@ from rakaia.outcomes import InMemoryOutcomeStore, Outcome
 #: rounds fixed a map's values, then its keys, then the list beside it, then the
 #: plain fields. A store must refuse all of them, and refuse them identically.
 class _StrSubclass(str, Enum):
-    """A `str` subclass, which is the shape that defeats every equality check.
+    """A `str` subclass — the shape that defeats every check made on value alone.
 
-    It compares equal to its own text and reads back from storage as plain text
-    with a different type — so `==` cannot see the difference and only a type check
-    can. A `StrEnum` is the one that turns up in real consumers.
+    It compares equal to its own text, so `==` cannot see it, and it renders to
+    plain text on the way into storage. Both stores therefore *agree* about it,
+    which is why the reason to refuse it is not disagreement between them: it is
+    that what comes back is not what went in. A `StrEnum` is the one that turns up
+    in real consumers.
     """
 
     APPEND = "append"
@@ -127,10 +129,10 @@ def test_the_backends_agree_on_ordering(tmp_path: Path):
 
 @pytest.mark.parametrize("value", NOT_TEXT, ids=lambda v: type(v).__name__)
 @pytest.mark.parametrize(
-    # `stage` and `status` are in the list deliberately. They are declared as a
-    # small set of strings, and a `str` subclass compares equal to a member of that
-    # set while reading back from storage as something else — the case a check on
-    # value alone cannot see.
+    # `stage` and `status` are in the list deliberately: declared as a small set of
+    # strings, and a `str` subclass compares equal to a member of that set, so a
+    # check on value alone admits it. Note the stores do not disagree about it —
+    # see `test_what_goes_in_is_what_comes_back` for what the refusal actually buys.
     "field",
     ["subject", "sequence_key", "consumer", "stream_path", "stage", "status"],
 )
@@ -212,3 +214,17 @@ def test_the_stores_agree_on_the_order_of_params(tmp_path: Path):
         got[name] = [list(o.params) for o in store.latest("c", "submission/tf611")]
     assert len(set(map(repr, got.values()))) == 1, got
     assert got["memory"] == [["a", "m", "z"]]
+
+
+def test_what_goes_in_is_what_comes_back():
+    """The property the declared-type check buys, now that one representation
+    means the stores cannot disagree.
+
+    A `str` subclass renders to plain text on the way in, so every store returns
+    the same thing and a cross-store comparison sees nothing wrong. What is wrong
+    is narrower and still worth refusing: the value read back is not the value
+    handed over. Asserted by refusing it at construction, because that is where the
+    difference is still visible.
+    """
+    with pytest.raises(ValueError, match="expected one of"):
+        an_outcome(stage=_StrSubclass.APPEND)

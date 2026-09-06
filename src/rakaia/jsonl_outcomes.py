@@ -22,9 +22,11 @@ percent-encoding is the mapping that is reversible.
 
 Sharing the stream store's limits, and for the same reasons: `fcntl` only, so no
 Windows; `flock` is unreliable on NFS; readers do not take the lock. A torn
-trailing line — a crash mid-append — is skipped on read rather than parsed,
-because a partial outcome is not worth failing a whole report over, and cut off
-before the next append so that record is not glued onto it and lost as well.
+trailing line — a crash mid-append — is cut off before the next append, so that
+record is not glued onto it and lost as well. One that is read costs that line
+and not the report, and is reported as a line this version cannot build: the
+reader cannot tell a crash fragment from a record written by another version,
+and does not try to.
 
 What the lock orders is not the write itself — with `O_APPEND` a single short
 `write()` lands whole on a local filesystem — but the torn-tail check against a

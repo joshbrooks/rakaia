@@ -67,6 +67,20 @@ because the decision is store-agnostic; only the place to keep the answer is Dja
 An outcome keyed by `(consumer, stream_path, subject)` is store-agnostic in exactly the
 same way, and there are now three stores.
 
+## What is built, and what this decision only proposes
+
+A decision record says what was decided; it should not be read as saying what exists. Of the
+decisions below, **3, 4, 6, 6a, 6b and 7 describe code in the tree.** Decision 1's core half
+does; its Django half does not. **Decisions 2 and 5 describe nothing that exists** — there is
+no consume loop and no `on_error` parameter — and the Consequences section's "'did we lose
+anything, and which ones?' becomes a query, and it survives a restart" is a claim about the
+finished thing, not about what is merged.
+
+That split is deliberate: what is merged is a record and the two stores that keep it, which
+is the part worth arguing about before the loop that writes them is built. It is called out
+here because an earlier version of this section did not, and a reader would reasonably have
+taken the Decision list for an inventory.
+
 ## Decision
 
 **1. An outcome is a core concept with pluggable storage.** `Outcome`,
@@ -76,8 +90,8 @@ durable place to keep them and nothing else, mirroring `load_cursor`/`commit_cur
 A shared contract suite at `tests/outcome_store_contract.py` is subclassed once per
 backend, so "does this work on JSONL?" is a red test rather than a question.
 
-**2. The record is written where the cursor is committed.** Rakaia gains the consume
-loop it has never had, next to `poll`. It applies, records any outcome in its own
+**2. The record is written where the cursor is committed.** *(Not built — this decision
+proposes it.)* Rakaia gains the consume loop it has never had, next to `poll`. It applies, records any outcome in its own
 transaction — outside the executor's — and then commits the cursor. Nothing is
 recorded from inside an `Effect`, an executor, or a handler.
 
@@ -128,7 +142,8 @@ Nothing is missing; something was rejected. Treating that as a lost append would
 re-drive hunting for a fact that is exactly where it should be, and treating it as an
 unapplied projection would send a replay looking for an event that was never written.
 
-**5. The failure policy is a parameter with per-mode defaults, never inferred.**
+**5. The failure policy is a parameter with per-mode defaults, never inferred.** *(Not
+built — this decision proposes it.)*
 `on_error="skip"` when consuming continuously, `on_error="halt"` when rebuilding. The
 same shape as `on_drift` (`src/rakaia/drift.py:41`), and for the same reason: one code
 path serving two operations with opposite invariants is how a guard ends up correct in
@@ -324,9 +339,11 @@ that is the point of it.
 
 ### Positive
 
-- "Did we lose anything, and which ones?" becomes a query, and it survives a restart.
-- The consume loop lands as a first-class thing. Rakaia has documented at-least-once
-  semantics and, until now, no code expressing them; every consumer wrote the loop.
+- "Did we lose anything, and which ones?" becomes a query that survives a restart — once
+  the loop of Decision 2 writes the records and a durable store keeps them. Neither is in
+  this change; both are what it is for.
+- The consume loop would land as a first-class thing. Rakaia has documented at-least-once
+  semantics and no code expressing them, so every consumer writes the loop itself.
 - `stage` makes the difference between a lost fact and an unapplied one legible at the
   point someone is deciding what to do about it.
 

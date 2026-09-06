@@ -20,7 +20,8 @@ an ordering assertion cannot catch a store that parses one. That property lives
 in `test_cross_backend_cursors.py`, where a foreign format is refused rather than
 misread. Retention, admin surfaces and
 re-drive are out of scope: the first is a policy a consumer schedules, and the
-last is deliberately not in this version (ADR 0007, "Not in v1").
+last is deliberately deferred (ADR 0007, "Alternatives considered — Ship re-drive
+in the same change").
 
 What *is* contract: an outcome is never updated in place, and `latest` collapses
 attempts and nothing else. There is no gap query to pin — ADR 0007 Decision 3
