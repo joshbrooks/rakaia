@@ -102,13 +102,10 @@ def test_attempts_count_from_one():
     ids=lambda v: type(v).__name__,
 )
 def test_anything_that_cannot_be_stored_as_text_is_refused(value):
-    """The whole storability rule, and the only one there is.
-
-    It refuses by *doing the storing* rather than by describing which types are
-    allowed. Seven review findings were values that satisfied a type rule and still
-    did not survive storage — a text subclass that flattens, a lone surrogate, a
-    string longer than a column. That set is open-ended, so a description of it
-    leaks by construction.
+    """The backstop under the declared-type walk: none of these is text, so the
+    walk refuses them before `json.dumps` would have. Kept because it is the case
+    a store cares about most — a value that cannot be written at all — and the
+    message a caller gets for it should not depend on which check saw it first.
     """
     with pytest.raises(ValueError, match="storable as text"):
         Outcome(
@@ -163,6 +160,40 @@ def test_a_value_json_can_render_is_still_refused_if_the_declaration_does_not_al
     field whose purpose is that field values never reach it — and lets a `bool`
     stand in for an attempt number, and a made-up `stage` for a real one. The
     declaration is the rule; each field is checked against it.
+    """
+    kwargs = {
+        **BASE,
+        "offset": None,
+        "stage": "append",
+        "status": "refused",
+        field: value,
+    }
+    with pytest.raises(ValueError, match="storable as text"):
+        Outcome(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("reasons", "missing_total"),
+        ("reasons", None),
+        ("reasons", 123),
+        ("reasons", {"missing_total": "1"}),
+        ("params", None),
+        ("params", [("a", "b")]),
+        ("params", "k=v"),
+    ],
+    ids=repr,
+)
+def test_a_container_of_the_wrong_shape_is_refused_not_coerced(field, value):
+    """The copy that makes `frozen` mean something ran before the check did.
+
+    `tuple("missing_total")` is thirteen one-letter codes, each of them valid
+    text, so a bare string for `reasons` was accepted and stored as gibberish;
+    a list of pairs became a `params` dict; and anything `tuple()` or `dict()`
+    choked on raised `TypeError` from the copy rather than the `ValueError` every
+    other refusal gives. Mutation: copy unconditionally again; the first case
+    stores thirteen codes and the second raises the wrong type.
     """
     kwargs = {
         **BASE,

@@ -26,13 +26,11 @@ trailing line — a crash mid-append — is skipped on read rather than parsed,
 because a partial outcome is not worth failing a whole report over, and cut off
 before the next append so that record is not glued onto it and lost as well.
 
-The lock is not pinned by a test, and that is a known gap rather than an
-oversight: with `O_APPEND` a single short `write()` lands whole on a local
-filesystem, so two unlocked writers cannot be made to interleave on demand. What
-the lock actually orders is the torn-tail check against a concurrent append —
-find the fragment, truncate, write — which is a window too narrow to hit
-deliberately. A test that fails with the lock removed would be welcome; none of
-the obvious ones do.
+What the lock orders is not the write itself — with `O_APPEND` a single short
+`write()` lands whole on a local filesystem — but the torn-tail check against a
+concurrent append: find the fragment, truncate, write. The test that pins it
+holds a writer inside that window and checks a second one waits, because a
+second writer that gets through is the one that can lose a line.
 """
 
 from __future__ import annotations

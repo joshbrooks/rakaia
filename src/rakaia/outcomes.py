@@ -141,9 +141,15 @@ class Outcome:
     def __post_init__(self) -> None:
         # Copy the two containers so `frozen=True` means what it says: it freezes
         # the binding, not the dict or list behind it, and a caller keeping its own
-        # reference could otherwise change what had already been recorded.
-        object.__setattr__(self, "params", dict(self.params))
-        object.__setattr__(self, "reasons", tuple(self.reasons))
+        # reference could otherwise change what had already been recorded. Only a
+        # container of the declared shape is copied — a bare string is iterable,
+        # and `tuple("missing_total")` is thirteen one-letter codes that the walk
+        # below would then pass; anything else is left as it came, for the walk to
+        # refuse.
+        if type(self.params) is dict:
+            object.__setattr__(self, "params", dict(self.params))
+        if type(self.reasons) in (list, tuple):
+            object.__setattr__(self, "reasons", tuple(self.reasons))
 
         # Every declared field is checked against its declared type, and the
         # declaration is read rather than restated: a field added later is

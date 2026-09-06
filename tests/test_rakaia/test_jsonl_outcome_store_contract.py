@@ -322,3 +322,60 @@ class TestJsonlOutcomeStoreDurability:
                 fh.write(encode(foreign) + "\n")
 
         assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
+
+
+class TestJsonlOutcomeStoreLocking:
+    """The one thing the append lock orders, pinned the only way it can be.
+
+    With `O_APPEND` a short `write()` lands whole, so two unlocked writers never
+    interleave and a test on the written bytes stays green with the lock removed.
+    What the lock guards is the torn-tail check — read the tail, maybe truncate,
+    then write — so the test holds one writer inside that window and checks the
+    second is still waiting. Removing the `LOCK_EX` call makes it fail; the
+    explicit unlock is not pinned, because closing the file releases it anyway.
+    """
+
+    def test_a_second_writer_waits_while_the_first_is_inside_the_torn_tail_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import threading
+
+        from rakaia import jsonl_outcomes
+        from rakaia.outcomes import Outcome
+
+        def refused(subject: str) -> Outcome:
+            return Outcome(
+                consumer="c",
+                stream_path="s",
+                subject=subject,
+                offset=None,
+                sequence_key=subject,
+                stage="append",
+                status="refused",
+            )
+
+        store = JsonlOutcomeStore(tmp_path / "outcomes", fsync=False)
+        store.record(refused("row-0"))  # so the file and its directory exist
+        real = jsonl_outcomes._discard_torn_tail
+        second_still_waiting: list[bool] = []
+        entered = threading.Event()
+
+        def held_open(fh):
+            # Only the first writer is held; the second must run the real thing.
+            if not entered.is_set():
+                entered.set()
+                other = threading.Thread(target=store.record, args=(refused("row-2"),))
+                other.start()
+                other.join(timeout=0.5)
+                second_still_waiting.append(other.is_alive())
+            real(fh)
+
+        monkeypatch.setattr(jsonl_outcomes, "_discard_torn_tail", held_open)
+        store.record(refused("row-1"))
+
+        assert second_still_waiting == [True]
+        assert [o.subject for o in store.latest("c", "s")] == [
+            "row-0",
+            "row-1",
+            "row-2",
+        ]
