@@ -89,6 +89,28 @@
 - Research notes live in `docs/research/` and are deliberately **not** in the
   nav. They are dated and are not decisions; decisions go in `docs/adr/`.
 
+## Writing it up
+
+- **Two plain paragraphs.** A commit message body, an issue body and a PR body are each
+  at most two paragraphs, written so someone who only reads the notification email gets
+  the whole point. Say what changed and what it means for whoever uses this. That is the
+  deliverable.
+- **Everything else goes in a comment.** Tables, measured counts, SHAs, query output,
+  repro steps, mutation records, per-file reasoning — post them below the body, on the PR.
+  They are evidence for whoever verifies the work, not the summary for whoever reads it. A
+  commit message has nowhere to put them, so they belong on its PR instead.
+- **No machinery in the body.** This library's own words — stream, event, consumer,
+  cursor, offset, replay, backend — are the vocabulary and are fine. Identifiers are not:
+  `DjangoExecutor.apply` is "the part that writes a batch", `_StageBuffer` is "batching a
+  pass together". Save the precise names for the comment, where precision is the job.
+- The test: read the body alone. If it needs the source open, or the point arrives after
+  the evidence, rewrite it.
+- **Docstrings too: two paragraphs**, with one difference — a docstring's reader is
+  looking at the code, so identifiers *are* their vocabulary. What does not belong is the
+  essay: the history of a bug, what an earlier cut did, or the same point twice. A
+  non-obvious constraint earns its own short paragraph; if it took a mutation to find,
+  write it down.
+
 ## Agent skills
 
 ### Issue tracker
