@@ -23,7 +23,7 @@ jobs:
           # Pin uv itself, not just the action. Unpinned, CI takes whatever is
           # latest and rewrites uv.lock in its newer style — a version-bump PR
           # once carried a few hundred lines of unrelated marker churn (#118).
-          version: "0.11.32"
+          version: "0.12.10"
 
       - name: Set up Python 3.12
         run: uv python install 3.12
@@ -120,7 +120,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          version: "0.11.32"
+          version: "0.12.10"
 
       - name: Set up Python 3.12
         run: uv python install 3.12
@@ -144,7 +144,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          version: "0.11.32"
+          version: "0.12.10"
 
       - name: Set up Python 3.12
         run: uv python install 3.12

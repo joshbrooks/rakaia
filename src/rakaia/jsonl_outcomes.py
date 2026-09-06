@@ -24,9 +24,10 @@ Layout, one file per consumer and stream::
 
     <root>/<quoted consumer>/<quoted stream path>.jsonl
 
-`quote(safe="")` on both components for the reason `JsonlStreamStore._dir` gives:
-a stream path contains slashes and must map to one name, not a tree, and
-percent-encoding is the mapping that is reversible.
+Both components go through `JsonlStreamStore`'s `_contained`, which maps a name
+to one child of a directory and then checks that it landed there — the same
+single rule the stream store uses, rather than each store carrying its own idea
+of which names are dangerous.
 
 Sharing the stream store's limits, and for the same reasons: `fcntl` only, so no
 Windows; `flock` is unreliable on NFS; readers do not take the lock. A torn
@@ -47,36 +48,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import quote
 
-from .jsonl_store import _discard_torn_tail
+from .jsonl_store import _contained, _discard_torn_tail
 from .outcomes import Outcome, _order, decode, encode
 
 try:  # pragma: no cover - platform dependent
     import fcntl
 except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
-
-
-def _safe_name(name: str) -> str:
-    """One path segment for `name`, guaranteed to stay under its parent.
-
-    `quote(safe="")` maps a slash to `%2F`, which is what keeps a stream path a
-    name rather than a tree, and it is reversible. What it does **not** touch is a
-    dot: `quote("..")` is `".."`, so a consumer or stream called `..` resolves
-    above the root and writes outside the store entirely. Only an all-dot name can
-    do that — anything else already carries an encoded character — so those are the
-    ones encoded here, and an empty name, which would otherwise collapse a
-    directory level.
-
-    Found by a containment test rather than by review, and that is the point worth
-    keeping: an unencoded name still *round-trips*, so reading back what was
-    written passes while the file sits somewhere it should never have been.
-    """
-    quoted = quote(name, safe="")
-    if not quoted or set(quoted) <= {"."}:
-        return quoted.replace(".", "%2E") or "%00"
-    return quoted
 
 
 class JsonlOutcomeStore:
@@ -101,7 +80,7 @@ class JsonlOutcomeStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _file(self, consumer: str, stream_path: str) -> Path:
-        return self.root / _safe_name(consumer) / f"{_safe_name(stream_path)}.jsonl"
+        return _contained(_contained(self.root, consumer), stream_path, ".jsonl")
 
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)

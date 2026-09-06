@@ -118,9 +118,8 @@ just polyglot-serve workers=4
 Uses `polyglot_project.settings_prod` (DEBUG=False, WhiteNoise
 CompressedManifest). Four workers all serve live updates from one log
 with no message broker between them: writers coordinate with `flock` on
-the stream directory and readers tail the files. Redis is still started
-by the `redis-up` recipe and the channel layer is still configured, but
-nothing in this demo rides on it any more.
+the stream directory and readers tail the files. Nothing here needs
+Redis, and the recipe no longer starts one.
 
 That works because every worker is on one machine. `flock` is not
 dependable over NFS or another network filesystem, so this arrangement

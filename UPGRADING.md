@@ -17,6 +17,91 @@ ones you are crossing.
 
 # Unreleased
 
+## Changing `RAKAIA_STORE` does not move your log
+
+This is not a break in the usual sense — nothing that worked stops working — but
+it is the one trap the new file-backed store introduces, and it fails quietly.
+
+Switching the setting and restarting brings the app up against a **different,
+empty log**. Every consumer position you have saved is still syntactically valid,
+because two of the three backends issue the same position format, so nothing
+raises: consumers resume into silence and a dashboard shows an empty stream next
+to a database still full of rows.
+
+**What to do.** Treat a backend change as a copy, and run it before you switch
+the setting:
+
+```python
+from rakaia import migrate_all
+
+for result in migrate_all(old_store, new_store):
+    print(result.path, result.events, result.offsets_preserved, result.notes)
+```
+
+`Migration.notes` names anything the copy could not carry. `migrate_stream` does
+one stream if you would rather move them individually. The reasoning is in
+[ADR 0006](docs/adr/0006-changing-backends-is-a-copy.md).
+
+## `import rakaia` no longer imports every submodule eagerly
+
+Public names are unaffected: `from rakaia import Upsert, replay, StreamStore` and
+every other exported name resolves exactly as before, and `uvicorn rakaia:app`
+still works. The change is that the package root resolves names on first use
+rather than importing all ten protocol-server modules at import time.
+
+**What to check.** Only one pattern is affected: reaching a **submodule** through
+the package without importing it first. `import rakaia` followed by
+`rakaia.jsonl_store.something` worked incidentally before, because some other
+module had already imported it; it now depends on what else your process has
+imported. Import the submodule explicitly instead:
+
+```python
+import rakaia.jsonl_store  # not: import rakaia; rakaia.jsonl_store...
+```
+
+`rakaia.replay` is deliberately exempt and stays bound eagerly, because it is both
+an export and a submodule, and resolving it lazily would return a function or a
+module depending on import order.
+
+## A third-party store behind the protocol server no longer has its positions refused
+
+The server's validation of an incoming position was a list of rakaia's own two
+formats. If you plug your own storage in behind the same server, positions it
+issued were rejected before your store was ever consulted. The rule now matches
+the specification — an opaque token, short, URL-safe, without the five characters
+that would split it across query parameters — and the store remains the authority
+on whether it issued a given position.
+
+This is a widening, so no action is needed unless you were relying on the server
+to reject a shape on your behalf. It no longer does; your store's own rejection is
+what answers now, with the same status.
+
+---
+
+# 0.3.1
+
+Both changes in this release are fixes, and neither needs action if you include
+`django_rakaia.urls` as shipped. One matters if you have copied those routes into
+your own URLconf.
+
+## If you copied the stream routes, the catch-all must be listed last
+
+Stream names may contain a slash — `_scratch/fold` is one the library generates
+itself — so the routes now use Django's `path` converter where they used `str`.
+`path` is greedy where `str` is not, so the catch-all stream-detail route has to
+come **last** in your list or it claims `api/streams/<name>/` as a stream called
+`api/streams/<name>`, and the read API starts returning HTML.
+
+A test that reverses a URL name will agree with that mistake. Resolve real paths
+instead if you want cover for it.
+
+## Polling no longer requires `channels`
+
+If you only read streams by polling, you no longer need `channels` installed (nor
+a Redis channel layer on a production tier) to include `django_rakaia.urls`. The
+SSE route is loaded behind the same gate `apps.py` uses, so `RAKAIA_ENABLE_SSE`
+now works as documented. Opting *in* without the extra installed still fails
+loudly, which is intended.
 ## A new table for the outcomes a consumer records
 
 There is a new migration, `django_rakaia` `0010`, adding one table:

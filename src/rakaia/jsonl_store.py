@@ -35,7 +35,10 @@ to be constructed rather than run unlocked), **NFS** (`flock` is not reliable
 across it), **readers do not take the lock**, and **appends are not broadcast**
 to live subscribers the way `DjangoStreamStore` broadcasts over channels, since
 this store cannot reach Django. `django_rakaia.checks` reports that last one as
-``rakaia.W002`` rather than leaving it to be discovered.
+``rakaia.W002`` rather than leaving it to be discovered. One more, added when
+it was found rather than left implied: a **symlink inside the root** still leads
+a write out of the store, because `_contained` checks containment lexically and
+a lexical check cannot see one. See its docstring for why that trade was taken.
 
 Two things this list used to name are now implemented, and the note is kept
 because their absence was a documented limitation: **fsync durability** is on by
@@ -119,6 +122,58 @@ def _discard_torn_tail(fh: Any) -> None:
     fh.seek(0)
     cut = fh.read().rfind(b"\n") + 1
     fh.truncate(cut)
+
+
+def _contained(root: Path, name: str, suffix: str = "") -> Path:
+    """The path `name` maps to, *proven* to sit directly under `root`.
+
+    A caller-supplied name — a stream path, a consumer id — becomes exactly one
+    child of `root`. `quote(safe="")` does the mapping, because a stream path
+    contains slashes and a stream is one directory rather than a tree: `/a/b`
+    and `/a%2Fb` must not collide, and percent-encoding is the one mapping
+    `list_paths` can reverse.
+
+    What makes it safe is not the encoding, though. `quote` leaves a dot alone,
+    so a stream called `..` used to resolve *above* the root and write outside
+    the store entirely. The tempting repair is to extend the escaping until
+    every dangerous name is covered, and that is the losing move: the bad set is
+    open-ended, and the next encoding nobody thought of walks straight through.
+    So the rule here is the structural one instead — build the path,
+    canonicalise it, and check it really is a child of the root. Escaping the
+    dots is only the repair attempted when the check says no; the check, not a
+    list of known-bad names, is what decides. A name that still escapes after
+    the repair is refused rather than written.
+
+    The containment is *lexical*, and that is a real limit rather than a
+    detail. The encoded name can never contain a separator, so `normpath`
+    collapsing `.` and `..` covers every spelling a caller can put in a name —
+    but it cannot see a symlink, and a symlink planted inside the root still
+    leads a write out of the store. `Path.resolve()` would catch it — the name
+    would be refused rather than misplaced — at the cost of a filesystem walk on
+    a path taken on every single append. The trade
+    was taken because the two sides are not comparable threats: a name is
+    supplied by whoever calls the store, while the contents of the root are the
+    deployer's, and anyone who can create a directory entry inside the root can
+    write outside it whatever this function does. Named rather than glossed
+    over, and pinned by a strict `xfail` in `test_jsonl_containment.py` so the
+    limit is found deliberately instead of discovered.
+
+    Found by a containment test rather than by review, which is the part worth
+    remembering: an unencoded name still *round-trips*, so reading back what was
+    written passes while the file sits somewhere it should never have been.
+    """
+    base = Path(os.path.normpath(root))
+    encoded = quote(name, safe="")
+    candidate = Path(os.path.normpath(base / (encoded + suffix)))
+    if candidate.parent == base:
+        return candidate
+    # Outside, so re-encode and re-check. `%00` covers the empty name, which
+    # would otherwise collapse a level away rather than escape one.
+    encoded = encoded.replace(".", "%2E") or "%00"
+    candidate = Path(os.path.normpath(base / (encoded + suffix)))
+    if candidate.parent == base:
+        return candidate
+    raise ValueError(f"name {name!r} does not map to a path under {root}")
 
 
 #: Where retired offset high-marks live, as a sibling of the stream directories.
@@ -255,13 +310,8 @@ class JsonlStreamStore:
     # =========================================================================
 
     def _dir(self, path: str) -> Path:
-        """The directory for `path`.
-
-        `quote(safe="")` because a stream path contains slashes and a stream is
-        one directory, not a tree: `/a/b` and `/a%2Fb` must not collide, and
-        percent-encoding is the one mapping that is reversible for `list_paths`.
-        """
-        return self.root / quote(path, safe="")
+        """The directory for `path`, which `_contained` guarantees is under the root."""
+        return _contained(self.root, path)
 
     def _segment(self, path: str, entry_id: int) -> Path:
         start = (entry_id // self.segment_size) * self.segment_size
@@ -274,7 +324,7 @@ class JsonlStreamStore:
         return sorted(d.glob("*.jsonl"))
 
     def _retired_path(self, path: str) -> Path:
-        return self.root / _RETIRED_DIR / quote(path, safe="")
+        return _contained(self.root / _RETIRED_DIR, path)
 
     def _retired(self, path: str) -> int:
         f = self._retired_path(path)

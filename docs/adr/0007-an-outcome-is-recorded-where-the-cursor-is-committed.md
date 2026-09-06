@@ -70,18 +70,19 @@ same way, and there are now three stores.
 ## What is built, and what this decision only proposes
 
 A decision record says what was decided; it should not be read as saying what exists. Of the
-decisions below, **4, 6, 6a, 6b and 7 describe code in the tree**, and **3 describes it
-only in the negative** — what is built is the absence of a success status and the absence
-of a gap query; the rule itself is a property of the loop in Decision 2, which is not. Decision 1's core half
-does; its Django half does not. **Decisions 2 and 5 describe nothing that exists** — there is
-no consume loop and no `on_error` parameter — and the Consequences section's "'did we lose
-anything, and which ones?' becomes a query, and it survives a restart" is a claim about the
-finished thing, not about what is merged.
+decisions below, **2, 3, 4, 5, 6, 6a, 6b and 7 describe code in the tree**. Decision 1's core half
+does; its Django half does not.
 
-That split is deliberate: what is merged is a record and the two stores that keep it, which
-is the part worth arguing about before the loop that writes them is built. It is called out
-here because an earlier version of this section did not, and a reader would reasonably have
-taken the Decision list for an inventory.
+Decisions 2 and 5 were the two that described nothing, and they no longer do:
+`rakaia.subscription.consume` is the loop, and `on_error` is its parameter. Decision 3 has
+stopped being a rule stated only in the negative with it — the loop is what makes absence of
+a record mean success, and a test pins each half of that. What is still outstanding is the
+Django place to keep an outcome, and the export: nothing in this ADR is in
+`rakaia.__all__`, deliberately, until the decision is Accepted.
+
+The split is called out here because an earlier version of this section did not, and a
+reader would reasonably have taken the Decision list for an inventory. It is worth keeping
+the habit even now that most of the list is real.
 
 ## Decision
 
@@ -92,10 +93,37 @@ durable place to keep them and nothing else, mirroring `load_cursor`/`commit_cur
 A shared contract suite at `tests/outcome_store_contract.py` is subclassed once per
 backend, so "does this work on JSONL?" is a red test rather than a question.
 
-**2. The record is written where the cursor is committed.** *(Not built — this decision
-proposes it.)* Rakaia gains the consume loop it has never had, next to `poll`. It applies, records any outcome in its own
-transaction — outside the executor's — and then commits the cursor. Nothing is
-recorded from inside an `Effect`, an executor, or a handler.
+**2. The record is written where the cursor is committed.** `consume`
+(`src/rakaia/subscription.py`) is the loop rakaia has documented and never had, next to
+`poll`. It applies, records any outcome outside whatever transaction the apply used, and
+then commits the cursor. Nothing is recorded from inside an `Effect`, an executor, or a
+handler.
+
+Two details of it are the decision rather than the implementation, and the first is a trade
+rather than a mechanism.
+
+**The commit is per message, and that is a cost accepted knowingly.** It is one durable
+cursor write per event where a batch commit would be one per poll, and a consumer at volume
+will feel the difference. What it buys is the only granularity at which "the cursor stopped
+below the event that failed" is a true statement: commit a batch and an unapplied event sits
+below the watermark, which under Decision 3 does not read as unapplied — it reads as an
+event that worked. So the choice is between a write per event and a mode (`halt`) that
+cannot mean what it says, and this decision takes the write. A consumer that measures this
+as its bottleneck is asking for batch commit back, and the answer is not "make it
+configurable" — it is that `skip` tolerates a coarser commit and `halt` does not, so the
+split would be per mode, like `on_error` itself. Nobody has needed it yet, so it is not
+built.
+
+**The loop must not be called from inside a transaction of the caller's own**, or the
+rollback this decision exists to escape swallows the record after all. That is a constraint
+on the caller, stated in the docstring because nothing in a stdlib-only module can enforce
+it; it is measured and cross-referenced in the Consequences below.
+
+An apply may also **return** outcomes rather than raise, and they are recorded on the same
+path. That is what a reducer needs to say a value was computed from a population with a hole
+in it (see *What would reopen this*, option (b)) — the loop accepts such a record without
+having an opinion about which construct decided there was a hole. Returning one is not
+failing: the message still applied and the cursor still advances.
 
 **3. Only exceptions are recorded; the cursor is the success record.** Everything
 below the cursor succeeded unless an outcome says otherwise, and anything the cursor
@@ -144,9 +172,10 @@ Nothing is missing; something was rejected. Treating that as a lost append would
 re-drive hunting for a fact that is exactly where it should be, and treating it as an
 unapplied projection would send a replay looking for an event that was never written.
 
-**5. The failure policy is a parameter with per-mode defaults, never inferred.** *(Not
-built — this decision proposes it.)*
-`on_error="skip"` when consuming continuously, `on_error="halt"` when rebuilding. The
+**5. The failure policy is a parameter with per-mode defaults, never inferred.**
+`on_error="skip"` when consuming continuously, `on_error="halt"` when rebuilding. It has no
+default value at all — the "per-mode defaults" are which one each operation passes, not a
+fallback the loop picks. The
 same shape as `on_drift` (`src/rakaia/drift.py:41`), and for the same reason: one code
 path serving two operations with opposite invariants is how a guard ends up correct in
 one mode and silently wrong in the other.
@@ -341,11 +370,15 @@ that is the point of it.
 
 ### Positive
 
-- "Did we lose anything, and which ones?" becomes a query that survives a restart — once
-  the loop of Decision 2 writes the records and a durable store keeps them. Neither is in
-  this change; both are what it is for.
-- The consume loop would land as a first-class thing. Rakaia has documented at-least-once
-  semantics and no code expressing them, so every consumer writes the loop itself.
+- "Did we lose anything, and which ones?" is a query. The loop of Decision 2 writes the
+  records and the file-backed store keeps them across a restart; the in-memory one does
+  not, and a Django place to keep them is still outstanding. So the query survives a
+  restart on the backend that survives one, and the remaining work is a backend rather
+  than the mechanism.
+- The consume loop lands as a first-class thing. Rakaia had documented at-least-once
+  semantics and no code expressing them, so every consumer wrote the loop itself. One
+  written loop is now the supported answer — see the first negative consequence below for
+  what that does and does not close.
 - `stage` makes the difference between a lost fact and an unapplied one legible at the
   point someone is deciding what to do about it.
 
@@ -354,6 +387,27 @@ that is the point of it.
 - **Nothing enforces that the loop is used.** A consumer keeping its hand-written
   `poll`/`commit` records nothing, and its stream looks identical to a clean one. This
   decision adds a supported path; it does not close the unsupported one.
+- **A caller's own transaction reopens the hole, one level out, and it is measured.**
+  `consume` writes the outcome outside the executor's transaction. It cannot write it
+  outside *the caller's*. Wrap the loop in `atomic()` and the record is back inside a
+  rollback — the same failure this ADR is built around, moved up one frame and no longer
+  visible in the loop that was fixed to prevent it. Measured on this branch: caller
+  `atomic()`, a raising handler, `on_error="skip"`, a database-backed outcome store, then
+  the caller rolls back —
+
+  | | |
+  |---|---|
+  | records written inside the block | 1 |
+  | records surviving the rollback | **0** |
+
+  Not a defect in the loop, and not fixable there: `consume` is core and stdlib-only
+  (`rakaia`, not `django_rakaia`), so it cannot see a Django atomic block, and a core
+  module that could would be the tier violation `tests/test_rakaia/test_tier_boundary.py`
+  exists to refuse. The guard belongs in the Django outcome store, which is the one piece
+  of this that is both unbuilt and Django-shaped enough to check — it is the same finding
+  as the unbuilt Django backend below, not a second problem, and should be closed with it
+  rather than separately. Until then it is a documented constraint on the caller and a line
+  in `consume`'s docstring, which is the weakest kind of guard this ADR has.
 - **A consumer that is not cursor-driven cannot adopt this.** Decision 3 makes absence of a
   record mean success. The motivating consumer's existing surface means the exact opposite:
   it writes a record on success *and* on failure precisely so that no record at all can be
@@ -442,7 +496,10 @@ that is the point of it.
   *(a)* extend parking to reducers, so one refuses to run over a population with an
   unresolved outcome — correct, changes live behaviour, needs the gates;
   *(b)* record a derived outcome against the affected row when a reducer's input has a
-  hole — purely additive, but a second kind of outcome with different provenance;
+  hole — purely additive, but a second kind of outcome with different provenance. The loop
+  can already carry one: an apply returns outcomes and they are recorded. What is undecided
+  is the reducer half — when a construct should decide its population has a hole, and what
+  it names as the subject;
   *(c)* leave the behaviour alone and make the affected population queryable.
   Whichever lands, `stage`/`status` from Decision 4 is what it will key off.
 - **A fourth store.** The contract suite is where that is absorbed; if a store cannot

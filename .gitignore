@@ -46,8 +46,10 @@ db.sqlite3
 # runtime the way db.sqlite3 above is.
 examples/polyglot/streams/
 
-# Collected static files (chat sample → WhiteNoise)
+# Collected static files (chat and polyglot samples → WhiteNoise).
+# `just polyglot-serve` runs collectstatic before starting hypercorn.
 examples/chat/staticfiles/
+examples/polyglot/staticfiles/
 
 # Zensical build output
 /site/

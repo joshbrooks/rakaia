@@ -88,6 +88,33 @@
   claims they modify.
 - Research notes live in `docs/research/` and are deliberately **not** in the
   nav. They are dated and are not decisions; decisions go in `docs/adr/`.
+- **A release updates four files, and a PR updates the first of them.** These
+  drifted apart across `0.3.0`/`0.3.1`, which is what this rule exists to stop:
+  - `CHANGELOG.md` — for anything a consumer of the library could notice, under
+    `[Unreleased]`, in the PR that makes the change. Repo tooling is out of scope
+    by long precedent: the uv pin, the lint config and the CI matrix have never
+    been changelogged, because the file documents the library, not the workshop.
+    Never leave `[Unreleased]` absent: the release-prep PR renames it and
+    immediately adds an empty one back. Reconstructing a release from the git log
+    at tag time is how `whats-new.md` got skipped for two releases.
+  - `UPGRADING.md` — if anything breaks, *or* if something works differently in a
+    way that fails quietly. A trap that raises nothing (changing `RAKAIA_STORE`
+    moves no data) belongs here even though it breaks no signature.
+  - `docs/whats-new.md` — if a headline capability landed. It is a **cumulative**
+    tour: append a numbered section, never rewrite the earlier ones. Every
+    section owes the reader a problem, a snippet, and a one-command demo.
+  - `docs/examples.md` — if an example changed, and always check *Known gaps*.
+    A new public API with no example is a gap; say so there rather than letting
+    the matrix imply coverage that does not exist.
+- **Doc code samples are checked against the real signature, not from memory.**
+  Every name in a snippet must resolve and every keyword must exist —
+  `rebuild_and_verify` was documented with three wrong arguments on the first
+  pass here. `docs/api-reference.md` is generated and is the cheapest place to
+  confirm a signature.
+- **`just demos` does not cover `chat` or `polyglot`.** They need a running
+  server, so CI never touches them and only a manual run finds a break. If you
+  change either — or the store, SSE or URL wiring underneath them — start the
+  server and exercise the real endpoint before claiming they work.
 
 ## Writing it up
 

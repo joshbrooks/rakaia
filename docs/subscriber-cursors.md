@@ -50,6 +50,47 @@ crash between applying and committing re-delivers the batch rather than skipping
 it, so downstream apply logic should be idempotent (which, for a projection, it
 already is).
 
+## The loop: `consume`
+
+Writing that order by hand is where it goes wrong, so there is one written
+version of it. `consume` polls, applies each message, records any outcome, and
+commits the cursor — per message, in that order:
+
+```python
+from rakaia.subscription import consume
+
+result = consume(
+    store,
+    "submissions",
+    apply,  # called once per message
+    consumer="reporting",
+    on_error="skip",  # "halt" when rebuilding — no default
+    cursor=load_cursor("reporting", "submissions"),
+    commit=lambda offset: commit_cursor("reporting", "submissions", offset),
+    outcomes=outcome_store,
+)
+```
+
+Three things about it are deliberate, and
+[ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md) has
+the reasoning:
+
+- **The outcome is written outside the apply's transaction.** A Django executor
+  wraps its batch in `transaction.atomic`; a record written inside rolls back
+  with the batch whose failure it exists to record. So do not call `consume`
+  from inside a transaction of your own either.
+- **The cursor is committed last, per message.** That is what makes `halt` mean
+  anything: the watermark stops *below* the event that failed, so the event is
+  still pending and is delivered again.
+- **`on_error` has no default.** `"skip"` for a live consumer — one poisoned
+  event must not stall a stream. `"halt"` for a rebuild — a rebuild that skips
+  an event has produced a projection that is not derived from every event, and
+  reported success anyway.
+
+An `apply` may also *return* outcomes instead of raising, for a fact it decided
+rather than an exception it hit. Returning one is not a failure: the message
+still applied and the cursor still advances.
+
 ## Rewind detection
 
 If the stored cursor sorts *after* the current head, the log shrank beneath it,
