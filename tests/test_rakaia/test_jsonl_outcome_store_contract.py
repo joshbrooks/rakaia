@@ -359,12 +359,12 @@ class TestJsonlOutcomeStoreLocking:
         real = jsonl_outcomes._discard_torn_tail
         second_still_waiting: list[bool] = []
         entered = threading.Event()
+        other = threading.Thread(target=store.record, args=(refused("row-2"),))
 
         def held_open(fh):
             # Only the first writer is held; the second must run the real thing.
             if not entered.is_set():
                 entered.set()
-                other = threading.Thread(target=store.record, args=(refused("row-2"),))
                 other.start()
                 other.join(timeout=0.5)
                 second_still_waiting.append(other.is_alive())
@@ -372,6 +372,9 @@ class TestJsonlOutcomeStoreLocking:
 
         monkeypatch.setattr(jsonl_outcomes, "_discard_torn_tail", held_open)
         store.record(refused("row-1"))
+        # The first writer returning is what unblocks the second; it still has
+        # its own check and write to do, so wait for it before reading.
+        other.join()
 
         assert second_still_waiting == [True]
         assert [o.subject for o in store.latest("c", "s")] == [
