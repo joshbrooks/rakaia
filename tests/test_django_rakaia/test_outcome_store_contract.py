@@ -178,3 +178,61 @@ class TestBoundedColumnsRefuseTheSameValueOnEveryDatabase:
         )
         [got] = store.latest("c", "s")
         assert got.sequence_key == long_key and got.reasons == (long_key,)
+
+
+@pytest.mark.django_db(databases=["default", "overlay"], transaction=True)
+class TestWhatSurvivesTheCallersOwnTransaction:
+    """The hole ADR 0007 closes one level in, reopening one level out.
+
+    The decision keeps an outcome out of the *executor's* transaction, so a batch
+    that fails cannot discard the record of its own failure. It says nothing about
+    the caller. A consumer that wraps its whole consume in `transaction.atomic()`
+    and then rolls back takes the outcome with it, because by default the write
+    joins the transaction already open — and the core consume loop cannot see
+    this, since it is stdlib-only and has no idea Django is underneath.
+
+    Both numbers are here rather than one, because the number a reader wants is
+    the difference: on the ambient connection nothing survives, and on an alias
+    the caller's transaction does not cover, the record does.
+    """
+
+    def test_an_outcome_on_the_ambient_connection_rolls_back_with_the_caller(self):
+        from django.db import transaction
+
+        from django_rakaia.models import ConsumerOutcome
+
+        store = DjangoOutcomeStore()
+        with transaction.atomic():
+            store.record(project("0000000001", reasons=("bad_total",)))
+            assert ConsumerOutcome.objects.count() == 1, "written inside the block"
+            transaction.set_rollback(True)
+
+        assert ConsumerOutcome.objects.count() == 0
+        assert store.latest("c", "s") == []
+
+    def test_an_outcome_on_another_alias_survives_the_callers_rollback(self):
+        """`using=` is the escape hatch, and this is what it buys.
+
+        The alias is a connection the caller's `atomic()` does not cover, so the
+        record commits on its own and is still there afterwards. Mutation: drop
+        `.using(self._using)` from `record`; the write lands on `default`, goes
+        back with the rollback, and this reads zero.
+        """
+        from django.db import transaction
+
+        from django_rakaia.models import ConsumerOutcome
+
+        store = DjangoOutcomeStore(using="overlay")
+        try:
+            with transaction.atomic():
+                store.record(project("0000000001", reasons=("bad_total",)))
+                transaction.set_rollback(True)
+
+            assert ConsumerOutcome.objects.using("default").count() == 0
+            assert [o.reasons for o in store.latest("c", "s")] == [("bad_total",)]
+        finally:
+            # `transaction=True` truncates the aliases this test declares, but a
+            # row committed on `overlay` outside the harness's control is exactly
+            # the kind that outlives its test. Clean it up here rather than leave
+            # the next test to discover it.
+            ConsumerOutcome.objects.using("overlay").all().delete()

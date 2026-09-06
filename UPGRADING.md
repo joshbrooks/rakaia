@@ -39,6 +39,13 @@ else an outcome carries is unbounded. If your names can run longer than that,
 they will not fit, and you will see the refusal when the outcome is recorded
 rather than when it is read back.
 
+One more thing to know if you wrap your own consuming in a transaction. By
+default the store writes on whichever connection is already open, so a record
+written inside a block that later rolls back is rolled back with it — the record
+of the failure goes down with the failure. Pass `using=` a database alias your
+own transaction does not cover if you need the record to survive that; there is a
+test stating both numbers.
+
 ---
 
 # 0.3.0
