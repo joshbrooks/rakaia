@@ -18,6 +18,8 @@ because what each one is defending is the property and not the call.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from rakaia.outcomes import InMemoryOutcomeStore, Outcome
@@ -203,12 +205,29 @@ class TestOnErrorIsExplicit:
         assert recorded.stage == "project"
 
     def test_on_error_has_no_default(self) -> None:
-        """The parameter must be passed, not inferred.
+        """The absence of a default is the assertion, not the two behaviours.
 
-        `on_drift` has no default for the same reason, and this is the assertion
-        that keeps one from being added later as a convenience.
+        Decision 5 exists to stop exactly one edit: a later reader adding
+        ``= "skip"`` because passing it every time is tedious. That reader breaks
+        no other test in this file — both modes still work, and the rebuild that
+        forgot to ask for `"halt"` skips its poisoned event and reports success.
+        So the signature is read directly rather than inferred from a raised
+        `TypeError`, which any missing required argument would produce.
         """
-        with pytest.raises(TypeError):
+        parameter = inspect.signature(consume).parameters["on_error"]
+
+        assert parameter.default is inspect.Parameter.empty, (
+            "`on_error` has acquired a default. It must not have one: the two "
+            "modes have opposite invariants, so whichever value is chosen is "
+            "silently wrong for the other operation (ADR 0007, Decision 5)."
+        )
+        # Keyword-only as well as required, so it cannot be passed positionally
+        # by accident and cannot be read as "the fifth argument, whatever that is".
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_omitting_on_error_is_an_error_at_the_call(self) -> None:
+        """And the absence is felt at the call site, not only in the signature."""
+        with pytest.raises(TypeError, match="on_error"):
             consume(  # type: ignore[call-arg]
                 _store_with("s", [b"a"]),
                 "s",

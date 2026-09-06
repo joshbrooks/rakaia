@@ -99,13 +99,25 @@ backend, so "does this work on JSONL?" is a red test rather than a question.
 then commits the cursor. Nothing is recorded from inside an `Effect`, an executor, or a
 handler.
 
-Two details of it are the decision rather than the implementation. The commit is **per
-message**, because that is the only granularity at which "the cursor stopped below the event
-that failed" is a true statement — a batch commit puts an unapplied event below the
-watermark, which under Decision 3 reads as an event that worked. And the loop must not be
-called from inside a transaction of the caller's own, or the rollback this decision exists
-to escape swallows the record after all; that is a constraint on the caller, and it is
-stated in the docstring because nothing can enforce it.
+Two details of it are the decision rather than the implementation, and the first is a trade
+rather than a mechanism.
+
+**The commit is per message, and that is a cost accepted knowingly.** It is one durable
+cursor write per event where a batch commit would be one per poll, and a consumer at volume
+will feel the difference. What it buys is the only granularity at which "the cursor stopped
+below the event that failed" is a true statement: commit a batch and an unapplied event sits
+below the watermark, which under Decision 3 does not read as unapplied — it reads as an
+event that worked. So the choice is between a write per event and a mode (`halt`) that
+cannot mean what it says, and this decision takes the write. A consumer that measures this
+as its bottleneck is asking for batch commit back, and the answer is not "make it
+configurable" — it is that `skip` tolerates a coarser commit and `halt` does not, so the
+split would be per mode, like `on_error` itself. Nobody has needed it yet, so it is not
+built.
+
+**The loop must not be called from inside a transaction of the caller's own**, or the
+rollback this decision exists to escape swallows the record after all. That is a constraint
+on the caller, stated in the docstring because nothing in a stdlib-only module can enforce
+it; it is measured and cross-referenced in the Consequences below.
 
 An apply may also **return** outcomes rather than raise, and they are recorded on the same
 path. That is what a reducer needs to say a value was computed from a population with a hole
@@ -374,9 +386,28 @@ that is the point of it.
 
 - **Nothing enforces that the loop is used.** A consumer keeping its hand-written
   `poll`/`commit` records nothing, and its stream looks identical to a clean one. This
-  decision adds a supported path; it does not close the unsupported one. Nor can the loop
-  stop a caller wrapping it in a transaction of their own, which puts the record back
-  inside the rollback it was moved out of.
+  decision adds a supported path; it does not close the unsupported one.
+- **A caller's own transaction reopens the hole, one level out, and it is measured.**
+  `consume` writes the outcome outside the executor's transaction. It cannot write it
+  outside *the caller's*. Wrap the loop in `atomic()` and the record is back inside a
+  rollback — the same failure this ADR is built around, moved up one frame and no longer
+  visible in the loop that was fixed to prevent it. Measured on this branch: caller
+  `atomic()`, a raising handler, `on_error="skip"`, a database-backed outcome store, then
+  the caller rolls back —
+
+  | | |
+  |---|---|
+  | records written inside the block | 1 |
+  | records surviving the rollback | **0** |
+
+  Not a defect in the loop, and not fixable there: `consume` is core and stdlib-only
+  (`rakaia`, not `django_rakaia`), so it cannot see a Django atomic block, and a core
+  module that could would be the tier violation `tests/test_rakaia/test_tier_boundary.py`
+  exists to refuse. The guard belongs in the Django outcome store, which is the one piece
+  of this that is both unbuilt and Django-shaped enough to check — it is the same finding
+  as the unbuilt Django backend below, not a second problem, and should be closed with it
+  rather than separately. Until then it is a documented constraint on the caller and a line
+  in `consume`'s docstring, which is the weakest kind of guard this ADR has.
 - **A consumer that is not cursor-driven cannot adopt this.** Decision 3 makes absence of a
   record mean success. The motivating consumer's existing surface means the exact opposite:
   it writes a record on success *and* on failure precisely so that no record at all can be

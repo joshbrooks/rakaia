@@ -209,8 +209,14 @@ def consume(
     called, and only once it has returned or raised does the loop record
     anything. A `DjangoExecutor` wraps its batch in ``transaction.atomic``, so a
     record written *inside* rolls back with the batch whose failure it exists to
-    record — the alternative this ADR rejected. Do not call `consume` from inside
-    a transaction of your own, or the same rollback swallows the outcome again.
+    record — the alternative this ADR rejected.
+
+    **Do not call `consume` from inside a transaction of your own.** The same
+    rollback swallows the outcome again, one frame further out, and this module
+    cannot see it: `rakaia` is stdlib-only and knows nothing about a Django
+    atomic block. Measured on a database-backed outcome store, a caller-held
+    transaction that rolls back leaves **0 of 1** recorded outcomes behind. It is
+    a constraint on you, not a guard here.
 
     **The cursor is committed last, one message at a time.** A cursor committed
     before the side effect lands is at-most-once with silent loss, and under
