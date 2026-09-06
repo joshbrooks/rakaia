@@ -223,20 +223,20 @@ polyglot-dev:
     cd {{POLYGLOT_DIR}} && uv run python manage.py migrate
     cd {{POLYGLOT_DIR}} && uv run python manage.py runserver 0.0.0.0:8001
 
-# Multi-worker hypercorn run for the polyglot sample
-polyglot-serve workers="4" host="0.0.0.0" port="8001": redis-up
+# Multi-worker hypercorn run for the polyglot sample.
+# No broker: the workers share one file-backed log, so there is no `redis-up`
+# dependency here. Writers coordinate with `flock` on the stream directory and
+# readers tail the files.
+polyglot-serve workers="4" host="0.0.0.0" port="8001":
     @echo "Starting polyglot on http://{{host}}:{{port}} ({{workers}} worker(s))"
     cd {{POLYGLOT_DIR}} && \
         DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
-        REDIS_URL={{REDIS_URL}} \
         uv run python manage.py migrate --noinput
     cd {{POLYGLOT_DIR}} && \
         DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
-        REDIS_URL={{REDIS_URL}} \
         uv run python manage.py collectstatic --noinput
     cd {{POLYGLOT_DIR}} && \
         DJANGO_SETTINGS_MODULE=polyglot_project.settings_prod \
-        REDIS_URL={{REDIS_URL}} \
         uv run hypercorn \
             --bind {{host}}:{{port}} \
             --workers {{workers}} \

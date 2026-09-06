@@ -2,8 +2,14 @@
 
 Run with:
 
-    just polyglot-serve              # multi-worker hypercorn + Redis
+    just polyglot-serve              # multi-worker hypercorn, no broker
     just polyglot-serve workers=8    # override worker count
+
+There is no channel layer here on purpose. This demo's log is a folder of files
+and its SSE comes from the protocol server mounted in `asgi.py`, so the workers
+share state through the filesystem rather than through a broker. `settings.py`
+leaves an in-memory channel layer configured for `channels` itself; nothing in
+this app sends on it.
 """
 
 import os
@@ -22,17 +28,6 @@ ALLOWED_HOSTS = [
     for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
     if h.strip()
 ]
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],
-        },
-    },
-}
 
 STORAGES = {
     "default": {
