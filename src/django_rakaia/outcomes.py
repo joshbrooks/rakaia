@@ -6,8 +6,11 @@ decision about what to record is store-agnostic and lives in `rakaia.outcomes`,
 and only the keeping of it is Django-shaped.
 
 What is kept is the **encoded text**, exactly as the other two stores keep it —
-ADR 0007 Decision 6b. The payload is the record; the columns beside it are an
-index over it, so `latest` can narrow in SQL rather than decode the table.
+ADR 0007 Decision 6b. The payload is the record; the two columns beside it are the
+scope index, so `latest` can narrow in SQL rather than decode the table. There are
+two because `latest(consumer, stream_path)` is the only query — subject and offset
+were columns for one round, written and never read, and the model says why they are
+not columns now.
 
 **The index is derived, never the raw value.** Each key column holds
 ``quote(value, safe="")`` cut to the column width, and that is not a new idea
@@ -32,8 +35,9 @@ removes the enumeration instead of extending it.
 value, truncating meant filing a record under a name that is not its own — two
 subjects collapsing into one, which is the defect `Outcome.subject` exists to
 fix. When the column is an index, a prefix is still an index: two names sharing
-one cut key both come back from the query, and the payload comparison in `latest`
-drops the one that does not belong. So the widths are a prefix length rather than
+one cut key both come back from the query — `latest` applies no ``LIMIT``, so a
+cut key can only over-fetch and never under-fetch — and the payload comparison in
+`latest` drops the one that does not belong. So the widths are a prefix length rather than
 a capacity, and **`record` cannot refuse an outcome** — no length, no byte, and no
 value a consumer can supply makes it raise. That totality is not a nicety: every
 other `OutcomeStore` is total, and the consume loop being built alongside this
@@ -100,15 +104,12 @@ class DjangoOutcomeStore:
         # `encode` first and store what it returns: the same text the in-memory
         # store holds in a list and the file-backed one writes as a line. Nothing
         # here renders an outcome its own way, so there is nothing for the three
-        # backends to disagree about. The key columns beside it are derived from
-        # the same outcome and are only ever read back through `_key`.
+        # backends to disagree about. The two key columns beside it are derived
+        # from the same outcome and are only ever read back through `_key`. Every
+        # other field of the outcome is in the payload and nowhere else.
         ConsumerOutcome.objects.using(self._using).create(
             consumer_key=_key("consumer_key", outcome.consumer),
             stream_path_key=_key("stream_path_key", outcome.stream_path),
-            subject_key=_key("subject_key", outcome.subject),
-            offset_key=(
-                None if outcome.offset is None else _key("offset_key", outcome.offset)
-            ),
             payload=encode(outcome),
         )
 

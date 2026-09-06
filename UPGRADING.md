@@ -37,10 +37,12 @@ wrong.
 
 The one thing to know if you plan to read the table directly rather than through
 the store. The `payload` column is the record: it holds the whole outcome as text,
-and `rakaia.outcomes.decode` turns it back into one. The columns ending in `_key`
-are an index over that text, not a copy of it — each holds a percent-encoded,
-possibly shortened form of the value, so `stream_path_key` for `submission/tf611`
-reads `submission%2Ftf611`. Query them to find rows; read the payload for values.
+and `rakaia.outcomes.decode` turns it back into one. The two columns ending in
+`_key` are the scope index over that text, not a copy of it — each holds a
+percent-encoded, possibly shortened form of the value, so `stream_path_key` for
+`submission/tf611` reads `submission%2Ftf611`. Use them to find the rows for a
+consumer and a stream; read everything else, the subject and offset included, out
+of the payload.
 
 One more thing to know if you wrap your own consuming in a transaction. By
 default the store writes on whichever connection is already open, so a record

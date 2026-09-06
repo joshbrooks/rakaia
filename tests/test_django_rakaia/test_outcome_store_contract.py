@@ -94,6 +94,30 @@ class TestTheKeyColumnsAreADerivedIndex:
     than left to a review round.
     """
 
+    def test_the_table_has_exactly_the_columns_the_only_query_needs(self):
+        """An index nothing reads is the finding this schema already had once.
+
+        `subject_key` and `offset_key` were columns for a round: written by
+        `record`, read by nothing, because `latest` groups by subject and orders
+        by offset in Python from the payload. Pinned as a list rather than left to
+        review, because the cost of an unread derived column is not the write — it
+        is that `subject_key` reads like the subject and is neither the subject nor
+        reliably distinct from another one.
+
+        A column added here should come with the query that reads it. If that
+        query is the operator worklist, this list is the place to notice it
+        arriving.
+        """
+        from django_rakaia.models import ConsumerOutcome
+
+        assert [f.name for f in ConsumerOutcome._meta.concrete_fields] == [
+            "id",
+            "consumer_key",
+            "stream_path_key",
+            "payload",
+            "recorded_at",
+        ]
+
     def test_a_key_column_holds_the_quoted_form_not_the_value(self):
         """The whole design in one assertion.
 
@@ -230,8 +254,6 @@ class TestTheKeysNarrowAndThePayloadDecides:
         ConsumerOutcome.objects.create(
             consumer_key="c",
             stream_path_key="s",
-            subject_key="row-other",
-            offset_key="0000000002",
             payload=encode(project("0000000002", consumer="other")),
         )
 
@@ -253,8 +275,6 @@ class TestTheKeysNarrowAndThePayloadDecides:
         ConsumerOutcome.objects.create(
             consumer_key="somewhere-else",
             stream_path_key="s",
-            subject_key="row-1",
-            offset_key="0000000001",
             payload=encode(project("0000000001", reasons=("orphaned",))),
         )
 
