@@ -31,9 +31,14 @@ observation about the data nor a verification result.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass, field, fields
+from functools import lru_cache
+from types import UnionType
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+
+logger = logging.getLogger(__name__)
 
 Stage = Literal["append", "project"]
 """How far the event got before something went wrong.
@@ -141,9 +146,17 @@ class Outcome:
         object.__setattr__(self, "reasons", tuple(self.reasons))
 
         # Structural invariants — about what an outcome *means*, not how it is kept.
-        if not self.subject:
+        # An empty name is not merely odd, it collides: a file-backed store maps a
+        # name to one path segment, and every escaping of "" lands on the segment
+        # some other input already uses. Refusing here is cheaper than making every
+        # store's naming injective, and an outcome about nothing is meaningless
+        # anyway.
+        empty = sorted(
+            n for n in ("consumer", "stream_path", "subject") if not getattr(self, n)
+        )
+        if empty:
             raise ValueError(
-                "An outcome needs a subject — what it is about — and got an empty one."
+                f"A name saying what this outcome belongs to cannot be empty: {', '.join(empty)}."
             )
         if self.stage == "append" and self.offset is not None:
             raise ValueError(
@@ -167,20 +180,42 @@ class Outcome:
         encode(self)
 
 
-#: The fields a stored outcome carries. Anything else in a payload came from a
-#: different version and is not this record's business.
-_FIELDS = (
-    "consumer",
-    "stream_path",
-    "subject",
-    "offset",
-    "sequence_key",
-    "stage",
-    "status",
-    "reasons",
-    "params",
-    "attempt",
-)
+@lru_cache(maxsize=1)
+def _declared() -> dict[str, Any]:
+    """Each field's declared type, resolved once."""
+    return get_type_hints(Outcome)
+
+
+def _matches(value: Any, hint: Any) -> bool:
+    """Whether `value` is what `hint` says it is, as JSON would keep it.
+
+    `type(...) is` rather than `isinstance`, deliberately. A `str` subclass — a
+    `StrEnum` member is the one that turns up — passes `isinstance`, compares equal
+    to its own text, and comes back from storage as plain text with a different type
+    and repr. `bool` under `int` is the same trap the other way. Equality cannot see
+    either, which is why this asks about the type.
+
+    Reading the declaration rather than a list of fields is the whole point. Five
+    review rounds each added the field it had just been bitten by, and the list was
+    never more complete than the last bug; a field added tomorrow is covered by this
+    without anyone remembering it exists.
+    """
+    origin = get_origin(hint)
+    if origin is Literal:
+        return value in get_args(hint)
+    if origin in (UnionType, Union):
+        return any(_matches(value, arg) for arg in get_args(hint))
+    if hint is type(None):
+        return value is None
+    if origin in (tuple, list):
+        member = get_args(hint)[0]
+        return type(value) is list and all(_matches(v, member) for v in value)
+    if origin is dict:
+        key, val = get_args(hint)
+        return type(value) is dict and all(
+            _matches(k, key) and _matches(v, val) for k, v in value.items()
+        )
+    return type(value) is hint
 
 
 def encode(outcome: Outcome) -> dict[str, Any]:
@@ -190,49 +225,44 @@ def encode(outcome: Outcome) -> dict[str, Any]:
     point of it rather than an implementation detail: the in-memory store used to
     keep the object as handed to it while the durable ones had to render it, so it
     accepted values they refused and the two disagreed about what had been
-    recorded. A reference implementation that is more permissive than the real ones
-    makes a passing test a weaker promise than production, which is the shape of
-    defect this module spent five review rounds on, one field at a time.
+    recorded. A reference implementation more permissive than the real ones makes a
+    passing test a weaker promise than production, which is the defect this module
+    spent five review rounds on, one field at a time.
 
-    Refuses rather than coerces. Rendering a value here would make the store
-    disagree with the caller instead of with another store — quieter, and worse.
+    The check walks the fields rather than naming them. Naming them is how it took
+    five rounds: each round added the field it had just been bitten by, and the list
+    was only ever as complete as the last bug. A field added to `Outcome` tomorrow
+    is covered by this without anyone remembering to add it.
+
+    Refuses rather than renders. Rendering here would make a store disagree with its
+    caller instead of with another store — quieter, and worse.
     """
-    wrong = sorted(
-        f"{name}={getattr(outcome, name)!r}"
-        for name in ("consumer", "stream_path", "subject", "sequence_key")
-        if not isinstance(getattr(outcome, name), str)
+    payload: dict[str, Any] = {}
+    for f in fields(outcome):
+        value = getattr(outcome, f.name)
+        if type(value) is tuple:
+            value = list(value)
+        elif type(value) is dict:
+            # Sorted so the two stores cannot disagree about order: one of them
+            # writes JSON with sorted keys and the other kept insertion order, and
+            # `==` on dicts hides the difference while anything comparing their
+            # rendered form does not.
+            value = dict(sorted(value.items()))
+        payload[f.name] = value
+
+    declared = _declared()
+    unstorable = sorted(
+        f"{name}={value!r}"
+        for name, value in payload.items()
+        if not _matches(value, declared[name])
     )
-    if outcome.offset is not None and not isinstance(outcome.offset, str):
-        wrong.append(f"offset={outcome.offset!r}")
-    wrong += [
-        f"reasons[{i}]={r!r}"
-        for i, r in enumerate(outcome.reasons)
-        if not isinstance(r, str)
-    ]
-    wrong += [f"params key {k!r}" for k in outcome.params if not isinstance(k, str)]
-    wrong += [
-        f"params[{k!r}]={v!r}"
-        for k, v in outcome.params.items()
-        if not isinstance(v, str)
-    ]
-    if wrong:
+    if unstorable:
         raise ValueError(
             "An outcome is kept as text, so every part of it has to be text already: "
-            + ", ".join(wrong)
+            + ", ".join(unstorable)
             + ". Render it, or leave it out."
         )
-    return {
-        "consumer": outcome.consumer,
-        "stream_path": outcome.stream_path,
-        "subject": outcome.subject,
-        "offset": outcome.offset,
-        "sequence_key": outcome.sequence_key,
-        "stage": outcome.stage,
-        "status": outcome.status,
-        "reasons": list(outcome.reasons),
-        "params": dict(outcome.params),
-        "attempt": outcome.attempt,
-    }
+    return payload
 
 
 def decode(payload: Mapping[str, Any]) -> Outcome | None:
@@ -242,10 +272,18 @@ def decode(payload: Mapping[str, Any]) -> Outcome | None:
     file: a line written by a version that added a field, or predating one, must
     cost that line and not the report. Unknown keys are dropped and a missing
     required one gives ``None``.
+
+    Dropping is logged, because a silently discarded line is the failure this whole
+    module exists to close — a file entirely of skew would otherwise read back as
+    "nothing failed". See ADR 0007 for why this is a log and not yet a count.
     """
+    known = {f.name for f in fields(Outcome)}
     try:
-        return Outcome(**{k: v for k, v in payload.items() if k in _FIELDS})
-    except (TypeError, ValueError):
+        return Outcome(**{k: v for k, v in payload.items() if k in known})
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "rakaia: dropping an outcome this version cannot build (%s)", exc
+        )
         return None
 
 

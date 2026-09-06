@@ -89,7 +89,11 @@ class JsonlOutcomeStore:
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(encode(outcome), sort_keys=True) + "\n"
+        # No `sort_keys`: `encode` already settles the order, and a second sorter
+        # here would be a second answer to the same question — the shape of defect
+        # this codec exists to remove. It also made the codec unobservable from this
+        # side, so reverting it looked harmless.
+        line = json.dumps(encode(outcome)) + "\n"
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert
         # rather than an ignore comment, the way `jsonl_store.py` states the same

@@ -47,7 +47,10 @@ class TestJsonlOutcomeStoreDurability:
         [got] = JsonlOutcomeStore(root, fsync=False).latest("c", "submission/tf611")
         assert got.reasons == ("bad_total",)
 
-    @pytest.mark.parametrize("hostile", ["a/b", "../escape", "..", "a%2Fb", ""])
+    # The empty string used to be here. It is now refused at construction — an empty
+    # name collides with whatever else escapes to the same path segment — so the case
+    # this file covered moved to `test_the_names_cannot_be_empty`.
+    @pytest.mark.parametrize("hostile", ["a/b", "../escape", "..", "a%2Fb"])
     @pytest.mark.parametrize("field", ["consumer", "stream_path"])
     def test_every_file_stays_directly_under_the_root(
         self, tmp_path: Path, field: str, hostile: str

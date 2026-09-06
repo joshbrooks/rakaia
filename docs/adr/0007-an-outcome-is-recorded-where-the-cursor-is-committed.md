@@ -167,6 +167,26 @@ will eventually disagree with the first. So outcomes are append-only and attempt
 and "is this still failing?" is the latest outcome for the key, not a column. `unresolved`
 is therefore a derived query, not stored state.
 
+**6b. One translation decides what a stored outcome looks like, and every backend uses it.**
+`encode`/`decode` is the only crossing between an outcome and its stored form, the in-memory
+reference included. That store previously kept the object as handed to it while the durable
+ones had to render it, so it accepted values they refused — a reference implementation more
+permissive than the real ones makes a passing test a weaker promise than production.
+
+The check **walks the declared fields rather than naming them**, and that is the part worth
+recording. Five review rounds each closed one field: a map's values, then its keys, then the
+list beside it, then the plain fields — each check written where the defect was found instead
+of where the rule belongs, so the list was never more complete than the last bug. Reading the
+declaration also brought two cases nobody had reported: a value outside a `Literal`'s domain,
+and `bool` arriving where an `int` was declared.
+
+Two consequences follow and are not obvious. A name may not be empty — a file-backed store
+maps a name to one path segment, and every escaping of the empty string collides with
+something. And a line this version cannot rebuild is dropped with a log rather than an
+exception, because one such line must not cost the whole report; it is only logged and not
+yet counted, which is a weaker answer than this decision would like given that unnoticed
+absence is the thing it exists to prevent.
+
 **7. Sequencing is recorded, not enforced.** An outcome carries a `sequence_key`.
 Rakaia does not yet refuse an event whose sequence has an unresolved failure; the field
 exists so that adding it later does not require re-deriving groupings a consumer has

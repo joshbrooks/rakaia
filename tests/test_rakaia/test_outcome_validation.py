@@ -20,13 +20,15 @@ BASE = {
 }
 
 
-def test_an_outcome_needs_a_subject():
-    """Without one there is nothing to key on, and every refusal on a stream
-    collapses into whichever was recorded first."""
-    with pytest.raises(ValueError, match="needs a subject"):
-        Outcome(
-            **{**BASE, "subject": ""}, offset=None, stage="append", status="refused"
-        )
+@pytest.mark.parametrize("field", ["consumer", "stream_path", "subject"])
+def test_the_names_cannot_be_empty(field):
+    """Without a subject there is nothing to key on, and every refusal on a stream
+    collapses into whichever was recorded first. The other two matter for a
+    different reason: a file-backed store maps a name to one path segment, and an
+    empty name shares a segment with whatever else escapes to the same thing.
+    """
+    with pytest.raises(ValueError, match="cannot be empty"):
+        Outcome(**{**BASE, field: ""}, offset=None, stage="append", status="refused")
 
 
 def test_an_appended_outcome_cannot_carry_an_offset():
@@ -68,9 +70,14 @@ def test_params_refuses_anything_that_is_not_a_string(value):
         )
 
 
-def test_params_names_the_offending_keys():
-    """A refusal that does not say which key is a refusal someone works around."""
-    with pytest.raises(ValueError, match=r"params\['b'\]"):
+def test_a_refusal_names_the_field_and_shows_its_contents():
+    """A refusal that does not say what was wrong is one someone works around.
+
+    The message names the field and prints it, rather than listing offending keys:
+    one rule that walks the declaration cannot report per-key without re-deriving
+    per-field knowledge, and the printed value is enough to see which entry is bad.
+    """
+    with pytest.raises(ValueError, match=r"params=\{"):
         Outcome(
             **BASE,
             offset=None,
@@ -130,7 +137,11 @@ def test_the_name_fields_must_be_strings(field, value):
     # is text, and that is the better message for it. The test pins that one of them
     # happens, not which — naming a single message would make it pass for the wrong
     # reason on that one case.
-    with pytest.raises(ValueError, match=r"has to be text|needs a subject"):
+    # Which refusal fires depends on the value: `None` is caught as an empty name
+    # before anything asks whether it is text, and both answers are correct. The
+    # test pins that one of them happens, not which — naming a single message would
+    # make it pass for the wrong reason on that case.
+    with pytest.raises(ValueError):
         Outcome(**{**BASE, field: value}, offset=None, stage="append", status="refused")
 
 

@@ -148,3 +148,39 @@ def test_the_backends_agree_about_a_bad_reason_or_param(tmp_path: Path, value):
         assert len(set(map(repr, outcomes.values()))) == 1, (
             f"disagree on {kw}: {outcomes}"
         )
+
+
+def test_every_store_keeps_the_encoded_form_not_the_object():
+    """The redesign's own change, pinned.
+
+    A review found that reverting the in-memory store to keeping the object left
+    the entire suite green: construction validates, so nothing downstream noticed
+    which shape the store held. That made the change this commit exists for
+    decorative. What the shape actually buys is below — ordering, and any future
+    store inheriting one definition instead of writing its own — but a property
+    nothing asserts is a property that will be undone.
+    """
+    store = InMemoryOutcomeStore()
+    store.record(an_outcome())
+    [held] = store._recorded
+    assert isinstance(held, dict), (
+        f"the store kept a {type(held).__name__}, not the encoded form"
+    )
+    assert held["subject"] == "row-1"
+
+
+def test_the_stores_agree_on_the_order_of_params(tmp_path: Path):
+    """The discriminator the codec is load-bearing for.
+
+    One store writes JSON with sorted keys and the other kept whatever order the
+    caller used, so the same outcome read back differently from each. `dict.__eq__`
+    hides it — this compares the rendered form, which is what anything printing,
+    logging or diffing an outcome will see.
+    """
+    outcome = an_outcome(params={"z": "1", "a": "2", "m": "3"})
+    got = {}
+    for name, store in backends(tmp_path).items():
+        store.record(outcome)
+        got[name] = [list(o.params) for o in store.latest("c", "submission/tf611")]
+    assert len(set(map(repr, got.values()))) == 1, got
+    assert got["memory"] == [["a", "m", "z"]]
