@@ -365,6 +365,17 @@ that is the point of it.
   verdict enum — pass, fail, not-applicable, indeterminate — imported in twenty-odd modules
   and referred to a few hundred times. Nothing breaks, but `from rakaia import Outcome` would
   shadow it there, so that consumer will want a qualified import.
+- **The codec closes shape, not size, and cannot.** Reading each field's declared type
+  settles what a value *is*; it says nothing about how long it may be. A backend with a
+  bounded column accepts a name every other backend keeps and then refuses or truncates it —
+  the same divergence, out of reach of the same mechanism. Measured on a spike of a third
+  backend: a 300-character stream path is kept by both current stores and by a database
+  under SQLite, and refused only under Postgres.
+
+  Which exposes the sharper half. The suite's default database does not enforce lengths, so
+  that divergence is invisible where the tests usually run — the same fault this decision
+  fixed one level in, where the reference store was the permissive one. Whatever else is
+  done, the cross-backend comparison has to run somewhere the constraints are real.
 - **Everything rests on the cursor meaning what it says.** A consumer that commits before
   applying — which `poll`'s docstring warns against and nothing prevents — silently
   converts "unapplied" into "succeeded", because success is the absence of a record. The
