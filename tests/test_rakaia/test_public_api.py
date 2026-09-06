@@ -459,6 +459,7 @@ class TestTierTwoIsDeliberatelyNotExported:
             "StreamProducer",
             "StreamOffsetWatermark",
             "ConsumerCursor",
+            "ConsumerOutcome",
         ],
     )
     def test_a_model_is_not_in_the_stable_surface(self, model):

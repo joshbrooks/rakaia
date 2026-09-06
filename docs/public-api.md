@@ -45,8 +45,8 @@ is why the package exported nothing for so long.
 ### Tier 2 — Provisional: the ORM models and the database schema
 
 `django_rakaia.models` — `Stream`, `StreamEvent`, `StreamEntry`,
-`StreamProducer`, `StreamOffsetWatermark`, `ConsumerCursor` — plus the table
-shape behind them.
+`StreamProducer`, `StreamOffsetWatermark`, `ConsumerCursor`, `ConsumerOutcome`
+— plus the table shape behind them.
 
 **These are usable, and deliberately not in `__all__`.** Importing them from
 `django_rakaia.models` keeps the weaker guarantee visible at the import site

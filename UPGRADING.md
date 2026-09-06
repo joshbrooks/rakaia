@@ -102,6 +102,39 @@ a Redis channel layer on a production tier) to include `django_rakaia.urls`. The
 SSE route is loaded behind the same gate `apps.py` uses, so `RAKAIA_ENABLE_SSE`
 now works as documented. Opting *in* without the extra installed still fails
 loudly, which is intended.
+## A new table for the outcomes a consumer records
+
+There is a new migration, `django_rakaia` `0010`, adding one table:
+`rakaia_consumeroutcome`. Run `manage.py migrate django_rakaia` when you upgrade.
+
+Nothing existing changes and nothing writes to the table on its own. It is where
+`django_rakaia.outcomes.DjangoOutcomeStore` keeps a record of an event a consumer
+could not apply — the third place outcomes can be kept, after the in-memory
+reference and the JSONL files — and only a consumer that asks for that store ever
+puts a row in it. A consumer that never fails, or never uses the store, carries an
+empty table and nothing else; outcomes record exceptions only, so there is no row
+per applied event.
+
+Recording never refuses. Whatever your consumer names its streams and subjects —
+any length, any character — the record is kept whole, so a bad name cannot turn
+into a failed write on the path whose job is to record that something already went
+wrong.
+
+The one thing to know if you plan to read the table directly rather than through
+the store. The `payload` column is the record: it holds the whole outcome as text,
+and `rakaia.outcomes.decode` turns it back into one. The two columns ending in
+`_key` are the scope index over that text, not a copy of it — each holds a
+percent-encoded, possibly shortened form of the value, so `stream_path_key` for
+`submission/tf611` reads `submission%2Ftf611`. Use them to find the rows for a
+consumer and a stream; read everything else, the subject and offset included, out
+of the payload.
+
+One more thing to know if you wrap your own consuming in a transaction. By
+default the store writes on whichever connection is already open, so a record
+written inside a block that later rolls back is rolled back with it — the record
+of the failure goes down with the failure. Pass `using=` a database alias your
+own transaction does not cover if you need the record to survive that; there is a
+test stating both numbers.
 
 ---
 
