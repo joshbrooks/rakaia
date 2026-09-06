@@ -15,6 +15,11 @@ The consumer holds the cursor; `django_rakaia` provides a durable place to keep
 it (`ConsumerCursor`) plus `load_cursor`/`commit_cursor` helpers, so a consumer
 survives restarts and resumes exactly where it left off.
 
+`consume` is the loop around `poll` that rakaia documented and did not have:
+poll, apply, record any outcome, commit the cursor — in that order, with the
+record written outside whatever transaction the apply used and the commit last.
+See ADR 0007 for why each half of that order is load-bearing.
+
 Rewind detection is offset-based: if the stored cursor sorts *after* the current
 head, the log shrank beneath it, so the consumer resets and re-reads from the
 start. Store offsets are **globally monotonic** — a stream recreated at a path
@@ -28,11 +33,13 @@ stream, where the head really does sort before the cursor.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
 from .offsets import after as offsets_after
-from .protocols import CursorStore
+from .outcomes import Outcome
+from .protocols import CursorStore, OutcomeStore
 from .types import StreamMessage
 
 PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
@@ -134,3 +141,184 @@ def _after(a: str, b: str) -> bool:
     the right answer for a store this library does not recognise.
     """
     return offsets_after(a, b)
+
+
+OnErrorPolicy = Literal["skip", "halt"]
+"""What the consume loop does with an event whose apply raised.
+
+* ``skip`` — record the outcome, advance past it, keep going. What a continuous
+  consumer wants: one poisoned event must not stop a live stream, and the record
+  is how it is found again.
+* ``halt`` — record the outcome and stop, leaving the cursor *below* the event
+  that failed. What a rebuild wants: a rebuild's whole claim is that the
+  projection it produced is derived from every event, and one silently skipped
+  event makes that claim false while the run still reports success.
+
+There is no default, for the same reason `on_drift` has none: the two modes have
+opposite invariants, and a shared default is right for one of them and quietly
+wrong for the other (ADR 0007, Decision 5).
+"""
+
+
+@dataclass(frozen=True)
+class Consumed:
+    """What one pass of the consume loop did."""
+
+    status: PollStatus
+    """The poll's own verdict — ``rewound`` still means reset derived state."""
+
+    applied: int
+    """How many messages were handed to `apply` and did not raise."""
+
+    outcomes: tuple[Outcome, ...]
+    """Every outcome recorded this pass, in the order recorded: the ones `apply`
+    returned as well as the ones the loop wrote for an exception."""
+
+    cursor: str | None
+    """The watermark as it stands now — what was last committed, not what was
+    polled. Below the poll's cursor when the pass halted."""
+
+    halted: bool
+    """``on_error="halt"`` stopped the pass. Messages after the failure were not
+    applied and are still pending."""
+
+
+def consume(
+    store: CursorStore,
+    path: str,
+    apply: Callable[[StreamMessage], Iterable[Outcome] | None],
+    *,
+    consumer: str,
+    on_error: OnErrorPolicy,
+    cursor: str | None = None,
+    commit: Callable[[str], None] | None = None,
+    outcomes: OutcomeStore | None = None,
+    subject_of: Callable[[StreamMessage], str] | None = None,
+    sequence_of: Callable[[StreamMessage], str] | None = None,
+) -> Consumed:
+    """Poll `path`, apply each message, record any outcome, then commit.
+
+    The loop rakaia documented and never had. Every consumer was writing
+    ``poll`` / apply / ``commit_cursor`` by hand, which is why there was nowhere
+    to record that an apply had failed — and why an event that never applied was
+    indistinguishable from one that did (ADR 0007).
+
+    Three properties are the point of it, and each is a defect somewhere else:
+
+    **An outcome is written outside the executor's transaction.** `apply` is
+    called, and only once it has returned or raised does the loop record
+    anything. A `DjangoExecutor` wraps its batch in ``transaction.atomic``, so a
+    record written *inside* rolls back with the batch whose failure it exists to
+    record — the alternative this ADR rejected. Do not call `consume` from inside
+    a transaction of your own, or the same rollback swallows the outcome again.
+
+    **The cursor is committed last, one message at a time.** A cursor committed
+    before the side effect lands is at-most-once with silent loss, and under
+    Decision 3 it is worse than lost: success writes no record, so an unapplied
+    event below the cursor reads as an event that worked. Committing per message
+    is what makes ``halt`` mean anything — the watermark stays below the event
+    that failed, so the event is still pending and is delivered again. Redelivery
+    is expected either way; **apply must be idempotent**.
+
+    **`on_error` is explicit.** See `OnErrorPolicy`: ``"skip"`` for a continuous
+    consumer, ``"halt"`` for a rebuild, never inferred from anything.
+
+    Args:
+        store: a `ReadableStore` that also exposes ``get_current_offset``.
+        path: the stream to consume.
+        apply: called once per message. Return an iterable of `Outcome` to record
+            facts the apply itself decided — a reducer computing a value from a
+            population with a hole in it is the case this exists for — or
+            ``None`` when there is nothing to say. Returning outcomes is not a
+            failure: the message still counts as applied and the cursor still
+            advances.
+        consumer: names who this cursor and these outcomes belong to.
+        on_error: ``"skip"`` or ``"halt"``. No default, deliberately.
+        cursor: the last committed offset, or ``None`` on first poll.
+        commit: called with each offset once its message is applied and any
+            outcome is recorded. Omit it to run the loop without persisting a
+            watermark — the returned ``cursor`` still says where it got to.
+        outcomes: where to keep outcomes. Omit it and nothing is recorded, which
+            is the pre-ADR behaviour and is offered only so a caller can adopt
+            the loop before it has a store.
+        subject_of: what an outcome for a message is *about*. Defaults to the
+            message's offset, which is honest here because every event this loop
+            sees is already in the log; a refused event that never reached the
+            log is not this loop's to record.
+        sequence_of: what a message is ordered *within*. Defaults to the subject.
+
+    Returns:
+        A `Consumed` describing the pass.
+    """
+    result = poll(store, path, cursor)
+    subject_of = subject_of or (lambda message: message.offset)
+    sequence_of = sequence_of or subject_of
+
+    committed = cursor
+    recorded: list[Outcome] = []
+    applied = 0
+
+    def _record(outcome: Outcome) -> None:
+        # Outside the executor's transaction by construction: `apply` has already
+        # returned or raised by the time anything gets here.
+        recorded.append(outcome)
+        if outcomes is not None:
+            outcomes.record(outcome)
+
+    for message in result.messages:
+        try:
+            emitted = apply(message)
+        except Exception as exc:
+            _record(
+                Outcome(
+                    consumer=consumer,
+                    stream_path=path,
+                    subject=subject_of(message),
+                    offset=message.offset,
+                    sequence_key=sequence_of(message),
+                    # It is in the log and it was not applied, so a replay
+                    # recovers it — the first row of ADR 0007's recovery table.
+                    stage="project",
+                    status="failed",
+                    reasons=(type(exc).__name__,),
+                )
+            )
+            if on_error == "halt":
+                # The cursor stays where it was, *below* this message, so the
+                # message is still pending. Committing here would convert
+                # "unapplied" into "succeeded" the moment the outcome was read.
+                return Consumed(
+                    status=result.status,
+                    applied=applied,
+                    outcomes=tuple(recorded),
+                    cursor=committed,
+                    halted=True,
+                )
+            # "skip" advances past it. The record is what makes that safe to do.
+            _commit(commit, message.offset)
+            committed = message.offset
+            continue
+
+        applied += 1
+        for outcome in emitted or ():
+            _record(outcome)
+        _commit(commit, message.offset)
+        committed = message.offset
+
+    # `caught_up` and `absent` applied nothing, so they committed nothing and
+    # `committed` is still the watermark they were handed. That is deliberate for
+    # `absent` in particular, where `poll` reports a cursor of `None`: a stream
+    # that is not there is no reason to forget how far this consumer once got.
+    return Consumed(
+        status=result.status,
+        applied=applied,
+        outcomes=tuple(recorded),
+        cursor=committed,
+        halted=False,
+    )
+
+
+def _commit(commit: Callable[[str], None] | None, offset: str) -> None:
+    """Persist a watermark, if the caller gave somewhere to persist it."""
+    if commit is not None:
+        commit(offset)

@@ -3,8 +3,8 @@
 A cursor says how far a consumer got. It says nothing about whether it got there
 cleanly, so an event that was skipped, refused or lost is indistinguishable from
 one applied without incident: **absence of a record reads as success**. This
-module is the record that closes that gap. The loop that writes it is not part of
-this change; ADR 0007 Decision 2 describes where it goes.
+module is the record that closes that gap. `subscription.consume` is the loop that
+writes it — poll, apply, record, commit, in that order (ADR 0007 Decision 2).
 
 Two things follow from where it is written, and both are load-bearing.
 
