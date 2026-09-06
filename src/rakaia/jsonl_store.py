@@ -99,6 +99,28 @@ _POLL_INTERVAL_SECONDS = 0.05
 
 _DEFAULT_SEGMENT_SIZE = 10_000
 
+
+def _discard_torn_tail(fh: Any) -> None:
+    """Truncate a partial trailing line before appending after it.
+
+    A crash mid-append leaves bytes with no newline. Reads already skip them —
+    but an append that simply continued would glue its own record onto the
+    fragment and lose *both*. Recovery has to happen on the write side too, and
+    this is the cheapest place: the file is already open and locked. Shared with
+    `JsonlOutcomeStore`, whose files have the same shape and the same failure.
+    """
+    fh.seek(0, os.SEEK_END)
+    size = fh.tell()
+    if size == 0:
+        return
+    fh.seek(size - 1)
+    if fh.read(1) == b"\n":
+        return
+    fh.seek(0)
+    cut = fh.read().rfind(b"\n") + 1
+    fh.truncate(cut)
+
+
 #: Where retired offset high-marks live, as a sibling of the stream directories.
 #:
 #: The leading ``%`` is load-bearing. Stream directories are named
@@ -412,7 +434,7 @@ class JsonlStreamStore:
         for seg, lines in by_segment.items():
             existed = seg.exists()
             with seg.open("a+b") as fh:
-                self._discard_torn_tail(fh)
+                _discard_torn_tail(fh)
                 fh.write("".join(line + "\n" for line in lines).encode("utf-8"))
                 if self.fsync:
                     fh.flush()
@@ -423,26 +445,6 @@ class JsonlStreamStore:
                 # it. Without this a roll-over can survive as data nothing can
                 # find.
                 self._fsync_dir(seg.parent)
-
-    @staticmethod
-    def _discard_torn_tail(fh: Any) -> None:
-        """Truncate a partial trailing line before appending after it.
-
-        A crash mid-append leaves bytes with no newline. Reads already skip them
-        — but an append that simply continued would glue its own record onto the
-        fragment and lose *both*. Recovery has to happen on the write side too,
-        and this is the cheapest place: the file is already open and locked.
-        """
-        fh.seek(0, os.SEEK_END)
-        size = fh.tell()
-        if size == 0:
-            return
-        fh.seek(size - 1)
-        if fh.read(1) == b"\n":
-            return
-        fh.seek(0)
-        cut = fh.read().rfind(b"\n") + 1
-        fh.truncate(cut)
 
     # =========================================================================
     # Records

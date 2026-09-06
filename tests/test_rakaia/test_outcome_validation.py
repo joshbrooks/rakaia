@@ -132,3 +132,44 @@ def test_an_outcome_does_not_change_when_the_caller_mutates_what_it_was_built_fr
     params["national_id"] = "1234-LEAK"
     assert outcome.reasons == ("missing_total",)
     assert outcome.params == {"row": "3"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("params", {"k": {"national_id": "1234"}}),
+        ("params", {"k": 42}),
+        ("params", {1: "v"}),
+        ("params", {"k": None}),
+        ("reasons", (42,)),
+        ("reasons", (None,)),
+        ("reasons", ("\ud800",)),
+        ("sequence_key", None),
+        ("sequence_key", 7),
+        ("stage", "bogus"),
+        ("status", "bogus"),
+        ("attempt", True),
+        ("attempt", "1"),
+    ],
+    ids=repr,
+)
+def test_a_value_json_can_render_is_still_refused_if_the_declaration_does_not_allow_it(
+    field, value
+):
+    """The privacy rule, as a test that can see it.
+
+    Every one of these is something `json.dumps` renders happily, so a check that
+    is only "does it store" lets a nested record of personal data through the one
+    field whose purpose is that field values never reach it — and lets a `bool`
+    stand in for an attempt number, and a made-up `stage` for a real one. The
+    declaration is the rule; each field is checked against it.
+    """
+    kwargs = {
+        **BASE,
+        "offset": None,
+        "stage": "append",
+        "status": "refused",
+        field: value,
+    }
+    with pytest.raises(ValueError, match="storable as text"):
+        Outcome(**kwargs)

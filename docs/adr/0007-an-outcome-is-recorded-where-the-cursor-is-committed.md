@@ -394,15 +394,17 @@ that is the point of it.
   Nothing in this decision detects it, and nothing keyed on an offset can — an event that
   was never appended has no offset to be found at. This is the largest thing the design leaves
   open, and it is a property of reducers reading projections, not of the record.
-- **The admin registration breaks a local pattern.** `ConsumerCursor`,
-  `StreamOffsetWatermark` and `StreamProducer` have no admin; operational bookkeeping is
-  not browsed. A dead-letter table is argued as the exception because looking at it *is*
-  the feature, but it is a deviation, not a precedent being followed.
+- **The admin registration will break a local pattern.** The Django backend is not in
+  this change, but when it lands: `ConsumerCursor`, `StreamOffsetWatermark` and
+  `StreamProducer` have no admin, because operational bookkeeping is not browsed. A
+  dead-letter table is argued as the exception because looking at it *is* the feature,
+  but it is a deviation, not a precedent being followed.
 
 ### Neutral
 
-- A consumer that never fails never writes a row, so the table is empty and the cost is
-  a migration.
+- A consumer that never fails never writes a row, so a store holding outcomes is empty
+  and the cost is whatever it takes to exist — a migration, once the Django backend lands;
+  an empty folder for the file-backed one.
 - Nothing about existing replay behaviour changes. `replay()` still raises out; the loop
   is a new caller, not a change to what it calls.
 

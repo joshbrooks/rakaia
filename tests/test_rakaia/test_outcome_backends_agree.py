@@ -127,10 +127,10 @@ def test_the_backends_agree_on_ordering(tmp_path: Path):
 
 @pytest.mark.parametrize("value", NOT_TEXT, ids=lambda v: type(v).__name__)
 @pytest.mark.parametrize(
-    # `stage` and `status` are in the list deliberately. They are the two fields
-    # declared as a small set of strings, and a value-equality check lets a `str`
-    # subclass through where every other field's type check catches it — so they
-    # were the only two the codec did not protect.
+    # `stage` and `status` are in the list deliberately. They are declared as a
+    # small set of strings, and a `str` subclass compares equal to a member of that
+    # set while reading back from storage as something else — the case a check on
+    # value alone cannot see.
     "field",
     ["subject", "sequence_key", "consumer", "stream_path", "stage", "status"],
 )

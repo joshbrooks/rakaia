@@ -11,7 +11,7 @@ Two things follow from where it is written, and both are load-bearing.
 The record is **not** produced inside an executor. A Django executor wraps its
 batch in a transaction, so a row written there would roll back with the batch
 whose failure it exists to record; and a staged pass buffers many events into one
-`apply()`, after which which event produced which effect is no longer
+`apply()`, after which the question of which event produced which effect is no longer
 recoverable. The loop that owns the cursor is the only place that still knows
 both the event and whether applying it worked.
 
@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import json
 import logging
+import types
+import typing
 from dataclasses import dataclass, field, fields
 from typing import Literal
 
@@ -124,10 +126,10 @@ class Outcome:
     params: dict[str, str] = field(default_factory=dict)
     """Bounded context for the reasons: identifiers, counts, verdicts.
 
-    Values must be strings, and that is checked rather than asserted — the
-    docstring used to claim "by construction" while a nested dict of personal data
-    went in and came back out unchanged. Not leaking field values is this field's
-    whole reason for existing instead of a rendered message, so it refuses.
+    Keys and values must be strings, and construction refuses anything else — a
+    nested map is exactly the shape a whole record of personal data arrives in,
+    and not leaking field values is this field's reason for existing instead of
+    a rendered message.
     """
 
     attempt: int = 1
@@ -143,45 +145,35 @@ class Outcome:
         object.__setattr__(self, "params", dict(self.params))
         object.__setattr__(self, "reasons", tuple(self.reasons))
 
-        # Structural invariants — about what an outcome *means*, not how it is kept.
+        # Every declared field is checked against its declared type, and the
+        # declaration is read rather than restated: a field added later is
+        # checked the moment it is declared, not when its first defect is found.
+        # `type(x) is str` rather than `isinstance`, because a `str` subclass
+        # reads back from storage as plain text and only a type check can see
+        # the difference; and every string must encode, because a lone surrogate
+        # is text by every type check and no path or column can carry it.
+        problems = _check_fields(self)
+        names = ("consumer", "stream_path", "subject", "offset")
+        unwritable = sorted(n for n in problems if n.split("[", 1)[0] in names)
+        if unwritable:
+            raise ValueError(
+                f"A store sorts and names by these, so they have to be writable text: "
+                f"{', '.join(unwritable)}."
+            )
+        if problems:
+            detail = "; ".join(f"{name}: {why}" for name, why in problems.items())
+            raise ValueError(
+                f"An outcome has to be storable as text and this one is not: {detail}. "
+                "Render it, or leave it out."
+            )
         # An empty name is not merely odd, it collides: a file-backed store maps a
         # name to one path segment, and every escaping of "" lands on the segment
         # some other input already uses. Refusing here is cheaper than making every
         # store's naming injective, and an outcome about nothing is meaningless
         # anyway.
-        # The fields a *store* reasons about, as opposed to merely carries. These
-        # four become path segments, dictionary keys and sort keys, so they have to
-        # be writable text — and for reasons the payload rule cannot see:
-        #
-        #   a number stored as a name raises in a file store's path escaping;
-        #   a lone surrogate is text by every type check and no path can carry it;
-        #   a number stored as an offset is kept identically by every store and then
-        #     makes `latest` raise the moment a text offset sits beside it, because
-        #     the two cannot be compared.
-        #
-        # Everything else an outcome holds is settled by `encode` actually storing
-        # it. This list is short because it is not a description of the type system;
-        # it is the set of values the machinery touches.
-        handled = ("consumer", "stream_path", "subject", "offset")
-        unwritable = []
-        for name in handled:
-            value = getattr(self, name)
-            if value is None and name == "offset":
-                continue  # an event that never reached the log has no position
-            if type(value) is not str:
-                unwritable.append(name)
-                continue
-            try:
-                value.encode("utf-8")
-            except UnicodeEncodeError:
-                unwritable.append(name)
-        if unwritable:
-            raise ValueError(
-                f"A store sorts and names by these, so they have to be writable text: "
-                f"{', '.join(sorted(unwritable))}."
-            )
-        names = ("consumer", "stream_path", "subject")
-        empty = sorted(n for n in names if not getattr(self, n))
+        empty = sorted(
+            n for n in ("consumer", "stream_path", "subject") if not getattr(self, n)
+        )
         if empty:
             raise ValueError(
                 f"A name saying what this outcome belongs to cannot be empty: {', '.join(empty)}."
@@ -198,14 +190,75 @@ class Outcome:
         if self.attempt < 1:
             raise ValueError(f"attempt counts from 1, got {self.attempt}.")
 
-        # Storability is one rule and `encode` is where it lives, so this asks the
-        # same question a store will ask rather than keeping a second copy of the
-        # answer. Five rounds of review closed this one field at a time — values of
-        # one map, then its keys, then the list beside it, then the plain fields —
-        # because each check was written where the defect was found instead of where
-        # the rule belongs. Calling it here only moves *when* the caller hears about
-        # it; the rule itself has one home.
+        # `encode` is still the last word: anything the walk above cannot see
+        # and json cannot render is refused there, with the same message.
         encode(self)
+
+
+def _check_fields(outcome: Outcome) -> dict[str, str]:
+    """Every declared field against its declared type; `{field: why}` for each miss.
+
+    Reads the annotations rather than naming the fields, so the rule is exactly the
+    declaration: a `Literal` admits only its members, an `int` is not a `bool`, a
+    `tuple[str, ...]` and a `dict[str, str]` are checked element by element, and
+    every `str` must be encodable. Paths into a container read as
+    ``params['k']`` so the message says which value was wrong.
+    """
+    problems: dict[str, str] = {}
+    hints = typing.get_type_hints(Outcome)
+    for f in fields(outcome):
+        _check_value(f.name, getattr(outcome, f.name), hints[f.name], problems)
+    return problems
+
+
+def _check_value(
+    path: str, value: object, hint: object, problems: dict[str, str]
+) -> None:
+    origin = typing.get_origin(hint)
+    args = typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        if value is None and type(None) in args:
+            return
+        others = [a for a in args if a is not type(None)]
+        if len(others) == 1:
+            _check_value(path, value, others[0], problems)
+            return
+        raise TypeError(f"Unsupported annotation on {path}: {hint!r}")
+    if origin is Literal:
+        if type(value) is not str or value not in args:
+            problems[path] = (
+                f"expected one of {', '.join(map(repr, args))}, got {value!r}"
+            )
+        return
+    if origin is tuple:
+        if type(value) is not tuple:
+            problems[path] = f"expected a tuple, got {type(value).__name__}"
+            return
+        for i, item in enumerate(value):
+            _check_value(f"{path}[{i}]", item, args[0], problems)
+        return
+    if origin is dict:
+        if type(value) is not dict:
+            problems[path] = f"expected a dict, got {type(value).__name__}"
+            return
+        for k, v in value.items():
+            _check_value(f"{path}[{k!r}] (key)", k, args[0], problems)
+            _check_value(f"{path}[{k!r}]", v, args[1], problems)
+        return
+    if hint is str:
+        if type(value) is not str:
+            problems[path] = f"expected text, got {type(value).__name__}"
+            return
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            problems[path] = "text that cannot be encoded"
+        return
+    if hint is int:
+        if type(value) is not int:
+            problems[path] = f"expected an int, got {type(value).__name__}"
+        return
+    raise TypeError(f"Unsupported annotation on {path}: {hint!r}")
 
 
 def encode(outcome: Outcome) -> str:
@@ -217,15 +270,10 @@ def encode(outcome: Outcome) -> str:
     file-backed store without the file, rather than a second implementation that
     happens to behave the same.
 
-    That matters because the previous approach did not work. It validated each
-    field against its declared type, and five review rounds plus two more found
-    values that satisfy a type and still do not survive storage: a `str` subclass
-    that flattens, a lone surrogate a path cannot carry, a string longer than a
-    column allows. The set is open-ended, so approximating "survives storage" with
-    type rules leaks by construction — the check has to *be* the storing.
-
     Refuses by raising, because `json.dumps` already refuses everything it cannot
-    represent. Nothing here re-states which types those are.
+    represent. Construction has already checked each field against its declared
+    type by the time this runs, so this is the backstop for whatever that walk
+    does not describe, not the rule itself.
     """
     try:
         return json.dumps(
@@ -252,6 +300,8 @@ def decode(stored: str) -> Outcome | None:
     known = {f.name for f in fields(Outcome)}
     try:
         payload = json.loads(stored)
+        if not isinstance(payload, dict):
+            raise ValueError(f"expected an object, got {type(payload).__name__}")
         return Outcome(**{k: v for k, v in payload.items() if k in known})
     except (TypeError, ValueError) as exc:
         logger.warning(

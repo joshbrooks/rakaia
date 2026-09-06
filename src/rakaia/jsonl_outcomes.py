@@ -23,7 +23,16 @@ percent-encoding is the mapping that is reversible.
 Sharing the stream store's limits, and for the same reasons: `fcntl` only, so no
 Windows; `flock` is unreliable on NFS; readers do not take the lock. A torn
 trailing line — a crash mid-append — is skipped on read rather than parsed,
-because a partial outcome is not worth failing a whole report over.
+because a partial outcome is not worth failing a whole report over, and cut off
+before the next append so that record is not glued onto it and lost as well.
+
+The lock is not pinned by a test, and that is a known gap rather than an
+oversight: with `O_APPEND` a single short `write()` lands whole on a local
+filesystem, so two unlocked writers cannot be made to interleave on demand. What
+the lock actually orders is the torn-tail check against a concurrent append —
+find the fragment, truncate, write — which is a window too narrow to hit
+deliberately. A test that fails with the lock removed would be welcome; none of
+the obvious ones do.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+from .jsonl_store import _discard_torn_tail
 from .outcomes import Outcome, _order, decode, encode
 
 try:  # pragma: no cover - platform dependent
@@ -88,19 +98,20 @@ class JsonlOutcomeStore:
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        line = encode(outcome) + "\n"
+        line = (encode(outcome) + "\n").encode("utf-8")
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert
         # rather than an ignore comment, the way `jsonl_store.py` states the same
         # guarantee.
         assert fcntl is not None
         # Append under an exclusive lock so two writers cannot interleave halves
-        # of a line. `a` mode means the write is positioned at the end at write
-        # time, not at open time, so the lock is what orders them rather than a
-        # seek this would otherwise have to do itself.
-        with target.open("a", encoding="utf-8") as fh:
+        # of a line. `a+` means the write is positioned at the end at write time,
+        # not at open time, and the file is readable, which the torn-tail check
+        # needs: it has to see the last byte before deciding whether to cut.
+        with target.open("a+b") as fh:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
             try:
+                _discard_torn_tail(fh)
                 fh.write(line)
                 fh.flush()
                 if self.fsync:
@@ -111,6 +122,11 @@ class JsonlOutcomeStore:
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
         best: dict[str, Outcome] = {}
         for record in self._read(consumer, stream_path):
+            # The file name says which scope this is, but the line says so too,
+            # and the line wins: on a case-folding filesystem two consumers can
+            # share a file, and a hand-edited file can hold anything.
+            if record.consumer != consumer or record.stream_path != stream_path:
+                continue
             held = best.get(record.subject)
             if held is None or record.attempt >= held.attempt:
                 best[record.subject] = record

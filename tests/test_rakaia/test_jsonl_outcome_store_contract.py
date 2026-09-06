@@ -212,3 +212,113 @@ class TestJsonlOutcomeStoreDurability:
             )
 
         assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
+
+    def test_the_record_after_a_torn_tail_is_not_lost_with_it(self, tmp_path: Path):
+        """Skipping a torn line on read is half the recovery.
+
+        An append that simply continued would glue its own record onto the
+        fragment, and *both* are then dropped as one unparseable line — so a crash
+        costs the outcome it interrupted and the next one too. The write side has
+        to cut the fragment first. Mutation: drop the torn-tail cut from `record`;
+        row-2 disappears.
+        """
+        from rakaia.outcomes import Outcome
+
+        def refused(subject: str) -> Outcome:
+            return Outcome(
+                consumer="c",
+                stream_path="s",
+                subject=subject,
+                offset=None,
+                sequence_key=subject,
+                stage="append",
+                status="refused",
+            )
+
+        root = tmp_path / "outcomes"
+        store = JsonlOutcomeStore(root, fsync=False)
+        store.record(refused("row-1"))
+        target = next(root.rglob("*.jsonl"))
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write('{"consumer": "c", "stream_pa')
+        store.record(refused("row-2"))
+        store.record(refused("row-3"))
+
+        assert [o.subject for o in store.latest("c", "s")] == [
+            "row-1",
+            "row-2",
+            "row-3",
+        ]
+
+    @pytest.mark.parametrize("line", ["[]", "null", "42", '"text"'])
+    def test_a_line_that_is_json_but_not_an_object_is_skipped_not_fatal(
+        self, tmp_path: Path, line: str
+    ):
+        """Valid JSON is not the same as a record. Each of these parsed and then
+        raised on `.items()`, outside the arm that catches a bad line — one such
+        line took the whole report down."""
+        from rakaia.outcomes import Outcome
+
+        root = tmp_path / "outcomes"
+        store = JsonlOutcomeStore(root, fsync=False)
+        store.record(
+            Outcome(
+                consumer="c",
+                stream_path="s",
+                subject="row-1",
+                offset="0000000001",
+                sequence_key="seq",
+                stage="project",
+                status="failed",
+            )
+        )
+        target = next(root.rglob("*.jsonl"))
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+        assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
+
+    def test_a_line_naming_another_scope_is_not_reported(self, tmp_path: Path):
+        """The file name says which scope this is, and so does each line; the
+        line wins. A case-folding filesystem gives consumers `A` and `a` one file,
+        and trusting the name would show each the other's outcomes. Mutation:
+        drop the scope filter from `latest`; `row-other` appears."""
+        from rakaia.outcomes import Outcome, encode
+
+        root = tmp_path / "outcomes"
+        store = JsonlOutcomeStore(root, fsync=False)
+        mine = Outcome(
+            consumer="c",
+            stream_path="s",
+            subject="row-1",
+            offset="0000000001",
+            sequence_key="seq",
+            stage="project",
+            status="failed",
+        )
+        store.record(mine)
+        target = next(root.rglob("*.jsonl"))
+        with target.open("a", encoding="utf-8") as fh:
+            for foreign in (
+                Outcome(
+                    consumer="C",
+                    stream_path="s",
+                    subject="row-other",
+                    offset="0000000002",
+                    sequence_key="seq",
+                    stage="project",
+                    status="failed",
+                ),
+                Outcome(
+                    consumer="c",
+                    stream_path="S",
+                    subject="row-other",
+                    offset="0000000003",
+                    sequence_key="seq",
+                    stage="project",
+                    status="failed",
+                ),
+            ):
+                fh.write(encode(foreign) + "\n")
+
+        assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
