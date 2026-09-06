@@ -1,10 +1,18 @@
 """An `OutcomeStore` backed by plain JSONL files on disk.
 
-The second implementation, and the reason the seam exists. `InMemoryOutcomeStore`
-proves nothing on its own — the same commit wrote it and the protocol, so of
-course it fits. This one has no database under it and shares no code with the
-first, so `tests/outcome_store_contract.py` passing against both is the evidence
-that an outcome is as store-agnostic as ADR 0007 Decision 1 claims.
+The second implementation, and the reason the seam exists — but be careful what
+the pair proves. It shows the *storing* is store-agnostic: keeping records in
+files needs no method the protocol lacks, and a third backend found a difference
+neither of these two had on its first run against the shared contract.
+
+It does **not** show the codec is right. Decision 6b makes both stores share
+`encode`, `decode` and `_order`, so a defect in any of the three is applied
+identically by both, agreed on by both, and invisible to the contract suite and
+to the cross-store comparison alike. That was the trade: one shared rendering
+buys structural agreement and spends the independence that would have made
+agreement evidence. What covers the codec is `test_outcome_validation.py`, which
+tests it directly rather than through a store. An earlier version of this
+paragraph said the two stores "share no code", which was never true.
 
 Outcomes are **append-only by definition** (Decision 6a), which makes a log file
 the natural shape rather than a compromise: `record` is one line appended, and

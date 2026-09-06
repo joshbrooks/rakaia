@@ -70,7 +70,9 @@ same way, and there are now three stores.
 ## What is built, and what this decision only proposes
 
 A decision record says what was decided; it should not be read as saying what exists. Of the
-decisions below, **3, 4, 6, 6a, 6b and 7 describe code in the tree.** Decision 1's core half
+decisions below, **4, 6, 6a, 6b and 7 describe code in the tree**, and **3 describes it
+only in the negative** — what is built is the absence of a success status and the absence
+of a gap query; the rule itself is a property of the loop in Decision 2, which is not. Decision 1's core half
 does; its Django half does not. **Decisions 2 and 5 describe nothing that exists** — there is
 no consume loop and no `on_error` parameter — and the Consequences section's "'did we lose
 anything, and which ones?' becomes a query, and it survives a restart" is a claim about the
