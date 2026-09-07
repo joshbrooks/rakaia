@@ -598,6 +598,54 @@ so the halves stay in one package.
 
 ---
 
+## 19. A consumer that could not apply an event has somewhere to say so
+
+**The problem.** A cursor records how far a consumer has read, and nothing else.
+So an event that was skipped, refused or lost looked exactly like one that
+worked: the cursor moved past both. The only way to find out that a form had
+been declined was to notice the row missing later, and the only record of *why*
+was whatever a log line happened to say before it rotated.
+
+**What rakaia does.** `consume()` is the loop — poll, apply, commit — and where
+it commits the cursor is where it records what happened. Recording is
+exceptions-only: the cursor is the success record, so a clean pass writes
+nothing, and below the cursor an outcome means it failed while no outcome means
+it worked. There is no third state.
+
+```python
+from rakaia import consume
+from django_rakaia import DjangoOutcomeStore
+
+result = consume(
+    store,
+    "submission/tf611",
+    apply,
+    consumer="tf611",
+    on_error="halt",  # no default; see below
+    outcomes=DjangoOutcomeStore(),
+)
+```
+
+`on_error` has no default on purpose. `"skip"` keeps a live stream running past
+one poisoned event; `"halt"` is what a rebuild needs, because a rebuild's whole
+claim is that it derived the projection from every event, and one silently
+skipped event makes that claim false while the run still reports success. One
+default would be quietly wrong for one of the two.
+
+A record is kept in whichever store you pass — a list for tests, a JSONL file,
+or a database table — and it holds reason *codes* and bounded parameters rather
+than an interpolated message, so it stays aggregatable, translatable, and free of
+the field values that a message would carry into a log.
+
+**Not yet demonstrated.** No example drives `consume()` — `examples/protocol_streams`
+still hand-rolls poll/apply/commit, which is the loop this replaces. That gap is
+named in [Examples](examples.md#known-gaps) rather than hidden.
+
+→ Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
+· [The public API](public-api.md)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

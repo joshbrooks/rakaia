@@ -106,6 +106,12 @@
   - `docs/examples.md` — if an example changed, and always check *Known gaps*.
     A new public API with no example is a gap; say so there rather than letting
     the matrix imply coverage that does not exist.
+- **Tag a release `v<version>`, with the `v`.** `publish.yml` triggers on `v*` and
+  nothing else, so a tag named `0.4.0` publishes nothing — no failure, no output,
+  just an absent release that looks like a slow PyPI. Worth stating because the
+  sibling repos disagree: `formkit-ninja` tags `4.1.0` without a prefix, and
+  moving between the two in one sitting is how the wrong one gets typed.
+
 - **Doc code samples are checked against the real signature, not from memory.**
   Every name in a snippet must resolve and every keyword must exist —
   `rebuild_and_verify` was documented with three wrong arguments on the first
