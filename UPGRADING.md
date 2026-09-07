@@ -32,6 +32,20 @@ either submodule directly — `from rakaia.handler import ServerOptions` — cha
 path. The failure is an `ImportError` at the import, so nothing gets past a first
 run.
 
+## Recorded reason codes changed value, and nothing raises about it
+
+A failure the loop recorded used to carry the exception's class name as its reason
+code — `HandlerGapError`, `UpcasterChainError`, `ValueError`. It now carries a
+short code from a published closed set: `handler_gap`, `upcaster_chain`,
+`undecodable_event`, and so on, with anything that is not rakaia's own recorded as
+`unhandled` and its type name in `params` under `exception_type`.
+
+Nothing warns and nothing breaks at import. A dashboard, alert or query filtering
+on the old strings simply stops matching, and under this library's own model an
+absent record reads as nothing having gone wrong — which is the failure worth
+naming here. Records already stored keep the old values; only new ones use the new
+codes. Update whatever reads them, and see the reference for the full set.
+
 ## Outcomes are part of the stable surface now
 
 `Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`, `InMemoryOutcomeStore`,

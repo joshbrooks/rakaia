@@ -23,6 +23,19 @@ runnable demo for each.
 
 ### Added
 
+- **A failure record now names the failure, not a class name.** Everything rakaia
+  raises while applying an event carries a short, stable reason code, and those
+  codes are a published closed set. The loop records the code rather than the
+  exception's class name, so renaming something internal no longer rewrites the
+  vocabulary an operator has been counting and filtering on. Anything that is not
+  rakaia's own — a bug in your own apply — is recorded under one code,
+  `unhandled`, with the exception's type name beside it and its message left out.
+  Three failures in a replay that used to arrive as a bare `ValueError` (a staged
+  replay with no reader, an event that will not decode, a missing or unusable
+  merge key) now have names of their own; each still subclasses `ValueError`, so
+  code already catching that keeps working. Catch `RakaiaError` to catch anything
+  the library raises from an apply in one clause. (#257)
+
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
   `consume()` takes the store, the stream, the consumer name, somewhere to load
   the cursor, somewhere to commit it and somewhere to keep outcomes on every

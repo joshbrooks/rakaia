@@ -90,6 +90,7 @@ from .effects import (
     _WrittenFields,
     transition_payload,
 )
+from .errors import RakaiaError
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
     HandlerRegistry,
@@ -98,6 +99,34 @@ from .registry import (
     get_default_registry,
     get_default_upcaster_registry,
 )
+
+# =============================================================================
+# Errors
+# =============================================================================
+#
+# Each also subclasses `ValueError`, which is what these sites raised before
+# they were named. Adding a type is then additive: a caller already catching
+# `ValueError` around a merge or a decode keeps catching it, and gains the
+# option of catching the specific failure or `RakaiaError` instead.
+
+
+class MissingReaderError(RakaiaError, ValueError):
+    """A staged replay was asked to run with no projection reader."""
+
+    code = "missing_reader"
+
+
+class UndecodableEventError(RakaiaError, ValueError):
+    """An event's stored bytes are not decodable JSON."""
+
+    code = "undecodable_event"
+
+
+class MergeKeyError(RakaiaError, ValueError):
+    """A merge cannot order its events: the order key is missing from an event,
+    or its values are not mutually comparable across them."""
+
+    code = "merge_key"
 
 
 class _EnvelopeTs:
@@ -267,7 +296,7 @@ def require_reader(ctx: _ReplayCtx, what: str = "Replay") -> None:
     here beats failing inside the first handler that dereferences `None`.
     """
     if is_staged(ctx) and ctx.reader is None:
-        raise ValueError(
+        raise MissingReaderError(
             f"{what} has stage > 0 handlers or reducers but no reader was "
             f"provided; pass reader= so they can read earlier stages' projections."
         )
@@ -762,7 +791,7 @@ def merge_replay(
             )
             if order_key is ENVELOPE_TS:
                 if msg.event_ts is None:
-                    raise ValueError(
+                    raise MergeKeyError(
                         f"Event at offset={offset} in stream={path!r} has no "
                         f"envelope event_ts; cannot merge on ENVELOPE_TS. (A store "
                         f"always sets it — is this a hand-built StreamMessage?)"
@@ -770,7 +799,7 @@ def merge_replay(
                 sort_value: Any = msg.event_ts
             else:
                 if order_key not in upcasted:
-                    raise ValueError(
+                    raise MergeKeyError(
                         f"Event at offset={offset} in stream={path!r} has no "
                         f"order_key={order_key!r} in its payload; cannot merge "
                         f"deterministically."
@@ -781,7 +810,7 @@ def merge_replay(
     try:
         tagged.sort(key=lambda item: item[0])
     except TypeError as exc:
-        raise ValueError(
+        raise MergeKeyError(
             f"Cannot merge deterministically: order_key={order_key!r} values are "
             f"not mutually comparable across events (mixed types or None?): {exc}"
         ) from exc
@@ -801,7 +830,7 @@ def _decode_event(data: bytes, stream_path: str, seq: int) -> dict:
     try:
         return json.loads(data)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise ValueError(
+        raise UndecodableEventError(
             f"Cannot decode event at seq={seq} in stream={stream_path!r} as JSON: {exc}"
         ) from exc
 

@@ -37,6 +37,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from .errors import EXCEPTION_TYPE_KEY, UNHANDLED, RakaiaError
 from .offsets import after as offsets_after
 from .outcomes import Outcome
 from .protocols import CursorStore, OutcomeStore
@@ -275,6 +276,7 @@ def consume(
         try:
             emitted = apply(message)
         except Exception as exc:
+            code = exc.code if isinstance(exc, RakaiaError) else UNHANDLED
             _record(
                 Outcome(
                     consumer=consumer,
@@ -286,7 +288,17 @@ def consume(
                     # recovers it — the first row of ADR 0007's recovery table.
                     stage="project",
                     status="failed",
-                    reasons=(type(exc).__name__,),
+                    reasons=(code,),
+                    # Only for what rakaia cannot name. A class name is not a
+                    # promised code — it moves when the class is renamed — so
+                    # anything outside `REASON_CODES` is counted as one code
+                    # with the type recorded beside it, message and all field
+                    # values left out.
+                    params=(
+                        {EXCEPTION_TYPE_KEY: type(exc).__name__}
+                        if code == UNHANDLED
+                        else {}
+                    ),
                 )
             )
             if on_error == "halt":

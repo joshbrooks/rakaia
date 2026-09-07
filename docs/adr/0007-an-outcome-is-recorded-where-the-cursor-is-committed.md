@@ -218,6 +218,22 @@ will eventually disagree with the first. So outcomes are append-only and attempt
 and "is this still failing?" is the latest outcome for the key, not a column. `unresolved`
 is therefore a derived query, not stored state.
 
+**6c. Rakaia's own codes are a promised set. A consumer's are still the consumer's.**
+Decision 6 says the codes are opaque to rakaia, and it was answering the question of what a
+*consumer* records. It never addressed the case where rakaia itself is what failed, and the
+loop was answering that with `type(exc).__name__` — so the vocabulary an operator reads was
+the internal class names, and any rename rewrote it silently. Everything rakaia raises from
+an apply now inherits one base type and carries a written-out `code`; the set of them is
+closed, published in `rakaia.REASON_CODES`, and changed with the care any other public name
+gets. The code is never derived from the class name, which is the whole defect.
+
+Anything outside that set is recorded as `unhandled` with the exception's type name in
+`params`, and nothing else from it — an exception's message is exactly where a field value
+would leak, which Decision 6 already refused. That keeps the vocabulary countable rather than
+an open set of class names, while still telling two unanticipated bugs apart. None of this
+touches Decision 6: reason codes on an outcome a consumer records remain the consumer's, and
+rakaia still has no opinion about them.
+
 **6b. One translation decides what a stored outcome looks like, and every backend uses it.**
 `encode_outcome`/`decode_outcome` is the only crossing between an outcome and its stored form, the in-memory
 reference included. That store previously kept the object as handed to it while the durable
@@ -257,6 +273,9 @@ This is why `subject` is a separate field rather than the same one. The subject 
 thing an outcome is about; the sequence key is what that particular refusal actually parked.
 They coincide often enough to be mistaken for one field, and the cases where they do not are
 the ones that matter.
+
+`sequence_key` is accepted as-is for now: nothing reads it, and removing it stopped being
+free once it was exported — enforcement is revisited on demand, not on schedule.
 
 ## Observations, refusals, and the record that one happened
 
