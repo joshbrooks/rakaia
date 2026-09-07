@@ -189,6 +189,11 @@ No example exercises these yet — a good place to contribute a demo:
   nothing under `examples/` calls `consume()` or builds a `Consumer`. #255 added
   the consumer object the example should be written against, which is the shape
   a demo should show rather than the six loose arguments underneath it.
+- Outcome retention. `manage.py prune_outcomes` deletes old failure records
+  (`docs/deployment.md`), but no example records a failure and then prunes it, so
+  nothing under `examples/` demonstrates the operator's side of the outcome
+  table. It follows the gap above: with no example calling `consume()`, there is
+  nothing for a prune demo to prune.
 
 ## Orientation for contributors
 

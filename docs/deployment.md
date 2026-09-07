@@ -215,6 +215,39 @@ For an actual deployment, you'd want at least:
 4. **Process supervision.** systemd, s6, or your container orchestrator.
 5. **Static files.** The chat sample has none, but if you add any, run
    `collectstatic` and serve them via the reverse proxy or WhiteNoise.
+6. **A retention policy for outcome records.** Nothing deletes them on its own.
+   See the next section.
+
+## Retention: pruning old outcome records
+
+When a consumer cannot apply an event, the failure is recorded so it can be
+looked at later. Only failures are recorded, so on a healthy system the table
+stays small — but nothing ever removes a row, and an installation that has run
+for years with an intermittent problem will have years of them.
+
+`prune_outcomes` deletes the old ones:
+
+```bash
+# What would go, without deleting anything:
+python manage.py prune_outcomes --older-than-days 365 --dry-run
+
+# Actually delete:
+python manage.py prune_outcomes --older-than-days 365
+```
+
+**There is no default age, and the command refuses to run without one.** How long
+these records are worth keeping is a question about your obligations, not about
+this library: a fortnight is right for one installation and seven years for
+another, and a default would be applied by whoever ran the command without
+reading this page. What it deletes is the evidence of a problem someone may still
+be working through, so the age is yours to state.
+
+"Older than" is strict — a record stamped exactly at the cutoff is kept — and
+deletion is done in batches (`--batch-size`, default 1000) so a first prune over
+a large backlog does not hold one long lock on a table your consumers are still
+writing to. `--database` prunes a named database alias, matching the alias the
+outcome store writes on. Run it from cron or your scheduler at whatever interval
+suits; running it twice deletes nothing the first run did not.
 
 ## Troubleshooting
 

@@ -687,6 +687,35 @@ rather than hidden.
 → Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 · [Subscriber cursors](subscriber-cursors.md)
 
+## 21. Old failure records can be cleared out, on your terms
+
+**The problem.** Failure records are written only when something goes wrong, so
+the table stays small on a healthy system and nobody thinks about it. An
+installation with an intermittent problem is the other case: the records
+accumulate for years and nothing removes them. Clearing the old ones meant
+writing SQL against a table you were told not to read directly.
+
+**What rakaia does.** A management command deletes records older than an age you
+name. Ask it what would go first:
+
+```bash
+python manage.py prune_outcomes --older-than-days 365 --dry-run
+```
+
+That prints the cutoff date and the count and changes nothing. Drop `--dry-run`
+to delete. The age has **no default and the command refuses to run without one** —
+how long these are worth keeping is a question about your obligations rather
+than about this library, and what a wrong guess destroys is the evidence of a
+problem someone may still be working through. A record stamped exactly on the
+cutoff is kept, deletion runs in batches so a first prune over a long backlog is
+not one long lock, and `--database` points it at a named alias.
+
+The timestamp gained an index in the same change. The table deliberately carries
+only the indexes its real queries need, and this sweep is the first query to ask
+about age.
+
+→ Deep dive: [Deployment — retention](deployment.md#retention-pruning-old-outcome-records)
+
 ---
 
 ## Where to go next

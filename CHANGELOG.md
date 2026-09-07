@@ -31,6 +31,23 @@ runnable demo for each.
   docstrings. `load_cursor()` and `commit_cursor()` also take `using=` now, so a
   consumer can keep its watermark on the same alias as its outcomes. (#255)
 
+- **`manage.py prune_outcomes` — a retention sweep for the outcome table, plus an
+  index on the timestamp it filters.** Failure records are written only when a
+  consumer cannot apply an event and nothing ever removed them, so an
+  installation with a long-running intermittent problem accumulated them with no
+  way to clear the old ones short of hand-written SQL. The command takes the age
+  to keep and deletes what is older:
+  `python manage.py prune_outcomes --older-than-days 365`.
+
+  **`--older-than-days` has no default and the command refuses to run without
+  it** — the right retention period differs by installation, and a guess destroys
+  the evidence of a problem someone may still be investigating. `--dry-run`
+  reports the count and deletes nothing, deletion is batched (`--batch-size`,
+  default 1000) so a first prune over a backlog is not one long lock, and
+  `--database` targets a named alias. "Older than" is strict: a record stamped
+  exactly on the cutoff is kept. Migration `0011` adds the index the sweep needs;
+  see `docs/deployment.md`. (#253)
+
 - **`JsonlStreamStore` — keep a log in plain text files instead of a database.**
   A stream is a directory of JSON-lines segments; an event is a line. Nothing but
   the filesystem is involved, so a consumer who wants durability without running
