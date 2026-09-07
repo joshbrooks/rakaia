@@ -39,6 +39,7 @@ COOKBOOK_DIR    := "examples/projection_cookbook"
 CLOSE_DIR       := "examples/partisipa_close"
 MERGE_DIR       := "examples/partisipa_merge"
 REPEATERS_DIR   := "examples/partisipa_repeaters"
+INTAKE_DIR      := "examples/partisipa_intake"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -87,7 +88,7 @@ demo:
 # Run EVERY demo and fail on the first one that breaks.
 #
 # `just demo` is the narrated two-part tour for a human reader. This is the
-# regression gate: all eleven demos, no narration budget, non-zero exit on the
+# regression gate: all twelve demos, no narration budget, non-zero exit on the
 # first failure. CI runs it, which is what makes the examples a tested surface
 # rather than a directory of prose that happened to compile.
 #
@@ -116,6 +117,8 @@ demos:
     @just partisipa-merge-demo
     @echo ">> partisipa repeaters — tree reconcile, no orphans"
     @just partisipa-tree-demo
+    @echo ">> partisipa intake — consuming loop, durable position and records"
+    @just intake-demo
     @echo ""
     @echo "All demos passed."
 
@@ -329,6 +332,15 @@ partisipa-merge-demo:
 partisipa-tree-demo:
     cd {{REPEATERS_DIR}} && uv run python manage.py migrate
     cd {{REPEATERS_DIR}} && uv run python manage.py demo_repeaters
+
+# ---------------------------------------------------------------------------
+# Consuming loop (durable position + outcome records — issue #254)
+# ---------------------------------------------------------------------------
+
+# Consume a stream: refuse, fail, skip; halt below a failure vs skip past it
+intake-demo:
+    cd {{INTAKE_DIR}} && uv run python manage.py migrate
+    cd {{INTAKE_DIR}} && uv run python manage.py demo_intake
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)

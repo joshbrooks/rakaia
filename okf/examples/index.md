@@ -20,6 +20,7 @@ migrate themselves.
 * [partisipa_close](partisipa-close.md) - close-precondition state machine.
 * [partisipa_merge](partisipa-merge.md) - `merge_replay` deterministic order.
 * [partisipa_repeaters](partisipa-repeaters.md) - nested-repeater tree reconcile.
+* [partisipa_intake](partisipa-intake.md) - the consuming loop, durable reading position, outcome records.
 
 ## Live SSE (Django, browser)
 
