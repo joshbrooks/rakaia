@@ -9,6 +9,18 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **Two modules renamed for what they serve.** `rakaia.handler` is the Durable
+  Streams protocol server — the ASGI surface, the wire semantics, producer
+  fencing — and had nothing to do with a handler in this library's own sense, the
+  pure function that turns an event into effects. It is now
+  `rakaia.protocol_server`. `rakaia.cursor` holds the response cursor that lets a
+  CDN collapse identical long-poll requests, not the reading position a consumer
+  keeps; it is now `rakaia.response_cursor`. Every exported name is importable
+  from `rakaia` exactly as before and none of them changed, so this is a break
+  only for code that imported the submodule directly.
+
 ### Added
 
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**

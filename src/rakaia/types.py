@@ -64,7 +64,7 @@ PRODUCER_STATE_TTL_SECONDS = 7 * 24 * 60 * 60
 #
 # The closed set of failures a store raises and a protocol server maps to a
 # status. Before these existed the mapping was a chain of substring tests over
-# `str(e)` in `handler.py`, so an f-string reworded in `store.py` silently
+# `str(e)` in `protocol_server.py`, so an f-string reworded in `store.py` silently
 # turned a 4xx into an unhandled 500 — and any other store implementation had
 # to reproduce five exact English strings to get the same statuses. Naming them
 # makes the mapping a lookup and the contract something a store can be tested

@@ -19,7 +19,7 @@ rakaia is effectively **two products in one package**:
   reading through the `ReadableStore` and `ProjectionReader` protocols. Pure,
   dependency-inverted, deterministic, testable. This is the layer consumers build
   on, and its internals are well-designed.
-- **Tier 2 — the Durable Streams protocol server.** `handler.py` (raw ASGI
+- **Tier 2 — the Durable Streams protocol server.** `protocol_server.py` (raw ASGI
   PUT/POST/GET/HEAD/DELETE), producer epoch/seq fencing, CDN cursors, SSE, TTL,
   and the full `StreamStore` lifecycle. Elaborate and self-consistent.
 
@@ -41,7 +41,7 @@ where they fuse**, not inside either tier:
 - **Routing is asymmetric.** Handlers can content-route (`match_field`);
   upcasters cannot — they match only the stream path.
 - **Two unrelated concepts named "cursor"** (CDN cache-collapsing vs consumer
-  subscription); reportedly **two HTTP protocol surfaces** (`handler.py` vs
+  subscription); reportedly **two HTTP protocol surfaces** (`protocol_server.py` vs
   `protocol_views.py`) with different offset formats.
 
 This has concrete downstream cost. In the first real consumer (Partisipa's

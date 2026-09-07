@@ -29,7 +29,7 @@ store, projection execution, a DB-backed protocol server, and SSE.
 | Capability | Where it lives | Requires |
 |---|---|---|
 | Event-sourcing framework — `replay`, `merge_replay`, registries, upcasters, effects, projections, dry-run executors | `rakaia` (Tier 1) | **Python stdlib only** |
-| Standalone protocol server — ASGI PUT/POST/GET/HEAD, SSE, producer fencing, TTL, in-memory `StreamStore` | `rakaia` (Tier 2: `rakaia.handler`) | **Python stdlib only** (plus any ASGI server to run it) |
+| Standalone protocol server — ASGI PUT/POST/GET/HEAD, SSE, producer fencing, TTL, in-memory `StreamStore` | `rakaia` (Tier 2: `rakaia.protocol_server`) | **Python stdlib only** (plus any ASGI server to run it) |
 | Subscriber cursors — incremental per-consumer reads with rewind detection | `rakaia.subscription` (Tier 1) | **Python stdlib only** |
 | Durable event store — survives restarts; `replay()` across processes | `django_rakaia.django_store` (`DjangoStreamStore`) | **Django** (ORM) |
 | Emit events from your models — `@stream_model` | `django_rakaia.decorators` | **Django** (ORM) |
