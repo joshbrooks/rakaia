@@ -162,6 +162,13 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "load_cursor",
     ),
     "Consuming, and what happened to an event": (
+        "Consumer",
+        "django_consumer",
+        "DjangoConsumer",
+        "CursorLedger",
+        "InMemoryCursorLedger",
+        "DjangoCursorLedger",
+        "CallerTransactionOpen",
         "consume",
         "Consumed",
         "OnErrorPolicy",

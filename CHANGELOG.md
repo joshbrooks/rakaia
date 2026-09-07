@@ -11,6 +11,26 @@ runnable demo for each.
 
 ### Added
 
+- **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
+  `consume()` takes the store, the stream, the consumer name, somewhere to load
+  the cursor, somewhere to commit it and somewhere to keep outcomes on every
+  call, and two of those are optional in a way that makes the wrong wiring look
+  right: omit the outcome store and the loop runs, the cursor advances and
+  nothing is ever recorded — which, under ADR 0007, reads back as "every event
+  succeeded". A `Consumer` holds the five together and asks for the outcome store
+  by construction, so there is no shape of it that silently records nothing, and
+  the consumer name and the stream path are said once instead of three times.
+  `on_error` still has no default. (#255)
+
+- **`django_consumer()` refuses to start inside a transaction you opened.** ADR
+  0007 keeps an outcome out of the executor's transaction and then names what it
+  cannot reach: a caller who wraps the whole run in `atomic()` and rolls back
+  takes the record with it, measured at 0 of 1 outcomes surviving. The core loop
+  cannot see a Django transaction; the Django entry point can, and now raises
+  `CallerTransactionOpen` rather than leaving the hazard as prose in three
+  docstrings. `load_cursor()` and `commit_cursor()` also take `using=` now, so a
+  consumer can keep its watermark on the same alias as its outcomes. (#255)
+
 - **`JsonlStreamStore` — keep a log in plain text files instead of a database.**
   A stream is a directory of JSON-lines segments; an event is a line. Nothing but
   the filesystem is involved, so a consumer who wants durability without running

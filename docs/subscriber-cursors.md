@@ -91,6 +91,26 @@ An `apply` may also *return* outcomes instead of raising, for a fact it decided
 rather than an exception it hit. Returning one is not a failure: the message
 still applied and the cursor still advances.
 
+## Holding it as one thing: `Consumer`
+
+The call above names `"reporting"` and `"submissions"` three times each, and
+`outcomes=` can be left off without anything complaining. `Consumer` holds the
+wiring instead: the name and the path are said once, and the outcome store is a
+required argument, so a consumer that records nothing cannot be built.
+
+```python
+from django_rakaia import django_consumer
+
+consumer = django_consumer(store, "submissions", "reporting")
+result = consumer.run(apply, on_error="skip")
+```
+
+`django_consumer` fills in the durable cursor and outcome stores, and refuses to
+run inside a transaction you opened — the third bullet above, enforced rather
+than described. Outside Django, build a `rakaia.Consumer` directly and pass your
+own `CursorLedger` and `OutcomeStore`; `InMemoryCursorLedger` and
+`InMemoryOutcomeStore` are the reference pair.
+
 ## Rewind detection
 
 If the stored cursor sorts *after* the current head, the log shrank beneath it,
