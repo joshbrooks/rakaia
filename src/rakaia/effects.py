@@ -611,3 +611,37 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
                 f"{field_name!r} on {eff.model_label} {eff.lookup!r}"
             )
         seen.record(eff, idx)
+
+
+# =============================================================================
+# Write order
+# =============================================================================
+
+
+def _write_order_rank(effect: Effect) -> int:
+    """Which pass of an applied batch `effect` belongs to.
+
+    Every executor applies a batch in three passes — every write, then every
+    delete, then every retire — so that a reconcile batch converges regardless
+    of the order its handlers emitted, and a ``produces=`` row is recorded
+    before any effect that :class:`Ref`s it. That is exactly why effects from
+    two different events cannot simply be poured into one batch: doing so would
+    hoist a later event's write above an earlier event's delete.
+
+    Kept beside `check_disjoint_defaults` and consulted by both executors and by
+    the replay buffer that decides where a batch boundary falls, so the rule has
+    one home rather than three that can drift (#152, #256).
+    """
+    if isinstance(effect, (Upsert, Update)):
+        return 0
+    if isinstance(effect, Delete):
+        return 1
+    return 2
+
+
+_WRITE_ORDER_PASSES = (0, 1, 2)
+"""The passes `_write_order_rank` sorts a batch into, in application order.
+
+An executor loops over this and dispatches on the rank, so a fourth pass would
+be added here and nowhere else.
+"""
