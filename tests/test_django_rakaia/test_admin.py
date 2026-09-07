@@ -704,11 +704,34 @@ class TestTheOutcomeScreenReadsThePayload:
         )
         assert found.count() == 1
 
+    def test_a_quoted_phrase_still_searches_as_a_phrase(self) -> None:
+        # Django splits the box on spaces and *then* strips the quotes around a
+        # bit. Escaping the whole term first turns the operator's quotes into
+        # something that branch no longer recognises, and the phrase is searched
+        # literally — nothing matches, which is the empty page this override was
+        # written to prevent, reintroduced by the override itself.
+        self._record(subject="alpha beta")
+        self._record(subject="beta alpha")
+        request, _ = _changelist(self.admin)
+
+        phrase, _ = self.admin.get_search_results(
+            request, ConsumerOutcome.objects.all(), '"alpha beta"'
+        )
+        loose, _ = self.admin.get_search_results(
+            request, ConsumerOutcome.objects.all(), "alpha beta"
+        )
+
+        assert phrase.count() == 1
+        assert loose.count() == 2
+
     def test_the_page_title_shows_the_value_not_the_encoded_key(self) -> None:
         # Django puts `str(obj)` in the change page's title and breadcrumb, so
         # the screen that exists to stop `submission%2Ftf611` being read as a
-        # stream name must not print it there either.
-        self._record()
+        # stream name must not print it there either. Both halves of the title
+        # carry a character the index encodes, because a consumer named `ledger`
+        # encodes to itself and leaves half the rendering unwatched.
+        self._record(consumer="ledger 100%", stream_path="submission/tf611")
         row = ConsumerOutcome.objects.get()
         assert "submission/tf611" in str(row)
-        assert "%2F" not in str(row)
+        assert "ledger 100%" in str(row)
+        assert "%2F" not in str(row) and "%25" not in str(row)

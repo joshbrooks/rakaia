@@ -336,14 +336,20 @@ class ConsumerOutcomeAdmin(admin.ModelAdmin):
         nothing and said so as an empty page — an operator reads that as "there
         is no record", which is the one conclusion this table exists to prevent.
 
-        Escaping the term the same way the payload was escaped makes the two
-        comparable. For a term that is already ASCII this is the identity, and a
-        term carrying a quote or a backslash is escaped to exactly the form the
-        payload stores.
+        **Only the characters that were escaped are escaped back, one at a
+        time.** Escaping the whole term through `json.dumps` was the first
+        attempt and it broke quoted phrases: Django splits the search box on
+        spaces and *then* strips the quotes around a bit, so a term arriving as
+        ``\"two words\"`` never matches that branch and is searched literally,
+        which returned nothing at all for a query that used to work. Anything
+        already ASCII is left exactly as the operator typed it, so every search
+        that worked before this method existed still works, character for
+        character.
         """
-        return super().get_search_results(
-            request, queryset, json.dumps(search_term)[1:-1]
+        escaped = "".join(
+            char if char.isascii() else json.dumps(char)[1:-1] for char in search_term
         )
+        return super().get_search_results(request, queryset, escaped)
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False
