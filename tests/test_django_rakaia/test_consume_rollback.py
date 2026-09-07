@@ -25,7 +25,7 @@ from django.db import transaction
 
 from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import Upsert
-from rakaia.outcomes import Outcome, decode, encode
+from rakaia.outcomes import Outcome, decode_outcome, encode_outcome
 from rakaia.store import StreamStore
 from rakaia.subscription import consume
 from rakaia.types import StreamMessage
@@ -52,13 +52,13 @@ class DatabaseOutcomeStore:
         Alert.objects.create(
             stream_key="outcome",
             alert_type=f"outcome-{self._n}",
-            message=encode(outcome),
+            message=encode_outcome(outcome),
         )
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
         found = []
         for row in Alert.objects.filter(stream_key="outcome"):
-            outcome = decode(row.message)
+            outcome = decode_outcome(row.message)
             if (
                 outcome is not None
                 and outcome.consumer == consumer

@@ -98,8 +98,8 @@ if TYPE_CHECKING:
         Outcome,
         OutcomeStatus,
         Stage,
-        decode,
-        encode,
+        decode_outcome,
+        encode_outcome,
     )
     from .projections import (
         project_latest,
@@ -311,8 +311,8 @@ _EXPORTS: dict[str, str] = {
     "Outcome": "rakaia.outcomes",
     "OutcomeStatus": "rakaia.outcomes",
     "Stage": "rakaia.outcomes",
-    "encode": "rakaia.outcomes",
-    "decode": "rakaia.outcomes",
+    "encode_outcome": "rakaia.outcomes",
+    "decode_outcome": "rakaia.outcomes",
     "InMemoryOutcomeStore": "rakaia.outcomes",
     "JsonlOutcomeStore": "rakaia.jsonl_outcomes",
     # Version

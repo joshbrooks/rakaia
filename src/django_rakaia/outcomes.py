@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from rakaia.outcomes import Outcome, _order, decode, encode
+from rakaia.outcomes import Outcome, _order, decode_outcome, encode_outcome
 
 from .models import ConsumerOutcome
 
@@ -101,7 +101,7 @@ class DjangoOutcomeStore:
 
     def record(self, outcome: Outcome) -> None:
         """Append `outcome`. Total: nothing a caller can put in one makes this raise."""
-        # `encode` first and store what it returns: the same text the in-memory
+        # `encode_outcome` first and store what it returns: the same text the in-memory
         # store holds in a list and the file-backed one writes as a line. Nothing
         # here renders an outcome its own way, so there is nothing for the three
         # backends to disagree about. The two key columns beside it are derived
@@ -110,7 +110,7 @@ class DjangoOutcomeStore:
         ConsumerOutcome.objects.using(self._using).create(
             consumer_key=_key("consumer_key", outcome.consumer),
             stream_path_key=_key("stream_path_key", outcome.stream_path),
-            payload=encode(outcome),
+            payload=encode_outcome(outcome),
         )
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
@@ -128,7 +128,7 @@ class DjangoOutcomeStore:
         )
         best: dict[str, Outcome] = {}
         for row in rows:
-            record = decode(row.payload)
+            record = decode_outcome(row.payload)
             if (
                 record is None
                 or record.consumer != consumer

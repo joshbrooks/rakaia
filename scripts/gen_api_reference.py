@@ -172,8 +172,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "InMemoryOutcomeStore",
         "JsonlOutcomeStore",
         "DjangoOutcomeStore",
-        "encode",
-        "decode",
+        "encode_outcome",
+        "decode_outcome",
     ),
     "Producer fencing": (
         "ProducerState",

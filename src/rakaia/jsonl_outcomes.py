@@ -6,7 +6,7 @@ files needs no method the protocol lacks, and a third backend found a difference
 neither of these two had on its first run against the shared contract.
 
 It does **not** show the codec is right. Decision 6b makes both stores share
-`encode`, `decode` and `_order`, so a defect in any of the three is applied
+`encode_outcome`, `decode_outcome` and `_order`, so a defect in any of the three is applied
 identically by both, agreed on by both, and invisible to the contract suite and
 to the cross-store comparison alike. That was the trade: one shared rendering
 buys structural agreement and spends the independence that would have made
@@ -50,7 +50,7 @@ import os
 from pathlib import Path
 
 from .jsonl_store import _contained, _discard_torn_tail
-from .outcomes import Outcome, _order, decode, encode
+from .outcomes import Outcome, _order, decode_outcome, encode_outcome
 
 try:  # pragma: no cover - platform dependent
     import fcntl
@@ -85,7 +85,7 @@ class JsonlOutcomeStore:
     def record(self, outcome: Outcome) -> None:
         target = self._file(outcome.consumer, outcome.stream_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        line = (encode(outcome) + "\n").encode("utf-8")
+        line = (encode_outcome(outcome) + "\n").encode("utf-8")
         # Narrowing, not defence: `__init__` refuses to build a store on a platform
         # without `fcntl`, so by here it is always a module. Stated as an assert
         # rather than an ignore comment, the way `jsonl_store.py` states the same
@@ -127,11 +127,11 @@ class JsonlOutcomeStore:
         for line in target.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            # `decode` takes the stored text directly — the same text `encode`
+            # `decode_outcome` takes the stored text directly — the same text `encode_outcome`
             # produced and the same text the in-memory store keeps. A torn line
             # from a crash mid-append, and a line this version cannot rebuild,
             # are the same case to it: that line is lost, never the report.
-            outcome = decode(line)
+            outcome = decode_outcome(line)
             if outcome is not None:
                 out.append(outcome)
         return out

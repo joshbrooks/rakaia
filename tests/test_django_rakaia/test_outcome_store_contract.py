@@ -52,21 +52,21 @@ class TestDjangoOutcomeStoreDurability:
     def test_the_row_holds_the_bytes_encode_produced(self):
         """Decision 6b, pinned as byte-identity rather than round-trippability.
 
-        This used to assert `decode(row.payload) == outcome`, which is a weaker
+        This used to assert `decode_outcome(row.payload) == outcome`, which is a weaker
         claim than it reads as: a hand-rolled `json.dumps` of the same ten fields
-        decodes to the same outcome, so replacing `encode(outcome)` with one left
+        decodes to the same outcome, so replacing `encode_outcome(outcome)` with one left
         the whole suite green. Decision 6b is not "the store can rebuild an
         equal outcome", it is "every store keeps the *same text*" — and only an
         equality on the text says so.
         """
         from django_rakaia.models import ConsumerOutcome
-        from rakaia.outcomes import encode
+        from rakaia.outcomes import encode_outcome
 
         outcome = project("0000000001", reasons=("bad_total",), params={"row": "3"})
         DjangoOutcomeStore().record(outcome)
 
         [row] = ConsumerOutcome.objects.all()
-        assert row.payload == encode(outcome)
+        assert row.payload == encode_outcome(outcome)
 
     def test_a_second_attempt_is_a_new_row_not_an_update(self):
         """Append-only (Decision 6a), pinned below `latest`.
@@ -248,13 +248,13 @@ class TestTheKeysNarrowAndThePayloadDecides:
         """The direction the payload decides. Mutation: drop the payload
         comparison from `latest`; `row-other` appears."""
         from django_rakaia.models import ConsumerOutcome
-        from rakaia.outcomes import encode
+        from rakaia.outcomes import encode_outcome
 
         DjangoOutcomeStore().record(project("0000000001", reasons=("mine",)))
         ConsumerOutcome.objects.create(
             consumer_key="c",
             stream_path_key="s",
-            payload=encode(project("0000000002", consumer="other")),
+            payload=encode_outcome(project("0000000002", consumer="other")),
         )
 
         assert [o.subject for o in DjangoOutcomeStore().latest("c", "s")] == [
@@ -270,12 +270,12 @@ class TestTheKeysNarrowAndThePayloadDecides:
         stated here rather than left as a surprise.
         """
         from django_rakaia.models import ConsumerOutcome
-        from rakaia.outcomes import encode
+        from rakaia.outcomes import encode_outcome
 
         ConsumerOutcome.objects.create(
             consumer_key="somewhere-else",
             stream_path_key="s",
-            payload=encode(project("0000000001", reasons=("orphaned",))),
+            payload=encode_outcome(project("0000000001", reasons=("orphaned",))),
         )
 
         assert DjangoOutcomeStore().latest("c", "s") == []

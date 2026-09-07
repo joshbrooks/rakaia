@@ -189,8 +189,8 @@ page is the contract.
 | `InMemoryOutcomeStore` | `rakaia` | `() -> 'None'` | An `OutcomeStore` held in a list. The reference implementation. |
 | `JsonlOutcomeStore` | `rakaia` | `(root: 'str \| Path', *, fsync: 'bool' = True)` | Outcomes kept as JSONL, one file per `(consumer, stream_path)`. |
 | `DjangoOutcomeStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Outcomes kept as rows in ``rakaia_consumeroutcome``. |
-| `encode` | `rakaia` | `(outcome: 'Outcome') -> 'str'` | The one translation from an outcome to the text a store keeps. |
-| `decode` | `rakaia` | `(stored: 'str') -> 'Outcome \| None'` | The inverse of `encode`, or ``None`` if this version cannot build it. |
+| `encode_outcome` | `rakaia` | `(outcome: 'Outcome') -> 'str'` | The one translation from an outcome to the text a store keeps. |
+| `decode_outcome` | `rakaia` | `(stored: 'str') -> 'Outcome \| None'` | The inverse of `encode_outcome`, or ``None`` if this version cannot build it. |
 
 ## Producer fencing
 

@@ -424,7 +424,7 @@ class ConsumerOutcome(models.Model):
 
     ``payload`` is the record. It holds the whole outcome as
     `rakaia.outcomes.encode` rendered it, which is the same text the other two
-    stores keep — ADR 0007 Decision 6b — and `decode` is the only way back out of
+    stores keep — ADR 0007 Decision 6b — and `decode_outcome` is the only way back out of
     it.
 
     **The two ``_key`` columns are the scope index, and nothing else is a

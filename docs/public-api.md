@@ -63,11 +63,11 @@ What "provisional" means here:
 
 !!! note "`ConsumerOutcome.payload` is Tier 2; what is inside it is Tier 1"
 
-    The column is a `TextField` holding exactly what `rakaia.encode` produced, and
-    `rakaia.decode` turns it back. So the **column** may change — it could gain
+    The column is a `TextField` holding exactly what `rakaia.encode_outcome` produced,
+    and `rakaia.decode_outcome` turns it back. So the **column** may change — it could gain
     siblings, or move — while the **text format** is a stable promise, because
     anything decoding that text depends on the format whether or not it went
-    through the exported function. Decode it with `rakaia.decode`; do not parse it.
+    through the exported function. Decode it with `rakaia.decode_outcome`; do not parse it.
 
     The two `_key` columns are a scope index, not a copy of the value: each holds a
     percent-encoded and possibly shortened form, so `stream_path_key` for

@@ -1,8 +1,8 @@
 # ADR 0007 — An outcome is recorded where the cursor is committed, not where the effect is applied
 
-- **Status:** Accepted (the core, both file-backed stores and the loop landed in #243,
-  #247 and #248; the Django store in #249; exported 2026-09-07 — see the update note
-  in "What is built" below)
+- **Status:** Accepted (the core and both reference stores landed in #243, the loop in
+  #248, the Django store in #249; exported in #251 — see the update note in "What is
+  built" below)
 - **Date:** 2026-09-05
 - **Deciders:** rakaia maintainers
 - **Related:** [ADR 0002](./0002-framework-vs-protocol-server-boundary.md) (the
@@ -83,7 +83,8 @@ hiding among them. Decision 7 in particular records a `sequence_key` that nothin
 built, and still a promise.
 
 **Update, 2026-09-07 — exported.** `Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`,
-`InMemoryOutcomeStore`, `JsonlOutcomeStore`, `encode`, `decode`, `consume`, `Consumed` and
+`InMemoryOutcomeStore`, `JsonlOutcomeStore`, `encode_outcome`, `decode_outcome`, `consume`,
+`Consumed` and
 `OnErrorPolicy` are in `rakaia.__all__`; `DjangoOutcomeStore` is in `django_rakaia.__all__`.
 `ConsumerOutcome` stays Tier 2 with the other models. That is what moves this to Accepted,
 and it is a stability promise — see the Consequences.
@@ -218,7 +219,7 @@ and "is this still failing?" is the latest outcome for the key, not a column. `u
 is therefore a derived query, not stored state.
 
 **6b. One translation decides what a stored outcome looks like, and every backend uses it.**
-`encode`/`decode` is the only crossing between an outcome and its stored form, the in-memory
+`encode_outcome`/`decode_outcome` is the only crossing between an outcome and its stored form, the in-memory
 reference included. That store previously kept the object as handed to it while the durable
 ones had to render it, so it accepted values they refused — a reference implementation more
 permissive than the real ones makes a passing test a weaker promise than production.
@@ -437,7 +438,8 @@ that is the point of it.
   still under review is how a bad shape becomes permanent. That reservation has been spent.
   What is now promised is `Outcome`'s ten fields as a frozen dataclass, `consume`'s signature
   **including `on_error` having no default**, `OutcomeStore`'s two methods, and — transitively
-  and least obviously — the `encode`/`decode` text format, because `ConsumerOutcome.payload`
+  and least obviously — the `encode_outcome`/`decode_outcome` text format, because
+  `ConsumerOutcome.payload`
   holds that text and anything decoding it depends on the format whether or not the functions
   were exported. They are exported explicitly rather than left as an accidental surface.
   Two of those promises are uncomfortable and named here rather than discovered later:

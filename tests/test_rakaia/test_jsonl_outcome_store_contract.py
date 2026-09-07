@@ -244,7 +244,7 @@ class TestJsonlOutcomeStoreDurability:
         line wins. A case-folding filesystem gives consumers `A` and `a` one file,
         and trusting the name would show each the other's outcomes. Mutation:
         drop the scope filter from `latest`; `row-other` appears."""
-        from rakaia.outcomes import Outcome, encode
+        from rakaia.outcomes import Outcome, encode_outcome
 
         root = tmp_path / "outcomes"
         store = JsonlOutcomeStore(root, fsync=False)
@@ -280,7 +280,7 @@ class TestJsonlOutcomeStoreDurability:
                     status="failed",
                 ),
             ):
-                fh.write(encode(foreign) + "\n")
+                fh.write(encode_outcome(foreign) + "\n")
 
         assert [o.subject for o in store.latest("c", "s")] == ["row-1"]
 

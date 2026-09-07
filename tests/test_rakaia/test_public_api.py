@@ -144,8 +144,8 @@ RAKAIA_PUBLIC = {
     "OutcomeStore",
     "Stage",
     "consume",
-    "decode",
-    "encode",
+    "decode_outcome",
+    "encode_outcome",
     # version
     "__version__",
 }
