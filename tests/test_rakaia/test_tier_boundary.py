@@ -56,13 +56,14 @@ FRAMEWORK = {
 PROTOCOL_SERVER = {
     "_asgi",
     "append_decision",
-    "cursor",
-    "handler",
+    "consumer",
     "jsonl_outcomes",
     "jsonl_store",
     "migrate",
     "producer",
+    "protocol_server",
     "read_decision",
+    "response_cursor",
     "store",
     "subscription",
 }

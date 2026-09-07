@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .effects import (
+    _WRITE_ORDER_PASSES,
     ApplyReport,
     Delete,
     Effect,
@@ -35,6 +36,7 @@ from .effects import (
     SpareKeys,
     Update,
     Upsert,
+    _write_order_rank,
     check_disjoint_defaults,
 )
 
@@ -135,28 +137,34 @@ class InMemoryProjections:
         resolver = RefResolver()
         retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
         created = written = 0
-        # Writes first, then deletes, then retires — so a reconcile batch
-        # converges regardless of the order its handlers emitted, and a produces=
-        # row is recorded before any later effect Refs it.
-        for eff in effects_list:
-            if isinstance(eff, Upsert):
-                # No skip_unchanged here, so every upsert writes: `skipped` stays
-                # 0 and `written` counts them all, which is what the Django
-                # executor also reports when the option is off.
-                if self._upsert(resolver, resolver.resolve_effect(eff)) == "created":
-                    created += 1
-                written += 1
-            elif isinstance(eff, Update):
-                self._update(resolver.resolve_effect(eff))
-        for eff in effects_list:
-            if isinstance(eff, Delete):
-                self._delete(resolver.resolve_effect(eff))
-        for eff in effects_list:
-            if isinstance(eff, Retire):
-                reff = resolver.resolve_effect(eff)
-                flipped = self._retire(reff)
-                if reff.transition is not None:
-                    retire_flips.append((reff, flipped))
+        # One pass per rank — writes, then deletes, then retires — so a
+        # reconcile batch converges regardless of the order its handlers
+        # emitted, and a produces= row is recorded before any later effect Refs
+        # it. Which effect lands in which pass is `_write_order_rank`'s to say,
+        # not this loop's.
+        for rank in _WRITE_ORDER_PASSES:
+            for eff in effects_list:
+                if _write_order_rank(eff) != rank:
+                    continue
+                if isinstance(eff, Upsert):
+                    # No skip_unchanged here, so every upsert writes: `skipped`
+                    # stays 0 and `written` counts them all, which is what the
+                    # Django executor also reports when the option is off.
+                    if (
+                        self._upsert(resolver, resolver.resolve_effect(eff))
+                        == "created"
+                    ):
+                        created += 1
+                    written += 1
+                elif isinstance(eff, Update):
+                    self._update(resolver.resolve_effect(eff))
+                elif isinstance(eff, Delete):
+                    self._delete(resolver.resolve_effect(eff))
+                elif isinstance(eff, Retire):
+                    reff = resolver.resolve_effect(eff)
+                    flipped = self._retire(reff)
+                    if reff.transition is not None:
+                        retire_flips.append((reff, flipped))
         return ApplyReport(
             retire_flips=retire_flips,
             upserts_created=created,

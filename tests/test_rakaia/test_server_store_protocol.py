@@ -5,7 +5,7 @@
 signature can disagree with every implementation and with the server calling
 them, and nothing fails. That is not hypothetical — this protocol first landed
 declaring `close_stream_with_producer(path, options=None)` while both stores
-took `(path, producer_id, producer_epoch, producer_seq)` and `handler.py`
+took `(path, producer_id, producer_epoch, producer_seq)` and `protocol_server.py`
 passed exactly those three positionally.
 
 The check is `inspect.Signature.bind`, not name-list equality: every call the
@@ -85,7 +85,7 @@ class TestTheDeclaredSurfaceMatchesTheImplementation:
     def test_the_surface_includes_the_inherited_methods(self) -> None:
         """The dynamic enumeration must not quietly shrink.
 
-        Everything `handler.py` calls on its store has to appear here; if a
+        Everything `protocol_server.py` calls on its store has to appear here; if a
         method leaves this list the bind check above stops policing it.
         """
         assert set(_protocol_methods()) >= {

@@ -59,8 +59,8 @@ if TYPE_CHECKING:
     __version__: str
 
     from .append import append_if_changed, snapshots_equal
+    from .consumer import Consumer, ConsumerCursorStore, InMemoryConsumerCursorStore
     from .context import get_provenance, provenance
-    from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
     from .drift import DriftLedger
     from .effects import (
         AnyEffect,
@@ -83,7 +83,6 @@ if TYPE_CHECKING:
         check_disjoint_defaults,
     )
     from .executors import CollectingExecutor, InMemoryProjections
-    from .handler import ServerOptions, create_app
     from .history import (
         envelope_actor,
         history_effects,
@@ -108,6 +107,7 @@ if TYPE_CHECKING:
         reconcile_children,
         reconcile_tree,
     )
+    from .protocol_server import ServerOptions, create_app
     from .protocols import (
         CursorStore,
         OutcomeStore,
@@ -140,6 +140,11 @@ if TYPE_CHECKING:
         upcast,
     )
     from .replay import ENVELOPE_TS, ReplayResult, TouchedSubject, merge_replay
+    from .response_cursor import (
+        CursorOptions,
+        calculate_cursor,
+        generate_response_cursor,
+    )
     from .seed import seed_stream
     from .store import StreamStore
     from .subscription import Consumed, OnErrorPolicy, Poll, PollStatus, consume, poll
@@ -188,7 +193,7 @@ from .replay import replay
 #: name -> the module that defines it.
 _EXPORTS: dict[str, str] = {
     # App factory
-    "create_app": "rakaia.handler",
+    "create_app": "rakaia.protocol_server",
     # "app" is computed, not imported — see __getattr__.
     # Store
     "StreamStore": "rakaia.store",
@@ -213,8 +218,8 @@ _EXPORTS: dict[str, str] = {
     "label_marker": "rakaia.history",
     "envelope_actor": "rakaia.history",
     # Options
-    "ServerOptions": "rakaia.handler",
-    "CursorOptions": "rakaia.cursor",
+    "ServerOptions": "rakaia.protocol_server",
+    "CursorOptions": "rakaia.response_cursor",
     # Types
     "Stream": "rakaia.types",
     "StreamMessage": "rakaia.types",
@@ -242,8 +247,8 @@ _EXPORTS: dict[str, str] = {
     "ForeignOffset": "rakaia.offsets",
     "InvalidOffset": "rakaia.types",
     # Cursor
-    "calculate_cursor": "rakaia.cursor",
-    "generate_response_cursor": "rakaia.cursor",
+    "calculate_cursor": "rakaia.response_cursor",
+    "generate_response_cursor": "rakaia.response_cursor",
     # Versioned handlers — effects
     "Effect": "rakaia.effects",
     "AnyEffect": "rakaia.effects",
@@ -315,6 +320,10 @@ _EXPORTS: dict[str, str] = {
     "decode_outcome": "rakaia.outcomes",
     "InMemoryOutcomeStore": "rakaia.outcomes",
     "JsonlOutcomeStore": "rakaia.jsonl_outcomes",
+    # The consumer that holds the loop's wiring, so recording cannot be omitted
+    "Consumer": "rakaia.consumer",
+    "ConsumerCursorStore": "rakaia.consumer",
+    "InMemoryConsumerCursorStore": "rakaia.consumer",
     # Version
     # "__version__" is computed, not imported — see __getattr__.
 }
@@ -371,7 +380,7 @@ def __getattr__(name: str) -> Any:
             # Re-checked inside the lock: a thread that waited here while
             # another built it must take that one, not build a second.
             if "app" not in globals():
-                from .handler import create_app
+                from .protocol_server import create_app
 
                 globals()["app"] = create_app()
             return globals()["app"]

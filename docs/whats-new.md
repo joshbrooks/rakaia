@@ -646,6 +646,78 @@ above has no worked example. That gap is named in
 
 ---
 
+## 20. A consumer you hold, which cannot forget to record
+
+**The problem.** The loop in section 19 takes six arguments, and two of them are
+optional in a way that makes the wrong wiring look right. Leave out the outcome
+store and everything still works: the stream is polled, the events are applied,
+the cursor advances — and nothing is ever recorded. Under the rule above, that
+does not read as "nothing was recorded", it reads as "every event succeeded". The
+consumer's name and the stream path also have to be repeated at each of the
+cursor, the commit and the loop itself, and a name that is right in two of the
+three places files the outcomes under one identity and the watermark under
+another.
+
+**What rakaia does.** A consumer is now an object you build once and run.
+
+```python
+from django_rakaia import django_consumer
+
+consumer = django_consumer(store, "submissions", "reporting")
+result = consumer.run(apply, on_error="skip")
+```
+
+The name and the path are said once and reach both the cursor and the outcomes.
+The outcome store is a constructor argument with no default, so a consumer that
+records nothing cannot be built — and the Django one above fills in a database
+table for the outcomes and a database row for the watermark, so both survive a
+restart. `on_error` still has no default, for the reason section 19 gives.
+
+It also refuses to start inside a transaction you opened. That was the one hole
+the loop could not close on its own: wrap the run in `atomic()`, roll back, and
+the record of the failure rolls back with it — measured at none of one outcome
+surviving. The core loop is dependency-free and cannot see a database
+transaction; this entry point can, and raises `CallerTransactionOpen` instead of
+running.
+
+**Not yet demonstrated.** Nothing under `examples/` builds one yet — the same
+gap section 19 names, and still named in [Examples](examples.md#known-gaps)
+rather than hidden.
+
+→ Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
+· [Subscriber cursors](subscriber-cursors.md)
+
+## 21. Old failure records can be cleared out, on your terms
+
+**The problem.** Failure records are written only when something goes wrong, so
+the table stays small on a healthy system and nobody thinks about it. An
+installation with an intermittent problem is the other case: the records
+accumulate for years and nothing removes them. Clearing the old ones meant
+writing SQL against a table you were told not to read directly.
+
+**What rakaia does.** A management command deletes records older than an age you
+name. Ask it what would go first:
+
+```bash
+python manage.py prune_outcomes --older-than-days 365 --dry-run
+```
+
+That prints the cutoff date and the count and changes nothing. Drop `--dry-run`
+to delete. The age has **no default and the command refuses to run without one** —
+how long these are worth keeping is a question about your obligations rather
+than about this library, and what a wrong guess destroys is the evidence of a
+problem someone may still be working through. A record stamped exactly on the
+cutoff is kept, deletion runs in batches so a first prune over a long backlog is
+not one long lock, and `--database` points it at a named alias.
+
+The timestamp gained an index in the same change. The table deliberately carries
+only the indexes its real queries need, and this sweep is the first query to ask
+about age.
+
+→ Deep dive: [Deployment — retention](deployment.md#retention-pruning-old-outcome-records)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)
