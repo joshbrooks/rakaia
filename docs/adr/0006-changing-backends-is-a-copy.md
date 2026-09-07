@@ -32,11 +32,37 @@ stores issue the same offset *format*:
 |---|---|
 | in-memory ↔ either other | `ForeignOffset`. Loud, immediate, correct. |
 | `DjangoStreamStore` ↔ `JsonlStreamStore` | **Accepted.** Both issue `PLAIN`. |
+| one store class, two locations | **Accepted.** Not a pair of backends at all. |
 
-Both are symmetric — a format is refused in whichever direction it is carried,
+All are symmetric — a format is refused in whichever direction it is carried,
 and accepted in whichever direction too.
 
-The second entry is new. Until `JsonlStreamStore` existed, every pair of stores
+**The third row is not a variation of the second, and it is the more reachable
+one.** Two `DjangoStreamStore`s on different database aliases are two independent
+logs numbering their events from the same start. Nothing about them differs in format, because nothing
+about them differs at all except where they keep their data — so there is not even
+a format to compare, and a cursor crosses between them as freely as within one.
+Measured on this tree, three events on one alias and ten on another: a position
+saved against the first resumes against the second as `advanced`, delivering seven
+events and skipping three permanently.
+
+Worth knowing while reading the tests: the second row is *modelled* by two
+`JsonlStreamStore`s at different roots, which is literally this third row — the
+file says so, on the grounds that `rakaia.offsets` sees a format rather than a
+class, and for the offset module that is exactly right. What demonstrates the
+second row for real is the pin that `DjangoStreamStore` issues the same format
+this one does (`tests/test_django_rakaia/test_offset_format_pin.py`). So one
+setup has been standing in for both rows, and only the alias case below separates
+them.
+
+It is the more reachable row because this codebase uses that seam on purpose.
+`DjangoStreamStore(using=…)` exists so a from-scratch rebuild can replay into a
+disposable database; `DjangoExecutor` and `DjangoProjectionReader` take the same
+argument, and `rebuild_and_verify` composes all three. Nothing in that path
+resumes a consumer, so nothing is wrong today — but "the same store class" reads
+as "the same store", and it is not.
+
+The `DjangoStreamStore` ↔ `JsonlStreamStore` entry is new. Until `JsonlStreamStore` existed, every pair of stores
 disagreed about format, so every cross-store cursor was refused by accident of
 shape. That protection is gone for one pair of three, and it was never a designed
 guarantee — `rakaia.offsets` refuses a cursor whose format it can see belongs to
