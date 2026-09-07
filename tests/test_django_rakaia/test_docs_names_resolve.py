@@ -41,6 +41,7 @@ _SWEPT: tuple[str, ...] = (
     "src/django_rakaia/**/*.py",
     "examples/**/*.py",
     "examples/**/*.md",
+    "okf/**/*.md",
     "scripts/**/*.py",
     "tests/**/*.py",
 )
@@ -211,6 +212,7 @@ class TestTheDocsNameThingsThatExist:
                 "src/django_rakaia/**/*.py",
                 "examples/**/*.py",
                 "examples/**/*.md",
+                "okf/**/*.md",
                 "scripts/**/*.py",
                 "tests/**/*.py",
             ),
@@ -271,4 +273,36 @@ class TestTheDocsNameThingsThatExist:
         )
         assert _offenders("rakaia.no_such_module", {elsewhere}) == [elsewhere], (
             "a name with no exemption at all must have every mention reported"
+        )
+
+
+class TestTheKnowledgeBundleKeepsUp:
+    """`okf/` claims to catalogue every runnable demo. Nothing checked that it does.
+
+    The bundle is machine-facing — it is what an agent reads to find out what this
+    library can do and which demo proves it — so a missing page is not a cosmetic
+    gap, it is a capability the catalogue says does not exist. It stayed current
+    through the release only because somebody noticed the directory by hand.
+
+    The check runs one way on purpose. Every example directory must have a page;
+    a page with no directory of its own is allowed, because the bundle also
+    describes variants that live inside another example (`formkit-submission-stream`
+    is one). Requiring the converse would forbid that on no evidence.
+    """
+
+    def test_every_example_has_a_page_in_the_bundle(self) -> None:
+        directories = {
+            p.name
+            for p in (_ROOT / "examples").iterdir()
+            if p.is_dir() and not p.name.startswith(("_", "."))
+        }
+        pages = {
+            p.stem.replace("-", "_") for p in (_ROOT / "okf" / "examples").glob("*.md")
+        }
+        missing = sorted(directories - pages)
+
+        assert not missing, (
+            f"these examples have no page in the knowledge bundle: {missing}. "
+            "Add one under okf/examples/ naming what it proves and the command "
+            "that runs it, and note it in okf/log.md."
         )

@@ -216,7 +216,42 @@ For an actual deployment, you'd want at least:
 5. **Static files.** The chat sample has none, but if you add any, run
    `collectstatic` and serve them via the reverse proxy or WhiteNoise.
 6. **A retention policy for outcome records.** Nothing deletes them on its own.
-   See the next section.
+   See [Retention](#retention-pruning-old-outcome-records); the screen for reading
+   them is the section before it.
+
+## Looking at the failure records
+
+The records are only useful if somebody reads them, so they get a screen — the
+one piece of this library's operational bookkeeping that does. Cursors, producer
+registrations and offset watermarks deliberately have no admin, because
+bookkeeping is not browsed; looking at these *is* the feature, which is the
+exception [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
+argues for.
+
+It appears under **Django Rakaia → Consumer outcomes** once `django_rakaia` is in
+`INSTALLED_APPS`, with no wiring of your own. Newest first, one row per failure,
+showing the consumer, the stream, what the record is about, the position in the
+log if the event ever reached it, and the reason codes.
+
+**It is read-only, and not merely by convention** — adding, changing and deleting
+are all refused. These are a record of what happened; removing them is the
+retention job below, not a button. Two things about the rows are worth knowing
+before you read one:
+
+- **What you see is not what is stored.** A record is kept as one encoded
+  payload, with two derived columns beside it purely as an index. Those columns
+  hold a percent-encoded, possibly shortened form of the value — `submission/tf611`
+  is indexed as `submission%2Ftf611` — so the screen decodes the payload for every
+  column rather than printing the index. Searching does the same in reverse, so a
+  name with an accent in it is found by typing the accent.
+- **A record this version cannot read still gets a row**, marked `UNREADABLE`
+  rather than dropped. A record vanishing from the page is the exact failure the
+  table exists to prevent.
+
+The reason codes are listed in
+[Read a stream incrementally](subscriber-cursors.md#the-reason-codes-rakaia-records-for-itself).
+A code of `unhandled` means the failure came from your own code, and the
+exception's type is recorded beside it.
 
 ## Retention: pruning old outcome records
 
