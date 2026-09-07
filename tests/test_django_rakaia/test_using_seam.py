@@ -9,15 +9,20 @@ instead of a bespoke in-memory engine.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.store import get_store
 from rakaia.effects import Ref, Upsert
+from rakaia.offsets import format_of
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
 from rakaia.replay import replay
 from rakaia.seed import seed_stream
+from rakaia.subscription import poll
 
 from .models import Area, FinanceLine
 
@@ -434,3 +439,52 @@ class TestTheDefaultAliasIsUnchanged:
         store.append("s", b'{"n": 1}')
 
         assert [m.data for m in store.read("s")[0]] == [b'{"n": 1}']
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+class TestTwoAliasesAreTwoLogs:
+    """One store class at two locations is two logs, and a cursor crosses freely.
+
+    The third row of ADR 0006's table, and the one that is not a pair of backends
+    at all: `DjangoStreamStore()` and `DjangoStreamStore(using="overlay")` are the
+    same class, issue the same offset format, and number their events from the
+    same start. There is nothing for `rakaia.offsets` to compare, so a position
+    saved against one is accepted against the other without a rewind.
+
+    Nothing is wrong today — the alias seam exists so a rebuild can replay into a
+    disposable database, and nothing on that path resumes a consumer. This asserts
+    the defect so that leaving it is a decision, the way
+    `tests/test_rakaia/test_cross_backend_cursors.py` does for the backend pair.
+    #232 is what changes it, and this is where that change announces itself.
+    """
+
+    @staticmethod
+    def _seed(store: DjangoStreamStore, count: int) -> None:
+        store.create("s")
+        for i in range(count):
+            store.append("s", json.dumps({"n": i}).encode())
+
+    def test_a_cursor_from_one_alias_skips_events_on_the_other(self) -> None:
+        self._seed(DjangoStreamStore(), 3)
+        self._seed(DjangoStreamStore(using="overlay"), 10)
+
+        cursor = poll(DjangoStreamStore(), "s", None).cursor
+        resumed = poll(DjangoStreamStore(using="overlay"), "s", cursor)
+
+        assert resumed.rewound is False, "a rewind here would make this loud"
+        assert resumed.status == "advanced"
+        # Seven of ten. The first three exist on the overlay and are never
+        # delivered, because the position from the other log claims they were.
+        delivered = [json.loads(m.data)["n"] for m in resumed.messages]
+        assert delivered == [3, 4, 5, 6, 7, 8, 9]
+
+    def test_the_offsets_are_indistinguishable(self) -> None:
+        """Why nothing catches it: there is no format difference to see."""
+        self._seed(DjangoStreamStore(), 2)
+        self._seed(DjangoStreamStore(using="overlay"), 2)
+
+        mine = poll(DjangoStreamStore(), "s", None).cursor
+        theirs = poll(DjangoStreamStore(using="overlay"), "s", None).cursor
+
+        assert mine == theirs
+        assert format_of(mine) is format_of(theirs)
