@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     __version__: str
 
     from .append import append_if_changed, snapshots_equal
-    from .consumer import Consumer, CursorLedger, InMemoryCursorLedger
+    from .consumer import Consumer, ConsumerCursorStore, InMemoryConsumerCursorStore
     from .context import get_provenance, provenance
     from .cursor import CursorOptions, calculate_cursor, generate_response_cursor
     from .drift import DriftLedger
@@ -318,8 +318,8 @@ _EXPORTS: dict[str, str] = {
     "JsonlOutcomeStore": "rakaia.jsonl_outcomes",
     # The consumer that holds the loop's wiring, so recording cannot be omitted
     "Consumer": "rakaia.consumer",
-    "CursorLedger": "rakaia.consumer",
-    "InMemoryCursorLedger": "rakaia.consumer",
+    "ConsumerCursorStore": "rakaia.consumer",
+    "InMemoryConsumerCursorStore": "rakaia.consumer",
     # Version
     # "__version__" is computed, not imported — see __getattr__.
 }

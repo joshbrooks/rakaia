@@ -34,7 +34,7 @@ from .types import StreamMessage
 
 
 @runtime_checkable
-class CursorLedger(Protocol):
+class ConsumerCursorStore(Protocol):
     """Somewhere to keep a consumer's watermark between runs.
 
     The seam `consume`'s ``cursor`` and ``commit`` arguments describe together:
@@ -53,8 +53,8 @@ class CursorLedger(Protocol):
         ...
 
 
-class InMemoryCursorLedger:
-    """Watermarks in a dict: the reference `CursorLedger`, for tests and demos.
+class InMemoryConsumerCursorStore:
+    """Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos.
 
     The counterpart of `InMemoryOutcomeStore`, and just as unsuited to anything
     that has to survive a restart — `django_rakaia.consumer` supplies the durable
@@ -89,7 +89,7 @@ class Consumer:
     name: str
     """Who the cursor and the outcomes belong to. Said once, here."""
 
-    cursors: CursorLedger
+    cursors: ConsumerCursorStore
     """Where the watermark is kept between runs."""
 
     outcomes: OutcomeStore

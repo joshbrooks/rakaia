@@ -13,6 +13,16 @@ surviving. `consume` cannot see that — `rakaia` is stdlib-only and a core modu
 that could see an atomic block would be the tier violation
 `tests/test_rakaia/test_tier_boundary.py` exists to refuse. This module can see
 it, so it checks, and the hazard stops being prose in three docstrings.
+
+**The connections it checks are the ones its stores name, not a fourth place to
+say the same thing.** An earlier version carried the alias as its own field,
+defaulted to ``default``, and only the factory kept it in step with the two
+stores. Building the consumer directly with both stores on another alias then
+left the guard inspecting a connection the rows were not on — it passed exactly
+when it should have refused, which is worse than not checking, because a caller
+reads the pass as permission. The alias is now asked of each store, so there is
+nothing to keep in step, and a cursor and an outcome kept on two different
+aliases are both covered.
 """
 
 from __future__ import annotations
@@ -44,21 +54,41 @@ class CallerTransactionOpen(RuntimeError):
     """
 
 
-class DjangoCursorLedger:
-    """A `CursorLedger` over the ``ConsumerCursor`` table.
+class DjangoConsumerCursorStore:
+    """A `ConsumerCursorStore` over the ``ConsumerCursor`` table.
 
     Pass ``using`` to read and write on a named database alias, exactly as
-    `DjangoStreamStore` and `DjangoOutcomeStore` do.
+    `DjangoStreamStore` and `DjangoOutcomeStore` do. The alias is a public
+    attribute because the guard in `DjangoConsumer` asks each store which
+    connection its rows live on rather than being told a second time.
     """
 
     def __init__(self, *, using: str | None = None) -> None:
-        self._using = using
+        self.using = using
 
     def load(self, consumer: str, stream_path: str) -> str | None:
-        return load_cursor(consumer, stream_path, using=self._using)
+        return load_cursor(consumer, stream_path, using=self.using)
 
     def commit(self, consumer: str, stream_path: str, offset: str) -> None:
-        commit_cursor(consumer, stream_path, offset, using=self._using)
+        commit_cursor(consumer, stream_path, offset, using=self.using)
+
+
+_UNSET = object()
+
+
+def _alias_of(target: object) -> str | None:
+    """The alias `target` writes on, or ``None`` when it does not name one.
+
+    A store that has no ``using`` is not database-backed, so no transaction of
+    the caller's can swallow what it records and there is nothing to guard. That
+    is the difference between "writes on the default alias" and "does not write
+    to a database at all", and collapsing the two would refuse a perfectly safe
+    run over an in-memory store.
+    """
+    using = getattr(target, "using", _UNSET)
+    if using is _UNSET:
+        return None
+    return DEFAULT_DB_ALIAS if using is None else str(using)
 
 
 @dataclass(frozen=True)
@@ -71,24 +101,31 @@ class DjangoConsumer(Consumer):
     the case being refused.
     """
 
-    alias: str = DEFAULT_DB_ALIAS
-    """The alias whose connection the guard inspects — the one the cursor and
-    outcome rows are written on, since it is that connection's transaction their
-    survival depends on."""
-
     def run(
         self,
         apply: Callable[[StreamMessage], Iterable[Outcome] | None],
         *,
         on_error: OnErrorPolicy,
     ) -> Consumed:
-        if connections[self.alias].in_atomic_block:
-            raise CallerTransactionOpen(
-                f"consumer {self.name!r} was started inside an open transaction "
-                f"on {self.alias!r}. Everything it records would roll back with "
-                "that transaction — see ADR 0007."
-            )
+        for alias in self._aliases():
+            if connections[alias].in_atomic_block:
+                raise CallerTransactionOpen(
+                    f"consumer {self.name!r} was started inside an open transaction "
+                    f"on {alias!r}. Everything it records would roll back with "
+                    "that transaction — see ADR 0007."
+                )
         return super().run(apply, on_error=on_error)
+
+    def _aliases(self) -> list[str]:
+        """Every connection this consumer's records depend on, in a stable order.
+
+        Both stores are asked, and the cursor and the outcomes may name different
+        ones: a caller keeping outcomes on a separate alias to escape its own
+        transaction still keeps the watermark wherever it said, and a rollback of
+        either loses something.
+        """
+        named = (_alias_of(self.cursors), _alias_of(self.outcomes))
+        return sorted({alias for alias in named if alias is not None})
 
 
 def django_consumer(
@@ -115,7 +152,6 @@ def django_consumer(
         store=store,
         path=path,
         name=name,
-        cursors=DjangoCursorLedger(using=using),
+        cursors=DjangoConsumerCursorStore(using=using),
         outcomes=DjangoOutcomeStore(using=using),
-        alias=using or DEFAULT_DB_ALIAS,
     )

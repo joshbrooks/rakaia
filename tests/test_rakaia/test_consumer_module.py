@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.consumer import Consumer, InMemoryCursorLedger
+from rakaia.consumer import Consumer, InMemoryConsumerCursorStore
 from rakaia.outcomes import InMemoryOutcomeStore
 from rakaia.store import StreamStore
 from rakaia.types import StreamMessage
@@ -39,7 +39,7 @@ class TestRecordingIsOnByConstruction:
                 store=_store_with("s", [b'{"a": 1}']),
                 path="s",
                 name="reporting",
-                cursors=InMemoryCursorLedger(),
+                cursors=InMemoryConsumerCursorStore(),
             )
 
     def test_a_failed_apply_is_recorded_without_asking_for_it(self) -> None:
@@ -48,7 +48,7 @@ class TestRecordingIsOnByConstruction:
             store=_store_with("s", [b'{"a": 1}']),
             path="s",
             name="reporting",
-            cursors=InMemoryCursorLedger(),
+            cursors=InMemoryConsumerCursorStore(),
             outcomes=outcomes,
         )
 
@@ -62,7 +62,7 @@ class TestRecordingIsOnByConstruction:
 
 class TestTheNameAndPathAreSaidOnce:
     def test_they_reach_the_cursor_ledger_and_the_outcome_alike(self) -> None:
-        ledger = InMemoryCursorLedger()
+        ledger = InMemoryConsumerCursorStore()
         outcomes = InMemoryOutcomeStore()
         consumer = Consumer(
             store=_store_with("submissions", [b'{"a": 1}']),
@@ -92,7 +92,7 @@ class TestTheNameAndPathAreSaidOnce:
             store=store,
             path="submissions",
             name="reporting",
-            cursors=InMemoryCursorLedger(),
+            cursors=InMemoryConsumerCursorStore(),
             outcomes=InMemoryOutcomeStore(),
         )
         consumer.run(lambda message: seen.append(message.data), on_error="skip")

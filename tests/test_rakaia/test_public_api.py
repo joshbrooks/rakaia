@@ -146,8 +146,8 @@ RAKAIA_PUBLIC = {
     "consume",
     # the consumer that holds the loop's wiring so recording cannot be omitted
     "Consumer",
-    "CursorLedger",
-    "InMemoryCursorLedger",
+    "ConsumerCursorStore",
+    "InMemoryConsumerCursorStore",
     "decode_outcome",
     "encode_outcome",
     # version
@@ -189,7 +189,7 @@ DJANGO_RAKAIA_PUBLIC = {
     "DjangoOutcomeStore",
     "CallerTransactionOpen",
     "DjangoConsumer",
-    "DjangoCursorLedger",
+    "DjangoConsumerCursorStore",
     "django_consumer",
     "commit_cursor",
     "create_stream_event",

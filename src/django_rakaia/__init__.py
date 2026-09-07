@@ -127,7 +127,7 @@ _EXPORTS: dict[str, str] = {
     # caller catching it must be able to spell it without a submodule import.
     "django_consumer": "django_rakaia.consumer",
     "DjangoConsumer": "django_rakaia.consumer",
-    "DjangoCursorLedger": "django_rakaia.consumer",
+    "DjangoConsumerCursorStore": "django_rakaia.consumer",
     "CallerTransactionOpen": "django_rakaia.consumer",
     # -- mounting ------------------------------------------------------------
     "get_asgi_app": "django_rakaia.integration",

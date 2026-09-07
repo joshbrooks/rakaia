@@ -108,7 +108,7 @@ result = consumer.run(apply, on_error="skip")
 `django_consumer` fills in the durable cursor and outcome stores, and refuses to
 run inside a transaction you opened — the third bullet above, enforced rather
 than described. Outside Django, build a `rakaia.Consumer` directly and pass your
-own `CursorLedger` and `OutcomeStore`; `InMemoryCursorLedger` and
+own `ConsumerCursorStore` and `OutcomeStore`; `InMemoryConsumerCursorStore` and
 `InMemoryOutcomeStore` are the reference pair.
 
 ## Rewind detection
