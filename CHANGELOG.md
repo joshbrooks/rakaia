@@ -50,6 +50,18 @@ runnable demo for each.
   the library raises from an apply in one clause. (#257)
 >>>>>>> origin/main
 
+- **`RecordingExecutor` — apply for real, and keep what you applied.** A replay
+  reports how many effects it applied, never which ones, so anything needing the
+  detail had to wrap the executor itself; that workaround lived privately in the
+  Django package, which meant the core could not answer a question about its own
+  replay. `RecordingExecutor(inner)` wraps any executor, applies through it and
+  holds the effects it passed on in `.effects`. It is transparent by contract:
+  the wrapped executor's report comes back unchanged, an exception it raises
+  propagates, and the batch is materialised so a generator is never recorded and
+  then applied nowhere. `rebuild_and_verify` now composes it in place of its
+  private copy, with no change to the report it returns. `CollectingExecutor` is
+  unaffected — it stays the terminal, writes-nothing case. (#265)
+
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
   `consume()` takes the store, the stream, the consumer name, somewhere to load
   the cursor, somewhere to commit it and somewhere to keep outcomes on every

@@ -77,6 +77,7 @@ RAKAIA_PUBLIC = {
     # effects
     "CollectingExecutor",
     "InMemoryProjections",
+    "RecordingExecutor",
     "DuplicateProducesError",
     "Effect",
     "AnyEffect",

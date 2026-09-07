@@ -112,6 +112,7 @@ page is the contract.
 |---|---|---|---|
 | `Executor` | `rakaia` | `(*args, **kwargs)` | Applies a batch of effects to durable storage. |
 | `CollectingExecutor` | `rakaia` | `() -> 'None'` | An Executor that records effects instead of applying them. |
+| `RecordingExecutor` | `rakaia` | `(inner: 'Executor') -> 'None'` | Applies through another `Executor` **and** keeps what it passed on. |
 | `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, batch_updates: 'bool' = False) -> 'None'` | Apply Effects via Django's ORM. |
 | `InMemoryProjections` | `rakaia` | `() -> 'None'` | An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables. |
 | `ProjectionReader` | `rakaia` | `(*args, **kwargs)` | Read-only view over materialised projections. |
@@ -265,6 +266,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-169 exported names across 15 sections. 147 carry a docstring; 22 do not and show `—` above.
+170 exported names across 15 sections. 148 carry a docstring; 22 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

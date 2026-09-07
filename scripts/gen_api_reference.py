@@ -110,6 +110,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "Applying changes (executors and readers)": (
         "Executor",
         "CollectingExecutor",
+        "RecordingExecutor",
         "DjangoExecutor",
         "InMemoryProjections",
         "ProjectionReader",

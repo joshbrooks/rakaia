@@ -437,26 +437,51 @@ class TestStagedHandlersReadTheScratchAlias:
 
 
 class TestTheRecordingTee:
-    def test_it_applies_a_generator_it_has_also_recorded(self):
-        # The tee walks the batch before handing it on, so a one-shot iterable
-        # would otherwise reach the inner executor already exhausted -- recorded
-        # as verified, applied nowhere.
-        from django_rakaia.rebuild import _RecordingExecutor
-        from rakaia.effects import Upsert
-        from rakaia.executors import CollectingExecutor
+    """The gate applies through a recorder and diffs what it recorded, and that
+    recorder is now the core package's, not a private copy here (#265)."""
 
-        inner = CollectingExecutor()
-        tee = _RecordingExecutor(inner)
-        effect = Upsert(
-            model_label="test_django_rakaia.FinanceLine",
-            lookup={"submission_id": "a"},
-            defaults={"delta": 1},
+    def test_the_gate_records_through_the_shared_recorder(self, monkeypatch):
+        import django_rakaia.rebuild as rebuild_mod
+        from rakaia.executors import RecordingExecutor
+
+        assert rebuild_mod.RecordingExecutor is RecordingExecutor
+
+        built: list[object] = []
+
+        class Spy(RecordingExecutor):
+            def __init__(self, inner):
+                super().__init__(inner)
+                built.append(inner)
+
+        monkeypatch.setattr(rebuild_mod, "RecordingExecutor", Spy)
+
+        rows = [{"id": "a", "suku": "s1", "delta": 1}]
+        _seed_log(*rows)
+        _live(*rows)
+
+        report = rebuild_and_verify(
+            PATH, into="overlay", live_models=[FinanceLine], registry=_registry()
         )
 
-        tee.apply(e for e in [effect])
+        assert report.certified
+        assert len(built) == 1
 
-        assert tee.effects == [effect]
-        assert inner.effects == [effect]
+    def test_the_diff_report_is_what_the_private_tee_produced(self):
+        """The swap's evidence: the same three scenarios, the same verdicts and
+        the same compared counts as before the recorder moved into the core."""
+        rows = [
+            {"id": "a", "suku": "s1", "delta": 1},
+            {"id": "b", "suku": "s2", "delta": 2},
+        ]
+        _seed_log(*rows)
+        _live(rows[0], {"id": "b", "suku": "s2", "delta": 999})
+
+        report = rebuild_and_verify(
+            PATH, into="overlay", live_models=[FinanceLine], registry=_registry()
+        )
+
+        assert (report.verdict, report.compared, len(report.problems)) == (RED, 2, 1)
+        assert [r.lookup["submission_id"] for r in report.problems] == ["b"]
 
 
 class TestWhatItForwardsToReplay:

@@ -181,6 +181,9 @@ No example exercises these yet — a good place to contribute a demo:
 - `DjangoExecutor(skip_unchanged=True)`.
 - `rebuild_and_verify` (the one-call guarded rebuild-and-diff). The
   `projection_cookbook` demo composes the pieces by hand instead.
+- `RecordingExecutor` — applying for real while keeping the effects. The demos
+  either write (`DjangoExecutor`) or preview (`CollectingExecutor`); none needs
+  both at once, which is the case this executor exists for.
 - `migrate_stream` / `migrate_all` — moving a log between backends. `polyglot`
   runs *on* the file-backed store but was seeded there, never copied onto it.
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
