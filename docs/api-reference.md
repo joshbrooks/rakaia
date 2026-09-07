@@ -175,6 +175,23 @@ page is the contract.
 | `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str') -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
 | `load_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str') -> 'str \| None'` | The consumer's last committed offset for `stream_path`, or None. |
 
+## Consuming, and what happened to an event
+
+| Name | Import from | Signature | What it does |
+|---|---|---|---|
+| `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
+| `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool') -> None` | What one pass of the consume loop did. |
+| `OnErrorPolicy` | `rakaia` | — | — |
+| `Outcome` | `rakaia` | `(consumer: 'str', stream_path: 'str', subject: 'str', offset: 'str \| None', sequence_key: 'str', stage: 'Stage', status: 'OutcomeStatus', reasons: 'tuple[str, ...]' = (), params: 'dict[str, str]' = <factory>, attempt: 'int' = 1) -> None` | One event's failure to be applied cleanly, as a value. |
+| `OutcomeStatus` | `rakaia` | — | — |
+| `Stage` | `rakaia` | — | — |
+| `OutcomeStore` | `rakaia` | `(*args, **kwargs)` | Somewhere durable to keep outcomes. |
+| `InMemoryOutcomeStore` | `rakaia` | `() -> 'None'` | An `OutcomeStore` held in a list. The reference implementation. |
+| `JsonlOutcomeStore` | `rakaia` | `(root: 'str \| Path', *, fsync: 'bool' = True)` | Outcomes kept as JSONL, one file per `(consumer, stream_path)`. |
+| `DjangoOutcomeStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Outcomes kept as rows in ``rakaia_consumeroutcome``. |
+| `encode` | `rakaia` | `(outcome: 'Outcome') -> 'str'` | The one translation from an outcome to the text a store keeps. |
+| `decode` | `rakaia` | `(stored: 'str') -> 'Outcome \| None'` | The inverse of `encode`, or ``None`` if this version cannot build it. |
+
 ## Producer fencing
 
 | Name | Import from | Signature | What it does |
@@ -234,6 +251,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-143 exported names across 14 sections. 127 carry a docstring; 16 do not and show `—` above.
+155 exported names across 15 sections. 136 carry a docstring; 19 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

@@ -61,6 +61,19 @@ What "provisional" means here:
   A future storage change could denormalise them.
 - Every change will appear in `UPGRADING.md` with the migration.
 
+!!! note "`ConsumerOutcome.payload` is Tier 2; what is inside it is Tier 1"
+
+    The column is a `TextField` holding exactly what `rakaia.encode` produced, and
+    `rakaia.decode` turns it back. So the **column** may change — it could gain
+    siblings, or move — while the **text format** is a stable promise, because
+    anything decoding that text depends on the format whether or not it went
+    through the exported function. Decode it with `rakaia.decode`; do not parse it.
+
+    The two `_key` columns are a scope index, not a copy of the value: each holds a
+    percent-encoded and possibly shortened form, so `stream_path_key` for
+    `submission/tf611` reads `submission%2Ftf611`. Read the subject, offset, stage,
+    status and reasons out of the payload.
+
 **Why they are available at all.** Because the alternative today is worse. The
 store protocol offers `read(path, offset)` and nothing else: no filter, no limit,
 no "the latest event matching this predicate". A consumer that needs to ask the

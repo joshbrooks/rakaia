@@ -134,6 +134,18 @@ RAKAIA_PUBLIC = {
     "Poll",
     "PollStatus",
     "poll",
+    # the consume loop, and what it records about an event it could not apply
+    "Consumed",
+    "InMemoryOutcomeStore",
+    "JsonlOutcomeStore",
+    "OnErrorPolicy",
+    "Outcome",
+    "OutcomeStatus",
+    "OutcomeStore",
+    "Stage",
+    "consume",
+    "decode",
+    "encode",
     # version
     "__version__",
 }
@@ -170,6 +182,7 @@ DJANGO_RAKAIA_PUBLIC = {
     "append_event",
     "assert_no_live_writes",
     "canonical_value",
+    "DjangoOutcomeStore",
     "commit_cursor",
     "create_stream_event",
     "deny_database_access",

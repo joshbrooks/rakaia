@@ -17,6 +17,25 @@ ones you are crossing.
 
 # Unreleased
 
+## Outcomes are part of the stable surface now
+
+Nothing changes for existing code; this is an addition. `Outcome`, `OutcomeStatus`,
+`Stage`, `OutcomeStore`, `InMemoryOutcomeStore`, `JsonlOutcomeStore`, `encode`,
+`decode`, `consume`, `Consumed` and `OnErrorPolicy` are importable from `rakaia`, and
+`DjangoOutcomeStore` from `django_rakaia`. If you adopted any of them early by
+importing the module they live in, that still works — but import from the package
+now, because the module layout is not what was promised.
+
+Two things worth knowing before you build on it. `consume` takes `on_error` with **no
+default**, so you have to say `"skip"` or `"halt"` at every call site; that is
+deliberate, because the two answers suit continuous consuming and rebuilding
+respectively and a default would be silently wrong for one of them. And if your own
+code already has a class called `Outcome` — a verdict enum, say — import this one
+under another name rather than letting it shadow yours.
+
+`ConsumerOutcome` stays out of `__all__` with the other models. Its `payload` column
+holds what `encode` produced: read it with `decode`, and do not parse it yourself.
+
 ## Changing `RAKAIA_STORE` does not move your log
 
 This is not a break in the usual sense — nothing that worked stops working — but
