@@ -144,6 +144,10 @@ RAKAIA_PUBLIC = {
     "OutcomeStore",
     "Stage",
     "consume",
+    # the consumer that holds the loop's wiring so recording cannot be omitted
+    "Consumer",
+    "ConsumerCursorStore",
+    "InMemoryConsumerCursorStore",
     "decode_outcome",
     "encode_outcome",
     # version
@@ -183,6 +187,10 @@ DJANGO_RAKAIA_PUBLIC = {
     "assert_no_live_writes",
     "canonical_value",
     "DjangoOutcomeStore",
+    "CallerTransactionOpen",
+    "DjangoConsumer",
+    "DjangoConsumerCursorStore",
+    "django_consumer",
     "commit_cursor",
     "create_stream_event",
     "deny_database_access",

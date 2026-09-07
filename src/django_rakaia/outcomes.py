@@ -99,6 +99,16 @@ class DjangoOutcomeStore:
     def __init__(self, *, using: str | None = None) -> None:
         self._using = using
 
+    @property
+    def using(self) -> str | None:
+        """The alias these rows are written on, or ``None`` for the ambient one.
+
+        Readable because a caller that has to know whether its own transaction
+        covers these rows should ask them rather than be told a second time —
+        `django_rakaia.consumer` derives the connection it guards from this.
+        """
+        return self._using
+
     def record(self, outcome: Outcome) -> None:
         """Append `outcome`. Total: nothing a caller can put in one makes this raise."""
         # `encode_outcome` first and store what it returns: the same text the in-memory
