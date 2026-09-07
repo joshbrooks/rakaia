@@ -182,9 +182,15 @@ class TestTheSetIsClosed:
 
         seen: set[type[RakaiaError]] = set()
 
+        def ours(cls: type[RakaiaError]) -> bool:
+            # `rakaia` itself has no dot, so a prefix test on "rakaia." misses a
+            # class defined in the package root — the same blind spot this walk
+            # was widened to close, one module short of where it was found.
+            return cls.__module__ == "rakaia" or cls.__module__.startswith("rakaia.")
+
         def walk(cls: type[RakaiaError]) -> None:
             for sub in cls.__subclasses__():
-                if sub.__module__.startswith("rakaia."):
+                if ours(sub):
                     seen.add(sub)
                     walk(sub)
 

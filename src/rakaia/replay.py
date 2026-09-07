@@ -561,7 +561,7 @@ def replay(
     before.
 
     How far it gets before failing: a single pass decodes one event at a time, so
-    a malformed event at offset N raises `ValueError` with the first N already
+    a malformed event at offset N raises `UndecodableEventError` with the first N already
     applied. A staged replay needs the whole range before its second pass, so it
     decodes up front and the same event applies nothing. See `EventSource`.
     """
@@ -633,13 +633,13 @@ def merge_replay(
             - a **string** (default ``"ts"``) reads a field out of the **decoded
               payload body** (``event[order_key]``). This is *not* the transport
               or envelope timestamp — it is whatever field the producer wrote into
-              the JSON. A missing key raises a ValueError.
+              the JSON. A missing key raises `MergeKeyError`.
             - the ``ENVELOPE_TS`` sentinel reads the first-class **envelope**
               timestamp (``StreamMessage.event_ts`` — the producer's logical event
               time, defaulting to append time). Prefer this: it is unambiguous and
               does not require the producer to duplicate a timestamp into the
               payload. A message with no ``event_ts`` (only a hand-built one; a
-              store always sets it) raises a ValueError.
+              store always sets it) raises `MergeKeyError`.
         handler_registry / upcaster_registry: default to the process-wide ones.
         event_match: Match string for handler routing + upcasting. Default None
             uses each event's **source stream path** as its match string, so
@@ -659,9 +659,11 @@ def merge_replay(
     field, or `event_ts` under `ENVELOPE_TS`), and when the order-key values
     aren't mutually comparable across events. Duplicate `stream_paths` raises a
     plain `ValueError`: it is an argument that cannot be right, checked before a
-    single event is read, so it is not a failure the consume loop can record a
-    code for. `MergeKeyError` is itself a `ValueError`, so one `except ValueError`
-    still catches all three.
+    single event is read, so a code for it would be one the published set carries
+    and no outcome can ever hold. Called from inside an `apply` it still reaches
+    the consume loop, which records it as `unhandled` with the type in `params` —
+    which is what an argument fault should look like. `MergeKeyError` is itself a
+    `ValueError`, so one `except ValueError` still catches all three.
 
     How far it gets before failing: **nothing is applied unless everything
     decodes.** Unlike a single-pass `replay()`, a merge has to read every stream

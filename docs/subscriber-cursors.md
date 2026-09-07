@@ -127,9 +127,9 @@ operator has been counting.
 | code | what failed |
 | --- | --- |
 | `handler_gap` | no handler version covers the event's position |
-| `upcaster_chain` | the chain of upcasters could not carry the event to the current version |
+| `upcaster_chain` | the chain of upcasters could not carry the event to the version asked for — a missing link, two that both match, or an event already above it |
 | `effect_collision` | two effects in one batch write the same field of the same row |
-| `unresolved_ref` | an effect pointed at a row the batch never created |
+| `unresolved_ref` | an effect pointed at a row no earlier effect in its batch produced, or at a field that row does not have |
 | `duplicate_produces` | two effects in one batch claimed the same name |
 | `handler_drift` | a handler's source changed since it was registered |
 | `missing_reader` | a staged replay was run without the reader its later stages need |
