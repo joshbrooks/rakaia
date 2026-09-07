@@ -165,7 +165,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Live SSE broadcast (Channels) | `chat` |
 | Durable `DjangoStreamStore` (log persisted in the DB) | `formkit_submissions` (stream) |
 | File-backed `JsonlStreamStore` under Django, with the protocol server mounted alongside it for live SSE | `polyglot` |
-| The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)` | `partisipa_intake` |
+| The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)`, and naming a record with `subject_of` / `sequence_of` | `partisipa_intake` |
 | Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake` |
 | The outcome record — `Outcome`, `DjangoOutcomeStore`, the `append`/`project` stages and all three statuses | `partisipa_intake` |
 

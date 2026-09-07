@@ -164,10 +164,24 @@ def django_consumer(
             consumer writes can name the row, and without this the records the
             loop writes for it name a position instead. Comparing those is the
             reason someone opens that screen.
+
+            Two things follow from it being yours to choose. It is called **only
+            when an apply fails**, so an exception from it surfaces on the path
+            you least want to be surprised on, and it propagates out of the run
+            rather than being recorded. And the subject is part of what makes a
+            record distinct: `latest` keeps the newest per subject, so a
+            function that gives two different events the same name shows one
+            record where two were written. The default could not do either — an
+            offset is always readable and always unique.
         sequence_of: what a message is ordered *within*, given the message.
-            Defaults to the subject. Recorded and not yet acted on — see ADR 0007
-            Decision 7 — so passing it costs nothing now and saves re-deriving a
-            grouping later.
+            Defaults to the subject.
+
+            Nothing reads it yet (ADR 0007 Decision 7), which is a weaker reason
+            to pass it than it first appears: the field is written on every
+            record either way, so leaving this out does not omit the grouping, it
+            stores a copy of the subject in its place. The choice is between
+            recording something true and recording noise. It is also shown, as
+            "Sequence", on a record's detail page.
     """
     return DjangoConsumer(
         store=store,

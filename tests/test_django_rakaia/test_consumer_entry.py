@@ -239,6 +239,29 @@ class TestNamingWhatTheLoopRecords:
         (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
         assert record.sequence_key == "prog-2026-01"
 
+    def test_the_sequence_defaults_to_the_subject(self) -> None:
+        """The other half of saying nothing, and it was asserted by nothing.
+
+        Review mutated `sequence_of = sequence_of or subject_of` in the loop to a
+        constant and the whole suite stayed green: the docstring promised the
+        default and no test read it. Passing only `subject_of` is the case that
+        can see it.
+        """
+        consumer = django_consumer(
+            _store_with("submissions", self._payloads()),
+            "submissions",
+            "reporting",
+            subject_of=lambda message: json.loads(message.data)["row"],
+        )
+
+        def apply(_message: StreamMessage) -> None:
+            raise ValueError("no")
+
+        consumer.run(apply, on_error="skip")
+
+        (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
+        assert record.sequence_key == record.subject == "Fatuberliu/WATER"
+
     def test_saying_nothing_still_names_the_position(self) -> None:
         """The default is unchanged, and honest: every event this loop sees is
         already in the log, so its position is a name it always has."""
