@@ -218,7 +218,8 @@ class Command(BaseCommand):
         self.stdout.write(f"    {calls} events handed over, {result.applied} applied")
         for record in skipped:
             self.stdout.write(
-                f"    skipped   offset {record.offset}  ({', '.join(record.reasons)})"
+                f"    skipped   {record.subject}  "
+                f"({', '.join(record.reasons)}, offset {record.offset})"
             )
 
         if calls != 3:
@@ -227,6 +228,15 @@ class Command(BaseCommand):
             )
         if len(skipped) != 1 or skipped[0].stage != "project":
             raise CommandError(f"expected one deliberate skip: {skipped}")
+        # The record this consumer wrote itself names the row, the same way the
+        # refusal on the other side of the log does — so one name follows a row
+        # whether or not its event ever got there. Nothing else checks this, and
+        # it is a choice the example is making rather than behaviour it inherits.
+        if "/" not in skipped[0].subject:
+            raise CommandError(
+                f"the skipped record should name the row, not its position in "
+                f"the log: {skipped[0].subject}"
+            )
         if ProgressRow.objects.count() != before + 2:
             raise CommandError(
                 f"expected two more rows, got {ProgressRow.objects.count()}"
@@ -303,6 +313,16 @@ class Command(BaseCommand):
                 f"{', '.join(record.reasons)}"
             )
         self.stdout.write(f"    position {committed}")
+        # Two of these name a row and two name a position, and the difference is
+        # worth reading rather than tidying away. A record this consumer writes
+        # itself can say what the row was called; the two the loop wrote for an
+        # apply that raised cannot, because `django_consumer` does not yet let a
+        # caller say how to name a message (#272). Until it does, the loop falls
+        # back to the one name it always has — where the event sits in the log.
+        self.stdout.write(
+            "    (rows are named where this consumer wrote the record itself; "
+            "the loop names a position — see #272)"
+        )
 
         if committed != store.get_current_offset(STREAM):
             raise CommandError("the position did not survive the restart")

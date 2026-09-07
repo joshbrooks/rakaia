@@ -38,6 +38,15 @@ is still pending and the next run delivers it again. Under `on_error="skip"` the
 position advances past it and the record is how it is found later. The demo runs
 both against the same kind of failure and prints the two positions.
 
+**One thing the final table shows that is worth reading rather than tidying
+away.** Two records name a row, two name a position in the log. A record this
+consumer writes itself — the refusal, and the row that landed in a closed month —
+can say what the row was called. The two the loop wrote when an apply raised
+cannot: `django_consumer` does not yet let a caller say how to name a message, so
+the loop falls back to the one name it always has. That gap is
+[#272](https://github.com/joshbrooks/rakaia/issues/272); the example shows it as
+it is rather than hiding it behind a subject the loop cannot really supply.
+
 ## Run
 
 ```sh
