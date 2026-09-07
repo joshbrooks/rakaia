@@ -23,19 +23,6 @@ runnable demo for each.
 
 ### Added
 
-<<<<<<< HEAD
-- **A worked example of the consuming loop (`examples/partisipa_intake`).** The
-  loop that reads a stream, applies each event, records what it could not apply
-  and commits the reading position had nothing under `examples/` using it, so the
-  documentation described something no working code demonstrated. The new example
-  is a small Django project that submits progress forms with repeating rows and
-  consumes them: a row the rules decline never reaches the log and leaves a record
-  with no offset, an event that fails to apply leaves a record with the reading
-  position stopped below it, one lands in a closed reporting period and is
-  skipped on purpose, and a fresh consumer reads the position and every record
-  back out of the database. It runs as part of `just demos`. (#254)
-||||||| 7b29f82
-=======
 - **A failure record now names the failure, not a class name.** Everything rakaia
   raises while applying an event carries a short, stable reason code, and those
   codes are a published closed set. The loop records the code rather than the
@@ -48,7 +35,17 @@ runnable demo for each.
   merge key) now have names of their own; each still subclasses `ValueError`, so
   code already catching that keeps working. Catch `RakaiaError` to catch anything
   the library raises from an apply in one clause. (#257)
->>>>>>> origin/main
+
+- **A worked example of the consuming loop (`examples/partisipa_intake`).** The
+  loop that reads a stream, applies each event, records what it could not apply
+  and commits the reading position had nothing under `examples/` using it, so the
+  documentation described something no working code demonstrated. The new example
+  is a small Django project that submits progress forms with repeating rows and
+  consumes them: a row the rules decline never reaches the log and leaves a record
+  with no offset, an event that fails to apply leaves a record with the reading
+  position stopped below it, one lands in a closed reporting period and is
+  skipped on purpose, and a fresh consumer reads the position and every record
+  back out of the database. It runs as part of `just demos`. (#254)
 
 - **`RecordingExecutor` — apply for real, and keep what you applied.** A replay
   reports how many effects it applied, never which ones, so anything needing the
