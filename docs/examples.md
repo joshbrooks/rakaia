@@ -182,10 +182,18 @@ No example exercises these yet — a good place to contribute a demo:
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
-- The outcome record and the consume loop (`consume`, `Outcome`, the three
-  stores). Exported and supported since #251, so the old reason for this gap —
-  that an example would document an unstable surface — has expired. What is
-  missing now is simply the example: nothing under `examples/` calls `consume()`.
+- The outcome record and the consume loop (`consume`, `Consumer`,
+  `django_consumer`, `Outcome`, the three stores). Exported and supported since
+  #251, so the old reason for this gap — that an example would document an
+  unstable surface — has expired. What is missing now is simply the example:
+  nothing under `examples/` calls `consume()` or builds a `Consumer`. #255 added
+  the consumer object the example should be written against, which is the shape
+  a demo should show rather than the six loose arguments underneath it.
+- Outcome retention. `manage.py prune_outcomes` deletes old failure records
+  (`docs/deployment.md`), but no example records a failure and then prunes it, so
+  nothing under `examples/` demonstrates the operator's side of the outcome
+  table. It follows the gap above: with no example calling `consume()`, there is
+  nothing for a prune demo to prune.
 
 ## Orientation for contributors
 

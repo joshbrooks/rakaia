@@ -11,6 +11,43 @@ runnable demo for each.
 
 ### Added
 
+- **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
+  `consume()` takes the store, the stream, the consumer name, somewhere to load
+  the cursor, somewhere to commit it and somewhere to keep outcomes on every
+  call, and two of those are optional in a way that makes the wrong wiring look
+  right: omit the outcome store and the loop runs, the cursor advances and
+  nothing is ever recorded — which, under ADR 0007, reads back as "every event
+  succeeded". A `Consumer` holds the five together and asks for the outcome store
+  by construction, so there is no shape of it that silently records nothing, and
+  the consumer name and the stream path are said once instead of three times.
+  `on_error` still has no default. (#255)
+
+- **`django_consumer()` refuses to start inside a transaction you opened.** ADR
+  0007 keeps an outcome out of the executor's transaction and then names what it
+  cannot reach: a caller who wraps the whole run in `atomic()` and rolls back
+  takes the record with it, measured at 0 of 1 outcomes surviving. The core loop
+  cannot see a Django transaction; the Django entry point can, and now raises
+  `CallerTransactionOpen` rather than leaving the hazard as prose in three
+  docstrings. `load_cursor()` and `commit_cursor()` also take `using=` now, so a
+  consumer can keep its watermark on the same alias as its outcomes. (#255)
+
+- **`manage.py prune_outcomes` — a retention sweep for the outcome table, plus an
+  index on the timestamp it filters.** Failure records are written only when a
+  consumer cannot apply an event and nothing ever removed them, so an
+  installation with a long-running intermittent problem accumulated them with no
+  way to clear the old ones short of hand-written SQL. The command takes the age
+  to keep and deletes what is older:
+  `python manage.py prune_outcomes --older-than-days 365`.
+
+  **`--older-than-days` has no default and the command refuses to run without
+  it** — the right retention period differs by installation, and a guess destroys
+  the evidence of a problem someone may still be investigating. `--dry-run`
+  reports the count and deletes nothing, deletion is batched (`--batch-size`,
+  default 1000) so a first prune over a backlog is not one long lock, and
+  `--database` targets a named alias. "Older than" is strict: a record stamped
+  exactly on the cutoff is kept. Migration `0011` adds the index the sweep needs;
+  see `docs/deployment.md`. (#253)
+
 - **A screen for the outcome records.** The database-backed store keeps a row for
   every event a consumer could not apply, and until now reading one meant querying
   the table by hand. The Django admin lists them newest first, with the consumer,

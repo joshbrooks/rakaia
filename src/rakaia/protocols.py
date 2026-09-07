@@ -280,6 +280,11 @@ class OutcomeStore(Protocol):
     record is store-agnostic, and only the keeping of it is backend-shaped. A
     backend may implement this on the same object as its stream store or on a
     separate one; nothing here assumes either.
+
+    A database-backed implementation should expose the alias it writes on as a
+    public ``using`` attribute. `django_rakaia.consumer` reads it to know which
+    connection must not already be inside the caller's transaction, and a store
+    that spells it some other way is silently left unguarded.
     """
 
     def record(self, outcome: Outcome) -> None:

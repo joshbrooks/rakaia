@@ -56,6 +56,7 @@ FRAMEWORK = {
 PROTOCOL_SERVER = {
     "_asgi",
     "append_decision",
+    "consumer",
     "cursor",
     "handler",
     "jsonl_outcomes",
