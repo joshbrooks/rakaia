@@ -181,6 +181,13 @@ class Command(BaseCommand):
                 f"only the events below the failure applied, got "
                 f"{ProgressRow.objects.count()} rows"
             )
+        # And they carry what was reported. Counting rows says the loop ran;
+        # only reading one says the projection is derived from the event rather
+        # than from a constant, and this is the one place the real projection
+        # (rather than the test double) is exercised at all.
+        projected = {(row.output, row.percent) for row in ProgressRow.objects.all()}
+        if projected != {("WATER", 40), ("SANITATION", 60)}:
+            raise CommandError(f"the rows do not carry what was reported: {projected}")
         # The record names an offset, so the log answers what failed.
         message = self._at(store, failed[0].offset)
         self.stdout.write(

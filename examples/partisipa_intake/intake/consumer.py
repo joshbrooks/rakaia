@@ -69,7 +69,10 @@ def make_apply(
                 Outcome(
                     consumer=consumer,
                     stream_path=path,
-                    subject=message.offset,
+                    # The row, not the offset — the same name the refusal on
+                    # the other side of the log uses, so one subject follows a
+                    # row whether or not its event ever reached the log.
+                    subject=event["row_key"],
                     offset=message.offset,
                     sequence_key=event["form_key"],
                     stage="project",

@@ -62,8 +62,8 @@ class InMemoryProgressRows:
         self.written[(suku, output, period)] = percent
 
 
-def _row(key: str, output: str, percent: int) -> dict[str, object]:
-    return {"key": key, "output": output, "percent": percent}
+def _row(output: str, percent: int) -> dict[str, object]:
+    return {"output": output, "percent": percent}
 
 
 FORM = {
@@ -72,9 +72,9 @@ FORM = {
     "suku": "Fatuberliu",
     "period": "2026-01",
     "rows": [
-        _row("r-water", "WATER", 40),
-        _row("r-road", "ROAD", 140),
-        _row("r-sanitation", "SANITATION", 60),
+        _row("WATER", 40),
+        _row("ROAD", 140),
+        _row("SANITATION", 60),
     ],
 }
 
@@ -211,10 +211,28 @@ class TestAFailedApply:
         second = consumer.run(apply, on_error="halt")
 
         assert second.applied == 2
-        # Two on the first pass, then the failure retried plus the one behind it:
-        # four attempts for four events, so nothing landed twice.
-        assert rows.upserts == 5  # the failed attempt is one of them
+        # Five attempts for four events: the one that failed is attempted twice,
+        # once before the suku was registered and once after. Four rows written,
+        # so the retry landed on the same row rather than adding one.
+        assert rows.upserts == 5
         assert len(rows.written) == 4
+
+    def test_the_projected_row_carries_the_value_the_event_reported(self) -> None:
+        """The one thing an example of a projection has to get right.
+
+        Every other test here counts rows or reads records. None of them looked
+        at what was written, so the write could have been a constant and the
+        suite would not have noticed — which is the failure an example is least
+        allowed to have, since someone will copy it.
+        """
+        store, _ = self._stream()
+        rows = InMemoryProgressRows(registered={"Fatuberliu"})
+        consumer = django_consumer(store, STREAM, CONSUMER)
+
+        consumer.run(make_apply(rows, consumer=CONSUMER, path=STREAM), on_error="skip")
+
+        assert rows.written[("Fatuberliu", "WATER", "2026-01")] == 40
+        assert rows.written[("Fatuberliu", "SANITATION", "2026-01")] == 60
 
     def test_a_fresh_store_object_reads_the_record_back(self) -> None:
         store, _ = self._stream()

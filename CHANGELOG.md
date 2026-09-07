@@ -31,8 +31,8 @@ runnable demo for each.
   consumes them: a row the rules decline never reaches the log and leaves a record
   with no offset, an event that fails to apply leaves a record with the reading
   position stopped below it, one lands in a closed reporting period and is
-  skipped on purpose, and a fresh process reads the position and every record
-  back. It runs as part of `just demos`. (#254)
+  skipped on purpose, and a fresh consumer reads the position and every record
+  back out of the database. It runs as part of `just demos`. (#254)
 
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
   `consume()` takes the store, the stream, the consumer name, somewhere to load

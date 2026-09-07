@@ -743,9 +743,10 @@ backfill task. One event lands in a closed reporting month and is skipped
 deliberately: recorded so that "we decided not to" can be told from "we never saw
 it", with the position moving on.
 
-The last check is the one a standalone script could not make: a fresh process
-builds a new consumer, and the reading position and all four records are still
-there. Both are kept in the database, so what the demo prints at the end is what
+The last check is the one a standalone script could not make: a fresh consumer,
+built from nothing the earlier passes left in memory, and the reading position
+and all four records are still there — read back out of the database, which is
+what a genuinely restarted process would find. Both are kept in the database, so what the demo prints at the end is what
 an operator would see the next morning.
 
 → Deep dive: [Examples](examples.md) ·
