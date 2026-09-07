@@ -755,9 +755,13 @@ def merge_replay(
     `HandlerGapError` under merge (the merged range is longer). Version merged
     handlers by content or open ranges.
 
-    Raises `ValueError` on duplicate `stream_paths`, when an event lacks the
-    requested order key (payload field, or `event_ts` under `ENVELOPE_TS`), or
-    when the order-key values aren't mutually comparable across events.
+    Raises `MergeKeyError` when an event lacks the requested order key (payload
+    field, or `event_ts` under `ENVELOPE_TS`), and when the order-key values
+    aren't mutually comparable across events. Duplicate `stream_paths` raises a
+    plain `ValueError`: it is an argument that cannot be right, checked before a
+    single event is read, so it is not a failure the consume loop can record a
+    code for. `MergeKeyError` is itself a `ValueError`, so one `except ValueError`
+    still catches all three.
 
     How far it gets before failing: **nothing is applied unless everything
     decodes.** Unlike a single-pass `replay()`, a merge has to read every stream

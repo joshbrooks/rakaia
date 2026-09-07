@@ -44,7 +44,8 @@ Nothing warns and nothing breaks at import. A dashboard, alert or query filterin
 on the old strings simply stops matching, and under this library's own model an
 absent record reads as nothing having gone wrong — which is the failure worth
 naming here. Records already stored keep the old values; only new ones use the new
-codes. Update whatever reads them, and see the reference for the full set.
+codes. Update whatever reads them; the full set is tabulated in
+`docs/subscriber-cursors.md`, under "The reason codes rakaia records for itself".
 
 ## Outcomes are part of the stable surface now
 

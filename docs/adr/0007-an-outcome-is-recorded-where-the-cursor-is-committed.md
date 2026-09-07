@@ -218,22 +218,6 @@ will eventually disagree with the first. So outcomes are append-only and attempt
 and "is this still failing?" is the latest outcome for the key, not a column. `unresolved`
 is therefore a derived query, not stored state.
 
-**6c. Rakaia's own codes are a promised set. A consumer's are still the consumer's.**
-Decision 6 says the codes are opaque to rakaia, and it was answering the question of what a
-*consumer* records. It never addressed the case where rakaia itself is what failed, and the
-loop was answering that with `type(exc).__name__` — so the vocabulary an operator reads was
-the internal class names, and any rename rewrote it silently. Everything rakaia raises from
-an apply now inherits one base type and carries a written-out `code`; the set of them is
-closed, published in `rakaia.REASON_CODES`, and changed with the care any other public name
-gets. The code is never derived from the class name, which is the whole defect.
-
-Anything outside that set is recorded as `unhandled` with the exception's type name in
-`params`, and nothing else from it — an exception's message is exactly where a field value
-would leak, which Decision 6 already refused. That keeps the vocabulary countable rather than
-an open set of class names, while still telling two unanticipated bugs apart. None of this
-touches Decision 6: reason codes on an outcome a consumer records remain the consumer's, and
-rakaia still has no opinion about them.
-
 **6b. One translation decides what a stored outcome looks like, and every backend uses it.**
 `encode_outcome`/`decode_outcome` is the only crossing between an outcome and its stored form, the in-memory
 reference included. That store previously kept the object as handed to it while the durable
@@ -253,6 +237,22 @@ something. And a line this version cannot rebuild is dropped with a log rather t
 exception, because one such line must not cost the whole report; it is only logged and not
 yet counted, which is a weaker answer than this decision would like given that unnoticed
 absence is the thing it exists to prevent.
+
+**6c. Rakaia's own codes are a promised set. A consumer's are still the consumer's.**
+Decision 6 says the codes are opaque to rakaia, and it was answering the question of what a
+*consumer* records. It never addressed the case where rakaia itself is what failed, and the
+loop was answering that with `type(exc).__name__` — so the vocabulary an operator reads was
+the internal class names, and any rename rewrote it silently. Everything rakaia raises from
+an apply now inherits one base type and carries a written-out `code`; the set of them is
+closed, published in `rakaia.REASON_CODES`, and changed with the care any other public name
+gets. The code is never derived from the class name, which is the whole defect.
+
+Anything outside that set is recorded as `unhandled` with the exception's type name in
+`params`, and nothing else from it — an exception's message is exactly where a field value
+would leak, which Decision 6 already refused. That keeps the vocabulary countable rather than
+an open set of class names, while still telling two unanticipated bugs apart. None of this
+touches Decision 6: reason codes on an outcome a consumer records remain the consumer's, and
+rakaia still has no opinion about them.
 
 **7. Sequencing is recorded, not enforced.** An outcome carries a `sequence_key`.
 Rakaia does not yet refuse an event whose sequence has an unresolved failure; the field

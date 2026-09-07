@@ -115,6 +115,32 @@ than described. Outside Django, build a `rakaia.Consumer` directly and pass your
 own `ConsumerCursorStore` and `OutcomeStore`; `InMemoryConsumerCursorStore` and
 `InMemoryOutcomeStore` are the reference pair.
 
+## The reason codes rakaia records for itself
+
+A record's `reasons` are codes rather than a sentence, so "how many failed for
+this reason" is something you count rather than grep. The codes on an outcome
+*your* consumer records are yours — rakaia never looks at them. These ten are the
+ones rakaia writes when the failure is its own, and they are a closed, published
+set: adding one is a public API change, and renaming one breaks whatever an
+operator has been counting.
+
+| code | what failed |
+| --- | --- |
+| `handler_gap` | no handler version covers the event's position |
+| `upcaster_chain` | the chain of upcasters could not carry the event to the current version |
+| `effect_collision` | two effects in one batch write the same field of the same row |
+| `unresolved_ref` | an effect pointed at a row the batch never created |
+| `duplicate_produces` | two effects in one batch claimed the same name |
+| `handler_drift` | a handler's source changed since it was registered |
+| `missing_reader` | a staged replay was run without the reader its later stages need |
+| `undecodable_event` | the event's payload is not readable as JSON |
+| `merge_key` | a merged stream's events lack, or disagree about, the ordering key |
+| `unhandled` | anything else — your `apply` raised, and the exception's type is in `params` |
+
+The last one is deliberately the only place a Python type name appears, and it
+appears as a parameter rather than as the code, so a rename inside rakaia can
+never rewrite what an operator has been reading.
+
 ## Rewind detection
 
 If the stored cursor sorts *after* the current head, the log shrank beneath it,

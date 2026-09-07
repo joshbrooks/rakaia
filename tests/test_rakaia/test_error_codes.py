@@ -13,8 +13,14 @@ fixed, so a rename must not move it.
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+import re
+from pathlib import Path
+
 import pytest
 
+import rakaia
 from rakaia.drift import HandlerDriftError
 from rakaia.effects import (
     DuplicateProducesError,
@@ -164,6 +170,16 @@ class TestTheSetIsClosed:
     def test_every_rakaia_error_in_the_tree_declares_a_promised_code(self) -> None:
         """A new exception that forgets its code would otherwise record
         `unhandled` — quietly, and only in production."""
+        # Import every module in the package first. `__subclasses__` only sees
+        # what has been imported, and `rakaia/__init__.py` resolves names lazily,
+        # so a subclass in a module nothing happened to touch is invisible here —
+        # the walk passed while the very thing it guards against sat in the tree.
+        # Measured: a codeless subclass appended to `rakaia.append` left this file
+        # green on its own and only reddened under the full run, by the luck of
+        # another test importing that module.
+        for info in pkgutil.walk_packages(rakaia.__path__, f"{rakaia.__name__}."):
+            importlib.import_module(info.name)
+
         seen: set[type[RakaiaError]] = set()
 
         def walk(cls: type[RakaiaError]) -> None:
@@ -236,3 +252,23 @@ class TestTheRealRaisingSitesRaiseTheNewTypes:
                 handler_registry=HandlerRegistry(),
                 upcaster_registry=UpcasterRegistry(),
             )
+
+
+class TestTheTableInTheDocsIsTheSet:
+    """The published table lists exactly the published codes.
+
+    The set is a promise, and a promise nobody can read is not one — the codes
+    live in `errors.py`, and the generated reference cannot render the docstring
+    under a module-level assignment, so the only place a reader meets them is a
+    table in prose. A table in prose rots. This is what stops it.
+    """
+
+    def test_the_documented_table_matches_reason_codes(self) -> None:
+        page = (
+            Path(__file__).resolve().parents[2] / "docs" / "subscriber-cursors.md"
+        ).read_text()
+        section = page.split("## The reason codes rakaia records for itself", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        documented = set(re.findall(r"^\| `([a-z_]+)` \|", section, re.MULTILINE))
+
+        assert documented == set(REASON_CODES)
