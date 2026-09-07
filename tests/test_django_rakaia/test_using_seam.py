@@ -451,6 +451,12 @@ class TestTwoAliasesAreTwoLogs:
     same start. There is nothing for `rakaia.offsets` to compare, so a position
     saved against one is accepted against the other without a rewind.
 
+    Two neighbours already pin the parts this builds on:
+    `tests/test_rakaia/test_cross_backend_cursors.py` for the cross-backend pair,
+    and `tests/test_django_rakaia/test_offset_format_pin.py` for the fact that
+    makes that pair real — that `DjangoStreamStore` issues the same format the
+    file store does. What is new here is the same class at two locations.
+
     Nothing is wrong today — the alias seam exists so a rebuild can replay into a
     disposable database, and nothing on that path resumes a consumer. This asserts
     the defect so that leaving it is a decision, the way

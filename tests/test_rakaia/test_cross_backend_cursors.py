@@ -16,6 +16,12 @@ A table in a Markdown file rots. This pins it where it is decided, the way
 gives `JsonlStreamStore` its own offset format, or lands #232, these go red and
 the ADR has to be amended rather than quietly left wrong.
 
+One store class at two locations is a *third* row of that table, and it is
+pinned in `tests/test_django_rakaia/test_using_seam.py` — it needs two database
+aliases, so it cannot live in this package (the same reason
+`test_offset_format_pin.py` was split out). Note that the modelling below is
+itself an instance of that third row.
+
 The two entry-counting stores are modelled here by two `JsonlStreamStore`s at
 different roots. That is not a stand-in for the durable store: the behaviour
 under test belongs to `rakaia.offsets`, which sees a *format*, not a class, and
