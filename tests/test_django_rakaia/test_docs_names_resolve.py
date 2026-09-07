@@ -57,6 +57,18 @@ _DELIBERATELY_ABSENT: dict[str, tuple[frozenset[str], str]] = {
         ),
         "the module was removed; these name it as what went",
     ),
+    "rakaia.handler": (
+        frozenset({"CHANGELOG.md", "UPGRADING.md"}),
+        "the pre-rename spelling, in the paragraphs announcing the rename",
+    ),
+    "rakaia.handler.STORE_FAILURE_STATUS": (
+        frozenset({"CHANGELOG.md"}),
+        "the pre-rename spelling, in the entry that shipped it",
+    ),
+    "rakaia.cursor": (
+        frozenset({"CHANGELOG.md", "UPGRADING.md"}),
+        "the pre-rename spelling, in the paragraphs announcing the rename",
+    ),
     "rakaia.outcomes.encode": (
         frozenset({"UPGRADING.md"}),
         "the pre-rename spelling, in the paragraph announcing the rename",

@@ -127,7 +127,7 @@ class StreamServerStore(WritableStore, Protocol):
     """A store that can back a Durable Streams **protocol server**.
 
     `WritableStore` is what `replay()` and projections need. This is the wider
-    surface `rakaia.handler.create_app` needs: everything in `WritableStore`,
+    surface `rakaia.protocol_server.create_app` needs: everything in `WritableStore`,
     plus the protocol lifecycle — producer epoch/seq fencing, close, the TTL
     sliding window, long-poll, and response formatting.
 
