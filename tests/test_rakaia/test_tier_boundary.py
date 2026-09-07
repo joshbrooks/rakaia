@@ -37,6 +37,7 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "rakaia"
 #: consumer builds on, and what would become the "projections" package.
 FRAMEWORK = {
     "append",
+    "batching",
     "context",
     "drift",
     "effects",
