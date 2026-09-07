@@ -80,7 +80,7 @@ class RecordingExecutor:
 
         rec = RecordingExecutor(DjangoExecutor(using="rebuild"))
         replay(store, "submissions", rec)
-        rec.effects  # every effect that reached the database
+        rec.effects  # every effect handed to the inner executor, in order
 
     Transparent, deliberately: the wrapped executor's report is returned
     unchanged, and an exception it raises propagates. The batch is materialised

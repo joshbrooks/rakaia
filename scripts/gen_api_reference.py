@@ -202,12 +202,16 @@ GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "Constants": (
         "__version__",
+        "REASON_CODES",
+        "UNHANDLED",
+        "EXCEPTION_TYPE_KEY",
         "HANDLERS_META_STREAM",
         "REDUCERS_META_STREAM",
         "UPCASTERS_META_STREAM",
         "SCRATCH_PATH",
     ),
     "Errors": (
+        "RakaiaError",
         "StreamError",
         "StreamNotFound",
         "SequenceConflict",
@@ -225,6 +229,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "DuplicateProducesError",
         "UpcasterChainError",
         "UpcasterConflictError",
+        "MissingReaderError",
+        "UndecodableEventError",
+        "MergeKeyError",
     ),
 }
 

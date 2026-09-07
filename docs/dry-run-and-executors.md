@@ -65,9 +65,11 @@ applied nowhere. `tests/test_rakaia/test_executor_contract.py` runs the whole
 executor conformance suite a second time through a `RecordingExecutor`, so
 anything the wrap reordered or swallowed would fail there.
 
-What it keeps is what it *handed on*, which is not always what committed: a batch
-that raises partway through is recorded and never lands. That is deliberate — a
-rebuild gate diffs what a replay meant to write — and it is why the wording here
+What it keeps is what it *handed on*, which is not always what committed. A batch
+that raises partway through is recorded whole, and this recorder rolls nothing
+back — what the inner executor already wrote stays written unless something
+outside supplies a transaction, as `rebuild_and_verify` does. That is deliberate:
+a rebuild gate diffs what a replay *meant* to write, which is why the wording here
 is "handed to the inner executor" rather than "written".
 
 `CollectingExecutor` stays separate rather than becoming

@@ -89,6 +89,7 @@ from .effects import (
     Upsert,
     transition_payload,
 )
+from .errors import RakaiaError
 from .protocols import ProjectionReader, ReadableStore
 from .registry import (
     HandlerRegistry,
@@ -97,6 +98,34 @@ from .registry import (
     get_default_registry,
     get_default_upcaster_registry,
 )
+
+# =============================================================================
+# Errors
+# =============================================================================
+#
+# Each also subclasses `ValueError`, which is what these sites raised before
+# they were named. Adding a type is then additive: a caller already catching
+# `ValueError` around a merge or a decode keeps catching it, and gains the
+# option of catching the specific failure or `RakaiaError` instead.
+
+
+class MissingReaderError(RakaiaError, ValueError):
+    """A staged replay was asked to run with no projection reader."""
+
+    code = "missing_reader"
+
+
+class UndecodableEventError(RakaiaError, ValueError):
+    """An event's stored bytes are not decodable JSON."""
+
+    code = "undecodable_event"
+
+
+class MergeKeyError(RakaiaError, ValueError):
+    """A merge cannot order its events: the order key is missing from an event,
+    or its values are not mutually comparable across them."""
+
+    code = "merge_key"
 
 
 class _EnvelopeTs:
@@ -266,7 +295,7 @@ def require_reader(ctx: _ReplayCtx, what: str = "Replay") -> None:
     here beats failing inside the first handler that dereferences `None`.
     """
     if is_staged(ctx) and ctx.reader is None:
-        raise ValueError(
+        raise MissingReaderError(
             f"{what} has stage > 0 handlers or reducers but no reader was "
             f"provided; pass reader= so they can read earlier stages' projections."
         )
@@ -532,7 +561,7 @@ def replay(
     before.
 
     How far it gets before failing: a single pass decodes one event at a time, so
-    a malformed event at offset N raises `ValueError` with the first N already
+    a malformed event at offset N raises `UndecodableEventError` with the first N already
     applied. A staged replay needs the whole range before its second pass, so it
     decodes up front and the same event applies nothing. See `EventSource`.
     """
@@ -604,13 +633,13 @@ def merge_replay(
             - a **string** (default ``"ts"``) reads a field out of the **decoded
               payload body** (``event[order_key]``). This is *not* the transport
               or envelope timestamp — it is whatever field the producer wrote into
-              the JSON. A missing key raises a ValueError.
+              the JSON. A missing key raises `MergeKeyError`.
             - the ``ENVELOPE_TS`` sentinel reads the first-class **envelope**
               timestamp (``StreamMessage.event_ts`` — the producer's logical event
               time, defaulting to append time). Prefer this: it is unambiguous and
               does not require the producer to duplicate a timestamp into the
               payload. A message with no ``event_ts`` (only a hand-built one; a
-              store always sets it) raises a ValueError.
+              store always sets it) raises `MergeKeyError`.
         handler_registry / upcaster_registry: default to the process-wide ones.
         event_match: Match string for handler routing + upcasting. Default None
             uses each event's **source stream path** as its match string, so
@@ -626,9 +655,15 @@ def merge_replay(
     `HandlerGapError` under merge (the merged range is longer). Version merged
     handlers by content or open ranges.
 
-    Raises `ValueError` on duplicate `stream_paths`, when an event lacks the
-    requested order key (payload field, or `event_ts` under `ENVELOPE_TS`), or
-    when the order-key values aren't mutually comparable across events.
+    Raises `MergeKeyError` when an event lacks the requested order key (payload
+    field, or `event_ts` under `ENVELOPE_TS`), and when the order-key values
+    aren't mutually comparable across events. Duplicate `stream_paths` raises a
+    plain `ValueError`: it is an argument that cannot be right, checked before a
+    single event is read, so a code for it would be one the published set carries
+    and no outcome can ever hold. Called from inside an `apply` it still reaches
+    the consume loop, which records it as `unhandled` with the type in `params` —
+    which is what an argument fault should look like. `MergeKeyError` is itself a
+    `ValueError`, so one `except ValueError` still catches all three.
 
     How far it gets before failing: **nothing is applied unless everything
     decodes.** Unlike a single-pass `replay()`, a merge has to read every stream
@@ -662,7 +697,7 @@ def merge_replay(
             )
             if order_key is ENVELOPE_TS:
                 if msg.event_ts is None:
-                    raise ValueError(
+                    raise MergeKeyError(
                         f"Event at offset={offset} in stream={path!r} has no "
                         f"envelope event_ts; cannot merge on ENVELOPE_TS. (A store "
                         f"always sets it — is this a hand-built StreamMessage?)"
@@ -670,7 +705,7 @@ def merge_replay(
                 sort_value: Any = msg.event_ts
             else:
                 if order_key not in upcasted:
-                    raise ValueError(
+                    raise MergeKeyError(
                         f"Event at offset={offset} in stream={path!r} has no "
                         f"order_key={order_key!r} in its payload; cannot merge "
                         f"deterministically."
@@ -681,7 +716,7 @@ def merge_replay(
     try:
         tagged.sort(key=lambda item: item[0])
     except TypeError as exc:
-        raise ValueError(
+        raise MergeKeyError(
             f"Cannot merge deterministically: order_key={order_key!r} values are "
             f"not mutually comparable across events (mixed types or None?): {exc}"
         ) from exc
@@ -701,7 +736,7 @@ def _decode_event(data: bytes, stream_path: str, seq: int) -> dict:
     try:
         return json.loads(data)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise ValueError(
+        raise UndecodableEventError(
             f"Cannot decode event at seq={seq} in stream={stream_path!r} as JSON: {exc}"
         ) from exc
 
