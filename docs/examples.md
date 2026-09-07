@@ -186,6 +186,11 @@ No example exercises these yet — a good place to contribute a demo:
   stores). Exported and supported since #251, so the old reason for this gap —
   that an example would document an unstable surface — has expired. What is
   missing now is simply the example: nothing under `examples/` calls `consume()`.
+- Outcome retention. `manage.py prune_outcomes` deletes old failure records
+  (`docs/deployment.md`), but no example records a failure and then prunes it, so
+  nothing under `examples/` demonstrates the operator's side of the outcome
+  table. It follows the gap above: with no example calling `consume()`, there is
+  nothing for a prune demo to prune.
 
 ## Orientation for contributors
 
