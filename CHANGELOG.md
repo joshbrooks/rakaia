@@ -9,6 +9,17 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation for what 0.4.0 added.** The failure-record screen had no page
+  outside the release notes, and the reason codes had no entry in the guided
+  tour; both are written up now, the screen beside the retention command it
+  belongs with. The machine-readable knowledge bundle under `okf/` gained the
+  consuming loop as a seventh concept group — it had no entry for any of it —
+  and two checks so it cannot drift again: every example directory must have a
+  page there, and the names in its prose are swept for resolution along with the
+  rest of the documentation.
+
 ## [0.4.0] - 2026-09-08
 
 ### Changed

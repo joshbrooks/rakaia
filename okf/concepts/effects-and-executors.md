@@ -36,7 +36,9 @@ Imported from `rakaia`:
   `UnresolvedRefError`, `DuplicateProducesError` on misuse.
 * `check_disjoint_defaults` — raise `EffectCollisionError` if two write effects
   write the same column of the same row (the multi-owner guard).
-* `Executor` protocol; `CollectingExecutor` (dry-run).
+* `Executor` protocol; `CollectingExecutor` (dry-run); `RecordingExecutor`
+  (wraps any executor, applies through it and keeps what it handed on — what a
+  rebuild gate diffs).
 * Django: `DjangoExecutor` (applies to the ORM, resolves `Ref`s);
   `diff_effects_against_rows` (verify replay reproduces existing rows).
 

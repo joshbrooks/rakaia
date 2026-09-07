@@ -11,7 +11,7 @@ and tools.
 
 It catalogs two things:
 
-* **Concepts** — rakaia's public API surface, grouped into six areas, each with
+* **Concepts** — rakaia's public API surface, grouped into seven areas, each with
   the APIs it covers and the examples that demonstrate it.
 * **Examples** — every runnable demo in `examples/`, what it proves, the one
   command that runs it, and which concepts it exercises. Demos verified green are
@@ -27,6 +27,7 @@ concept coverage"); this bundle is its structured, cross-linked counterpart.
 * [Effects & executors](concepts/effects-and-executors.md) - effect data, executors, dry-run, symbolic refs.
 * [Projections & fan-out](concepts/projections-and-fan-out.md) - orphan-free child/aggregate reconcile helpers.
 * [Event envelope & provenance](concepts/event-envelope-and-provenance.md) - the event envelope and history read-model.
+* [Consuming a stream & failure records](concepts/consuming-and-outcomes.md) - one loop that reads, applies, records what it could not apply, and commits the position.
 * [Django integration](concepts/django-integration.md) - stream events from models, live SSE.
 
 ## Examples

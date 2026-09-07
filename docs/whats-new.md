@@ -752,6 +752,50 @@ an operator would see the next morning.
 → Deep dive: [Examples](examples.md) ·
 [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 
+## 23. A failure record says *why* in a word you can count
+
+**The problem.** A record of a failure is only worth keeping if you can ask
+questions of it, and the first question is always "how many, and why". That needs
+the reason to be a short code rather than a sentence — a sentence has to be
+grepped, and it leaks whatever it interpolated, which on a submission means
+somebody's name or their bank details. Rakaia kept codes from the start for the
+reasons a *consumer* records. For its own failures it wrote down the name of
+whatever Python class had been raised, which is not a vocabulary: rename the
+class and every count an operator had built quietly changes meaning.
+
+**What rakaia does.** Everything the library raises while applying an event now
+carries a stable code, and the ten of them are a published, closed set. The loop
+records the code; renaming anything inside rakaia cannot change it. Your own
+exceptions are not in that set and are not pretended into it — they are recorded
+under one code, `unhandled`, with the exception's type beside it and its message
+left out.
+
+```python
+from rakaia import RakaiaError, REASON_CODES
+
+try:
+    replay("submissions", store=store, executor=executor)
+except RakaiaError as exc:
+    print(exc.code)  # e.g. "handler_gap" — one clause for anything rakaia raises
+```
+
+The full table, with a line each for what failed, is in
+[Read a stream incrementally](subscriber-cursors.md#the-reason-codes-rakaia-records-for-itself).
+
+**See it.** The worked example records a real failure of each kind and prints the
+codes:
+
+```bash
+just intake-demo
+```
+
+Its `[2] HALT` step shows the boundary directly — `unhandled, UnknownSuku` — a
+consumer's own exception recorded under rakaia's code with the consumer's class
+name kept beside it, where a rename cannot rewrite what anyone has been counting.
+
+→ Deep dive: [Read a stream incrementally](subscriber-cursors.md) ·
+[ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
+
 ---
 
 ## Where to go next
