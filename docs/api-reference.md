@@ -23,7 +23,7 @@ page is the contract.
 |---|---|---|---|
 | `app` | `rakaia` | `(scope: 'Scope', receive: 'Receive', send: 'Send') -> 'None'` | — |
 | `create_app` | `rakaia` | `(store: 'StreamServerStore \| None' = None, options: 'ServerOptions \| None' = None) -> 'Any'` | Create a plain ASGI application implementing the Durable Streams protocol. |
-| `get_asgi_app` | `django_rakaia` | `(options: rakaia.handler.ServerOptions \| None = None, store: rakaia.protocols.StreamServerStore \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
+| `get_asgi_app` | `django_rakaia` | `(options: rakaia.protocol_server.ServerOptions \| None = None, store: rakaia.protocols.StreamServerStore \| None = None) -> object` | Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names. |
 | `ServerOptions` | `rakaia` | `(long_poll_timeout: 'float' = 3.0, cursor_options: 'CursorOptions' = <factory>, enable_fault_injection: 'bool' = <factory>) -> None` | Configuration for the ASGI handler. |
 | `get_store` | `django_rakaia` | `() -> Any` | Get the configured stream store. |
 | `reset_store_cache` | `django_rakaia` | `() -> None` | Drop every memoised store, so the next `get_store()` rebuilds. |
@@ -172,13 +172,20 @@ page is the contract.
 | `CursorOptions` | `rakaia` | `(interval_seconds: 'int' = 20, epoch: 'float' = 1728432000.0) -> None` | Configuration for cursor calculation. |
 | `calculate_cursor` | `rakaia` | `(options: 'CursorOptions \| None' = None) -> 'str'` | Calculate the current cursor value based on time intervals. |
 | `generate_response_cursor` | `rakaia` | `(client_cursor: 'str \| None', options: 'CursorOptions \| None' = None) -> 'str'` | Generate a cursor for a response, ensuring monotonic progression. |
-| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str') -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
-| `load_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str') -> 'str \| None'` | The consumer's last committed offset for `stream_path`, or None. |
+| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str', *, using: 'str \| None' = None) -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
+| `load_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', *, using: 'str \| None' = None) -> 'str \| None'` | The consumer's last committed offset for `stream_path`, or None. |
 
 ## Consuming, and what happened to an event
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
+| `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
+| `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
+| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | A `Consumer` that checks the caller has no transaction open. |
+| `ConsumerCursorStore` | `rakaia` | `(*args, **kwargs)` | Somewhere to keep a consumer's watermark between runs. |
+| `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |
+| `DjangoConsumerCursorStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A `ConsumerCursorStore` over the ``ConsumerCursor`` table. |
+| `CallerTransactionOpen` | `django_rakaia` | — | Raised when a run is started inside a transaction the caller opened. |
 | `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
 | `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool') -> None` | What one pass of the consume loop did. |
 | `OnErrorPolicy` | `rakaia` | — | — |
@@ -251,6 +258,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-155 exported names across 15 sections. 136 carry a docstring; 19 do not and show `—` above.
+162 exported names across 15 sections. 143 carry a docstring; 19 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

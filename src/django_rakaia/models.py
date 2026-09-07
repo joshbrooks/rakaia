@@ -6,6 +6,7 @@ for efficient querying and real-time updates via Unix sockets.
 """
 
 from typing import TYPE_CHECKING
+from urllib.parse import unquote
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
@@ -450,17 +451,22 @@ class ConsumerOutcome(models.Model):
     a capacity, and why nothing here can refuse a name for being too long.
 
     **There are exactly two because `latest(consumer, stream_path)` is the only
-    query.** `subject` and `offset` were columns for one round and were written
-    and never read: `latest` groups by subject and orders by offset in Python,
-    from the payload. An index nothing queries is not free — it is two derived
-    writes per record, and a ``subject_key`` holding a cut, percent-encoded
-    string is a trap for the next reader, who will take it for the subject and
-    get a value that is neither the subject nor reliably distinct from another
-    one. When the operator worklist ADR 0007 sketches arrives it can add the
-    column the query actually wants; the ADR's own complaint about the motivating
-    consumer is that it has "neither a retention policy nor an index supporting
-    the query its two hot paths run", which is an argument for indexes that match
-    real queries and against carrying ones that match imagined queries.
+    query that needs a scope.** `subject` and `offset` were columns for one round
+    and were written and never read: `latest` groups by subject and orders by
+    offset in Python, from the payload. An index nothing queries is not free — it
+    is two derived writes per record, and a ``subject_key`` holding a cut,
+    percent-encoded string is a trap for the next reader, who will take it for
+    the subject and get a value that is neither the subject nor reliably distinct
+    from another one. When the operator worklist ADR 0007 sketches arrives it can
+    add the column the query actually wants; the ADR's own complaint about the
+    motivating consumer is that it has "neither a retention policy nor an index
+    supporting the query its two hot paths run", which is an argument for indexes
+    that match real queries and against carrying ones that match imagined
+    queries.
+
+    ``recorded_at`` earns the second index on the same terms. It carried none
+    until `manage.py prune_outcomes` gave it a query — a retention sweep filtering
+    on age — and the index landed with that command rather than ahead of it.
 
     ``attempt`` is not a column either, for the same reason plus one more. It is
     a counter rather than a name, `latest` reads it from the payload, and as an
@@ -483,6 +489,7 @@ class ConsumerOutcome(models.Model):
     """The whole outcome, as `rakaia.outcomes.encode_outcome` wrote it. The record."""
 
     recorded_at = models.DateTimeField(auto_now_add=True)
+    """When the row was appended. Indexed, because `prune_outcomes` filters on it."""
 
     class Meta:
         db_table = "rakaia_consumeroutcome"
@@ -490,10 +497,25 @@ class ConsumerOutcome(models.Model):
             models.Index(
                 fields=["consumer_key", "stream_path_key"],
                 name="rakaia_outcome_scope_idx",
-            )
+            ),
+            # The retention sweep's `recorded_at__lt` — the second real query,
+            # and the reason this index exists rather than the timestamp having
+            # carried one since the table was created.
+            models.Index(
+                fields=["recorded_at"],
+                name="rakaia_outcome_age_idx",
+            ),
         ]
 
     def __str__(self) -> str:
         # The scope plus the row id: a scope holds many outcomes and nothing here
         # is unique on its own, so naming a subject would suggest otherwise.
-        return f"{self.consumer_key}@{self.stream_path_key}#{self.pk}"
+        #
+        # Unquoted, because this is the one place the row is read by a person.
+        # Django puts `str(obj)` in the admin change page's title, its breadcrumb
+        # and its action labels, so printing the stored key would show
+        # `submission%2Ftf611` for a stream a consumer named `submission/tf611`
+        # — the exact confusion the `_key` suffix exists to warn about, on the
+        # screen most likely to be believed. The key columns stay encoded; only
+        # this rendering is turned back.
+        return f"{unquote(self.consumer_key)}@{unquote(self.stream_path_key)}#{self.pk}"

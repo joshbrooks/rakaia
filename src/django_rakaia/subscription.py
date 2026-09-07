@@ -14,20 +14,28 @@ from rakaia.subscription import CursorStore, Poll, poll
 from .models import ConsumerCursor
 
 
-def load_cursor(consumer_id: str, stream_path: str) -> str | None:
+def load_cursor(
+    consumer_id: str, stream_path: str, *, using: str | None = None
+) -> str | None:
     """The consumer's last committed offset for `stream_path`, or None."""
-    row = ConsumerCursor.objects.filter(
-        consumer_id=consumer_id, stream_path=stream_path
-    ).first()
+    row = (
+        ConsumerCursor.objects.using(using)
+        .filter(consumer_id=consumer_id, stream_path=stream_path)
+        .first()
+    )
     return row.offset if row else None
 
 
-def commit_cursor(consumer_id: str, stream_path: str, offset: str) -> None:
+def commit_cursor(
+    consumer_id: str, stream_path: str, offset: str, *, using: str | None = None
+) -> None:
     """Persist `offset` as the consumer's watermark for `stream_path`.
 
-    Call this only **after** the polled messages have been applied.
+    Call this only **after** the polled messages have been applied. ``using``
+    names a database alias, as it does on the stores; the default alias is the
+    ambient connection.
     """
-    ConsumerCursor.objects.update_or_create(
+    ConsumerCursor.objects.using(using).update_or_create(
         consumer_id=consumer_id,
         stream_path=stream_path,
         defaults={"offset": offset},
