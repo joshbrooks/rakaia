@@ -6,6 +6,7 @@ for efficient querying and real-time updates via Unix sockets.
 """
 
 from typing import TYPE_CHECKING
+from urllib.parse import unquote
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
@@ -509,4 +510,12 @@ class ConsumerOutcome(models.Model):
     def __str__(self) -> str:
         # The scope plus the row id: a scope holds many outcomes and nothing here
         # is unique on its own, so naming a subject would suggest otherwise.
-        return f"{self.consumer_key}@{self.stream_path_key}#{self.pk}"
+        #
+        # Unquoted, because this is the one place the row is read by a person.
+        # Django puts `str(obj)` in the admin change page's title, its breadcrumb
+        # and its action labels, so printing the stored key would show
+        # `submission%2Ftf611` for a stream a consumer named `submission/tf611`
+        # — the exact confusion the `_key` suffix exists to warn about, on the
+        # screen most likely to be believed. The key columns stay encoded; only
+        # this rendering is turned back.
+        return f"{unquote(self.consumer_key)}@{unquote(self.stream_path_key)}#{self.pk}"

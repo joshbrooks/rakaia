@@ -48,6 +48,20 @@ runnable demo for each.
   exactly on the cutoff is kept. Migration `0011` adds the index the sweep needs;
   see `docs/deployment.md`. (#253)
 
+- **A screen for the outcome records.** The database-backed store keeps a row for
+  every event a consumer could not apply, and until now reading one meant querying
+  the table by hand. The Django admin lists them newest first, with the consumer,
+  the stream, the subject, the position, the stage, the status and the reasons —
+  decoded from the stored record rather than read off the two index columns beside
+  it, which hold a percent-encoded form of the value and would show
+  `submission%2Ftf611` for a stream named `submission/tf611`.
+
+  Read-only on purpose: nothing can be added, changed or deleted from it. These
+  are a record of what happened, and clearing them out is a retention job rather
+  than a button. A record written by a version this one cannot read still gets a
+  row, marked as unreadable, because a dropped record is the failure the table
+  exists to prevent. (#252)
+
 - **`JsonlStreamStore` — keep a log in plain text files instead of a database.**
   A stream is a directory of JSON-lines segments; an event is a line. Nothing but
   the filesystem is involved, so a consumer who wants durability without running
