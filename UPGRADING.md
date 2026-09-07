@@ -19,11 +19,21 @@ ones you are crossing.
 
 ## Outcomes are part of the stable surface now
 
-Nothing changes for existing code; this is an addition. `Outcome`, `OutcomeStatus`,
-`Stage`, `OutcomeStore`, `InMemoryOutcomeStore`, `JsonlOutcomeStore`,
-`encode_outcome`, `decode_outcome`, `consume`, `Consumed` and `OnErrorPolicy` are
-importable from `rakaia`, and
-`DjangoOutcomeStore` from `django_rakaia`. If you adopted any of them early by
+`Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`, `InMemoryOutcomeStore`,
+`JsonlOutcomeStore`, `encode_outcome`, `decode_outcome`, `consume`, `Consumed` and
+`OnErrorPolicy` are importable from `rakaia`, and `DjangoOutcomeStore` from
+`django_rakaia`.
+
+**Two of those were renamed on the way out, and there is no shim.** The codec was
+`rakaia.outcomes.encode` / `.decode` and is now `encode_outcome` / `decode_outcome`.
+Nothing shipped depended on it — it was never exported, and this is its first
+release — so this is a break only for anyone who adopted it from the module before
+it was supported. If that is you, the import fails loudly at start-up rather than
+doing anything subtle. The rename is because the package root already means
+something else by those verbs: `encode_payload` and `decode_payload` encode an
+*event payload*, and `from rakaia import encode` would have read as that.
+
+Everything else here is an addition. If you adopted any of the other names early by
 importing the module they live in, that still works — but import from the package
 now, because the module layout is not what was promised.
 

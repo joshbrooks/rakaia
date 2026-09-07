@@ -637,9 +637,10 @@ or a database table — and it holds reason *codes* and bounded parameters rathe
 than an interpolated message, so it stays aggregatable, translatable, and free of
 the field values that a message would carry into a log.
 
-**Not yet demonstrated.** No example drives `consume()` — `examples/protocol_streams`
-still hand-rolls poll/apply/commit, which is the loop this replaces. That gap is
-named in [Examples](examples.md#known-gaps) rather than hidden.
+**Not yet demonstrated.** No example calls `consume()`. The nearest one drives
+`poll()` directly and threads the cursor between calls by hand, without applying a
+message or committing a position — so the loop above has no worked example yet. That
+gap is named in [Examples](examples.md#known-gaps) rather than hidden.
 
 → Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 · [The public API](public-api.md)

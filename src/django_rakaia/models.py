@@ -423,7 +423,7 @@ class ConsumerOutcome(models.Model):
     says how far a consumer got, a row here says what went wrong on the way.
 
     ``payload`` is the record. It holds the whole outcome as
-    `rakaia.outcomes.encode` rendered it, which is the same text the other two
+    `rakaia.outcomes.encode_outcome` rendered it, which is the same text the other two
     stores keep — ADR 0007 Decision 6b — and `decode_outcome` is the only way back out of
     it.
 
@@ -480,7 +480,7 @@ class ConsumerOutcome(models.Model):
     """Quoted `Outcome.stream_path`, at `ConsumerCursor.stream_path`'s width."""
 
     payload = models.TextField()
-    """The whole outcome, as `rakaia.outcomes.encode` wrote it. The record."""
+    """The whole outcome, as `rakaia.outcomes.encode_outcome` wrote it. The record."""
 
     recorded_at = models.DateTimeField(auto_now_add=True)
 
