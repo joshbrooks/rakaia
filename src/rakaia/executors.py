@@ -2,13 +2,17 @@
 Reusable Executor implementations.
 
 The `Executor` protocol (see effects.py) is applied by `replay()` to every batch
-of effects it produces. Two implementations live here, neither of which needs a
+of effects it produces. Three implementations live here, none of which needs a
 database:
 
 * `CollectingExecutor` records effects instead of applying them — the building
   block for a dry run and for migration verification: run `replay()` with one
   and inspect `.effects` to see exactly what a real executor would write, with
   zero side effects.
+* `RecordingExecutor` wraps another executor, applies through it and keeps what
+  it passed on — the answer to "what did this replay actually write?", which
+  `ReplayResult` reports only as a count. It is what a rebuild gate needs when it
+  must both write (so a later stage can read an earlier one) and diff.
 * `InMemoryProjections` actually applies them, to dict-backed "tables", and reads
   them back through the same object — an `Executor` and a `ProjectionReader` in
   one. It is what lets a test, a demo or an example exercise the full
@@ -31,6 +35,7 @@ from .effects import (
     Delete,
     Effect,
     Exclude,
+    Executor,
     RefResolver,
     Retire,
     SpareKeys,
@@ -60,6 +65,37 @@ class CollectingExecutor:
         self.effects.extend(effects)
         # Records effects without applying them, so it observes no retire flips.
         return ApplyReport()
+
+
+class RecordingExecutor:
+    """Applies through another `Executor` **and** keeps what it passed on.
+
+    `ReplayResult.effects_applied` is a count, so "what did this replay actually
+    write?" has no answer once the run is over. Wrapping the real executor is the
+    answer: the effects go past on their way to it, and `.effects` holds them in
+    the order they arrived. Both halves matter for a rebuild gate — applying is
+    what lets a stage > 0 handler read what stage 0 wrote, and the recording is
+    what the diff compares against the live rows, which a `CollectingExecutor`
+    cannot supply because it never writes::
+
+        rec = RecordingExecutor(DjangoExecutor(using="rebuild"))
+        replay(store, "submissions", rec)
+        rec.effects  # every effect that reached the database
+
+    Transparent, deliberately: the wrapped executor's report is returned
+    unchanged, and an exception it raises propagates. The batch is materialised
+    before either sees it, so a one-shot iterable is not consumed by the
+    recording and then applied nowhere.
+    """
+
+    def __init__(self, inner: Executor) -> None:
+        self.inner = inner
+        self.effects: list[Effect] = []
+
+    def apply(self, effects: Iterable[Effect]) -> ApplyReport | None:
+        batch = list(effects)
+        self.effects.extend(batch)
+        return self.inner.apply(batch)
 
 
 class InMemoryProjections:

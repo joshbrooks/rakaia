@@ -82,7 +82,11 @@ if TYPE_CHECKING:
         Upsert,
         check_disjoint_defaults,
     )
-    from .executors import CollectingExecutor, InMemoryProjections
+    from .executors import (
+        CollectingExecutor,
+        InMemoryProjections,
+        RecordingExecutor,
+    )
     from .history import (
         envelope_actor,
         history_effects,
@@ -270,6 +274,7 @@ _EXPORTS: dict[str, str] = {
     "check_disjoint_defaults": "rakaia.effects",
     "CollectingExecutor": "rakaia.executors",
     "InMemoryProjections": "rakaia.executors",
+    "RecordingExecutor": "rakaia.executors",
     # Versioned handlers — projections
     "reconcile_by_key": "rakaia.projections",
     "reconcile_children": "rakaia.projections",

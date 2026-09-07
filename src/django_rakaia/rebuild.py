@@ -26,18 +26,20 @@ against the **live** rows. The ``into`` alias is not the thing being diffed — 
 exists so a stage > 0 handler can read what stage 0 wrote, which is a fact a
 :class:`~rakaia.executors.CollectingExecutor` cannot supply. Both are needed at
 once, and `ReplayResult` reports a *count* of effects applied rather than the
-effects themselves, which is why the executor here is a recording tee.
+effects themselves, which is why the executor here is wrapped in a
+:class:`~rakaia.executors.RecordingExecutor`.
 
 See ADR 0003 (``docs/adr/0003-handler-hermeticity.md``).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from rakaia.effects import Effect, Executor
+from rakaia.effects import Executor
+from rakaia.executors import RecordingExecutor
 from rakaia.replay import replay
 from rakaia.types import StreamMessage
 
@@ -104,27 +106,6 @@ class _Drained:
         # rather than of this use of it.
         del path, offset
         return list(self.messages), True
-
-
-class _RecordingExecutor:
-    """Applies through ``inner`` **and** keeps what it applied.
-
-    Both halves are needed: applying is what lets a stage > 0 handler read what
-    stage 0 wrote, and the effects are what the diff compares against the live
-    rows. `ReplayResult.effects_applied` is a count, so the effects have to be
-    captured on the way past.
-    """
-
-    def __init__(self, inner: Executor) -> None:
-        self._inner = inner
-        self.effects: list[Effect] = []
-
-    def apply(self, effects: Iterable[Effect]):
-        # Materialise once: `inner.apply` would otherwise consume a generator
-        # this has already walked, and apply nothing at all.
-        batch = list(effects)
-        self.effects.extend(batch)
-        return self._inner.apply(batch)
 
 
 def _prove_read_guard_armed(alias: str) -> None:
@@ -223,7 +204,7 @@ def rebuild_and_verify(
     log = source if source is not None else DjangoStreamStore(using=live_using)
     drained = _Drained(list(log.read(stream_path)[0]))
 
-    recorder = _RecordingExecutor(_django_executor(into))
+    recorder = RecordingExecutor(_django_executor(into))
 
     # The write guard goes outside, and covers the diff as well as the replay: it
     # counts rows rather than intercepting statements, so it tolerates the diff's
