@@ -188,6 +188,44 @@ something it does not buy today:
   that cannot ship because the framework half is mid-change is the cost a shared
   distribution actually imposes, and nothing so far has hit it.
 
+## Update — 2026-09-07: how far the framework tier goes into handling
+
+The framework tier has grown a second half. It began as a log, some pure functions
+over it, and a way to apply what they return. It now also owns *delivery*: one
+written loop that reads, applies, records what could not be applied and commits the
+reading position (ADR 0007); a durable record of every refusal, failure and
+deliberate skip, with three backends; a screen for reading those records and a
+command for expiring them. That is a consumer runtime, not an event store, and it
+arrived one accepted decision at a time without anyone stating the shape it was
+growing into.
+
+**This update states it. The handling the framework tier owns is: deliver an event
+to a consumer, and keep an honest record of what happened to it.** That is the
+whole of it, and it is banked — the pieces above are built, tested and released,
+and are not to be re-argued as scope creep.
+
+**Three things sit deliberately outside that line**, and each is deferred here so
+that the next one does not have to be argued from first principles:
+
+- **Retrying, with or without backoff.** The loop records a failure and moves on,
+  or stops. When to try again is a scheduling decision about a particular
+  consumer's workload, and a library that guesses it is wrong for most of them.
+- **Re-driving a recorded failure.** The obvious pairing with a dead-letter
+  record, and the one most likely to be asked for. It writes to a projection, so
+  it needs the rebuild and parity gates extended to cover it; ADR 0007 declines it
+  on those grounds and this does not overturn that. The record is useful alone: it
+  makes a manual repair targeted rather than a sweep.
+- **Holding events back behind a failure.** `Outcome.sequence_key` records what an
+  event was ordered within and nothing reads it. Refusing to apply an event whose
+  group has an unresolved failure changes live behaviour and needs its own
+  argument. Accepted as-is for now: the field is exported, so removing it is no
+  longer free, and the enforcement is revisited on demand rather than on principle.
+
+The test for anything proposed in this area is whether it is *delivering an event
+and recording what happened*, or *deciding what to do about what happened*. The
+first is in. The second is a decision of its own, and wants an ADR before it wants
+an implementation.
+
 ## Decision
 
 **Name the boundary and bring the framework-tier seams up to the protocol tier's
