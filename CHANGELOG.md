@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-08
+
 ### Changed
 
 - **Two modules renamed for what they serve.** `rakaia.handler` is the Durable
