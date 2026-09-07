@@ -6,7 +6,7 @@ in the Django admin.
 """
 
 import json
-from typing import Any, cast
+from typing import Any
 
 from django.contrib import admin
 from django.utils.html import format_html, format_html_join
@@ -17,8 +17,7 @@ from django_rakaia.event_message import (
     event_label,
     event_label_display,
 )
-from django_rakaia.models import ConsumerOutcome, Stream, StreamEntry, StreamEvent
-from rakaia.outcomes import Outcome, decode_outcome
+from django_rakaia.models import Stream, StreamEntry, StreamEvent
 
 
 @admin.register(Stream)
@@ -228,207 +227,6 @@ class StreamEntryAdmin(admin.ModelAdmin):
     @admin.display(description="Type")
     def event_type_badge(self, obj) -> SafeString:
         return _event_badge(obj.event.event_type)
-
-
-_ABSENT = "—"
-"""What a field that is legitimately empty shows. An em-dash, not a blank cell,
-for the same reason a labelless badge is one: a blank reads as a rendering fault."""
-
-_STATUS_COLORS = {
-    "failed": "#dc3545",
-    "refused": "#ffc107",
-    "skipped": "#6c757d",
-}
-
-
-_DECODED_ATTR = "_rakaia_decoded"
-_NOT_DECODED = object()
-
-
-def _decoded(obj: ConsumerOutcome) -> Outcome | None:
-    """The record in `obj.payload`, or ``None`` if this version cannot build it.
-
-    Cached on the instance because a row is eight columns wide and every one of
-    them asks the same question; `decode_outcome` also logs each time it drops a
-    payload, and one unreadable row should be one line in the log, not eight.
-    """
-    cached = getattr(obj, _DECODED_ATTR, _NOT_DECODED)
-    if cached is _NOT_DECODED:
-        cached = decode_outcome(obj.payload)
-        setattr(obj, _DECODED_ATTR, cached)
-    return cast("Outcome | None", cached)
-
-
-def _outcome_field(obj: ConsumerOutcome, name: str) -> str:
-    """One field of the decoded record, as text a cell can hold."""
-    outcome = _decoded(obj)
-    if outcome is None:
-        return _ABSENT
-    value = getattr(outcome, name)
-    return _truncate(str(value)) if value else _ABSENT
-
-
-@admin.register(ConsumerOutcome)
-class ConsumerOutcomeAdmin(admin.ModelAdmin):
-    """What a consumer could not apply, newest first, and why.
-
-    The one screen this app's operational bookkeeping gets — `ConsumerCursor`,
-    `StreamOffsetWatermark` and `StreamProducer` deliberately have none, because
-    bookkeeping is not browsed. Looking at these *is* the feature, which is the
-    exception ADR 0007 argues for rather than a precedent for the others.
-
-    Every column here comes out of `payload` through `decode_outcome`, and none
-    of them is a model field. The two ``_key`` columns are a scope index holding
-    a percent-encoded, possibly truncated form of the value — printing them would
-    show `submission%2Ftf611` for a stream a consumer named `submission/tf611`,
-    which is the mistake the row's shape invites. A payload this version cannot
-    build still gets a row, marked as unreadable, because a record dropped from
-    the page is the failure the whole table exists to prevent.
-
-    Read-only throughout, and not only by convention: these are a record of what
-    happened. Removing them is a retention job, not a button.
-    """
-
-    list_display = [
-        "recorded_at",
-        "consumer",
-        "stream_path",
-        "subject",
-        "offset",
-        "stage",
-        "status_badge",
-        "reasons",
-    ]
-    # `recorded_at` can tie — a batch of failures lands in one transaction — so
-    # the primary key breaks it, and the newest row is first either way.
-    ordering = ["-recorded_at", "-pk"]
-    # No `date_hierarchy`. It costs two `COUNT(*)`s and a `SELECT DISTINCT` over
-    # a truncated `recorded_at` on every page load, none of which an index on
-    # that column can serve, and this table has no bound on its size until a
-    # retention job is scheduled. Newest-first ordering answers the question the
-    # hierarchy was there for.
-    # The payload is the record, so searching it searches every field of every
-    # outcome at once, in the values the consumer passed rather than the keys.
-    search_fields = ["payload"]
-    list_per_page = 50
-    fields = [
-        "recorded_at",
-        "consumer",
-        "stream_path",
-        "subject",
-        "offset",
-        "sequence_key",
-        "stage",
-        "status_badge",
-        "reasons",
-        "params",
-        "attempt",
-        "payload",
-    ]
-    readonly_fields = fields
-
-    def get_search_results(self, request, queryset, search_term):
-        """Search the payload for what the consumer passed, not for its spelling.
-
-        `encode_outcome` renders with `json.dumps`, which escapes anything
-        outside ASCII, so a stream a consumer named `café/tf611` sits in the
-        column as ``caf\u00e9/tf611``. Searching the term as typed matched
-        nothing and said so as an empty page — an operator reads that as "there
-        is no record", which is the one conclusion this table exists to prevent.
-
-        **Only the characters that were escaped are escaped back, one at a
-        time.** Escaping the whole term through `json.dumps` was the first
-        attempt and it broke quoted phrases: Django splits the search box on
-        spaces and *then* strips the quotes around a bit, so a term arriving as
-        ``\"two words\"`` never matches that branch and is searched literally,
-        which returned nothing at all for a query that used to work. Anything
-        already ASCII is left exactly as the operator typed it, so every search
-        that worked before this method existed still works, character for
-        character.
-        """
-        escaped = "".join(
-            char if char.isascii() else json.dumps(char)[1:-1] for char in search_term
-        )
-        return super().get_search_results(request, queryset, escaped)
-
-    def has_add_permission(self, request) -> bool:  # noqa: ARG002
-        return False
-
-    def has_change_permission(self, request, obj=None) -> bool:  # noqa: ARG002
-        return False
-
-    def has_delete_permission(self, request, obj=None) -> bool:  # noqa: ARG002
-        return False
-
-    @admin.display(description="Consumer")
-    def consumer(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "consumer")
-
-    @admin.display(description="Stream")
-    def stream_path(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "stream_path")
-
-    @admin.display(description="Subject")
-    def subject(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "subject")
-
-    @admin.display(description="Offset")
-    def offset(self, obj: ConsumerOutcome) -> str:
-        # Absent at ``stage="append"``: the event never reached the log, so it
-        # has no position to name.
-        return _outcome_field(obj, "offset")
-
-    @admin.display(description="Sequence")
-    def sequence_key(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "sequence_key")
-
-    @admin.display(description="Stage")
-    def stage(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "stage")
-
-    @admin.display(description="Attempt")
-    def attempt(self, obj: ConsumerOutcome) -> str:
-        return _outcome_field(obj, "attempt")
-
-    @admin.display(description="Status")
-    def status_badge(self, obj: ConsumerOutcome) -> SafeString:
-        """The status, or the fact that the payload could not be read.
-
-        This column carries the unreadable case because it is the one every row
-        has: the rest go to an em-dash, and a row of em-dashes and nothing else
-        looks like a bug rather than a record from another version.
-        """
-        outcome = _decoded(obj)
-        status = outcome.status if outcome is not None else "unreadable"
-        return format_html(
-            '<span style="background-color: {}; color: white; padding: 3px 8px; '
-            'border-radius: 3px; font-size: 11px; font-weight: bold;">{}</span>',
-            _STATUS_COLORS.get(status, "#6c757d"),
-            status.upper(),
-        )
-
-    @admin.display(description="Reasons")
-    def reasons(self, obj: ConsumerOutcome) -> str:
-        """The consumer's own codes, all of them.
-
-        One event can breach several rules at once, and showing the first would
-        make a row look like a single problem when it is several.
-        """
-        outcome = _decoded(obj)
-        if outcome is None or not outcome.reasons:
-            return _ABSENT
-        return _truncate(", ".join(outcome.reasons))
-
-    @admin.display(description="Params")
-    def params(self, obj: ConsumerOutcome) -> SafeString | str:
-        outcome = _decoded(obj)
-        if outcome is None or not outcome.params:
-            return _ABSENT
-        return format_html_join(
-            mark_safe("<br>"),
-            "<code>{}</code> = {}",
-            sorted(outcome.params.items()),
-        )
 
 
 def register_stream_event_admin(event_model_class):

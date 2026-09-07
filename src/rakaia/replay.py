@@ -86,7 +86,6 @@ from .effects import (
     Retire,
     Update,
     Upsert,
-    _write_order_rank,
     _WrittenFields,
     transition_payload,
 )
@@ -399,6 +398,22 @@ def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
             for identity in rows
         )
     return out
+
+
+def _write_order_rank(effect: Effect) -> int:
+    """Where `effect` lands in the order an executor applies a batch.
+
+    Every executor applies a batch in three passes — every write, then every
+    delete, then every retire — so that a reconcile batch converges regardless
+    of the order its handlers emitted. That is exactly why effects from two
+    different events cannot simply be poured into one batch: doing so would
+    hoist a later event's write above an earlier event's delete.
+    """
+    if isinstance(effect, (Upsert, Update)):
+        return 0
+    if isinstance(effect, Delete):
+        return 1
+    return 2
 
 
 def _self_collides(effects: list[Effect]) -> bool:

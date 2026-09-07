@@ -6,24 +6,18 @@ short-data path), link builders, translation status, and the dynamic
 ``register_stream_event_admin`` guard.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 from django.contrib import admin as django_admin
-from django.contrib.admin.templatetags.admin_list import result_list
 from django.test import RequestFactory
 
 from django_rakaia.admin import (
-    ConsumerOutcomeAdmin,
     StreamAdmin,
     StreamEntryAdmin,
     StreamEventAdmin,
     register_stream_event_admin,
 )
 from django_rakaia.event_message import NO_LABEL_DISPLAY
-from django_rakaia.models import ConsumerOutcome, Stream, StreamEntry, StreamEvent
-from django_rakaia.outcomes import DjangoOutcomeStore
-from rakaia.outcomes import Outcome
+from django_rakaia.models import Stream, StreamEntry, StreamEvent
 from tests.test_django_rakaia.models import AppStreamEvent
 
 pytestmark = pytest.mark.django_db
@@ -571,167 +565,3 @@ class TestRelabellingTheFilterChangedNothingElseAboutIt:
             ("create (1)", "?_facets=True&event_type=create"),
             ("delete (1)", "?_facets=True&event_type=delete"),
         ]
-
-
-class TestTheOutcomeScreenReadsThePayload:
-    """The one screen operational bookkeeping gets, and why it cannot read columns.
-
-    `ConsumerCursor`, `StreamOffsetWatermark` and `StreamProducer` have no admin
-    because bookkeeping is not browsed; this table is the deviation ADR 0007
-    argues for, because looking at it *is* the feature. What makes it a screen
-    rather than a `list_display` of the model's fields is that the row is not
-    field-shaped: two derived percent-encoded key columns and a payload holding
-    the whole record. `submission/tf611` is indexed as `submission%2Ftf611`, so a
-    screen printing the column prints something no consumer ever passed.
-
-    Each case asks what the changelist *renders*, through the same
-    `result_list` the template calls, rather than what a display method returns.
-    """
-
-    def setup_method(self) -> None:
-        self.admin = ConsumerOutcomeAdmin(ConsumerOutcome, django_admin.site)
-
-    def _record(self, **overrides: object) -> None:
-        fields: dict[str, object] = {
-            "consumer": "ledger",
-            "stream_path": "submission/tf611",
-            "subject": "row-9",
-            "offset": "42",
-            "sequence_key": "tf611",
-            "stage": "project",
-            "status": "refused",
-            "reasons": ("missing_total", "bad_date"),
-        }
-        fields.update(overrides)
-        DjangoOutcomeStore().record(Outcome(**fields))  # type: ignore[arg-type]
-
-    def _rendered_rows(self) -> list[str]:
-        """One string per row, as the changelist template renders its cells."""
-        _, changelist = _changelist(self.admin)
-        # `changelist_view` sets this before rendering; nothing on this screen is
-        # editable, so it is the None that view would have set.
-        changelist.formset = None
-        return [
-            " ".join(str(cell) for cell in row)
-            for row in result_list(changelist)["results"]
-        ]
-
-    def test_the_changelist_renders(self) -> None:
-        self._record()
-        assert len(self._rendered_rows()) == 1
-
-    def test_the_newest_record_is_first(self) -> None:
-        # Written oldest-first and then dated in the opposite order, so a
-        # screen falling back to insertion order gets this exactly backwards.
-        for subject in ("newest", "middle", "oldest"):
-            self._record(subject=subject)
-        for row, day in zip(
-            ConsumerOutcome.objects.order_by("pk"), (3, 2, 1), strict=True
-        ):
-            ConsumerOutcome.objects.filter(pk=row.pk).update(
-                recorded_at=datetime(2026, 1, day, tzinfo=UTC)
-            )
-
-        shown = [
-            next(s for s in ("newest", "middle", "oldest") if s in row)
-            for row in self._rendered_rows()
-        ]
-        assert shown == ["newest", "middle", "oldest"]
-
-    def test_the_screen_shows_the_values_not_the_encoded_keys(self) -> None:
-        self._record()
-        (row,) = self._rendered_rows()
-
-        # The value the consumer passed, not the column it was indexed under.
-        assert "submission/tf611" in row
-        assert "submission%2Ftf611" not in row
-        for value in ("ledger", "row-9", "42", "project", "REFUSED"):
-            assert value in row
-        assert "missing_total" in row and "bad_date" in row
-
-    def test_a_record_from_before_the_log_renders_without_an_offset(self) -> None:
-        # `stage="append"` means the event never reached the log, so it has no
-        # position to name — an absence, not the word Python prints for one.
-        self._record(stage="append", status="failed", offset=None)
-        (row,) = self._rendered_rows()
-        assert "FAILED" in row and "append" in row
-        assert "None" not in row
-
-    def test_nothing_can_be_added_changed_or_deleted(self) -> None:
-        self._record()
-        request, _ = _changelist(self.admin)
-        row = ConsumerOutcome.objects.get()
-        assert self.admin.has_add_permission(request) is False
-        assert self.admin.has_change_permission(request) is False
-        assert self.admin.has_change_permission(request, row) is False
-        assert self.admin.has_delete_permission(request) is False
-        assert self.admin.has_delete_permission(request, row) is False
-
-    def test_a_payload_this_version_cannot_read_still_renders(self) -> None:
-        # A row from a version whose outcome had fields this one requires.
-        # `decode_outcome` returns None for it, and the page must survive.
-        self._record()
-        ConsumerOutcome.objects.create(
-            consumer_key="ledger",
-            stream_path_key="submission%2Ftf611",
-            payload='{"consumer": "ledger"}',
-        )
-        rows = self._rendered_rows()
-
-        assert len(rows) == 2
-        # And it has to say so: an all-blank row reads as a rendering fault.
-        assert any("unreadable" in row.lower() for row in rows)
-
-    def test_a_search_finds_a_value_that_is_not_ascii(self) -> None:
-        # `encode_outcome` renders with `json.dumps`, which escapes anything
-        # outside ASCII, so this stream sits in the column as `café/...`.
-        # Searching what the operator can see on the screen has to find it;
-        # an empty page reads as "there is no record", which is the one
-        # conclusion this table exists to prevent.
-        self._record(stream_path="café/tf611")
-        request, _ = _changelist(self.admin)
-        found, _ = self.admin.get_search_results(
-            request, ConsumerOutcome.objects.all(), "café"
-        )
-        assert found.count() == 1
-
-    def test_a_search_for_an_ordinary_value_still_finds_it(self) -> None:
-        # The other half: escaping the term must be the identity for ASCII.
-        self._record()
-        request, _ = _changelist(self.admin)
-        found, _ = self.admin.get_search_results(
-            request, ConsumerOutcome.objects.all(), "submission/tf611"
-        )
-        assert found.count() == 1
-
-    def test_a_quoted_phrase_still_searches_as_a_phrase(self) -> None:
-        # Django splits the box on spaces and *then* strips the quotes around a
-        # bit. Escaping the whole term first turns the operator's quotes into
-        # something that branch no longer recognises, and the phrase is searched
-        # literally — nothing matches, which is the empty page this override was
-        # written to prevent, reintroduced by the override itself.
-        self._record(subject="alpha beta")
-        self._record(subject="beta alpha")
-        request, _ = _changelist(self.admin)
-
-        phrase, _ = self.admin.get_search_results(
-            request, ConsumerOutcome.objects.all(), '"alpha beta"'
-        )
-        loose, _ = self.admin.get_search_results(
-            request, ConsumerOutcome.objects.all(), "alpha beta"
-        )
-
-        assert phrase.count() == 1
-        assert loose.count() == 2
-
-    def test_the_page_title_shows_the_value_not_the_encoded_key(self) -> None:
-        # Django puts `str(obj)` in the change page's title and breadcrumb, so
-        # the screen that exists to stop `submission%2Ftf611` being read as a
-        # stream name must not print it there either. Both halves of the title
-        # carry a character the index encodes, because a consumer named `ledger`
-        # encodes to itself and leaves half the rendering unwatched.
-        self._record(consumer="ledger 100%", stream_path="submission/tf611")
-        row = ConsumerOutcome.objects.get()
-        assert "submission/tf611" in str(row)
-        assert "ledger 100%" in str(row)
-        assert "%2F" not in str(row) and "%25" not in str(row)

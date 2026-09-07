@@ -127,7 +127,7 @@ class StreamServerStore(WritableStore, Protocol):
     """A store that can back a Durable Streams **protocol server**.
 
     `WritableStore` is what `replay()` and projections need. This is the wider
-    surface `rakaia.protocol_server.create_app` needs: everything in `WritableStore`,
+    surface `rakaia.handler.create_app` needs: everything in `WritableStore`,
     plus the protocol lifecycle — producer epoch/seq fencing, close, the TTL
     sliding window, long-poll, and response formatting.
 
@@ -280,11 +280,6 @@ class OutcomeStore(Protocol):
     record is store-agnostic, and only the keeping of it is backend-shaped. A
     backend may implement this on the same object as its stream store or on a
     separate one; nothing here assumes either.
-
-    A database-backed implementation should expose the alias it writes on as a
-    public ``using`` attribute. `django_rakaia.consumer` reads it to know which
-    connection must not already be inside the caller's transaction, and a store
-    that spells it some other way is silently left unguarded.
     """
 
     def record(self, outcome: Outcome) -> None:

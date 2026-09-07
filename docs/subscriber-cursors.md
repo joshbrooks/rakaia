@@ -78,11 +78,7 @@ the reasoning:
 - **The outcome is written outside the apply's transaction.** A Django executor
   wraps its batch in `transaction.atomic`; a record written inside rolls back
   with the batch whose failure it exists to record. So do not call `consume`
-  from inside a transaction of your own either — `django_consumer` refuses to
-  start inside one rather than leaving that as advice. The usual way to meet
-  that refusal without having written a transaction yourself is
-  `ATOMIC_REQUESTS = True`, which wraps every view in one: run the consumer
-  outside the request, or on a database alias that setting does not cover.
+  from inside a transaction of your own either.
 - **The cursor is committed last, per message.** That is what makes `halt` mean
   anything: the watermark stops *below* the event that failed, so the event is
   still pending and is delivered again.
@@ -94,26 +90,6 @@ the reasoning:
 An `apply` may also *return* outcomes instead of raising, for a fact it decided
 rather than an exception it hit. Returning one is not a failure: the message
 still applied and the cursor still advances.
-
-## Holding it as one thing: `Consumer`
-
-The call above names `"reporting"` and `"submissions"` three times each, and
-`outcomes=` can be left off without anything complaining. `Consumer` holds the
-wiring instead: the name and the path are said once, and the outcome store is a
-required argument, so a consumer that records nothing cannot be built.
-
-```python
-from django_rakaia import django_consumer
-
-consumer = django_consumer(store, "submissions", "reporting")
-result = consumer.run(apply, on_error="skip")
-```
-
-`django_consumer` fills in the durable cursor and outcome stores, and refuses to
-run inside a transaction you opened — the third bullet above, enforced rather
-than described. Outside Django, build a `rakaia.Consumer` directly and pass your
-own `ConsumerCursorStore` and `OutcomeStore`; `InMemoryConsumerCursorStore` and
-`InMemoryOutcomeStore` are the reference pair.
 
 ## Rewind detection
 

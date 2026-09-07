@@ -48,7 +48,7 @@ meta-stream registry need. Five methods: `read`, `has`, `create(path)`, `append`
 `append_many`, plus `get_current_offset`. Conformance suite:
 `tests/store_contract.py` (240 lines, ~20 tests).
 
-**Level 2 — `StreamServerStore`.** What `rakaia.protocol_server.create_app` needs to serve
+**Level 2 — `StreamServerStore`.** What `rakaia.handler.create_app` needs to serve
 the Durable Streams protocol on top of the backend. Adds eleven more: `run_sync`,
 the widened `create(path, *, content_type, ttl_seconds, expires_at, initial_data,
 closed)`, `get`, `touch`, `delete`, `format_response`, `append_with_producer`,

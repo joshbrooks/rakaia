@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.protocol_server import producer_response
+from rakaia.handler import producer_response
 from rakaia.types import (
     PRODUCER_EPOCH_HEADER,
     PRODUCER_EXPECTED_SEQ_HEADER,

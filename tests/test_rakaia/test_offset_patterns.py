@@ -3,7 +3,7 @@
 Offset validity lives in ``rakaia.offsets.is_syntactically_valid`` (#226) — the
 last of a stream position's rules to move there, after #206 moved the other
 four. ``VALID_TTL_PATTERN`` / ``VALID_CONTENT_TYPE_PATTERN`` still live in
-``rakaia.protocol_server``.
+``rakaia.handler``.
 
 **The offset cases assert the request's outcome, not which layer produced it.**
 The old version asserted a regex directly, and that pinned the wrong thing twice
@@ -20,8 +20,8 @@ from __future__ import annotations
 import pytest
 
 from rakaia import StreamStore
+from rakaia.handler import VALID_CONTENT_TYPE_PATTERN, VALID_TTL_PATTERN
 from rakaia.offsets import MAX_OFFSET_LENGTH, is_syntactically_valid
-from rakaia.protocol_server import VALID_CONTENT_TYPE_PATTERN, VALID_TTL_PATTERN
 from tests.asgi_client import asgi_client
 
 

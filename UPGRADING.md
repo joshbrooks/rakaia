@@ -17,21 +17,6 @@ ones you are crossing.
 
 # Unreleased
 
-## Two module paths changed, and there is no shim
-
-`rakaia.handler` is now `rakaia.protocol_server`, and `rakaia.cursor` is now
-`rakaia.response_cursor`. Both were named after something they are not: the first
-is the protocol server, not a handler in this library's sense — the pure function
-that turns an event into effects, which lives in `rakaia.registry` — and the second
-holds the response cursor a CDN uses to collapse identical long-poll requests, not
-the reading position a consumer keeps between runs.
-
-Nothing exported moved. Every name is importable from `rakaia` exactly as before,
-so `from rakaia import create_app` and the rest are unaffected. If you imported
-either submodule directly — `from rakaia.handler import ServerOptions` — change the
-path. The failure is an `ImportError` at the import, so nothing gets past a first
-run.
-
 ## Outcomes are part of the stable surface now
 
 `Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`, `InMemoryOutcomeStore`,

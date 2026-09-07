@@ -9,7 +9,7 @@ this file is the exhaustive cover for them: one class per exit, plus the
 agreement between the plain read and the live push that used to be two separate
 answers to the same question.
 
-`tests/test_rakaia/test_protocol_server.py` still drives the whole thing over HTTP. That
+`tests/test_rakaia/test_handler.py` still drives the whole thing over HTTP. That
 coverage is wiring — it proves the handler asks these functions and sends what
 they say — and is deliberately not duplicated here.
 """
