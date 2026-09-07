@@ -302,7 +302,11 @@ class ConsumerOutcomeAdmin(admin.ModelAdmin):
     # `recorded_at` can tie — a batch of failures lands in one transaction — so
     # the primary key breaks it, and the newest row is first either way.
     ordering = ["-recorded_at", "-pk"]
-    date_hierarchy = "recorded_at"
+    # No `date_hierarchy`. It costs two `COUNT(*)`s and a `SELECT DISTINCT` over
+    # a truncated `recorded_at` on every page load, none of which an index on
+    # that column can serve, and this table has no bound on its size until a
+    # retention job is scheduled. Newest-first ordering answers the question the
+    # hierarchy was there for.
     # The payload is the record, so searching it searches every field of every
     # outcome at once, in the values the consumer passed rather than the keys.
     search_fields = ["payload"]
@@ -322,6 +326,24 @@ class ConsumerOutcomeAdmin(admin.ModelAdmin):
         "payload",
     ]
     readonly_fields = fields
+
+    def get_search_results(self, request, queryset, search_term):
+        """Search the payload for what the consumer passed, not for its spelling.
+
+        `encode_outcome` renders with `json.dumps`, which escapes anything
+        outside ASCII, so a stream a consumer named `café/tf611` sits in the
+        column as ``caf\u00e9/tf611``. Searching the term as typed matched
+        nothing and said so as an empty page — an operator reads that as "there
+        is no record", which is the one conclusion this table exists to prevent.
+
+        Escaping the term the same way the payload was escaped makes the two
+        comparable. For a term that is already ASCII this is the identity, and a
+        term carrying a quote or a backslash is escaped to exactly the form the
+        payload stores.
+        """
+        return super().get_search_results(
+            request, queryset, json.dumps(search_term)[1:-1]
+        )
 
     def has_add_permission(self, request) -> bool:  # noqa: ARG002
         return False

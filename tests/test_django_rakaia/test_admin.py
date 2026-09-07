@@ -681,3 +681,34 @@ class TestTheOutcomeScreenReadsThePayload:
         assert len(rows) == 2
         # And it has to say so: an all-blank row reads as a rendering fault.
         assert any("unreadable" in row.lower() for row in rows)
+
+    def test_a_search_finds_a_value_that_is_not_ascii(self) -> None:
+        # `encode_outcome` renders with `json.dumps`, which escapes anything
+        # outside ASCII, so this stream sits in the column as `café/...`.
+        # Searching what the operator can see on the screen has to find it;
+        # an empty page reads as "there is no record", which is the one
+        # conclusion this table exists to prevent.
+        self._record(stream_path="café/tf611")
+        request, _ = _changelist(self.admin)
+        found, _ = self.admin.get_search_results(
+            request, ConsumerOutcome.objects.all(), "café"
+        )
+        assert found.count() == 1
+
+    def test_a_search_for_an_ordinary_value_still_finds_it(self) -> None:
+        # The other half: escaping the term must be the identity for ASCII.
+        self._record()
+        request, _ = _changelist(self.admin)
+        found, _ = self.admin.get_search_results(
+            request, ConsumerOutcome.objects.all(), "submission/tf611"
+        )
+        assert found.count() == 1
+
+    def test_the_page_title_shows_the_value_not_the_encoded_key(self) -> None:
+        # Django puts `str(obj)` in the change page's title and breadcrumb, so
+        # the screen that exists to stop `submission%2Ftf611` being read as a
+        # stream name must not print it there either.
+        self._record()
+        row = ConsumerOutcome.objects.get()
+        assert "submission/tf611" in str(row)
+        assert "%2F" not in str(row)
