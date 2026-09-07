@@ -15,7 +15,7 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.4.0
 
 ## Two module paths changed, and there is no shim
 
