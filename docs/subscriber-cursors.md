@@ -109,6 +109,12 @@ consumer = django_consumer(store, "submissions", "reporting")
 result = consumer.run(apply, on_error="skip")
 ```
 
+`django_consumer` also takes `subject_of` and `sequence_of` — how to name what a
+record is about, and what it is ordered within — which is worth passing whenever
+your consumer records outcomes of its own: without them the records the loop
+writes name the event's position while yours name a row, and both land in one
+column on one screen.
+
 `django_consumer` fills in the durable cursor and outcome stores, and refuses to
 run inside a transaction you opened — the third bullet above, enforced rather
 than described. Outside Django, build a `rakaia.Consumer` directly and pass your

@@ -38,14 +38,27 @@ is still pending and the next run delivers it again. Under `on_error="skip"` the
 position advances past it and the record is how it is found later. The demo runs
 both against the same kind of failure and prints the two positions.
 
-**One thing the final table shows that is worth reading rather than tidying
-away.** Two records name a row, two name a position in the log. A record this
-consumer writes itself — the refusal, and the row that landed in a closed month —
-can say what the row was called. The two the loop wrote when an apply raised
-cannot: `django_consumer` does not yet let a caller say how to name a message, so
-the loop falls back to the one name it always has. That gap is
-[#272](https://github.com/joshbrooks/rakaia/issues/272); the example shows it as
-it is rather than hiding it behind a subject the loop cannot really supply.
+**Every record names a row, and that takes one argument.** A record this consumer
+writes itself — the refusal, and the row that landed in a closed month — names the
+row because the consumer chose the name. The two the loop writes when an apply
+raises would otherwise name the event's position in the log, because the position
+is the only name the loop has on its own. Passing `subject_of` to
+`django_consumer` tells it the row's name instead, and `sequence_of` says what
+that row is ordered within:
+
+```python
+django_consumer(
+    store,
+    STREAM,
+    CONSUMER,
+    subject_of=lambda message: json.loads(message.data)["row_key"],
+    sequence_of=lambda message: json.loads(message.data)["form_key"],
+)
+```
+
+Worth doing whenever a consumer records outcomes of its own, because both kinds
+end up in one column on one screen, and comparing them is why somebody opened
+it.
 
 ## Run
 

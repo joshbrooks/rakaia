@@ -141,6 +141,8 @@ def django_consumer(
     name: str,
     *,
     using: str | None = None,
+    subject_of: Callable[[StreamMessage], str] | None = None,
+    sequence_of: Callable[[StreamMessage], str] | None = None,
 ) -> DjangoConsumer:
     """A consumer of `path`, named `name`, keeping both its cursor and its
     outcomes in the database.
@@ -154,6 +156,32 @@ def django_consumer(
             transaction the caller has open, which is exactly what `run` refuses
             to start inside; a separate alias commits independently, and is the
             way out described in `django_rakaia.outcomes`.
+        subject_of: what a record written for a failed apply is *about*, given
+            the message. Defaults to the event's position in the log.
+
+            Worth passing whenever the consumer records outcomes of its own,
+            because the two end up in one column on one screen: a record the
+            consumer writes can name the row, and without this the records the
+            loop writes for it name a position instead. Comparing those is the
+            reason someone opens that screen.
+
+            Two things follow from it being yours to choose. It is called **only
+            when an apply fails**, so an exception from it surfaces on the path
+            you least want to be surprised on, and it propagates out of the run
+            rather than being recorded. And the subject is part of what makes a
+            record distinct: `latest` keeps the newest per subject, so a
+            function that gives two different events the same name shows one
+            record where two were written. The default could not do either — an
+            offset is always readable and always unique.
+        sequence_of: what a message is ordered *within*, given the message.
+            Defaults to the subject.
+
+            Nothing reads it yet (ADR 0007 Decision 7), which is a weaker reason
+            to pass it than it first appears: the field is written on every
+            record either way, so leaving this out does not omit the grouping, it
+            stores a copy of the subject in its place. The choice is between
+            recording something true and recording noise. It is also shown, as
+            "Sequence", on a record's detail page.
     """
     return DjangoConsumer(
         store=store,
@@ -161,4 +189,6 @@ def django_consumer(
         name=name,
         cursors=DjangoConsumerCursorStore(using=using),
         outcomes=DjangoOutcomeStore(using=using),
+        subject_of=subject_of,
+        sequence_of=sequence_of,
     )
