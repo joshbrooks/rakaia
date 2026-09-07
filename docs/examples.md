@@ -185,8 +185,7 @@ No example exercises these yet — a good place to contribute a demo:
 - The outcome record and the consume loop (`consume`, `Outcome`, the three
   stores). Exported and supported since #251, so the old reason for this gap —
   that an example would document an unstable surface — has expired. What is
-  missing now is simply the example: no demo calls `consume()`, and
-  `examples/protocol_streams/demo.py` drives `poll()` directly, threading the cursor from one call into the next by hand; it never applies a message and nothing in `examples/` commits a cursor at all.
+  missing now is simply the example: nothing under `examples/` calls `consume()`.
 
 ## Orientation for contributors
 

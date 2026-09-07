@@ -29,9 +29,8 @@ ones you are crossing.
 Nothing shipped depended on it — it was never exported, and this is its first
 release — so this is a break only for anyone who adopted it from the module before
 it was supported. If that is you, the import fails loudly at start-up rather than
-doing anything subtle. The rename is because the package root already means
-something else by those verbs: `encode_payload` and `decode_payload` encode an
-*event payload*, and `from rakaia import encode` would have read as that.
+doing anything subtle. The new names say what they encode, which `encode` and
+`decode` alone did not — this package encodes several things.
 
 Everything else here is an addition. If you adopted any of the other names early by
 importing the module they live in, that still works — but import from the package
@@ -153,7 +152,7 @@ wrong.
 
 The one thing to know if you plan to read the table directly rather than through
 the store. The `payload` column is the record: it holds the whole outcome as text,
-and `rakaia.outcomes.decode` turns it back into one. The two columns ending in
+and `rakaia.decode_outcome` turns it back into one. The two columns ending in
 `_key` are the scope index over that text, not a copy of it — each holds a
 percent-encoded, possibly shortened form of the value, so `stream_path_key` for
 `submission/tf611` reads `submission%2Ftf611`. Use them to find the rows for a
