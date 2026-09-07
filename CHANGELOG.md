@@ -47,11 +47,10 @@ runnable demo for each.
   proposes what to record instead, and this adds the record, the seam a backend
   implements, and two backends held to one shared suite.
 
-  **Deliberately partial and not exported.** The loop that would write these
-  records, a database-backed place to keep them, and retrying a failure are all
-  absent, and the ADR marks which of its parts describe code and which it only
-  proposes. Adopting it today means importing below the stable surface on
-  purpose. (#243)
+  **Partial when it landed, and no longer.** The loop arrived in #248 and a
+  database-backed place to keep the records in #249; retrying a failure is still
+  absent and the ADR says so. Exported and supported as of #251 — import from
+  `rakaia`, not from the module. (#243, #248, #249, #251)
 
 ### Changed
 

@@ -17,6 +17,36 @@ ones you are crossing.
 
 # Unreleased
 
+## Outcomes are part of the stable surface now
+
+`Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`, `InMemoryOutcomeStore`,
+`JsonlOutcomeStore`, `encode_outcome`, `decode_outcome`, `consume`, `Consumed` and
+`OnErrorPolicy` are importable from `rakaia`, and `DjangoOutcomeStore` from
+`django_rakaia`.
+
+**Two of those were renamed on the way out, and there is no shim.** The codec was
+`rakaia.outcomes.encode` / `.decode` and is now `encode_outcome` / `decode_outcome`.
+Nothing shipped depended on it — it was never exported, and this is its first
+release — so this is a break only for anyone who adopted it from the module before
+it was supported. If that is you, the import fails loudly at start-up rather than
+doing anything subtle. The new names say what they encode, which `encode` and
+`decode` alone did not — this package encodes several things.
+
+Everything else here is an addition. If you adopted any of the other names early by
+importing the module they live in, that still works — but import from the package
+now, because the module layout is not what was promised.
+
+Two things worth knowing before you build on it. `consume` takes `on_error` with **no
+default**, so you have to say `"skip"` or `"halt"` at every call site; that is
+deliberate, because the two answers suit continuous consuming and rebuilding
+respectively and a default would be silently wrong for one of them. And if your own
+code already has a class called `Outcome` — a verdict enum, say — import this one
+under another name rather than letting it shadow yours.
+
+`ConsumerOutcome` stays out of `__all__` with the other models. Its `payload` column
+holds what `encode_outcome` produced: read it with `decode_outcome`, and do not parse
+it yourself.
+
 ## Changing `RAKAIA_STORE` does not move your log
 
 This is not a break in the usual sense — nothing that worked stops working — but
@@ -122,7 +152,7 @@ wrong.
 
 The one thing to know if you plan to read the table directly rather than through
 the store. The `payload` column is the record: it holds the whole outcome as text,
-and `rakaia.outcomes.decode` turns it back into one. The two columns ending in
+and `rakaia.decode_outcome` turns it back into one. The two columns ending in
 `_key` are the scope index over that text, not a copy of it — each holds a
 percent-encoded, possibly shortened form of the value, so `stream_path_key` for
 `submission/tf611` reads `submission%2Ftf611`. Use them to find the rows for a

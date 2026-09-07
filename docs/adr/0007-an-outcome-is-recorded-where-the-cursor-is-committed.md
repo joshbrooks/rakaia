@@ -1,6 +1,8 @@
 # ADR 0007 — An outcome is recorded where the cursor is committed, not where the effect is applied
 
-- **Status:** Proposed
+- **Status:** Accepted (the core and both reference stores landed in #243, the loop in
+  #248, the Django store in #249; exported in #251 — see the update note in "What is
+  built" below)
 - **Date:** 2026-09-05
 - **Deciders:** rakaia maintainers
 - **Related:** [ADR 0002](./0002-framework-vs-protocol-server-boundary.md) (the
@@ -69,20 +71,23 @@ same way, and there are now three stores.
 
 ## What is built, and what this decision only proposes
 
-A decision record says what was decided; it should not be read as saying what exists. Of the
-decisions below, **2, 3, 4, 5, 6, 6a, 6b and 7 describe code in the tree**. Decision 1's core half
-does; its Django half does not.
+A decision record says what was decided; it should not be read as saying what exists. **Every
+decision below now describes code in the tree.** Decision 1's Django half — the outstanding
+item when this was written — landed in #249 as `ConsumerOutcome` and `DjangoOutcomeStore`.
 
-Decisions 2 and 5 were the two that described nothing, and they no longer do:
-`rakaia.subscription.consume` is the loop, and `on_error` is its parameter. Decision 3 has
-stopped being a rule stated only in the negative with it — the loop is what makes absence of
-a record mean success, and a test pins each half of that. What is still outstanding is the
-Django place to keep an outcome, and the export: nothing in this ADR is in
-`rakaia.__all__`, deliberately, until the decision is Accepted.
+The habit of separating the two is worth keeping even now that the list is entirely real,
+because an earlier version of this section did not, and a reader would reasonably have taken
+the Decision list for an inventory. What that separation now records is the reverse: the
+decisions are built, and what remains is named under "What would reopen this" rather than
+hiding among them. Decision 7 in particular records a `sequence_key` that nothing acts on —
+built, and still a promise.
 
-The split is called out here because an earlier version of this section did not, and a
-reader would reasonably have taken the Decision list for an inventory. It is worth keeping
-the habit even now that most of the list is real.
+**Update, 2026-09-07 — exported.** `Outcome`, `OutcomeStatus`, `Stage`, `OutcomeStore`,
+`InMemoryOutcomeStore`, `JsonlOutcomeStore`, `encode_outcome`, `decode_outcome`, `consume`,
+`Consumed` and
+`OnErrorPolicy` are in `rakaia.__all__`; `DjangoOutcomeStore` is in `django_rakaia.__all__`.
+`ConsumerOutcome` stays Tier 2 with the other models. That is what moves this to Accepted,
+and it is a stability promise — see the Consequences.
 
 ## Decision
 
@@ -214,7 +219,7 @@ and "is this still failing?" is the latest outcome for the key, not a column. `u
 is therefore a derived query, not stored state.
 
 **6b. One translation decides what a stored outcome looks like, and every backend uses it.**
-`encode`/`decode` is the only crossing between an outcome and its stored form, the in-memory
+`encode_outcome`/`decode_outcome` is the only crossing between an outcome and its stored form, the in-memory
 reference included. That store previously kept the object as handed to it while the durable
 ones had to render it, so it accepted values they refused — a reference implementation more
 permissive than the real ones makes a passing test a weaker promise than production.
@@ -428,12 +433,18 @@ that is the point of it.
   it is the rendering step that makes the refusal safe, not the source.) Its flag path does not: the structured detail is flattened into a sentence before
   it is stored, so anything populating parameters from a flag has only prose to read back and
   must re-derive them. Decision 6 asks for the opposite of what that path does today.
-- **Nothing here is exported.** `Outcome`, `OutcomeStore` and the two backends are absent
-  from `rakaia.__all__`, so a consumer adopting this today is importing below the stable
-  surface. Deliberate while the decision is Proposed — exporting is a stability promise, and
-  making one for a design still under review is how a bad shape becomes permanent — but it
-  means "usable" and "supported" are not yet the same thing here. Exporting is the last step
-  before this is Accepted, not an oversight.
+- **Exporting is a promise, and it is now made.** While this was Proposed nothing here was in
+  `rakaia.__all__`, deliberately: exporting is a stability promise and making one for a design
+  still under review is how a bad shape becomes permanent. That reservation has been spent.
+  What is now promised is `Outcome`'s ten fields as a frozen dataclass, `consume`'s signature
+  **including `on_error` having no default**, `OutcomeStore`'s two methods, and — transitively
+  and least obviously — the `encode_outcome`/`decode_outcome` text format, because
+  `ConsumerOutcome.payload`
+  holds that text and anything decoding it depends on the format whether or not the functions
+  were exported. They are exported explicitly rather than left as an accidental surface.
+  Two of those promises are uncomfortable and named here rather than discovered later:
+  `sequence_key` is a field nothing acts on, and `attempt` is only meaningful to a caller that
+  re-delivers.
 - **`Outcome` is a name the motivating consumer already uses** for an unrelated four-member
   verdict enum — pass, fail, not-applicable, indeterminate — imported in twenty-odd modules
   and referred to a few hundred times. Nothing breaks, but `from rakaia import Outcome` would

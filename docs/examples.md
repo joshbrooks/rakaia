@@ -182,8 +182,10 @@ No example exercises these yet — a good place to contribute a demo:
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
-- The outcome record (`rakaia.outcomes`) — deliberately unexported and partial,
-  so an example would be documenting an unstable surface.
+- The outcome record and the consume loop (`consume`, `Outcome`, the three
+  stores). Exported and supported since #251, so the old reason for this gap —
+  that an example would document an unstable surface — has expired. What is
+  missing now is simply the example: nothing under `examples/` calls `consume()`.
 
 ## Orientation for contributors
 

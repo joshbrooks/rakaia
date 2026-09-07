@@ -89,9 +89,18 @@ if TYPE_CHECKING:
         history_effects,
         label_marker,
     )
+    from .jsonl_outcomes import JsonlOutcomeStore
     from .jsonl_store import JsonlStreamStore
     from .migrate import Migration, migrate_all, migrate_stream
     from .offsets import ForeignOffset
+    from .outcomes import (
+        InMemoryOutcomeStore,
+        Outcome,
+        OutcomeStatus,
+        Stage,
+        decode_outcome,
+        encode_outcome,
+    )
     from .projections import (
         project_latest,
         reconcile_aggregate,
@@ -101,6 +110,7 @@ if TYPE_CHECKING:
     )
     from .protocols import (
         CursorStore,
+        OutcomeStore,
         ProjectionReader,
         ReadableStore,
         StreamServerStore,
@@ -132,7 +142,7 @@ if TYPE_CHECKING:
     from .replay import ENVELOPE_TS, ReplayResult, TouchedSubject, merge_replay
     from .seed import seed_stream
     from .store import StreamStore
-    from .subscription import Poll, PollStatus, poll
+    from .subscription import Consumed, OnErrorPolicy, Poll, PollStatus, consume, poll
     from .types import (
         AppendOptions,
         AppendResult,
@@ -193,6 +203,7 @@ _EXPORTS: dict[str, str] = {
     "WritableStore": "rakaia.protocols",
     "StreamServerStore": "rakaia.protocols",
     "CursorStore": "rakaia.protocols",
+    "OutcomeStore": "rakaia.protocols",
     "ProjectionReader": "rakaia.protocols",
     "provenance": "rakaia.context",
     "get_provenance": "rakaia.context",
@@ -293,6 +304,17 @@ _EXPORTS: dict[str, str] = {
     "poll": "rakaia.subscription",
     "Poll": "rakaia.subscription",
     "PollStatus": "rakaia.subscription",
+    # The consume loop, and what it records about an event it could not apply
+    "consume": "rakaia.subscription",
+    "Consumed": "rakaia.subscription",
+    "OnErrorPolicy": "rakaia.subscription",
+    "Outcome": "rakaia.outcomes",
+    "OutcomeStatus": "rakaia.outcomes",
+    "Stage": "rakaia.outcomes",
+    "encode_outcome": "rakaia.outcomes",
+    "decode_outcome": "rakaia.outcomes",
+    "InMemoryOutcomeStore": "rakaia.outcomes",
+    "JsonlOutcomeStore": "rakaia.jsonl_outcomes",
     # Version
     # "__version__" is computed, not imported — see __getattr__.
 }

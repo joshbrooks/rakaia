@@ -196,9 +196,9 @@ class Outcome:
         if self.attempt < 1:
             raise ValueError(f"attempt counts from 1, got {self.attempt}.")
 
-        # `encode` is still the last word: anything the walk above cannot see
+        # `encode_outcome` is still the last word: anything the walk above cannot see
         # and json cannot render is refused there, with the same message.
-        encode(self)
+        encode_outcome(self)
 
 
 def _check_fields(outcome: Outcome) -> dict[str, str]:
@@ -267,7 +267,7 @@ def _check_value(
     raise TypeError(f"Unsupported annotation on {path}: {hint!r}")
 
 
-def encode(outcome: Outcome) -> str:
+def encode_outcome(outcome: Outcome) -> str:
     """The one translation from an outcome to the text a store keeps.
 
     Returns **text**, not a dict, and that is the whole design. Every store keeps
@@ -291,8 +291,8 @@ def encode(outcome: Outcome) -> str:
         ) from exc
 
 
-def decode(stored: str) -> Outcome | None:
-    """The inverse of `encode`, or ``None`` if this version cannot build it.
+def decode_outcome(stored: str) -> Outcome | None:
+    """The inverse of `encode_outcome`, or ``None`` if this version cannot build it.
 
     ``None`` rather than an exception because the caller is usually reading a whole
     file: a line written by a version that added a field, or predating one, must
@@ -340,12 +340,12 @@ class InMemoryOutcomeStore:
         # The encoded *text*, not the object and not a dict. This store is then the
         # file-backed one without the file, so the two cannot disagree about what
         # was stored — which is the disagreement seven review findings were about.
-        self._recorded.append(encode(outcome))
+        self._recorded.append(encode_outcome(outcome))
 
     def latest(self, consumer: str, stream_path: str) -> list[Outcome]:
         best: dict[str, Outcome] = {}
         for stored in self._recorded:
-            outcome = decode(stored)
+            outcome = decode_outcome(stored)
             if (
                 outcome is None
                 or outcome.consumer != consumer

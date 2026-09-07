@@ -117,6 +117,10 @@ _EXPORTS: dict[str, str] = {
     "poll_consumer": "django_rakaia.subscription",
     "load_cursor": "django_rakaia.subscription",
     "commit_cursor": "django_rakaia.subscription",
+    # -- what happened to an event a consumer could not apply -----------------
+    # The store, not the model. `ConsumerOutcome` stays Tier 2 and out of `__all__`
+    # with the other models — see `docs/public-api.md`.
+    "DjangoOutcomeStore": "django_rakaia.outcomes",
     # -- mounting ------------------------------------------------------------
     "get_asgi_app": "django_rakaia.integration",
     "register_stream_event_admin": "django_rakaia.admin",
