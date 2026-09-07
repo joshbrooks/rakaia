@@ -41,6 +41,11 @@ class ConsumerCursorStore(Protocol):
     one loads, the other stores, and both are keyed by the same
     ``(consumer, stream_path)`` pair. Passing them as two unrelated callables is
     what let a consumer read one key and write another.
+
+    A database-backed implementation should expose the alias it writes on as a
+    public ``using`` attribute. `django_rakaia.consumer` reads it to know which
+    connection must not already be inside the caller's transaction, and a store
+    that spells it some other way is silently left unguarded.
     """
 
     def load(self, consumer: str, stream_path: str) -> str | None:

@@ -78,7 +78,11 @@ the reasoning:
 - **The outcome is written outside the apply's transaction.** A Django executor
   wraps its batch in `transaction.atomic`; a record written inside rolls back
   with the batch whose failure it exists to record. So do not call `consume`
-  from inside a transaction of your own either.
+  from inside a transaction of your own either — `django_consumer` refuses to
+  start inside one rather than leaving that as advice. The usual way to meet
+  that refusal without having written a transaction yourself is
+  `ATOMIC_REQUESTS = True`, which wraps every view in one: run the consumer
+  outside the request, or on a database alias that setting does not cover.
 - **The cursor is committed last, per message.** That is what makes `halt` mean
   anything: the watermark stops *below* the event that failed, so the event is
   still pending and is delivered again.

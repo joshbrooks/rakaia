@@ -61,14 +61,14 @@ class TestRecordingIsOnByConstruction:
 
 
 class TestTheNameAndPathAreSaidOnce:
-    def test_they_reach_the_cursor_ledger_and_the_outcome_alike(self) -> None:
-        ledger = InMemoryConsumerCursorStore()
+    def test_they_reach_the_cursor_store_and_the_outcome_alike(self) -> None:
+        cursors = InMemoryConsumerCursorStore()
         outcomes = InMemoryOutcomeStore()
         consumer = Consumer(
             store=_store_with("submissions", [b'{"a": 1}']),
             path="submissions",
             name="reporting",
-            cursors=ledger,
+            cursors=cursors,
             outcomes=outcomes,
         )
 
@@ -81,10 +81,10 @@ class TestTheNameAndPathAreSaidOnce:
         assert [(o.consumer, o.stream_path) for o in recorded] == [
             ("reporting", "submissions")
         ]
-        assert ledger.load("reporting", "submissions") is not None
+        assert cursors.load("reporting", "submissions") is not None
 
     def test_a_second_run_resumes_from_the_committed_cursor(self) -> None:
-        """The ledger is loaded as well as committed, or a consumer re-applies
+        """The cursor store is read as well as committed, or a consumer re-applies
         everything it already applied on every run."""
         store = _store_with("submissions", [b'{"a": 1}', b'{"a": 2}'])
         seen: list[bytes] = []

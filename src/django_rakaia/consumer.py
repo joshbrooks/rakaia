@@ -51,6 +51,13 @@ class CallerTransactionOpen(RuntimeError):
     outside your own ``atomic()`` block; if the work `apply` does needs a
     transaction, open it inside `apply`, where it covers the effect and not the
     record of the effect failing.
+
+    ``ATOMIC_REQUESTS = True`` is the usual way to meet this without having
+    written an ``atomic()`` at all: it wraps every view in one, so a consumer run
+    from a request handler raises here. That is the right answer rather than an
+    inconvenience — the records really would roll back with the response — and
+    the fix is to run the consumer outside the request, or on a database alias
+    that setting does not cover.
     """
 
 

@@ -122,7 +122,7 @@ _EXPORTS: dict[str, str] = {
     # with the other models — see `docs/public-api.md`.
     "DjangoOutcomeStore": "django_rakaia.outcomes",
     # -- consuming a stream, durably -----------------------------------------
-    # The factory is the entry point; the class and the ledger are named because
+    # The factory is the entry point; the class and the cursor store are named
     # they are what it returns and what it wires in, and the error because a
     # caller catching it must be able to spell it without a submodule import.
     "django_consumer": "django_rakaia.consumer",
