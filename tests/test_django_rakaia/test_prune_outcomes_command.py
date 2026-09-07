@@ -178,3 +178,86 @@ class TestRecordedAtIndex:
         """The command's filter is the first real query on the timestamp."""
         indexed = {tuple(index.fields) for index in ConsumerOutcome._meta.indexes}
         assert ("recorded_at",) in indexed
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+class TestTheDatabaseFlag:
+    """`--database` decides which database is pruned, and nothing else is touched.
+
+    ``transaction=True`` because this is alias-aware: under a plain marker
+    pytest-django has already opened a transaction on every declared alias, which
+    is what `CLAUDE.md` records as hiding a missing ``using=`` (#180). There is no
+    ``atomic()`` in this command for that to mask today, and the marker is what
+    keeps that true if one ever appears.
+    """
+
+    def _stale_on(self, alias: str) -> int:
+        row = ConsumerOutcome.objects.using(alias).create(
+            consumer_key="c", stream_path_key="s", payload="{}"
+        )
+        ConsumerOutcome.objects.using(alias).filter(pk=row.pk).update(
+            recorded_at=timezone.now() - timedelta(days=400)
+        )
+        return row.pk
+
+    def test_only_the_named_database_is_pruned(self):
+        self._stale_on("default")
+        self._stale_on("overlay")
+
+        call_command(
+            "prune_outcomes", "--older-than-days", "365", "--database", "overlay"
+        )
+
+        assert ConsumerOutcome.objects.using("overlay").count() == 0
+        # The row the operator did not name. Drop `.using(alias)` from either
+        # queryset in the command and this is the row that goes instead.
+        assert ConsumerOutcome.objects.using("default").count() == 1
+
+    def test_a_dry_run_counts_the_named_database(self):
+        self._stale_on("default")
+        self._stale_on("overlay")
+        self._stale_on("overlay")
+
+        out = io.StringIO()
+        call_command(
+            "prune_outcomes",
+            "--older-than-days",
+            "365",
+            "--database",
+            "overlay",
+            "--dry-run",
+            stdout=out,
+        )
+
+        assert "deleted=2" in out.getvalue()
+        assert ConsumerOutcome.objects.using("overlay").count() == 2
+
+
+@pytest.mark.django_db
+class TestTheBatchSize:
+    """A batch size below one is refused rather than quietly doing nothing.
+
+    ``--batch-size 0`` slices ``[:0]``, finds nothing, breaks on the first pass
+    and reports ``deleted=0`` — a cron entry that looks like it ran and pruned an
+    empty table. ``-1`` reaches Django and raises about negative indexing.
+    """
+
+    def test_zero_is_refused_and_deletes_nothing(self):
+        _outcome(age=timedelta(days=400))
+
+        with pytest.raises(CommandError, match="--batch-size"):
+            call_command(
+                "prune_outcomes", "--older-than-days", "365", "--batch-size", "0"
+            )
+
+        assert ConsumerOutcome.objects.count() == 1
+
+    def test_negative_is_refused_and_deletes_nothing(self):
+        _outcome(age=timedelta(days=400))
+
+        with pytest.raises(CommandError, match="--batch-size"):
+            call_command(
+                "prune_outcomes", "--older-than-days", "365", "--batch-size", "-1"
+            )
+
+        assert ConsumerOutcome.objects.count() == 1
