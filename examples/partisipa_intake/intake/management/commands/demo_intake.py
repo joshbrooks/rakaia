@@ -100,7 +100,17 @@ class Command(BaseCommand):
             ReportingPeriod.objects.create(period=period, closed=closed)
 
     def _consumer(self) -> Any:
-        return django_consumer(DjangoStreamStore(), STREAM, CONSUMER)
+        # Name a record after the row it is about, the same way this consumer
+        # names the ones it writes itself. Without this the loop falls back to
+        # the event's position in the log, and the final table reads as two kinds
+        # of thing in one column.
+        return django_consumer(
+            DjangoStreamStore(),
+            STREAM,
+            CONSUMER,
+            subject_of=lambda message: json.loads(message.data)["row_key"],
+            sequence_of=lambda message: json.loads(message.data)["form_key"],
+        )
 
     def _run(self, on_error: str) -> tuple[Consumed, int]:
         apply = CountedApply(make_apply(DatabaseRows(), consumer=CONSUMER, path=STREAM))
@@ -311,7 +321,7 @@ class Command(BaseCommand):
     def _check_durable(self, store: DjangoStreamStore) -> None:
         # Nothing from the runs above is reused: a new store object, a new
         # consumer, as a restarted process would build.
-        fresh = django_consumer(DjangoStreamStore(), STREAM, CONSUMER)
+        fresh = self._consumer()
         records = fresh.outcomes.latest(CONSUMER, STREAM)
         committed = fresh.cursors.load(CONSUMER, STREAM)
 
@@ -322,15 +332,18 @@ class Command(BaseCommand):
                 f"{', '.join(record.reasons)}"
             )
         self.stdout.write(f"    position {committed}")
-        # Two of these name a row and two name a position, and the difference is
-        # worth reading rather than tidying away. A record this consumer writes
-        # itself can say what the row was called; the two the loop wrote for an
-        # apply that raised cannot, because `django_consumer` does not yet let a
-        # caller say how to name a message (#272). Until it does, the loop falls
-        # back to the one name it always has — where the event sits in the log.
+        # Every one of them names a row, whichever side of the log it came from
+        # and whoever wrote it — the two this consumer wrote itself, and the two
+        # the loop wrote when an apply raised. That is the comparison someone
+        # opens this list to make, so it is asserted rather than admired.
+        positional = [r.subject for r in records if "/" not in r.subject]
+        if positional:
+            raise CommandError(
+                f"these records name a position rather than a row: {positional}"
+            )
         self.stdout.write(
-            "    (rows are named where this consumer wrote the record itself; "
-            "the loop names a position — see #272)"
+            "    (every record names a row — the consumer's own and the loop's "
+            "alike, because the consumer said how)"
         )
 
         if committed != store.get_current_offset(STREAM):

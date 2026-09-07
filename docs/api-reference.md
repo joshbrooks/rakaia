@@ -181,7 +181,7 @@ page is the contract.
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
 | `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
-| `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
+| `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
 | `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | A `Consumer` that checks the caller has no transaction open. |
 | `ConsumerCursorStore` | `rakaia` | `(*args, **kwargs)` | Somewhere to keep a consumer's watermark between runs. |
 | `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |

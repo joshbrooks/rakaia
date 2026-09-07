@@ -15,6 +15,8 @@ in `CLAUDE.md`, arriving from the other side.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from django.db import transaction
 
@@ -186,3 +188,70 @@ class TestTheAliasIsAskedOfTheStores:
             result = consumer.run(apply, on_error="skip")
 
         assert len(result.outcomes) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+class TestNamingWhatTheLoopRecords:
+    """A caller can say what a record is about, and what it is ordered within.
+
+    The loop has always accepted both; the entry point did not pass them on, so a
+    record written *for* a consumer named the event's position while a record
+    written *by* it named the row. That is two kinds of thing in one column, on
+    the screen where the comparison is the whole point (#272).
+    """
+
+    @staticmethod
+    def _payloads() -> list[bytes]:
+        return [b'{"row": "Fatuberliu/WATER", "form": "prog-2026-01"}']
+
+    def test_a_record_is_named_by_the_caller(self) -> None:
+        consumer = django_consumer(
+            _store_with("submissions", self._payloads()),
+            "submissions",
+            "reporting",
+            subject_of=lambda message: json.loads(message.data)["row"],
+        )
+
+        def apply(_message: StreamMessage) -> None:
+            raise ValueError("no")
+
+        consumer.run(apply, on_error="skip")
+
+        (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
+        assert record.subject == "Fatuberliu/WATER"
+        # The position is still recorded — it is how a replay finds the event.
+        assert record.offset is not None
+
+    def test_the_sequence_a_record_belongs_to_is_the_callers_too(self) -> None:
+        consumer = django_consumer(
+            _store_with("submissions", self._payloads()),
+            "submissions",
+            "reporting",
+            subject_of=lambda message: json.loads(message.data)["row"],
+            sequence_of=lambda message: json.loads(message.data)["form"],
+        )
+
+        def apply(_message: StreamMessage) -> None:
+            raise ValueError("no")
+
+        consumer.run(apply, on_error="skip")
+
+        (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
+        assert record.sequence_key == "prog-2026-01"
+
+    def test_saying_nothing_still_names_the_position(self) -> None:
+        """The default is unchanged, and honest: every event this loop sees is
+        already in the log, so its position is a name it always has."""
+        consumer = django_consumer(
+            _store_with("submissions", self._payloads()),
+            "submissions",
+            "reporting",
+        )
+
+        def apply(_message: StreamMessage) -> None:
+            raise ValueError("no")
+
+        consumer.run(apply, on_error="skip")
+
+        (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
+        assert record.subject == record.offset

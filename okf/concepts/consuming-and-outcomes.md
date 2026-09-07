@@ -61,8 +61,11 @@ Imported from `rakaia`:
 
 Imported from `django_rakaia`:
 
-* `django_consumer(store, path, name, using=…)` → a `DjangoConsumer` with the
-  durable cursor and outcome stores wired in. Its `run` raises
+* `django_consumer(store, path, name, using=…, subject_of=…, sequence_of=…)` → a
+  `DjangoConsumer` with the durable cursor and outcome stores wired in.
+  `subject_of` names what a record the loop writes is about — without it the loop
+  can only name the event's position, which reads as a different kind of thing
+  beside a record the consumer named itself. Its `run` raises
   `CallerTransactionOpen` when the caller already has a transaction open on the
   alias the records are written to — the one hazard the dependency-free core
   cannot see.

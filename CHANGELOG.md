@@ -9,6 +9,16 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **A consumer can say how the records written for it are named.**
+  `django_consumer()` now takes `subject_of` and `sequence_of` and passes them to
+  the loop, which has always accepted them. Without this the records a consumer
+  writes itself name a row while the records the loop writes for a failed apply
+  name the event's position in the log — two kinds of thing in one column, on the
+  screen where comparing them is the whole point. The worked example passes both
+  and asserts that every record it produces names a row. (#272)
+
 ### Changed
 
 - **Documentation for what 0.4.0 added.** The failure-record screen had no page
