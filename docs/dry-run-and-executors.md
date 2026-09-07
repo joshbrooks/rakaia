@@ -50,7 +50,7 @@ from rakaia import RecordingExecutor
 
 rec = RecordingExecutor(DjangoExecutor(using="rebuild"))
 replay(store, "submissions", rec, reader=DjangoProjectionReader(using="rebuild"))
-rec.effects  # every effect that reached the database, in order
+rec.effects  # every effect handed to the inner executor, in order
 ```
 
 That is exactly the shape of a guarded rebuild: a stage > 0 handler can only read
@@ -61,15 +61,26 @@ that reason.
 It is transparent by contract. The wrapped executor's report comes back
 unchanged, an exception it raises propagates, and the batch is materialised
 before either sees it, so a generator is never consumed by the recording and then
-applied nowhere. `tests/executor_contract.py` runs the whole executor conformance
-suite a second time through a `RecordingExecutor`, so anything the wrap reordered
-or swallowed would fail there.
+applied nowhere. `tests/test_rakaia/test_executor_contract.py` runs the whole
+executor conformance suite a second time through a `RecordingExecutor`, so
+anything the wrap reordered or swallowed would fail there.
+
+What it keeps is what it *handed on*, which is not always what committed: a batch
+that raises partway through is recorded and never lands. That is deliberate — a
+rebuild gate diffs what a replay meant to write — and it is why the wording here
+is "handed to the inner executor" rather than "written".
 
 `CollectingExecutor` stays separate rather than becoming
 `RecordingExecutor(some_no_op)`. It is the *terminal* case, not a wrapper: its
 promise is that no writing code exists to run, which is what makes it safe to
 point at production, and expressing that as "wrap an executor that does nothing"
 would put a real `apply()` call in the path of a dry run to buy nothing.
+
+The sharper version of that argument is about what a reader can check. A
+`RecordingExecutor` takes any `Executor`, so whether a run writes is a property of
+what the call site passed, discoverable only by following the argument.
+`CollectingExecutor()` is the guarantee at the point of use — greppable, and true
+of the class rather than of one construction of it.
 
 ### Applying effects without a database
 
