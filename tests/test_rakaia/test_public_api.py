@@ -130,6 +130,14 @@ RAKAIA_PUBLIC = {
     "TouchedSubject",
     "merge_replay",
     "replay",
+    # what the apply path raises, and the codes an outcome records for it
+    "EXCEPTION_TYPE_KEY",
+    "MergeKeyError",
+    "MissingReaderError",
+    "REASON_CODES",
+    "RakaiaError",
+    "UNHANDLED",
+    "UndecodableEventError",
     # subscriptions
     "Poll",
     "PollStatus",

@@ -227,6 +227,9 @@ page is the contract.
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
 | `__version__` | `rakaia` | — | — |
+| `REASON_CODES` | `rakaia` | — | — |
+| `UNHANDLED` | `rakaia` | — | — |
+| `EXCEPTION_TYPE_KEY` | `rakaia` | — | — |
 | `HANDLERS_META_STREAM` | `rakaia` | — | — |
 | `REDUCERS_META_STREAM` | `rakaia` | — | — |
 | `UPCASTERS_META_STREAM` | `rakaia` | — | — |
@@ -236,6 +239,7 @@ page is the contract.
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
+| `RakaiaError` | `rakaia` | — | Base for every failure rakaia raises from the apply path. |
 | `StreamError` | `rakaia` | — | Base for store failures a protocol server maps to a status. |
 | `StreamNotFound` | `rakaia` | — | The stream does not exist, or has expired. |
 | `SequenceConflict` | `rakaia` | — | An append's `Stream-Seq` is not above the stream's last seq. |
@@ -253,11 +257,14 @@ page is the contract.
 | `DuplicateProducesError` | `rakaia` | — | Two effects in one batch declare the same `produces` id. The id would silently bind to the second producer's row, orphaning the first — always a bug, so it is rejected rather than resolved to the… |
 | `UpcasterChainError` | `rakaia` | — | Cannot upcast: missing or ambiguous link in the upcaster chain. |
 | `UpcasterConflictError` | `rakaia` | — | Two upcasters were registered for the same (event_match, from_version). |
+| `MissingReaderError` | `rakaia` | — | A staged replay was asked to run with no projection reader. |
+| `UndecodableEventError` | `rakaia` | — | An event's stored bytes are not decodable JSON. |
+| `MergeKeyError` | `rakaia` | — | A merge cannot order its events: the order key is missing from an event, or its values are not mutually comparable across them. |
 
 ---
 
 ## Appendix — coverage
 
-162 exported names across 15 sections. 143 carry a docstring; 19 do not and show `—` above.
+169 exported names across 15 sections. 147 carry a docstring; 22 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

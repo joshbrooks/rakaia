@@ -33,6 +33,8 @@ from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
 from typing import Any, NoReturn, Protocol, TypeVar, cast, runtime_checkable
 
+from .errors import RakaiaError
+
 # =============================================================================
 # Symbolic refs — bind to a sibling effect's generated key
 # =============================================================================
@@ -283,22 +285,28 @@ AnyEffect = Upsert | Update | Delete | Retire | ExternalEffect
 # =============================================================================
 
 
-class EffectCollisionError(Exception):
+class EffectCollisionError(RakaiaError):
     """
     Two sibling effects target the same (model_label, lookup) row with
     overlapping keys in `defaults`, violating the disjoint-defaults invariant.
     """
 
+    code = "effect_collision"
 
-class UnresolvedRefError(Exception):
+
+class UnresolvedRefError(RakaiaError):
     """A `Ref` names a `produces` id no earlier effect in the batch produced
     (a forward reference or a typo)."""
 
+    code = "unresolved_ref"
 
-class DuplicateProducesError(Exception):
+
+class DuplicateProducesError(RakaiaError):
     """Two effects in one batch declare the same `produces` id. The id would
     silently bind to the second producer's row, orphaning the first — always a
     bug, so it is rejected rather than resolved to the wrong row."""
+
+    code = "duplicate_produces"
 
 
 # =============================================================================
