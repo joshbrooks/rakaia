@@ -165,12 +165,21 @@ class Command(BaseCommand):
         self.stdout.write(f"    position {committed} (the failure is at {offsets[2]})")
         for record in failed:
             self.stdout.write(
-                f"    failed    offset {record.offset}  ({', '.join(record.reasons)})"
+                f"    failed    offset {record.offset}  "
+                f"({', '.join(record.reasons)}"
+                f", {record.params.get('exception_type', '?')})"
             )
 
         if not result.halted or committed != offsets[1]:
             raise CommandError(
                 f"halt should leave the position below the failure: {committed}"
+            )
+        # The code is `unhandled`: our exception is the consumer's, not one of
+        # rakaia's promised set, so the type is recorded beside it rather than
+        # as it. Renaming our class cannot rewrite an operator's counts.
+        if failed and failed[0].params.get("exception_type") != "UnknownSuku":
+            raise CommandError(
+                f"the consumer's own exception type belongs in params: {failed}"
             )
         if len(failed) != 1 or failed[0].offset != offsets[2]:
             raise CommandError(

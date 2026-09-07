@@ -32,6 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from .errors import RakaiaError
 from .source_hash import hash_function_source
 
 # Deliberately the logger `replay()` has always warned through: `RAKAIA_DRIFT`
@@ -42,8 +43,10 @@ OnDriftPolicy = Literal["warn", "raise"]
 """What to do when a rule's source no longer matches its registered hash."""
 
 
-class HandlerDriftError(Exception):
+class HandlerDriftError(RakaiaError):
     """A handler/upcaster's source body differs from its registered hash."""
+
+    code = "handler_drift"
 
 
 @dataclass

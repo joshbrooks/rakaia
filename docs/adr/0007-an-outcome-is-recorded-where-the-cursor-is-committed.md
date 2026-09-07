@@ -238,6 +238,22 @@ exception, because one such line must not cost the whole report; it is only logg
 yet counted, which is a weaker answer than this decision would like given that unnoticed
 absence is the thing it exists to prevent.
 
+**6c. Rakaia's own codes are a promised set. A consumer's are still the consumer's.**
+Decision 6 says the codes are opaque to rakaia, and it was answering the question of what a
+*consumer* records. It never addressed the case where rakaia itself is what failed, and the
+loop was answering that with `type(exc).__name__` — so the vocabulary an operator reads was
+the internal class names, and any rename rewrote it silently. Everything rakaia raises from
+an apply now inherits one base type and carries a written-out `code`; the set of them is
+closed, published in `rakaia.REASON_CODES`, and changed with the care any other public name
+gets. The code is never derived from the class name, which is the whole defect.
+
+Anything outside that set is recorded as `unhandled` with the exception's type name in
+`params`, and nothing else from it — an exception's message is exactly where a field value
+would leak, which Decision 6 already refused. That keeps the vocabulary countable rather than
+an open set of class names, while still telling two unanticipated bugs apart. None of this
+touches Decision 6: reason codes on an outcome a consumer records remain the consumer's, and
+rakaia still has no opinion about them.
+
 **7. Sequencing is recorded, not enforced.** An outcome carries a `sequence_key`.
 Rakaia does not yet refuse an event whose sequence has an unresolved failure; the field
 exists so that adding it later does not require re-deriving groupings a consumer has
@@ -257,6 +273,9 @@ This is why `subject` is a separate field rather than the same one. The subject 
 thing an outcome is about; the sequence key is what that particular refusal actually parked.
 They coincide often enough to be mistaken for one field, and the cases where they do not are
 the ones that matter.
+
+`sequence_key` is accepted as-is for now: nothing reads it, and removing it stopped being
+free once it was exported — enforcement is revisited on demand, not on schedule.
 
 ## Observations, refusals, and the record that one happened
 

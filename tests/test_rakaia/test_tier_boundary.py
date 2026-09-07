@@ -74,7 +74,10 @@ PROTOCOL_SERVER = {
 #: format rules (`json_mode`, `offsets`) both tiers must agree on. ADR 0002 calls
 #: these out as the reason the tiers "genuinely share types today" — they are the
 #: substance of the split question, so a change here is the thing to look at.
-SHARED = {"types", "protocols", "json_mode", "offsets", "outcomes"}
+SHARED = {"types", "protocols", "json_mode", "offsets", "outcomes", "errors"}
+# `errors` is shared for the same reason `outcomes` is: the framework tier
+# raises the exceptions and the consume loop, in the server tier, reads the
+# code off one to record it. Neither tier owns the vocabulary.
 
 #: Deliberate, documented crossings. Keep this empty if you can; every entry is a
 #: thing a package split would have to resolve, so the list is the running cost

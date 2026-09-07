@@ -82,6 +82,12 @@ if TYPE_CHECKING:
         Upsert,
         check_disjoint_defaults,
     )
+    from .errors import (
+        EXCEPTION_TYPE_KEY,
+        REASON_CODES,
+        UNHANDLED,
+        RakaiaError,
+    )
     from .executors import CollectingExecutor, InMemoryProjections
     from .history import (
         envelope_actor,
@@ -139,7 +145,15 @@ if TYPE_CHECKING:
         reset_default_registries,
         upcast,
     )
-    from .replay import ENVELOPE_TS, ReplayResult, TouchedSubject, merge_replay
+    from .replay import (
+        ENVELOPE_TS,
+        MergeKeyError,
+        MissingReaderError,
+        ReplayResult,
+        TouchedSubject,
+        UndecodableEventError,
+        merge_replay,
+    )
     from .response_cursor import (
         CursorOptions,
         calculate_cursor,
@@ -303,6 +317,9 @@ _EXPORTS: dict[str, str] = {
     "merge_replay": "rakaia.replay",
     "ENVELOPE_TS": "rakaia.replay",
     "ReplayResult": "rakaia.replay",
+    "MissingReaderError": "rakaia.replay",
+    "UndecodableEventError": "rakaia.replay",
+    "MergeKeyError": "rakaia.replay",
     "TouchedSubject": "rakaia.replay",
     "DriftLedger": "rakaia.drift",
     # Subscriber cursors
@@ -313,6 +330,11 @@ _EXPORTS: dict[str, str] = {
     "consume": "rakaia.subscription",
     "Consumed": "rakaia.subscription",
     "OnErrorPolicy": "rakaia.subscription",
+    # What the apply path raises, and the codes an outcome records for it
+    "RakaiaError": "rakaia.errors",
+    "REASON_CODES": "rakaia.errors",
+    "UNHANDLED": "rakaia.errors",
+    "EXCEPTION_TYPE_KEY": "rakaia.errors",
     "Outcome": "rakaia.outcomes",
     "OutcomeStatus": "rakaia.outcomes",
     "Stage": "rakaia.outcomes",

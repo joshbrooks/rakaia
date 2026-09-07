@@ -191,6 +191,11 @@ No example exercises these yet — a good place to contribute a demo:
   the loop and the record, and keeps both in the database because what it is
   showing is what survives a restart; nothing under `examples/` keeps outcomes in
   a file or in memory.
+- Reason codes for a failure rakaia raised (`RakaiaError`, `REASON_CODES`). The
+  gap is narrower than it was: `partisipa_intake` runs the loop and records real
+  failures, so there are codes sitting in its table. What no example does is
+  *read* one — catch the base type, or branch on the code a record carries — which
+  is what an operator's own tooling would do with them.
 - Outcome retention. `manage.py prune_outcomes` deletes old failure records
   (`docs/deployment.md`), and `partisipa_intake` now leaves four records for such
   a demo to prune — but no example runs it, so the operator's side of the outcome

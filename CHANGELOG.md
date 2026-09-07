@@ -23,6 +23,7 @@ runnable demo for each.
 
 ### Added
 
+<<<<<<< HEAD
 - **A worked example of the consuming loop (`examples/partisipa_intake`).** The
   loop that reads a stream, applies each event, records what it could not apply
   and commits the reading position had nothing under `examples/` using it, so the
@@ -33,6 +34,21 @@ runnable demo for each.
   position stopped below it, one lands in a closed reporting period and is
   skipped on purpose, and a fresh consumer reads the position and every record
   back out of the database. It runs as part of `just demos`. (#254)
+||||||| 7b29f82
+=======
+- **A failure record now names the failure, not a class name.** Everything rakaia
+  raises while applying an event carries a short, stable reason code, and those
+  codes are a published closed set. The loop records the code rather than the
+  exception's class name, so renaming something internal no longer rewrites the
+  vocabulary an operator has been counting and filtering on. Anything that is not
+  rakaia's own — a bug in your own apply — is recorded under one code,
+  `unhandled`, with the exception's type name beside it and its message left out.
+  Three failures in a replay that used to arrive as a bare `ValueError` (a staged
+  replay with no reader, an event that will not decode, a missing or unusable
+  merge key) now have names of their own; each still subclasses `ValueError`, so
+  code already catching that keeps working. Catch `RakaiaError` to catch anything
+  the library raises from an apply in one clause. (#257)
+>>>>>>> origin/main
 
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
   `consume()` takes the store, the stream, the consumer name, somewhere to load

@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 # where callers have always imported it from — keeps working.
 from .drift import DriftLedger
 from .drift import HandlerDriftError as HandlerDriftError
+from .errors import RakaiaError
 from .protocols import WritableStore
 from .registration_log import RegistrationLog
 from .source_hash import hash_function_source, is_importable, unwrap_handler
@@ -44,16 +45,20 @@ class HandlerOverlapError(Exception):
     """Two versions of the same handler claim overlapping sequence ranges."""
 
 
-class HandlerGapError(Exception):
+class HandlerGapError(RakaiaError):
     """No registered version of a handler covers the requested sequence."""
+
+    code = "handler_gap"
 
 
 class UpcasterConflictError(Exception):
     """Two upcasters were registered for the same (event_match, from_version)."""
 
 
-class UpcasterChainError(Exception):
+class UpcasterChainError(RakaiaError):
     """Cannot upcast: missing or ambiguous link in the upcaster chain."""
+
+    code = "upcaster_chain"
 
 
 # =============================================================================

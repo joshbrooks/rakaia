@@ -36,6 +36,7 @@ from intake.ingest import submit_form
 from django_rakaia.consumer import django_consumer
 from django_rakaia.outcomes import DjangoOutcomeStore
 from django_rakaia.subscription import load_cursor
+from rakaia.errors import EXCEPTION_TYPE_KEY, UNHANDLED
 from rakaia.store import StreamStore
 from rakaia.types import StreamMessage
 
@@ -184,7 +185,12 @@ class TestAFailedApply:
         assert len(records) == 1
         assert (records[0].stage, records[0].status) == ("project", "failed")
         assert records[0].offset == messages[2].offset
-        assert records[0].reasons == ("UnknownSuku",)
+        # `unhandled`, not the exception's class name. The codes rakaia records
+        # for its own failures are a promised set (#257), and a consumer's
+        # exception is not one of them — the type goes in `params` instead, where
+        # renaming the class cannot rewrite what an operator has been counting.
+        assert records[0].reasons == (UNHANDLED,)
+        assert records[0].params == {EXCEPTION_TYPE_KEY: "UnknownSuku"}
 
     def test_skip_advances_past_it_where_halt_stops(self) -> None:
         store, messages = self._stream()
