@@ -18,7 +18,7 @@ code that only reads/writes through the Store contract never needs them.
 A write carrying the three producer headers is validated against the stream's
 per-producer state before it is appended. `append()` returns an `AppendResult`
 whose `producer_result` is one of the variants below; the ASGI handler
-(`rakaia.protocol_server`) maps each to an HTTP status. All three headers must be
+(`rakaia.handler`) maps each to an HTTP status. All three headers must be
 supplied together or none at all (partial → `400`).
 
 - **`ProducerState`** — the per-producer state the store tracks to make these

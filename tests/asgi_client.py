@@ -1,7 +1,7 @@
 """One way to drive `create_app` over HTTP, for the tests that still need to.
 
 The three-line `httpx.ASGITransport` incantation was written out separately in
-`test_rakaia/test_protocol_server.py`, `test_rakaia/test_store_failures.py` and
+`test_rakaia/test_handler.py`, `test_rakaia/test_store_failures.py` and
 `test_django_rakaia/test_protocol_server.py`, once per fixture and again inline
 for the tests that wanted a shorter long-poll window. It lives here now, next to
 the store contracts, since it is the same seam: the protocol served over an
@@ -17,7 +17,7 @@ from __future__ import annotations
 import httpx
 
 from rakaia import create_app
-from rakaia.protocol_server import ServerOptions
+from rakaia.handler import ServerOptions
 from rakaia.protocols import StreamServerStore
 
 

@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 
 from rakaia import StreamStore
-from rakaia.protocol_server import _fault_injection_enabled_by_env
+from rakaia.handler import _fault_injection_enabled_by_env
 from rakaia.types import INITIAL_OFFSET
 from tests.asgi_client import asgi_client
 

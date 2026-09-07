@@ -1,9 +1,9 @@
 """The named store failures, and the status each one becomes.
 
-Before these types existed, `protocol_server.py` chose a status by matching English in
+Before these types existed, `handler.py` chose a status by matching English in
 `str(e)`. Rewording an f-string in `store.py` turned a 4xx into an unhandled
 500, and nothing failed: `test_store.py` asserted `pytest.raises(ValueError)`,
-`test_protocol_server.py` asserted status codes, and no test connected the two. These
+`test_handler.py` asserted status codes, and no test connected the two. These
 do.
 """
 
@@ -16,7 +16,7 @@ import pytest
 import pytest_asyncio
 
 from rakaia import StreamStore
-from rakaia.protocol_server import STORE_FAILURE_STATUS, _status_for
+from rakaia.handler import STORE_FAILURE_STATUS, _status_for
 from rakaia.types import (
     ContentTypeMismatch,
     EmptyJsonArray,
