@@ -23,19 +23,66 @@ flowchart LR
   S[("Stream")] -->|replay| H["Handlers"] --> E["Effects<br/>(descriptions)"]
   E --> DE["DjangoExecutor"] -->|writes| DB[("Database")]
   E --> CE["CollectingExecutor"] -->|records| L["ex.effects list<br/>(no writes)"]
+  E --> RE["RecordingExecutor"] -->|records, then| DE
 ```
 
 `replay()` calls `apply()` with each batch of effects a handler produces. Rakaia
-ships three implementations:
+ships four implementations:
 
 | Executor | Package | What it does |
 |---|---|---|
 | `DjangoExecutor` | `django_rakaia.effect_executor` | Applies effects for real — an `Upsert` via `update_or_create`, an `Update`, a `Delete`, a `Retire`. |
 | `CollectingExecutor` | `rakaia.executors` | Records effects into `.effects` **without applying them**. The building block for a dry run. |
+| `RecordingExecutor` | `rakaia.executors` | Wraps any other executor: applies **through** it, and keeps what it passed on in `.effects`. |
 | `InMemoryProjections` | `rakaia.executors` | Applies effects to in-memory dicts, and reads them back — an `Executor` and a `ProjectionReader` in one, with no database. |
 
 You can write your own — anything that satisfies the protocol works (e.g. an
 executor that streams effects to a log, or applies them to a non-Django store).
+
+### Asking what a replay actually wrote
+
+A replay reports how many effects it applied, not which ones. `RecordingExecutor`
+is the answer when you need both halves at once — the writes really happening,
+*and* the list of them afterwards:
+
+```python
+from rakaia import RecordingExecutor
+
+rec = RecordingExecutor(DjangoExecutor(using="rebuild"))
+replay(store, "submissions", rec, reader=DjangoProjectionReader(using="rebuild"))
+rec.effects  # every effect handed to the inner executor, in order
+```
+
+That is exactly the shape of a guarded rebuild: a stage > 0 handler can only read
+what stage 0 wrote if the writes are real, and the effects are what gets diffed
+against the live rows afterwards. `rebuild_and_verify` composes this executor for
+that reason.
+
+It is transparent by contract. The wrapped executor's report comes back
+unchanged, an exception it raises propagates, and the batch is materialised
+before either sees it, so a generator is never consumed by the recording and then
+applied nowhere. `tests/test_rakaia/test_executor_contract.py` runs the whole
+executor conformance suite a second time through a `RecordingExecutor`, so
+anything the wrap reordered or swallowed would fail there.
+
+What it keeps is what it *handed on*, which is not always what committed. A batch
+that raises partway through is recorded whole, and this recorder rolls nothing
+back — what the inner executor already wrote stays written unless something
+outside supplies a transaction, as `rebuild_and_verify` does. That is deliberate:
+a rebuild gate diffs what a replay *meant* to write, which is why the wording here
+is "handed to the inner executor" rather than "written".
+
+`CollectingExecutor` stays separate rather than becoming
+`RecordingExecutor(some_no_op)`. It is the *terminal* case, not a wrapper: its
+promise is that no writing code exists to run, which is what makes it safe to
+point at production, and expressing that as "wrap an executor that does nothing"
+would put a real `apply()` call in the path of a dry run to buy nothing.
+
+The sharper version of that argument is about what a reader can check. A
+`RecordingExecutor` takes any `Executor`, so whether a run writes is a property of
+what the call site passed, discoverable only by following the argument.
+`CollectingExecutor()` is the guarantee at the point of use — greppable, and true
+of the class rather than of one construction of it.
 
 ### Applying effects without a database
 
