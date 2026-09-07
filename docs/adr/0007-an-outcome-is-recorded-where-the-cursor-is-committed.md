@@ -42,7 +42,7 @@ out the obvious implementation.
 `transaction.atomic` (`src/django_rakaia/effect_executor.py:204`). An outcome row
 written inside that block rolls back with the batch whose failure it exists to
 record. Worse, it could not name the event anyway: a stage-0 pass buffers many events
-into one `apply()` (`_StageBuffer`, `src/rakaia/replay.py:434`), and `RowEffect`
+into one `apply()` (`_StageBuffer`, `src/rakaia/batching.py:62`), and `RowEffect`
 carries `model_label` and `lookup` and nothing else (`src/rakaia/effects.py:176-189`).
 By the time effects reach an executor, which event produced which effect is not
 recoverable.

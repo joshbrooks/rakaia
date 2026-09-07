@@ -31,6 +31,7 @@ from rakaia.store import StreamStore
 # back a function and every assertion below would be about the wrong object.
 effects_module = import_module("rakaia.effects")
 replay_module = import_module("rakaia.replay")
+batching_module = import_module("rakaia.batching")
 executors_module = import_module("rakaia.executors")
 effect_executor = import_module("django_rakaia.effect_executor")
 
@@ -60,7 +61,7 @@ class _Batches:
 
 @pytest.mark.parametrize(
     "module",
-    [replay_module, executors_module, effect_executor],
+    [batching_module, executors_module, effect_executor],
     ids=["buffer", "in_memory_executor", "django_executor"],
 )
 def test_every_site_reads_the_one_rule(module: ModuleType) -> None:
@@ -72,7 +73,7 @@ def test_the_buffer_takes_its_batch_boundary_from_the_rule(monkeypatch) -> None:
     """A delete then a write is two batches only because the rule says a write
     outranks a delete. Under a reversed rule the pair is orderable as emitted,
     so the buffer must hold them in one batch."""
-    monkeypatch.setattr(replay_module, "_write_order_rank", _retires_first)
+    monkeypatch.setattr(batching_module, "_write_order_rank", _retires_first)
     store = StreamStore()
     seed_stream("s", [{"id": "e0", "n": 0}, {"id": "e1", "n": 1}], store=store)
     registry = HandlerRegistry()
