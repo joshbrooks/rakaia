@@ -23,6 +23,17 @@ runnable demo for each.
 
 ### Added
 
+- **A worked example of the consuming loop (`examples/partisipa_intake`).** The
+  loop that reads a stream, applies each event, records what it could not apply
+  and commits the reading position had nothing under `examples/` using it, so the
+  documentation described something no working code demonstrated. The new example
+  is a small Django project that submits progress forms with repeating rows and
+  consumes them: a row the rules decline never reaches the log and leaves a record
+  with no offset, an event that fails to apply leaves a record with the reading
+  position stopped below it, one lands in a closed reporting period and is
+  skipped on purpose, and a fresh process reads the position and every record
+  back. It runs as part of `just demos`. (#254)
+
 - **`Consumer` and `django_consumer()` — the consume loop as a thing you hold.**
   `consume()` takes the store, the stream, the consumer name, somewhere to load
   the cursor, somewhere to commit it and somewhere to keep outcomes on every

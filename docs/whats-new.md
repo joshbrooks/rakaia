@@ -637,9 +637,8 @@ or a database table — and it holds reason *codes* and bounded parameters rathe
 than an interpolated message, so it stays aggregatable, translatable, and free of
 the field values that a message would carry into a log.
 
-**Not yet demonstrated.** Nothing under `examples/` calls `consume()` yet, so the loop
-above has no worked example. That gap is named in
-[Examples](examples.md#known-gaps) rather than hidden.
+**Demonstrated in** [`partisipa_intake`](../examples/partisipa_intake/) — see
+section 22.
 
 → Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 · [The public API](public-api.md)
@@ -680,9 +679,8 @@ surviving. The core loop is dependency-free and cannot see a database
 transaction; this entry point can, and raises `CallerTransactionOpen` instead of
 running.
 
-**Not yet demonstrated.** Nothing under `examples/` builds one yet — the same
-gap section 19 names, and still named in [Examples](examples.md#known-gaps)
-rather than hidden.
+**Demonstrated in** [`partisipa_intake`](../examples/partisipa_intake/) — see
+section 22.
 
 → Deep dive: [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 · [Subscriber cursors](subscriber-cursors.md)
@@ -715,6 +713,43 @@ only the indexes its real queries need, and this sweep is the first query to ask
 about age.
 
 → Deep dive: [Deployment — retention](deployment.md#retention-pruning-old-outcome-records)
+
+---
+
+## 22. A worked example of the whole consuming loop
+
+**The problem.** Sections 19, 20 and 21 describe a loop, a record and a way to
+clear the records out, and nothing in the repository used any of it. The first
+person to wire a consumer was also the first to find out whether the
+documentation was right, and the three failure paths — a fact refused before it
+reaches the log, one that reaches the log and fails to apply, one declined on
+purpose — read as three lines of a table rather than three things you could run.
+
+**What rakaia does.** `examples/partisipa_intake` is a small Django project that
+submits progress forms with repeating rows and consumes them:
+
+```bash
+just intake-demo
+```
+
+One row reports 140 %, is declined by the submitting side's own rules, and never
+reaches the log: the record says the fact is upstream, in the form, and carries
+no position because there is no event to point at. Its siblings are appended and
+get real positions. One event names a village the reference data does not have
+yet; applying it fails, so the record says it is safe in the log and unapplied,
+and under `on_error="halt"` the reading position stops **below** it — the event
+is still pending, and when the village is loaded the next run applies it with no
+backfill task. One event lands in a closed reporting month and is skipped
+deliberately: recorded so that "we decided not to" can be told from "we never saw
+it", with the position moving on.
+
+The last check is the one a standalone script could not make: a fresh process
+builds a new consumer, and the reading position and all four records are still
+there. Both are kept in the database, so what the demo prints at the end is what
+an operator would see the next morning.
+
+→ Deep dive: [Examples](examples.md) ·
+[ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 
 ---
 

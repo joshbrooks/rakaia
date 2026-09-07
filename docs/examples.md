@@ -88,6 +88,7 @@ One command each: seed a stream, replay it, assert the projection.
 | [`partisipa_close`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_close) | Close-precondition state machine decided purely from projected state; stage reducers | `just partisipa-close-demo` |
 | [`partisipa_merge`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_merge) | `merge_replay` of N streams into one deterministic order; cross-stream rollup | `just partisipa-merge-demo` |
 | [`partisipa_repeaters`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_repeaters) | Nested-repeater tree reconcile — no deep orphans, no double-count | `just partisipa-tree-demo` |
+| [`partisipa_intake`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_intake) | The consuming loop — `django_consumer` / `run`, a durable reading position, and an outcome per refused, failed or skipped event | `just intake-demo` |
 
 ### Standalone (no Django)
 
@@ -164,6 +165,9 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Live SSE broadcast (Channels) | `chat` |
 | Durable `DjangoStreamStore` (log persisted in the DB) | `formkit_submissions` (stream) |
 | File-backed `JsonlStreamStore` under Django, with the protocol server mounted alongside it for live SSE | `polyglot` |
+| The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)` | `partisipa_intake` |
+| Durable reading position (`ConsumerCursor`, `load_cursor`) and `poll` statuses | `partisipa_intake` |
+| The outcome record — `Outcome`, `DjangoOutcomeStore`, the `append`/`project` stages and all three statuses | `partisipa_intake` |
 
 ### Known gaps
 
@@ -182,18 +186,15 @@ No example exercises these yet — a good place to contribute a demo:
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
-- The outcome record and the consume loop (`consume`, `Consumer`,
-  `django_consumer`, `Outcome`, the three stores). Exported and supported since
-  #251, so the old reason for this gap — that an example would document an
-  unstable surface — has expired. What is missing now is simply the example:
-  nothing under `examples/` calls `consume()` or builds a `Consumer`. #255 added
-  the consumer object the example should be written against, which is the shape
-  a demo should show rather than the six loose arguments underneath it.
+- The file-backed and in-memory outcome stores (`JsonlOutcomeStore`,
+  `InMemoryOutcomeStore`) as an example's own choice. `partisipa_intake` covers
+  the loop and the record, and keeps both in the database because what it is
+  showing is what survives a restart; nothing under `examples/` keeps outcomes in
+  a file or in memory.
 - Outcome retention. `manage.py prune_outcomes` deletes old failure records
-  (`docs/deployment.md`), but no example records a failure and then prunes it, so
-  nothing under `examples/` demonstrates the operator's side of the outcome
-  table. It follows the gap above: with no example calling `consume()`, there is
-  nothing for a prune demo to prune.
+  (`docs/deployment.md`), and `partisipa_intake` now leaves four records for such
+  a demo to prune — but no example runs it, so the operator's side of the outcome
+  table is still undemonstrated.
 
 ## Orientation for contributors
 

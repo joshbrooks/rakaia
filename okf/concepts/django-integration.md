@@ -34,6 +34,7 @@ From `django_rakaia`:
 * [chat](../examples/chat.md) — `@stream_model`, multi-stream events, live SSE.
 * [polyglot](../examples/polyglot.md) — `create_stream_event`, language-scoped streams, SSE.
 * [formkit_submissions (stream)](../examples/formkit-submission-stream.md) — durable `DjangoStreamStore`.
+* [partisipa_intake](../examples/partisipa-intake.md) — `django_consumer`, durable reading position, outcome records.
 
 # Deeper reference
 
