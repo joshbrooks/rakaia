@@ -53,7 +53,9 @@
   the lockfile. Do **not** set it to `latest`, which this file used to advise:
   pyright nags that a newer release exists, and taking its suggestion typechecks
   against a different pyright than CI — the nag is cosmetic, the divergence is
-  not. Django's synthesised attributes are declared explicitly (see the
+  not. The recipe silences the nag; a bare `uv run pyright` still prints it.
+  Upgrading pyright is its own change: bump the pin in `pyproject.toml` and the
+  `justfile` together. Django's synthesised attributes are declared explicitly (see the
   `if TYPE_CHECKING` blocks in `django_rakaia/models.py`) rather than waved
   through with ignores.
 - **Lint and format take no path arguments.** `[tool.ruff]` in `pyproject.toml`
@@ -65,6 +67,14 @@
   only by `just check`. If you add or remove an exported name, run
   `just api-reference` and commit the result — and rebase before merging, since
   the count line at the bottom is a single line two branches will both rewrite.
+  The check compares against the last commit, so run it *after* committing;
+  before that, a correctly regenerated file still reads as out of date.
+- **Adding a public name touches five places.** `_EXPORTS` in the package
+  `__init__` (and, for `rakaia`, its `if TYPE_CHECKING` import block), the
+  expected set in `tests/test_rakaia/test_public_api.py`, `GROUPS` in
+  `scripts/gen_api_reference.py`, then `just api-reference`. Two of those fail
+  nothing when missed: a name absent from `GROUPS` lands under *Everything else*,
+  and one absent from the `TYPE_CHECKING` block is invisible to type checkers.
 - To reproduce the **full** CI gate locally you also need the docs extra
   (`zensical` isn't in `dev`/`django`): `uv sync --extra dev --extra django --extra docs`,
   then `uv run zensical build`. Without `--extra docs` that step fails with

@@ -437,8 +437,10 @@ fmt:
 # `latest`. pyright-python nags when a newer release exists and suggests
 # `latest`, which silently typechecks against a different pyright than CI — the
 # one thing a gate must not do. Bump this with the `pyright` pin in pyproject.
+# `PYRIGHT_PYTHON_IGNORE_WARNINGS` silences that nag, which prints after the
+# results and pushes real errors out of a `| tail`; it changes nothing that runs.
 typecheck:
-    PYRIGHT_PYTHON_FORCE_VERSION=1.1.411 uv run pyright src/
+    PYRIGHT_PYTHON_IGNORE_WARNINGS=1 PYRIGHT_PYTHON_FORCE_VERSION=1.1.411 uv run pyright src/
 
 # Regenerate docs/api-reference.md from what the packages actually export.
 # Commit the result; `api-reference-check` fails if it drifts.
