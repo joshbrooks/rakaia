@@ -8,7 +8,7 @@ and protocol constants.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal, TypedDict
 
 # =============================================================================
 # Protocol constants
@@ -115,6 +115,38 @@ class InvalidOffset(StreamError, ValueError):
 
 
 # =============================================================================
+# The event-sourcing envelope
+# =============================================================================
+
+ChangeLabel = Literal["insert", "create", "update", "delete"]
+"""The change labels rakaia itself acts on.
+
+`history.label_marker` turns ``insert``/``create`` into ``+``, ``delete`` into
+``-`` and anything else into ``~``, and `@stream_model` writes ``create``,
+``update`` and ``delete``. The ``label`` fields accept these *or any string*:
+an application label such as ``import`` is legitimate and lands on ``~``, so
+naming the set lets an editor offer it without making other labels an error.
+"""
+
+
+class EnvelopeMetadata(TypedDict, total=False):
+    """The metadata keys rakaia reads or writes on an event.
+
+    ``user`` is the actor — `django_rakaia.append_event` writes it and
+    `history.envelope_actor` reads it. ``url`` and ``causation`` are what a
+    request-scoped `provenance()` block conventionally carries.
+
+    The ``metadata`` fields accept this *or any* ``dict[str, Any]``, so extra
+    keys are not an error. ``total=False`` on the class rather than
+    ``NotRequired`` per key keeps it importable on Python 3.10.
+    """
+
+    user: Any
+    url: str
+    causation: str
+
+
+# =============================================================================
 # Data structures
 # =============================================================================
 
@@ -147,13 +179,15 @@ class StreamMessage:
     sets ``event_ts`` to the original historical event time while its transport
     ``timestamp`` is ≈now. ``merge_replay(order_key=ENVELOPE_TS)`` orders on this."""
 
-    label: str = ""
+    label: ChangeLabel | str = ""
     """Optional event-sourcing envelope: the change label (e.g. create/update/
-    delete → +/~/-). Empty for pure-protocol messages; ignored by the transport."""
+    delete → +/~/-; see `ChangeLabel`). Empty for pure-protocol messages;
+    ignored by the transport."""
 
-    metadata: dict | None = None
-    """Optional event-sourcing envelope: an open metadata dict (actor, url,
-    causation, …). None for pure-protocol messages; ignored by the transport."""
+    metadata: EnvelopeMetadata | dict[str, Any] | None = None
+    """Optional event-sourcing envelope: an open metadata dict (``user``,
+    ``url``, ``causation``, …; see `EnvelopeMetadata`). None for pure-protocol
+    messages; ignored by the transport."""
 
 
 @dataclass
@@ -314,9 +348,9 @@ class AppendOptions:
     producer_epoch: int | None = None
     producer_seq: int | None = None
     close: bool = False
-    label: str = ""
+    label: ChangeLabel | str = ""
     """Event-sourcing envelope label to record on the appended message."""
-    metadata: dict | None = None
+    metadata: EnvelopeMetadata | dict[str, Any] | None = None
     """Event-sourcing envelope metadata to record on the appended message."""
     event_ts: float | None = None
     """Event-sourcing envelope timestamp: the event's **logical** time (e.g. a

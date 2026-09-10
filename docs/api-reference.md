@@ -46,11 +46,13 @@ page is the contract.
 | `migrate_all` | `rakaia` | `(source: 'ReadableStore', target: 'WritableStore', *, batch_size: 'int' = 500) -> 'list[Migration]'` | Copy every stream `source` can list, in listing order. |
 | `Migration` | `rakaia` | `(path: 'str', events: 'int', offsets_preserved: 'bool', head_preserved: 'bool', notes: 'tuple[str, ...]' = <factory>) -> None` | What one stream's copy achieved, and what it could not carry. |
 | `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str, using: str \| None = None) -> django_rakaia.models.StreamEvent` | Create a stream event for the given model instance. |
-| `AppendOptions` | `rakaia` | `(seq: 'str \| None' = None, content_type: 'str \| None' = None, producer_id: 'str \| None' = None, producer_epoch: 'int \| None' = None, producer_seq: 'int \| None' = None, close: 'bool' = False, label: 'str' = '', metadata: 'dict \| None' = None, event_ts: 'float \| None' = None) -> None` | Options for append operations. |
+| `AppendOptions` | `rakaia` | `(seq: 'str \| None' = None, content_type: 'str \| None' = None, producer_id: 'str \| None' = None, producer_epoch: 'int \| None' = None, producer_seq: 'int \| None' = None, close: 'bool' = False, label: 'ChangeLabel \| str' = '', metadata: 'EnvelopeMetadata \| dict[str, Any] \| None' = None, event_ts: 'float \| None' = None) -> None` | Options for append operations. |
 | `AppendResult` | `rakaia` | `(message: 'StreamMessage \| None' = None, producer_result: 'ProducerValidationResult \| None' = None, stream_closed: 'bool' = False) -> None` | Result of an append operation. |
 | `CloseResult` | `rakaia` | `(final_offset: 'str' = '', already_closed: 'bool' = False, producer_result: 'ProducerValidationResult \| None' = None) -> None` | Result of a close operation. |
 | `ClosedBy` | `rakaia` | `(producer_id: 'str', epoch: 'int', seq: 'int') -> None` | Tracks which producer tuple closed a stream (for idempotent close). |
-| `StreamMessage` | `rakaia` | `(data: 'bytes', offset: 'str', timestamp: 'float', event_ts: 'float \| None' = None, label: 'str' = '', metadata: 'dict \| None' = None) -> None` | A single message in a stream. |
+| `StreamMessage` | `rakaia` | `(data: 'bytes', offset: 'str', timestamp: 'float', event_ts: 'float \| None' = None, label: 'ChangeLabel \| str' = '', metadata: 'EnvelopeMetadata \| dict[str, Any] \| None' = None) -> None` | A single message in a stream. |
+| `ChangeLabel` | `rakaia` | — | — |
+| `EnvelopeMetadata` | `rakaia` | — | The metadata keys rakaia reads or writes on an event. |
 | `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus') -> None` | The result of polling a stream from a cursor. |
 | `PollStatus` | `rakaia` | — | — |
 | `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None') -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
@@ -151,7 +153,7 @@ page is the contract.
 | `get_provenance` | `rakaia` | `() -> 'dict[str, Any]'` | The current ambient provenance (a copy; empty dict if none is set). |
 | `ProvenanceMiddleware` | `django_rakaia` | `(get_response: 'Callable[[Any], Any]') -> 'None'` | Stamp the acting user + request path onto envelope metadata per request. |
 | `envelope_actor` | `rakaia` | `(msg: 'StreamMessage', event: 'dict[str, Any]', *, owner_key: 'str' = 'user_id') -> 'Any'` | The acting user: the envelope's ``metadata['user']`` (the editor), falling back to the payload's own owner FK (``event[owner_key]``) when there is no request-context actor (bulk import, management… |
-| `label_marker` | `rakaia` | `(label: 'str') -> 'str'` | Map an envelope label to the `/history` diff marker `+` / `~` / `-`. |
+| `label_marker` | `rakaia` | `(label: 'ChangeLabel \| str') -> 'str'` | Map an envelope label to the `/history` diff marker `+` / `~` / `-`. |
 | `materialize_history` | `django_rakaia` | `(store: 'Any', path: 'str', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[Any, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', version_field: 'str' = 'version', version_of: 'Callable[[Any], Any] \| None' = None, executor: 'Any \| None' = None) -> 'list[Effect]'` | Read `path` and materialise its `/history` audit rows into `model_label`. |
 | `history_effects` | `rakaia` | `(messages: 'Sequence[StreamMessage]', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[StreamMessage, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', version_field: 'str' = 'version', version_of: 'Callable[[StreamMessage], Any] \| None' = None) -> 'list[Effect]'` | One idempotent audit-row upsert per event in `messages`. |
 | `ENVELOPE_TS` | `rakaia` | — | — |
@@ -266,6 +268,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-170 exported names across 15 sections. 148 carry a docstring; 22 do not and show `—` above.
+172 exported names across 15 sections. 149 carry a docstring; 23 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

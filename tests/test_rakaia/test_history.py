@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import get_args
 
 from rakaia.history import (
     envelope_actor,
     history_effects,
     label_marker,
 )
-from rakaia.types import StreamMessage
+from rakaia.types import ChangeLabel, EnvelopeMetadata, StreamMessage
 
 
 def _msg(
@@ -31,6 +32,31 @@ class TestLabelMarker:
         assert label_marker("delete") == "-"
         assert label_marker("update") == "~"
         assert label_marker("") == "~"  # raw append → update marker
+
+    def test_change_label_names_every_label_the_marker_distinguishes(self):
+        # `ChangeLabel` is documentation for a type checker, so nothing else
+        # notices if it and `label_marker` drift apart. Every label the marker
+        # special-cases must be in the set, and the set must hold nothing that
+        # only reaches the fallback except `update`, which `@stream_model` writes.
+        labels = set(get_args(ChangeLabel))
+        assert labels == {"insert", "create", "update", "delete"}
+        assert {label_marker(label) for label in labels} == {"+", "~", "-"}
+
+    def test_a_label_outside_the_set_is_still_accepted(self):
+        assert label_marker("import") == "~"
+        assert _msg({}, label="import").label == "import"
+
+
+class TestEnvelopeMetadata:
+    def test_names_the_key_envelope_actor_reads(self):
+        assert "user" in EnvelopeMetadata.__optional_keys__
+        assert not EnvelopeMetadata.__required_keys__
+        metadata: EnvelopeMetadata = {"user": 42}
+        assert envelope_actor(_msg({}, metadata=dict(metadata)), {}) == 42
+
+    def test_extra_keys_are_still_accepted(self):
+        msg = _msg({}, metadata={"user": 1, "tenant": "acme"})
+        assert msg.metadata == {"user": 1, "tenant": "acme"}
 
 
 class TestEnvelopeActor:

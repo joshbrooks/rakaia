@@ -22,7 +22,7 @@ per-append annotation.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from typing import Any
 
@@ -51,7 +51,7 @@ def get_provenance() -> dict[str, Any]:
     return dict(_provenance.get() or {})
 
 
-def merge_provenance(explicit: dict[str, Any] | None) -> dict[str, Any] | None:
+def merge_provenance(explicit: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Merge ambient provenance *under* `explicit` metadata (explicit wins).
 
     Returns None when both are empty, so a plain append with no provenance and

@@ -48,6 +48,8 @@ RAKAIA_PUBLIC = {
     # types
     "AppendOptions",
     "AppendResult",
+    "ChangeLabel",
+    "EnvelopeMetadata",
     "ClosedBy",
     "CloseResult",
     "ProducerState",
