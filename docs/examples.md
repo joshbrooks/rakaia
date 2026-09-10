@@ -187,6 +187,9 @@ No example exercises these yet — a good place to contribute a demo:
 - `migrate_stream` / `migrate_all` — moving a log between backends. `polyglot`
   runs *on* the file-backed store but was seeded there, never copied onto it.
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
+- `ChangeLabel` and `EnvelopeMetadata` — the named types for an event's change
+  label and metadata keys. They annotate fields every example already writes, but
+  no example imports them or shows an editor offering the known values.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
 - The file-backed and in-memory outcome stores (`JsonlOutcomeStore`,

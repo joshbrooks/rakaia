@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
 ### Added
 
 - **A consumer can say how the records written for it are named.**
