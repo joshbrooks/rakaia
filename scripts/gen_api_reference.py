@@ -61,6 +61,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "CloseResult",
         "ClosedBy",
         "StreamMessage",
+        "ChangeLabel",
+        "EnvelopeMetadata",
         "Poll",
         "PollStatus",
         "poll",

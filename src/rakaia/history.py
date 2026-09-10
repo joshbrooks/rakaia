@@ -23,10 +23,10 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .effects import Effect, Upsert
-from .types import StreamMessage
+from .types import ChangeLabel, StreamMessage
 
 
-def label_marker(label: str) -> str:
+def label_marker(label: ChangeLabel | str) -> str:
     """Map an envelope label to the `/history` diff marker `+` / `~` / `-`.
 
     ``insert``/``create`` → ``+``, ``delete`` → ``-``, everything else (incl.
@@ -48,9 +48,9 @@ def envelope_actor(
     request-context actor (bulk import, management command, migration). Returns
     None when neither is present.
     """
-    meta = msg.metadata or {}
-    if meta.get("user") is not None:
-        return meta["user"]
+    actor = (msg.metadata or {}).get("user")
+    if actor is not None:
+        return actor
     return event.get(owner_key)
 
 

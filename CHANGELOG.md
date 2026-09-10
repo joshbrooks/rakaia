@@ -18,6 +18,14 @@ runnable demo for each.
   name the event's position in the log — two kinds of thing in one column, on the
   screen where comparing them is the whole point. The worked example passes both
   and asserts that every record it produces names a row. (#272)
+- **The change label and the event metadata now have named types.**
+  `ChangeLabel` lists the four labels rakaia acts on (`insert`, `create`,
+  `update`, `delete`), and `EnvelopeMetadata` lists the metadata keys it reads or
+  writes (`user`, `url`, `causation`). The `label` and `metadata` fields on
+  `AppendOptions` and `StreamMessage` are annotated with them, so an editor can
+  offer the known values. Both still accept any string or dictionary, so an
+  application label such as `import`, or an extra metadata key, is not a type
+  error — and for the same reason a misspelling is not one either. (#277, #278)
 
 ### Changed
 

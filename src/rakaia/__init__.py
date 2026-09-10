@@ -169,10 +169,12 @@ if TYPE_CHECKING:
     from .types import (
         AppendOptions,
         AppendResult,
+        ChangeLabel,
         ClosedBy,
         CloseResult,
         ContentTypeMismatch,
         EmptyJsonArray,
+        EnvelopeMetadata,
         InvalidJson,
         InvalidOffset,
         ProducerAccepted,
@@ -246,6 +248,9 @@ _EXPORTS: dict[str, str] = {
     "AppendOptions": "rakaia.types",
     "AppendResult": "rakaia.types",
     "CloseResult": "rakaia.types",
+    # The event-sourcing envelope's known values
+    "ChangeLabel": "rakaia.types",
+    "EnvelopeMetadata": "rakaia.types",
     # Producer validation
     "ProducerValidationResult": "rakaia.types",
     "ProducerAccepted": "rakaia.types",
