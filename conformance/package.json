@@ -10,7 +10,7 @@
     "check-regressions": "node check-regressions.mjs"
   },
   "devDependencies": {
-    "@durable-streams/server-conformance-tests": "0.3.6",
+    "@durable-streams/server-conformance-tests": "0.3.7",
     "vitest": "^4.1.11"
   }
 }
