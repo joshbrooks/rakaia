@@ -43,6 +43,7 @@ nav = [
         { "Read a stream incrementally" = "subscriber-cursors.md" },
         { "Store streams in files" = "store-streams-in-files.md" },
         { "Combine human and machine decisions" = "alerts-projection.md" },
+        { "Check a stream still matches its table" = "check-stream-coverage.md" },
         { "Deploy it" = "deployment.md" },
     ] },
     { "How it works" = [
