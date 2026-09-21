@@ -190,6 +190,9 @@ No example exercises these yet — a good place to contribute a demo:
 - `ChangeLabel` and `EnvelopeMetadata` — the named types for an event's change
   label and metadata keys. They annotate fields every example already writes, but
   no example imports them or shows an editor offering the known values.
+- `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
+  Every example that serves the protocol takes the default page of a thousand,
+  and none holds a stream long enough for a read to stop short.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
 - The file-backed and in-memory outcome stores (`JsonlOutcomeStore`,
