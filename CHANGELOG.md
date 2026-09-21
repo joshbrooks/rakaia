@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-22
+
 ### Fixed
 
 - **A model save and a protocol append on the same stream no longer deadlock
