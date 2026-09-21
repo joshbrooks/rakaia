@@ -63,10 +63,39 @@ for (const file of report.testResults ?? []) {
   }
 }
 
+// A run that exercised none of the suite is not a result, and must not read as
+// one. With nothing run there are no NEW failures, so without this check an empty
+// run passes: a vitest 5 upgrade once did exactly that, because the upstream suite
+// still registers its tests with vitest 4 and none were collected (#283, #300).
+// "None of the suite" is zero tests, or not one baselined test seen either way; a
+// few stale entries are only an upstream rename and stay a warning below. An empty
+// run is refused before `--write-baseline` too, which would otherwise replace the
+// baseline with an empty one; a run that did execute tests may still rewrite it,
+// since regenerating is the fix when upstream renames every known failure.
+const seen = passed.size + failed.size
+const baselineSeen = [...baseline].filter((n) => passed.has(n) || failed.has(n))
+const writing = process.argv.includes("--write-baseline")
+if (seen === 0 || (!writing && baseline.size > 0 && baselineSeen.length === 0)) {
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(
+      `::error title=Conformance suite did not run::${seen} test(s) ran and none of the ${baseline.size} baselined tests was seen`,
+    )
+  }
+  fail(
+    seen === 0
+      ? "the suite did not run: no test passed or failed. Usually the tests were " +
+          "not collected (for example a vitest version the suite does not " +
+          "support); see the vitest output above."
+      : `${seen} test(s) ran but none of the ${baseline.size} baselined tests was ` +
+          "seen. Either the suite ran only in part, or upstream renamed every " +
+          "known failure; if the latter, regenerate the baseline (see README).",
+  )
+}
+
 // `--write-baseline`: overwrite expected-failures.txt with the current failures.
 // Run after the suite when the accepted gap changes (e.g. fork lands, or the
 // suite version bumps). Review the diff before committing.
-if (process.argv.includes("--write-baseline")) {
+if (writing) {
   const { writeFileSync } = await import("node:fs")
   const header = [
     "# Durable Streams conformance — expected failures (baseline)",
