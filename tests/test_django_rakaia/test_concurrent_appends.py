@@ -171,3 +171,79 @@ def test_many_concurrent_appends_produce_no_duplicate_offsets() -> None:
         f"expected offsets 1..{total} with no duplicates or gaps, got "
         f"{len(offsets)} offsets ending {offsets[-5:] if offsets else []}"
     )
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
+def test_fanning_into_the_same_streams_in_opposite_orders_does_not_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two events fanned into the same two streams, listed in opposite orders.
+
+    Each allocation holds its stream's watermark lock until the transaction
+    ends. If `write_enveloped_event` locks in the order the caller listed the
+    streams, writer A takes `left` and writer B takes `right`, and then each
+    waits for the other's: Postgres aborts one of them with a deadlock error.
+    Locking in one agreed order (by stream path) makes the second writer queue
+    behind the first on its very first lock instead.
+
+    The interleave is forced, not hoped for. After its first allocation each
+    writer announces it and waits -- briefly, and without failing if the wait
+    runs out -- for the other writer to announce too. When locks are taken in
+    caller order both writers get there, both go on to their second stream,
+    and they deadlock every time. When they are taken in path order the second
+    writer is still blocked on its first lock, so the first writer's wait runs
+    out, it commits, and the second follows.
+
+    Both streams are seeded first, for the reason the first test in this file
+    gives: a watermark row that does not exist yet is serialised by its unique
+    key rather than by the lock.
+    """
+    from django_rakaia import django_store as ds
+
+    store = DjangoStreamStore()
+    for path in ("left", "right"):
+        store.create(path)
+        store.append(path, b'{"seed": true}')
+
+    original = Stream.get_next_offset_block
+    local = threading.local()
+    first_taken = {"a": threading.Event(), "b": threading.Event()}
+
+    def announcing(self: Stream, count: int) -> int:
+        start = original(self, count)
+        if not getattr(local, "announced", False):
+            local.announced = True
+            first_taken[local.me].set()
+            first_taken[local.other].wait(timeout=2)
+        return start
+
+    monkeypatch.setattr(Stream, "get_next_offset_block", announcing)
+
+    got: dict[str, list[str]] = {}
+
+    def writer(me: str, other: str, order: list[str]) -> Any:
+        def inner() -> None:
+            local.me, local.other = me, other
+            with transaction.atomic():
+                streams = [Stream.objects.get(stream_id=p) for p in order]
+                _, entries = ds.write_enveloped_event(streams, {"w": me})
+                got[me] = [e.stream.stream_id for e in entries]
+
+        return inner
+
+    _run(
+        writer("a", "b", ["left", "right"]),
+        writer("b", "a", ["right", "left"]),
+    )
+
+    # Entries come back in the order the caller listed the streams, whatever
+    # order they were locked in.
+    assert got == {"a": ["left", "right"], "b": ["right", "left"]}
+    for path in ("left", "right"):
+        offsets = sorted(
+            StreamEntry.objects.filter(stream__stream_id=path).values_list(
+                "offset", flat=True
+            )
+        )
+        assert offsets == [1, 2, 3]

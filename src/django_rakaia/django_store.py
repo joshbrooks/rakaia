@@ -126,7 +126,9 @@ def write_enveloped_event(
       decides whether to set one: a raw protocol append has none unless the
       producer supplied it, while `@stream_model` always stamps one;
     * **the offsets** come from `Stream.get_next_offset`, which locks the
-      per-path high-water — so this must run inside a transaction.
+      per-path high-water — so this must run inside a transaction. The locks
+      are taken in `stream_id` order, whatever order `streams` is in, so two
+      fan-outs over the same streams cannot deadlock each other (#293).
 
     **Fan-out is `streams`, plural.** One event appearing in several streams is
     one `StreamEvent` with one envelope and N `StreamEntry` rows, each with its
@@ -154,13 +156,22 @@ def write_enveloped_event(
         event_ts=event_ts,
         payload_encoding=payload_encoding,
     )
+    # Offsets are allocated in one agreed order -- by stream path -- and not
+    # in the order the caller listed the streams. Each allocation holds that
+    # stream's watermark lock until the transaction ends, so two events fanned
+    # into the same streams in opposite orders would each take one lock and
+    # wait for the other's, and Postgres would abort one of them (#293). The
+    # entries still come back in the caller's order.
+    offsets: dict[int, int] = {}
+    for i in sorted(range(len(streams)), key=lambda i: streams[i].stream_id):
+        offsets[i] = streams[i].get_next_offset()
     entries = [
         StreamEntry.objects.using(using).create(
             stream=stream,
             event=event,
-            offset=stream.get_next_offset(),
+            offset=offsets[i],
         )
-        for stream in streams
+        for i, stream in enumerate(streams)
     ]
     return event, entries
 

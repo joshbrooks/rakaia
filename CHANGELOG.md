@@ -9,6 +9,14 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two saves fanning into the same streams in opposite orders no longer
+  deadlock each other.** The stream locks are now taken in path order instead of
+  the order the streams were listed, so the second save queues behind the first
+  rather than one being aborted by Postgres. The entries still come
+  back in the caller's order. (#293)
+
 ## [0.5.0] - 2026-09-10
 
 ### Added

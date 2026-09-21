@@ -32,7 +32,7 @@ import json
 import pytest
 
 from django_rakaia.decorators import create_stream_event
-from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.django_store import DjangoStreamStore, write_enveloped_event
 from django_rakaia.models import Stream, StreamEvent
 from rakaia import AppendOptions, provenance
 
@@ -168,3 +168,17 @@ class TestFanOut:
             "fanout/two",
         ]
         assert {e.offset for e in event.entries.all()} == {1}
+
+    def test_entries_come_back_in_the_callers_order_not_the_lock_order(self):
+        # Locks are taken in path order (#293); the entries, and the offset each
+        # one got from its own stream, are still returned in the order given.
+        # Here that order is the reverse of path order, and `a` is one event
+        # ahead of `b`, so a swapped entry or offset shows.
+        a = Stream.objects.create(stream_id="order/a")
+        b = Stream.objects.create(stream_id="order/b")
+        write_enveloped_event([a], {"warm": True})
+        _, entries = write_enveloped_event([b, a], {"id": 1})
+        assert [(e.stream.stream_id, e.offset) for e in entries] == [
+            ("order/b", 1),
+            ("order/a", 2),
+        ]
