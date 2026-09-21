@@ -284,6 +284,29 @@ writing to. `--database` prunes a named database alias, matching the alias the
 outcome store writes on. Run it from cron or your scheduler at whatever interval
 suits; running it twice deletes nothing the first run did not.
 
+## Retention: pruning orphaned events
+
+An event is kept as long as at least one stream refers to it. Deleting a stream
+now removes the events only it referred to, but deletes from before that change
+left theirs behind, and nothing else ever removes them. `prune_orphan_events`
+deletes every event no stream refers to:
+
+```bash
+# How many would go, without deleting anything:
+python manage.py prune_orphan_events --dry-run
+
+# Actually delete:
+python manage.py prune_orphan_events
+```
+
+There is no copy of what it deletes, so run the dry run first and make sure your
+database backup is recent if the payloads might ever be wanted. An event still in
+any stream is never touched. Like `prune_outcomes`, it deletes in batches
+(`--batch-size`, default 1000) and takes `--database` for a named alias. Running
+it twice deletes nothing the first run did not. If your app subclasses
+`StreamEvent`, pruning (and deleting a stream) costs one query per event, because
+Django reads each subclass row, payload included, before deleting it.
+
 ## Troubleshooting
 
 **`just: command not found`** — install just from your package manager

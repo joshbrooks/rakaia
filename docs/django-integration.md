@@ -338,7 +338,7 @@ Routing is by **HTTP method on the stream path**, as the protocol specifies:
 | POST   | `/protocol/<stream_path>`        | append (or close)           |
 | GET    | `/protocol/<stream_path>?offset=`| read, long-poll, or SSE     |
 | HEAD   | `/protocol/<stream_path>`        | metadata                    |
-| DELETE | `/protocol/<stream_path>`        | delete                      |
+| DELETE | `/protocol/<stream_path>`        | delete ([refusable](#permanent-streams)) |
 
 This is the same implementation the standalone server runs, so producer
 epoch/seq fencing, close, TTL, long-poll, ETag/304 and CORS all behave
@@ -358,6 +358,58 @@ without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
 
 The semantics follow the [protocol specification](protocol.md).
 
+## Permanent streams
+
+By default a stream can be given an expiry, is removed once it runs out, and can
+be deleted by any client with a protocol `DELETE`. If your streams are the
+record of what happened, that is history disappearing without anyone deciding it
+should. Turn it off with one setting:
+
+```python
+# settings.py
+RAKAIA_PERMANENT_STREAMS = True  # off unless you set it
+```
+
+With it on, every stream in the durable store is permanent:
+
+- **A create that asks for an expiry is refused.** Passing `ttl_seconds` or
+  `expires_at` to `create()` raises `ExpiryNotAllowed`, and a protocol `PUT`
+  carrying `Stream-TTL` or `Stream-Expires-At` gets `400 Bad Request`.
+- **A protocol `DELETE` is refused** with `405 Method Not Allowed`. The stream
+  and its events are untouched.
+- **Nothing is removed for having expired.** A stream that was given an expiry
+  before you turned the switch on is read, written and listed as if it had none.
+
+**Deleting a stream from Python still works.** `DjangoStreamStore().delete(path)`
+is carried out whether the switch is on or off, because calling it is a decision
+made by whoever wrote the code, not something a client or a clock did. A command
+that rebuilds a stream from scratch by deleting and re-appending keeps working.
+
+The setting is read by the durable store only. The in-memory and file-backed
+stores ignore it: both still accept an expiry, remove a stream once it runs out,
+and delete on a protocol `DELETE`. If you need permanent streams, keep them in
+the database. The setting is read on every call, so `override_settings` in a
+test takes effect immediately.
+
+### Deleting a stream deletes its events
+
+Whether the switch is on or off, `delete()` removes the stream, its entries, and
+every event that no stream refers to any more. An event that also appears in
+another stream is kept, because that stream still needs it. Nothing keeps a copy
+of what goes: if the payloads matter, export the stream first, and treat your
+database backups as the way back.
+
+Events left behind by deletes from before this behaviour, or by anything else
+that removed entries, can be cleared with a command:
+
+```bash
+python manage.py prune_orphan_events --dry-run   # count only
+python manage.py prune_orphan_events             # delete them
+```
+
+It takes `--database` for a named alias and `--batch-size` (default 1000), as
+`prune_outcomes` does. See [Deployment](deployment.md#retention-pruning-orphaned-events).
+
 ## Admin
 
 `django_rakaia.admin` registers `Stream`, `StreamEvent`, and `StreamEntry` with
@@ -370,3 +422,35 @@ from myapp.models import MyStreamEvent
 
 register_stream_event_admin(MyStreamEvent)
 ```
+
+## Appendix
+
+**Permanent streams, precisely.** The switch makes `DjangoStreamStore._is_expired`
+report every stream as live, which is the one question each read and write path
+asks before reaping, so none of them reaps. A create is refused before anything
+is written, including an idempotent re-create of a stream that already has the
+same expiry. The protocol server refuses `DELETE` by calling the store's optional
+`check_protocol_delete(path)` before `delete`; a store without that method is
+never refused. A `DELETE` of a stream that does not exist is still `404`, and the
+`405` carries an `Allow` header without `DELETE` in it, whether the refusal came
+from that check or from `delete()` itself. A stream that was given an expiry
+earlier reports none (`get()` returns no TTL or expiry), so `HEAD` does not send
+`Stream-TTL` or `Stream-Expires-At` for it. The two refusals are
+`rakaia.ExpiryNotAllowed` (a `ValueError`, mapped to `400`) and
+`rakaia.DeleteNotAllowed` (mapped to `405`), both in `STORE_FAILURE_STATUS`.
+Copying a log onto a permanent store with `migrate_stream` fails on a source
+stream that has an expiry, since the copy recreates it with that expiry.
+
+**The orphan delete** runs in one transaction on the store's alias. It walks
+the stream's entries 500 at a time, reading only ids: it deletes each batch of
+entries, then the events from that batch that no entry points at any more, and
+deletes the stream row (and its producer rows) last. An event fanned into
+another stream still has an entry there and is kept. If any step fails, the
+whole delete is rolled back. The offset watermark survives as before. If your
+app subclasses `StreamEvent` (the `register_stream_event_admin(MyStreamEvent)`
+pattern), deleting a stream costs one query per event instead: Django reads
+each subclass row, payload included, before deleting it.
+
+**A stream given an expiry before the switch** is treated as having none by
+`create()` too, so re-creating it without an expiry returns it (a protocol `PUT`
+answers `200`) instead of a `409` configuration conflict.

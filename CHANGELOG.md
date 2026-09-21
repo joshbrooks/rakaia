@@ -21,6 +21,22 @@ runnable demo for each.
   `stream_coverage()` runs the same check from Python and returns a
   `StreamCoverage` report. Durable store only; three queries whatever the size
   of the table. See [the guide](docs/check-stream-coverage.md). (#285)
+- **`RAKAIA_PERMANENT_STREAMS` makes every durable stream permanent.** Off by
+  default. With it on, the durable store refuses a create that asks for a TTL or
+  an expiry (`ExpiryNotAllowed`, a protocol `400`), the protocol server refuses
+  `DELETE` (`DeleteNotAllowed`, a `405`), and a stream whose expiry has already
+  passed is served instead of removed. `DjangoStreamStore.delete()` called from
+  Python still works. The in-memory and file stores ignore the setting. (#291)
+- **`manage.py prune_orphan_events`** deletes events no stream refers to, with
+  `--dry-run`, `--batch-size` and `--database`. (#291)
+
+### Changed
+
+- **Deleting a durable stream deletes the events only it referred to.**
+  `DjangoStreamStore.delete()`, and the removal of an expired stream, now take
+  those events in the same transaction; an event that also appears in another
+  stream is kept. Before, the payloads stayed in the table with nothing pointing
+  at them. See `UPGRADING.md`. (#291)
 
 ## [0.6.1] - 2026-09-22
 

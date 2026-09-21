@@ -193,6 +193,10 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
   Every example that serves the protocol takes the default page of a thousand,
   and none holds a stream long enough for a read to stop short.
+- `RAKAIA_PERMANENT_STREAMS`, its two refusals (`ExpiryNotAllowed`,
+  `DeleteNotAllowed`) and `manage.py prune_orphan_events`. No example turns the
+  switch on or deletes a stream, so none shows a `DELETE` being refused or a
+  deleted stream's events going with it.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
 - The file-backed and in-memory outcome stores (`JsonlOutcomeStore`,
