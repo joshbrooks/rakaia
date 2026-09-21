@@ -114,6 +114,25 @@ class InvalidOffset(StreamError, ValueError):
     """
 
 
+class ExpiryNotAllowed(StreamError, ValueError):
+    """A create asked for a TTL or an expiry on a store whose streams are permanent.
+
+    Raised by `DjangoStreamStore` when `RAKAIA_PERMANENT_STREAMS` is on. The
+    protocol server answers it with `400 Bad Request`, as the spec does for
+    creation headers a server will not accept.
+    """
+
+
+class DeleteNotAllowed(StreamError):
+    """A client asked to delete a stream on a store whose streams are permanent.
+
+    Raised from a store's `check_protocol_delete`, which a protocol server calls
+    before `delete`; a `delete()` called from Python is not refused. The server
+    answers `405 Method Not Allowed`, the status the spec names for a delete the
+    server does not support.
+    """
+
+
 # =============================================================================
 # The event-sourcing envelope
 # =============================================================================

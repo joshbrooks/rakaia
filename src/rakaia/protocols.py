@@ -227,7 +227,12 @@ class StreamServerStore(WritableStore, Protocol):
     def delete(self, path: str) -> bool:
         """Delete the stream, cancelling any pending long-polls. Returns whether
         it existed. Offsets stay globally monotonic across delete+recreate: a
-        recreated path resumes numbering above the retired high mark."""
+        recreated path resumes numbering above the retired high mark.
+
+        A store may also define `check_protocol_delete(path)`, raising
+        `DeleteNotAllowed` to refuse a client's DELETE while this method stays
+        callable from Python; the server calls it first if it exists. It is
+        optional and deliberately not part of this protocol."""
         ...
 
     def format_response(self, path: str, messages: list[Any]) -> bytes:

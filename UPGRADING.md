@@ -15,6 +15,27 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## Deleting a stream now deletes its payloads
+
+`delete()` now removes payloads no stream references; export first if you need
+them. Before, `DjangoStreamStore.delete()` removed the stream and its entries
+but left the events themselves in the table, so a stream deleted and rebuilt —
+a backfill with a `--reset`, say — still had its old payloads sitting there,
+recoverable by hand. They are now deleted in the same transaction, and nothing
+fails or warns when that happens. An event that also appears in another stream
+is kept. A stream removed because its expiry ran out loses its events the same
+way. Your database backup is the way back.
+
+Payloads left behind by earlier deletes are still there. They go only if you run
+`manage.py prune_orphan_events`, which has a `--dry-run`.
+
+Nothing else changes unless you set the new `RAKAIA_PERMANENT_STREAMS`, which is
+off by default.
+
+---
+
 # 0.6.0
 
 ## Protocol reads come back in pages, and nothing says so unless you look
