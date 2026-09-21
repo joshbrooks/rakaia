@@ -64,6 +64,12 @@ class StreamStore:
         # Highest read_seq (offset generation) ever retired at a path, so a
         # recreate issues offsets strictly greater than any prior one (#34).
         self._retired_seq: dict[str, int] = {}
+        # The last `event_ts` this store stamped on each path, so its own stamps
+        # never go backwards within a stream (#284). Kept beside the stream
+        # rather than on it, and not cleared on delete, for the same reason as
+        # `_retired_seq`: the durable store keeps the equivalent on its offset
+        # watermark, which outlives the stream, so a recreated path carries on.
+        self._last_event_ts: dict[str, float] = {}
 
     # =========================================================================
     # Stream lifecycle
@@ -661,7 +667,15 @@ class StreamStore:
 
         # Envelope timestamp defaults to append time when the producer didn't set
         # a logical one, so `event_ts` is always populated after a store append.
+        # That default is this store's own stamp, so it is clamped to never go
+        # backwards on this path; a producer's time is kept exactly as sent and
+        # does not move the mark (#284).
         append_time = time.time()
+        if event_ts is None:
+            event_ts = max(
+                self._last_event_ts.get(stream.path, append_time), append_time
+            )
+            self._last_event_ts[stream.path] = event_ts
         message: StreamMessage | None = None
 
         for payload in payloads:
@@ -684,7 +698,7 @@ class StreamStore:
                 data=payload,
                 offset=new_offset,
                 timestamp=append_time,
-                event_ts=event_ts if event_ts is not None else append_time,
+                event_ts=event_ts,
                 label=label,
                 metadata=metadata,
             )

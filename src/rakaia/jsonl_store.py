@@ -207,6 +207,11 @@ class _Meta:
     producers: dict[str, ProducerState] = field(default_factory=dict)
     head: int = 0
     """The highest entry id issued. Also the numeric part of the head offset."""
+    last_event_ts: float | None = None
+    """The last `event_ts` this store stamped itself, so its stamps never go
+    backwards within the stream (#284). Producer-supplied times are not recorded.
+    Lost with the rest of the cache if `meta.json` is: it is not derivable from
+    the log, which does not say which times were stamped and which were sent."""
 
     def to_json(self) -> dict[str, Any]:
         # `last_activity_at` is deliberately absent: it lives in its own file.
@@ -236,6 +241,7 @@ class _Meta:
                 for pid, s in self.producers.items()
             },
             "head": self.head,
+            "last_event_ts": self.last_event_ts,
         }
 
     @classmethod
@@ -264,6 +270,7 @@ class _Meta:
                 for pid, s in raw.get("producers", {}).items()
             },
             head=raw.get("head", 0),
+            last_event_ts=raw.get("last_event_ts"),
         )
 
 
@@ -332,6 +339,22 @@ class JsonlStreamStore:
             return int(f.read_text())
         except (OSError, ValueError):
             return 0
+
+    def _retired_event_ts_path(self, path: str) -> Path:
+        # `%` cannot follow a name `quote` produced unless two hex digits do, so
+        # no stream's high-mark file can be called this.
+        return _contained(self.root / _RETIRED_DIR, path, "%event_ts")
+
+    def _retired_event_ts(self, path: str) -> float | None:
+        """The last `event_ts` this store stamped on a deleted `path`, if any.
+
+        Kept beside the retired high mark so a recreated path carries on from
+        it, as the durable store's watermark and the in-memory store do (#284).
+        """
+        try:
+            return float(self._retired_event_ts_path(path).read_text())
+        except (OSError, ValueError):
+            return None
 
     # =========================================================================
     # Metadata and the lock
@@ -674,6 +697,7 @@ class JsonlStreamStore:
             # A recreated path resumes above the id it retired, so offsets stay
             # globally monotonic across delete-and-recreate (#34).
             head=self._retired(path),
+            last_event_ts=self._retired_event_ts(path),
         )
         self._save_meta(path, meta)
         self._save_activity(path, now)
@@ -731,6 +755,16 @@ class JsonlStreamStore:
         meta = self._load_meta(path)
         high = max(self._retired(path), meta.head if meta else 0)
         self._retired_path(path).write_text(str(high))
+        stamps = [
+            ts
+            for ts in (
+                self._retired_event_ts(path),
+                meta.last_event_ts if meta else None,
+            )
+            if ts is not None
+        ]
+        if stamps:
+            self._retired_event_ts_path(path).write_text(repr(max(stamps)))
         for child in d.iterdir():
             child.unlink()
         d.rmdir()
@@ -778,6 +812,17 @@ class JsonlStreamStore:
             payloads = [data]
 
         append_time = time.time()
+        # The default `event_ts` is this store's own stamp, so it never goes
+        # backwards on this stream; a producer's time is kept exactly as sent
+        # and does not move the mark (#284). `_write` runs under the stream's
+        # file lock, which is what makes the read-then-advance safe.
+        if event_ts is None:
+            event_ts = (
+                append_time
+                if meta.last_event_ts is None
+                else max(meta.last_event_ts, append_time)
+            )
+            meta.last_event_ts = event_ts
         message: StreamMessage | None = None
         for payload in payloads:
             meta.head += 1
@@ -786,7 +831,7 @@ class JsonlStreamStore:
                 "id": meta.head,
                 "offset": offset,
                 "ts": append_time,
-                "event_ts": event_ts if event_ts is not None else append_time,
+                "event_ts": event_ts,
                 "label": label,
                 "metadata": metadata,
                 **self._encode(payload),
