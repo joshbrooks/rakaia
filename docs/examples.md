@@ -209,6 +209,10 @@ No example exercises these yet — a good place to contribute a demo:
   (`docs/deployment.md`), and `partisipa_intake` now leaves four records for such
   a demo to prune — but no example runs it, so the operator's side of the outcome
   table is still undemonstrated.
+- `stream_coverage` and `manage.py check_stream_coverage`. No example lists its
+  streams in `RAKAIA_COVERAGE_CHECKS` or runs the check, so there is no demo of a
+  gap being found; the tests and `docs/check-stream-coverage.md` are the only
+  coverage.
 
 ## Orientation for contributors
 

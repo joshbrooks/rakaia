@@ -9,6 +9,19 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **A check that a stream still covers the table it is written from.**
+  `manage.py check_stream_coverage` compares each table listed in the new
+  `RAKAIA_COVERAGE_CHECKS` setting with its stream, and reports rows no event
+  names, rows changed since their newest event, and events whose row is gone. It
+  exits non-zero on a missing or stale row, so a nightly timer can alert on it;
+  events for deleted rows are reported and do not fail it. The change time can
+  be a column or any annotation, such as the newest entry in a history table.
+  `stream_coverage()` runs the same check from Python and returns a
+  `StreamCoverage` report. Durable store only; three queries whatever the size
+  of the table. See [the guide](docs/check-stream-coverage.md). (#285)
+
 ## [0.6.1] - 2026-09-22
 
 ### Fixed

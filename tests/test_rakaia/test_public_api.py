@@ -217,6 +217,9 @@ DJANGO_RAKAIA_PUBLIC = {
     "register_stream_event_admin",
     "replay_stream",
     "stream_model",
+    # Added with the stream-coverage check (#285).
+    "stream_coverage",
+    "StreamCoverage",
 }
 
 
