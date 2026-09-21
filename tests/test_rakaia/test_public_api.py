@@ -65,7 +65,9 @@ RAKAIA_PUBLIC = {
     "ProducerValidationResult",
     # named store failures
     "ContentTypeMismatch",
+    "DeleteNotAllowed",
     "EmptyJsonArray",
+    "ExpiryNotAllowed",
     "InvalidJson",
     "ForeignOffset",
     "InvalidOffset",

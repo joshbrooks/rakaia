@@ -226,6 +226,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "InvalidOffset",
         "ForeignOffset",
         "EmptyJsonArray",
+        "ExpiryNotAllowed",
+        "DeleteNotAllowed",
         "SpareKeys",
         "StreamConfigConflict",
         "HandlerDriftError",

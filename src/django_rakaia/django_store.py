@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.db import transaction
 
 from rakaia.append_decision import (
@@ -60,6 +61,8 @@ from rakaia.types import (
     AppendOptions,
     AppendResult,
     CloseResult,
+    DeleteNotAllowed,
+    ExpiryNotAllowed,
     ProducerAccepted,
     ProducerState,
     ProducerValidationResult,
@@ -224,6 +227,21 @@ def write_enveloped_event(
 _POLL_INTERVAL_SECONDS = 0.05
 
 
+# How many event ids `DjangoStreamStore.delete` removes per statement. Well
+# under SQLite's bound-parameter limit, and large enough that a stream of many
+# thousands of events is a handful of round trips.
+_ORPHAN_DELETE_CHUNK = 500
+
+
+def _permanent_streams() -> bool:
+    """Whether `RAKAIA_PERMANENT_STREAMS` is on. Off unless a project sets it.
+
+    Read on every call rather than once at import, so `override_settings` and a
+    settings change between calls are both honoured.
+    """
+    return bool(getattr(settings, "RAKAIA_PERMANENT_STREAMS", False))
+
+
 class _StreamExpired(Exception):
     """Internal: the locked stream row had aged out. Never leaves this module.
 
@@ -305,7 +323,13 @@ class DjangoStreamStore:
 
         Mirrors the in-memory store, including its treatment of a malformed
         `expires_at` as non-expiring rather than as immediately expired.
+
+        Always false under `RAKAIA_PERMANENT_STREAMS`, which is what stops every
+        read and write path from reaping: they all ask here. A stream given an
+        expiry before the switch was turned on is served as live.
         """
+        if _permanent_streams():
+            return False
         now = time.time()
 
         if (
@@ -525,7 +549,18 @@ class DjangoStreamStore:
         here is invisible to the test suite but a guaranteed 500 in
         production — hence the contract's create-with-body case and this
         comment. Do not unwrap it.
+
+        Under `RAKAIA_PERMANENT_STREAMS` a `ttl_seconds` or `expires_at` raises
+        `ExpiryNotAllowed` before anything is written, including on an idempotent
+        re-create: a permanent store accepts no expiry at all. A stream given one
+        before the switch was turned on compares as having none, as `get` reports.
         """
+        permanent = _permanent_streams()
+        if permanent and (ttl_seconds is not None or expires_at):
+            raise ExpiryNotAllowed(
+                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} cannot "
+                f"be created with a TTL or an expiry"
+            )
         self._reap_if_expired(path)
         with transaction.atomic(using=self._using):
             existing = self._get_if_not_expired(path)
@@ -533,8 +568,8 @@ class DjangoStreamStore:
                 same = (
                     normalize_content_type(content_type)
                     == normalize_content_type(existing.content_type)
-                    and ttl_seconds == existing.ttl_seconds
-                    and expires_at == existing.expires_at
+                    and ttl_seconds == (None if permanent else existing.ttl_seconds)
+                    and expires_at == (None if permanent else existing.expires_at)
                     and closed == existing.closed
                 )
                 if same:
@@ -1220,18 +1255,20 @@ class DjangoStreamStore:
 
         Returns a `rakaia.types.Stream` — the same type the in-memory store
         returns — carrying metadata only. It never carried messages; read the
-        stream with `read()`.
+        stream with `read()`. Under `RAKAIA_PERMANENT_STREAMS` the TTL and expiry
+        read as unset, so a stream given one earlier is not advertised as lapsing.
         """
         row = self._get_if_not_expired(path)
         if row is None:
             return None
+        permanent = _permanent_streams()
         return ProtocolStream(
             path=row.stream_id,
             content_type=row.content_type,
             current_offset=row.current_offset,
             last_seq=row.last_seq,
-            ttl_seconds=row.ttl_seconds,
-            expires_at=row.expires_at,
+            ttl_seconds=None if permanent else row.ttl_seconds,
+            expires_at=None if permanent else row.expires_at,
             created_at=row.created_at.timestamp() if row.created_at else 0.0,
             last_activity_at=row.last_activity_at,
             closed=row.closed,
@@ -1242,14 +1279,63 @@ class DjangoStreamStore:
         return self._get_if_not_expired(path) is not None
 
     def delete(self, path: str) -> bool:
-        """Delete a stream and its entries. Returns whether it existed.
+        """Delete a stream, its entries, and the events left in no stream at all.
 
-        The offset high-water (`StreamOffsetWatermark`) deliberately survives,
-        so a stream recreated at this path resumes numbering above the retired
-        mark rather than reissuing offsets a subscriber has already seen.
+        An event is deleted only when no entry in *any* stream still points at
+        it, so an event fanned into a surviving stream is kept. It all happens in
+        one transaction on this store's alias. The offset high-water
+        (`StreamOffsetWatermark`) deliberately survives, so a stream recreated at
+        this path resumes numbering above the retired mark rather than reissuing
+        offsets a subscriber has already seen. Returns whether the stream existed.
+
+        Works under `RAKAIA_PERMANENT_STREAMS` too. The switch refuses a client's
+        protocol DELETE (`check_protocol_delete`) and stops expiry reaping, but a
+        call from Python is an operator's decision and is carried out.
+
+        The entries are walked in primary-key order, `_ORPHAN_DELETE_CHUNK` at a
+        time, reading only ids: each chunk's entries are deleted, then that
+        chunk's events that no entry points at any more ("no entry left" is a
+        left join), and the stream row goes last. `.only("pk")` keeps Django's
+        cascade collector from loading payloads, so neither memory nor the
+        query count grows with anything but the number of chunks.
         """
-        deleted, _ = self._streams().filter(stream_id=path).delete()
-        return deleted > 0
+        with transaction.atomic(using=self._using):
+            stream_pk = (
+                self._streams().filter(stream_id=path).values_list("pk", flat=True)
+            ).first()
+            if stream_pk is None:
+                return False
+            last = 0
+            while True:
+                chunk = list(
+                    self._entries()
+                    .filter(stream_id=stream_pk, pk__gt=last)
+                    .order_by("pk")
+                    .values_list("pk", "event_id")[:_ORPHAN_DELETE_CHUNK]
+                )
+                if not chunk:
+                    break
+                last = chunk[-1][0]
+                self._entries().filter(pk__in=[pk for pk, _ in chunk]).delete()
+                self._events().filter(
+                    pk__in={event_id for _, event_id in chunk}, entries__isnull=True
+                ).only("pk").delete()
+            self._streams().filter(pk=stream_pk).delete()
+        return True
+
+    def check_protocol_delete(self, path: str) -> None:
+        """Raise `DeleteNotAllowed` if a client may not delete `path`.
+
+        The protocol server calls this before `delete`, and the server answers
+        the refusal with `405 Method Not Allowed`. It refuses every path while
+        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off; `delete()`
+        itself never asks.
+        """
+        if _permanent_streams():
+            raise DeleteNotAllowed(
+                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} "
+                f"cannot be deleted over the protocol"
+            )
 
     def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
         """Render `messages` as the response body for `path`.

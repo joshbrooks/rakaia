@@ -258,6 +258,8 @@ page is the contract.
 | `InvalidOffset` | `rakaia` | — | An offset is syntactically valid but not one this store can read. |
 | `ForeignOffset` | `rakaia` | — | An offset was used where its format does not belong — passed to a store that did not issue it, or compared against one from another store. |
 | `EmptyJsonArray` | `rakaia` | — | A JSON-mode append carried an empty array. |
+| `ExpiryNotAllowed` | `rakaia` | — | A create asked for a TTL or an expiry on a store whose streams are permanent. |
+| `DeleteNotAllowed` | `rakaia` | — | A client asked to delete a stream on a store whose streams are permanent. |
 | `SpareKeys` | `rakaia` | `(keys: 'list[dict[str, Any]]') -> None` | Spare rows from a delete or retire by composite natural key. |
 | `StreamConfigConflict` | `rakaia` | — | A create names an existing stream with a different configuration. |
 | `HandlerDriftError` | `rakaia` | — | A handler/upcaster's source body differs from its registered hash. |
@@ -275,6 +277,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-174 exported names across 16 sections. 151 carry a docstring; 23 do not and show `—` above.
+176 exported names across 16 sections. 153 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

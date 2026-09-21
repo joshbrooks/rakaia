@@ -62,7 +62,9 @@ from .types import (
     STREAM_TTL_HEADER,
     AppendOptions,
     ContentTypeMismatch,
+    DeleteNotAllowed,
     EmptyJsonArray,
+    ExpiryNotAllowed,
     InvalidJson,
     InvalidOffset,
     ProducerAccepted,
@@ -99,7 +101,24 @@ STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     # failure, which is the point of it. A later offset failure might warrant 409
     # or 410, and inheriting silently is how that would go unnoticed.
     ForeignOffset: (400, b"Invalid offset"),
+    # A store whose streams are permanent. The spec answers a creation header
+    # the server will not accept with 400, and a delete it does not support
+    # with 405 (§5.4); `create_app` adds the `Allow` header a 405 needs.
+    ExpiryNotAllowed: (
+        400,
+        (
+            b"Streams on this server are permanent: Stream-TTL and "
+            b"Stream-Expires-At are not accepted"
+        ),
+    ),
+    DeleteNotAllowed: (
+        405,
+        b"Streams on this server are permanent and cannot be deleted",
+    ),
 }
+
+# The methods a stream still accepts when its store refuses DELETE.
+_ALLOW_WITHOUT_DELETE = "GET, HEAD, POST, PUT, OPTIONS"
 
 
 def _status_for(failure: BaseException) -> tuple[int, bytes] | None:
@@ -419,7 +438,13 @@ def create_app(
             if mapped is None:
                 raise
             status, body = mapped
-            await _send_error(send, status, body, cors_headers)
+            # A 405 must say what is allowed, whichever store call refused.
+            extra = (
+                {"allow": _ALLOW_WITHOUT_DELETE}
+                if isinstance(e, DeleteNotAllowed)
+                else None
+            )
+            await _send_error(send, status, body, cors_headers, extra)
 
     return app
 
@@ -1199,6 +1224,14 @@ async def _handle_delete(
     if not await store.run_sync(store.has, path):
         await _send_error(send, 404, b"Stream not found", cors)
         return
+
+    # Optional, so a store that has no such policy need not grow a method: a
+    # store may refuse a client's DELETE while still honouring `delete()` from
+    # Python, which is what `DjangoStreamStore` does for permanent streams.
+    # Its `DeleteNotAllowed` is answered by `create_app`, like any store failure.
+    check = getattr(store, "check_protocol_delete", None)
+    if check is not None:
+        await store.run_sync(check, path)
 
     await store.run_sync(store.delete, path)
     await send_response(send, 204, cors)

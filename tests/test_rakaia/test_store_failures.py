@@ -19,6 +19,7 @@ from rakaia import StreamStore
 from rakaia.protocol_server import STORE_FAILURE_STATUS, _status_for
 from rakaia.types import (
     ContentTypeMismatch,
+    DeleteNotAllowed,
     EmptyJsonArray,
     InvalidJson,
     InvalidOffset,
@@ -281,6 +282,25 @@ class TestFailureBecomesStatus:
         assert r.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_a_delete_refused_by_delete_itself_still_says_allow(self) -> None:
+        """A 405 names the methods that are allowed, whichever call refused.
+
+        A store may refuse from `delete()` rather than from the optional
+        `check_protocol_delete`; the response must be the same.
+        """
+        store = StreamStore()
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise DeleteNotAllowed("no")
+
+        async with asgi_client(store) as ac:
+            await ac.put("/s")
+            store.delete = _refuse  # type: ignore[method-assign]
+            resp = await ac.delete("/s")
+        assert resp.status_code == 405
+        assert "GET" in resp.headers["allow"]
+        assert "DELETE" not in resp.headers["allow"]
+
     async def test_message_text_is_not_load_bearing(self) -> None:
         """Reword a failure's message; the status must not move.
 
