@@ -138,7 +138,7 @@ def create_stream_event(
     # open, so the event stays inside the save that produced it.
     # The save being audited decides the database, unless a caller says
     # otherwise. `write_enveloped_event` then takes the alias from the streams
-    # themselves, and offset allocation from the stream row it locks.
+    # themselves.
     # `getattr` rather than `instance._state.db`: this door accepts anything
     # with the attributes `to_dataclass` reads, and the envelope-writer tests
     # pass a plain stand-in with no ORM state. No state means no routing, which
@@ -147,10 +147,27 @@ def create_stream_event(
     alias = using if using is not None else getattr(state, "db", None)
 
     with transaction.atomic(using=alias):
+        # Streams are fetched or created, then row-locked, in path order: the
+        # order a protocol append takes the same locks in -- stream row first,
+        # offset watermark second. Going to the watermark first and needing the
+        # stream row later (inserting an entry that points at it) is the
+        # opposite order, and deadlocked against an append on one stream
+        # (#298). Creating them in path order too means two first saves into
+        # the same new streams also meet in one order.
+        by_id = {
+            stream_id: _get_or_create_stream(stream_id, using=alias)
+            for stream_id in sorted(set(stream_ids))
+        }
+        list(
+            Stream.objects.using(alias)
+            .select_for_update()
+            .filter(pk__in=[stream.pk for stream in by_id.values()])
+            .order_by("stream_id")
+        )
         # One envelope shared by every entry: a fan-out is one event appearing
         # in several streams, not several events that look alike.
         event, _entries = write_enveloped_event(
-            [_get_or_create_stream(stream_id, using=alias) for stream_id in stream_ids],
+            [by_id[stream_id] for stream_id in stream_ids],
             payload,
             label=action,
             stamp_event_ts=True,

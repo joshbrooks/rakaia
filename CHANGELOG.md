@@ -9,6 +9,13 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model save and a protocol append on the same stream no longer deadlock
+  each other.** A `@stream_model` save now locks its streams before reserving
+  their offsets, the same order a protocol append uses, so on Postgres the
+  second writer waits for the first instead of one being aborted. (#298)
+
 ## [0.6.0] - 2026-09-21
 
 ### Changed

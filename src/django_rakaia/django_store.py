@@ -116,6 +116,12 @@ def write_enveloped_event(
 
     Returns the `StreamEvent` and its `StreamEntry` rows, in `streams` order.
 
+    The caller must already hold the `streams` rows' locks, taken in
+    `stream_id` order, inside a transaction on their database. This function
+    locks only the offset watermarks; inserting an entry then needs the stream
+    row, so a caller that skipped the row lock could deadlock against a
+    protocol append on the same stream, which takes the row first (#298).
+
     Every rule that turns an envelope into columns is resolved here, once:
 
     * **the label** becomes `event_type`, with a labelless event recorded under
