@@ -247,3 +247,72 @@ def test_fanning_into_the_same_streams_in_opposite_orders_does_not_deadlock(
             )
         )
         assert offsets == [1, 2, 3]
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
+def test_a_model_save_and_a_protocol_append_on_one_stream_do_not_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `@stream_model` save and a protocol append racing for one stream.
+
+    The protocol append locks the stream row, then the offset watermark. A
+    model save that went straight to the watermark would then need a share lock
+    on that same stream row to insert its entry -- which waits on the append's
+    row lock, while the append waits on the save's watermark. One stream is
+    enough for Postgres to abort one of them (#298). Taking the stream row
+    first on both paths makes the second writer queue behind the first.
+
+    The interleave is forced the same way as the fan-out test above: the save
+    announces once it holds the watermark, the append announces once it holds
+    the row and is about to reserve, and each waits briefly, without failing,
+    for the other. With the old order both get there and deadlock every time;
+    with the fix the second is still blocked on the row, the first's wait runs
+    out, and both commit.
+    """
+    from django_rakaia.decorators import create_stream_event
+
+    from .models import AreaData
+
+    store = DjangoStreamStore()
+    store.create(PATH)
+    store.append(PATH, b'{"seed": true}')
+
+    original = Stream._reserve
+    local = threading.local()
+    save_has_watermark = threading.Event()
+    append_has_row = threading.Event()
+
+    def announcing(self: Stream, count: int, *, stamp: bool) -> Any:
+        if local.role == "append":
+            append_has_row.set()
+            save_has_watermark.wait(timeout=2)
+            return original(self, count, stamp=stamp)
+        reserved = original(self, count, stamp=stamp)
+        save_has_watermark.set()
+        append_has_row.wait(timeout=2)
+        return reserved
+
+    monkeypatch.setattr(Stream, "_reserve", announcing)
+
+    def save() -> None:
+        local.role = "save"
+        create_stream_event(
+            stream_paths=PATH,
+            to_dataclass=lambda _i: AreaData(id=1, name="a"),
+            instance=object(),  # type: ignore[arg-type]
+            action="update",
+        )
+
+    def append() -> None:
+        local.role = "append"
+        store.append(PATH, b'{"w": "append"}')
+
+    _run(save, append)
+
+    offsets = sorted(
+        StreamEntry.objects.filter(stream__stream_id=PATH).values_list(
+            "offset", flat=True
+        )
+    )
+    assert offsets == [1, 2, 3]
