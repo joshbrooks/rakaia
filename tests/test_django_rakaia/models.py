@@ -438,5 +438,37 @@ class RepeaterProjection(models.Model):
         app_label = "test_django_rakaia"
 
 
+class CoverageRow(models.Model):
+    """A plain source row for the stream-coverage check (#285).
+
+    Plain rather than `@stream_model` so the tests decide exactly which events
+    exist. ``updated_at`` is the last-changed column a table sometimes has;
+    ``form`` is there so a settings entry has something to filter on.
+    """
+
+    form = models.CharField(max_length=32, default="a")
+    updated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
+class CoverageRowChange(models.Model):
+    """A history row for `CoverageRow`, standing in for a trigger-filled table.
+
+    The consumer that motivated #285 has no last-changed column on its source
+    rows; the change time lives in a related history table and reaches the
+    check as an annotation. This is that table.
+    """
+
+    row = models.ForeignKey(
+        CoverageRow, on_delete=models.CASCADE, related_name="changes"
+    )
+    changed_at = models.DateTimeField()
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 # Register the admin interface for AppStreamEvent
 register_stream_event_admin(AppStreamEvent)

@@ -140,6 +140,10 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "VerificationError",
         "PreloadMismatch",
     ),
+    "Checking a stream against its table": (
+        "stream_coverage",
+        "StreamCoverage",
+    ),
     "Audit trails and provenance": (
         "provenance",
         "get_provenance",

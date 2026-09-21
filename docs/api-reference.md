@@ -145,6 +145,13 @@ page is the contract.
 | `VerificationError` | `django_rakaia` | `(report: 'DiffReport') -> 'None'` | Raised by :meth:`DiffReport.raise_if_diff` when a projection disagrees. |
 | `PreloadMismatch` | `django_rakaia` | — | A :class:`PreloadedProjectionReader` was handed to :func:`diff_effects_against_rows` together with effects its bulk fetch does not cover. |
 
+## Checking a stream against its table
+
+| Name | Import from | Signature | What it does |
+|---|---|---|---|
+| `stream_coverage` | `django_rakaia` | `(queryset: 'QuerySet[Any]', stream_path: 'str', *, subject_key: 'str', row_key: 'str' = 'pk', changed_field: 'str \| None' = None) -> 'StreamCoverage'` | Report how completely the stream at ``stream_path`` covers ``queryset``. |
+| `StreamCoverage` | `django_rakaia` | `(stream_path: 'str', rows: 'int', covered: 'int', missing: 'int', missing_sample: 'tuple[str, ...]', stale: 'int \| None', stale_sample: 'tuple[str, ...]', extra: 'int', extra_sample: 'tuple[str, ...]', skipped: 'int') -> None` | What `stream_coverage` found for one queryset and one stream. |
+
 ## Audit trails and provenance
 
 | Name | Import from | Signature | What it does |
@@ -268,6 +275,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-172 exported names across 15 sections. 149 carry a docstring; 23 do not and show `—` above.
+174 exported names across 16 sections. 151 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

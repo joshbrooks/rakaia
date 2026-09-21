@@ -110,6 +110,9 @@ _EXPORTS: dict[str, str] = {
     "assert_no_live_writes": "django_rakaia.hermeticity",
     "AmbientDatabaseAccess": "django_rakaia.hermeticity",
     "LiveWriteLeaked": "django_rakaia.hermeticity",
+    # -- checking a stream against its table ------------------------------
+    "stream_coverage": "django_rakaia.coverage",
+    "StreamCoverage": "django_rakaia.coverage",
     # -- reading -------------------------------------------------------------
     "ModelStreamReader": "django_rakaia.streams",
     "materialize_history": "django_rakaia.history",
