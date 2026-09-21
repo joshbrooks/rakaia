@@ -19,7 +19,7 @@ rows and the read-back messages.
 
 What they deliberately do *not* pin is that the two doors choose the same
 envelope. They don't: a raw protocol append carries no `event_ts` unless the
-producer sets one, while `@stream_model` always stamps `time.time()` (ADR 0002
+producer sets one, while `@stream_model` always stamps one (ADR 0002
 item 5, `test_decorators_provenance.TestEnvelopeTimestamp`). That is a
 difference of *input*, decided by the caller. Everything below is about what
 the writer does with the input it is given.

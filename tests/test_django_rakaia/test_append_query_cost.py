@@ -78,13 +78,14 @@ _STEADY_STATE_APPEND = [
     # transaction to reap an expired stream, then the locked one inside it
     # (#202).
     "SELECT rakaia_stream",
-    "INSERT rakaia_streamevent",
     # The high-water, under its own lock, and advanced. No `MAX(offset)` scan
     # beside it: the watermark is authoritative once advanced, and re-deriving
     # the head would be the one statement here whose cost grows with the length
-    # of the stream.
+    # of the stream. It comes before the event row, so the event's times are
+    # taken with the lock held (#284).
     "SELECT rakaia_streamoffsetwatermark",
     "UPDATE rakaia_streamoffsetwatermark",
+    "INSERT rakaia_streamevent",
     "INSERT rakaia_streamentry",
 ]
 
@@ -212,9 +213,9 @@ class TestAppendQueryCost:
             "SELECT rakaia_stream",
             # The producer's pre-batch state, read once for the whole batch.
             "SELECT rakaia_streamproducer",
-            "INSERT rakaia_streamevent",
             "SELECT rakaia_streamoffsetwatermark",
             "UPDATE rakaia_streamoffsetwatermark",
+            "INSERT rakaia_streamevent",
             "INSERT rakaia_streamentry",
             # `update_or_create`: the existence probe, then the write. Once --
             # an INSERT here because this producer is new to the stream.

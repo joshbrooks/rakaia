@@ -81,6 +81,7 @@ from .models import (
     Stream,
     StreamEntry,
     StreamEvent,
+    StreamOffsetWatermark,
     StreamProducer,
 )
 
@@ -107,6 +108,7 @@ def write_enveloped_event(
     label: str = "",
     metadata: Any = None,
     event_ts: float | None = None,
+    stamp_event_ts: bool = False,
     payload_encoding: str | None = None,
 ) -> tuple[StreamEvent, list[StreamEntry]]:
     """Write one enveloped event into `streams`. The **only** writer of one.
@@ -124,7 +126,11 @@ def write_enveloped_event(
     * **`event_ts`** is passed through, NULL included. NULL means "no logical
       time was set", and readers surface the append time instead. The caller
       decides whether to set one: a raw protocol append has none unless the
-      producer supplied it, while `@stream_model` always stamps one;
+      producer supplied it, while `@stream_model` asks for one with
+      ``stamp_event_ts=True``. That stamp is taken here, under the offset
+      locks, as ``max(the stream's last stamp, now)`` — so it agrees with the
+      offset order in every stream the event lands in (#284). A supplied
+      ``event_ts`` always wins over the stamp and is stored verbatim;
     * **the offsets** come from `Stream.get_next_offset`, which locks the
       per-path high-water — so this must run inside a transaction. The locks
       are taken in `stream_id` order, whatever order `streams` is in, so two
@@ -149,6 +155,42 @@ def write_enveloped_event(
     # (#159). Deriving the alias from the streams means it follows the data and
     # no caller has to remember to pass it.
     using = streams[0]._state.db if streams else None
+    # Offsets are allocated in one agreed order -- by stream path -- and not
+    # in the order the caller listed the streams. Each allocation holds that
+    # stream's watermark lock until the transaction ends, so two events fanned
+    # into the same streams in opposite orders would each take one lock and
+    # wait for the other's, and Postgres would abort one of them (#293). The
+    # entries still come back in the caller's order.
+    #
+    # Allocation comes *before* the event row, so that everything about the
+    # event that carries a time -- the stamp, and `created_at`, which readers
+    # fall back to when there is no stamp -- is taken once the locks are held
+    # rather than before them (#284).
+    stamp = stamp_event_ts and event_ts is None
+    offsets: dict[int, int] = {}
+    stamps: dict[str, float] = {}
+    for i in sorted(range(len(streams)), key=lambda i: streams[i].stream_id):
+        if stamp:
+            offsets[i], stamps[streams[i].stream_id] = streams[
+                i
+            ].get_next_offset_and_stamp()
+        else:
+            offsets[i] = streams[i].get_next_offset()
+    if stamp and not stamps:
+        # A save whose paths resolved to no streams has no lock to stamp under
+        # and no stream to keep in order; it still gets a time.
+        event_ts = time.time()
+    elif stamp:
+        # One event has one time, so a fan-out takes the latest of its
+        # streams' stamps. Any stream whose own stamp was earlier is brought up
+        # to it, still under the lock this transaction holds, or its next event
+        # could be stamped before this one.
+        event_ts = max(stamps.values())
+        behind = [path for path, ts in stamps.items() if ts < event_ts]
+        if behind:
+            StreamOffsetWatermark.objects.using(using).filter(
+                stream_path__in=behind
+            ).update(last_event_ts=event_ts)
     event = StreamEvent.objects.using(using).create(
         data=data,
         event_type=label or _APPEND_EVENT_TYPE,
@@ -156,15 +198,6 @@ def write_enveloped_event(
         event_ts=event_ts,
         payload_encoding=payload_encoding,
     )
-    # Offsets are allocated in one agreed order -- by stream path -- and not
-    # in the order the caller listed the streams. Each allocation holds that
-    # stream's watermark lock until the transaction ends, so two events fanned
-    # into the same streams in opposite orders would each take one lock and
-    # wait for the other's, and Postgres would abort one of them (#293). The
-    # entries still come back in the caller's order.
-    offsets: dict[int, int] = {}
-    for i in sorted(range(len(streams)), key=lambda i: streams[i].stream_id):
-        offsets[i] = streams[i].get_next_offset()
     entries = [
         StreamEntry.objects.using(using).create(
             stream=stream,
@@ -1001,9 +1034,12 @@ class DjangoStreamStore:
                     ]
                 )
             stream_events = [event for group in groups for event in group]
+            # The block is reserved before the events are inserted, as
+            # `write_enveloped_event` does, so their `created_at` is taken with
+            # the watermark lock held (#284).
+            start = stream.get_next_offset_block(len(stream_events))
             self._events().bulk_create(stream_events)
 
-            start = stream.get_next_offset_block(len(stream_events))
             entries = [
                 StreamEntry(stream=stream, event=event, offset=start + i)
                 for i, event in enumerate(stream_events)

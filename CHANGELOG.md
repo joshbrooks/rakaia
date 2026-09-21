@@ -16,6 +16,14 @@ runnable demo for each.
   the order the streams were listed, so the second save queues behind the first
   rather than one being aborted by Postgres. The entries still come
   back in the caller's order. (#293)
+- **The time rakaia stamps on an event now agrees with its position.** The
+  stamp is taken after the event's position is locked in, and is never earlier
+  than the stream's previous stamp, so a clock stepping backwards repeats the
+  last time instead of dating a later event before an earlier one. Replays that
+  interleave streams by event time see each stream in the order it was written.
+  A time the producer supplies is still stored exactly as sent. On the durable
+  store this adds a column to the offset watermark: run
+  `manage.py migrate django_rakaia` (migration `0012`). (#284)
 
 ## [0.5.0] - 2026-09-10
 

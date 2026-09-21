@@ -7,7 +7,6 @@ streams with independent, monotonic offsets per stream.
 
 import dataclasses
 import json
-import time
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -122,16 +121,18 @@ def create_stream_event(
     # always stamps one: leaving it NULL would force `merge_replay` onto
     # transport time, which is the ordering trap that item closed. A raw
     # protocol append is the other case — no logical time unless the producer
-    # set one — which is why the shared writer takes it as an argument rather
+    # set one — which is why the shared writer is told whether to stamp rather
     # than deciding it.
+    #
+    # The stamp is *taken* by the writer, not here: under the offset lock, as
+    # `max(the stream's last stamp, now)`, so a stream's times agree with its
+    # positions (#284).
     #
     # Everything else about the envelope — the `"append"` sentinel, merging the
     # ambient `provenance()` block into `metadata`, `{}` rather than NULL,
     # locking offset allocation — is `write_enveloped_event`'s to decide, shared
     # with `DjangoStreamStore.append`. `@stream_model` used to have its own copy
     # of those rules and the copies had drifted (#131).
-    event_ts = time.time()
-
     # Atomic because `get_next_offset` locks the per-path high-water for the
     # duration of the transaction. A savepoint when the caller already has one
     # open, so the event stays inside the save that produced it.
@@ -152,7 +153,7 @@ def create_stream_event(
             [_get_or_create_stream(stream_id, using=alias) for stream_id in stream_ids],
             payload,
             label=action,
-            event_ts=event_ts,
+            stamp_event_ts=True,
         )
 
     return event

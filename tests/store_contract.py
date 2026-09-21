@@ -168,6 +168,81 @@ class StoreContract:
         assert messages[-1].event_ts == logical
         assert messages[-1].timestamp != logical
 
+    # Whether a raw append with no producer-set time gets a stamp this store
+    # takes itself. The durable store is the exception: it stores NULL, and its
+    # readers fall back to the row's database insert time, which the clock
+    # below does not reach. Its own stamp -- the one `@stream_model` asks for --
+    # is pinned in `tests/test_django_rakaia/test_event_ts_stamp.py`.
+    stamps_raw_appends = True
+
+    @pytest.fixture
+    def clock(self, monkeypatch):
+        """A wall clock the test sets by hand, including backwards."""
+        if not self.stamps_raw_appends:
+            pytest.skip("this store does not stamp a raw append's event_ts itself")
+        now = [2_000_000_000.0]
+        monkeypatch.setattr("time.time", lambda: now[0])
+        return now
+
+    def test_own_event_ts_never_goes_backwards_when_the_clock_does(self, store, clock):
+        # The store's own stamp is `max(last stamp, now)`, so a clock stepped
+        # backwards repeats the last time instead of dating a later event
+        # before an earlier one. Readers break the tie by offset (#284).
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        clock[0] -= 100
+        store.append("s", b'{"id": 2}')
+        clock[0] += 150
+        store.append("s", b'{"id": 3}')
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [
+            2_000_000_000.0,
+            2_000_000_000.0,
+            2_000_000_050.0,
+        ]
+
+    def test_own_event_ts_carries_over_a_delete_and_recreate(self, store, clock):
+        # The durable store keeps the last stamp on its offset watermark, which
+        # outlives the stream, so a path deleted and created again carries on
+        # from it rather than dating its first new event before its last old one.
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        store.delete("s")
+        clock[0] -= 100
+        store.create("s")
+        store.append("s", b'{"id": 2}')
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [2_000_000_000.0]
+
+    def test_own_event_ts_never_goes_backwards_across_a_batch(self, store, clock):
+        # `append_many` stamps through the same rule as `append`.
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        clock[0] -= 100
+        store.append_many("s", [(b'{"id": 2}', None), (b'{"id": 3}', None)])
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [2_000_000_000.0] * 3
+
+    def test_a_producer_time_neither_is_clamped_nor_moves_the_stamp(self, store, clock):
+        # Only the store's own stamp is clamped. A producer-set time -- here one
+        # far in the past, then one far in the future -- is stored verbatim, and
+        # does not drag the stamps after it along with it. The future one comes
+        # last, directly before the next stamp: were it recorded as the stream's
+        # last stamp, that stamp would be pinned to it.
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        store.append("s", b'{"id": 2}', AppendOptions(event_ts=1_000_000_000.0))
+        store.append("s", b'{"id": 3}', AppendOptions(event_ts=3_000_000_000.0))
+        clock[0] += 10
+        store.append("s", b'{"id": 4}')
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [
+            2_000_000_000.0,
+            1_000_000_000.0,
+            3_000_000_000.0,
+            2_000_000_010.0,
+        ]
+
     def test_offsets_strictly_increase_lexicographically(self, store):
         # The offset contract (protocol §6): successive appends yield offsets that
         # are strictly increasing under plain string (lexicographic) comparison —

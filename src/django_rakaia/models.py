@@ -5,6 +5,7 @@ Provides a normalized model structure with Stream, StreamEvent, and StreamEntry
 for efficient querying and real-time updates via Unix sockets.
 """
 
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
@@ -147,7 +148,40 @@ class Stream(models.Model):
         return self.get_next_offset_block(1)
 
     def get_next_offset_block(self, count: int) -> int:
+        """Reserve ``count`` contiguous offsets, returning the first.
+
+        See :meth:`_reserve` for the locking and monotonicity contract.
+        """
+        start, _stamp = self._reserve(count, stamp=False)
+        return start
+
+    def get_next_offset_and_stamp(self) -> tuple[int, float]:
+        """Reserve one offset and stamp the event's time under the same lock.
+
+        Returns ``(offset, event_ts)``, where ``event_ts`` is
+        ``max(the last time rakaia stamped on this path, now)``, with ``now``
+        read *after* the watermark lock is held. Two writers racing for the same
+        stream then get times in the same order as their offsets, and a clock
+        that steps backwards cannot make a later event look older than an
+        earlier one (#284). The stamp is non-decreasing, not strictly
+        increasing: a regressed clock repeats the last time, and readers break
+        the tie by offset.
+
+        Only rakaia's own stamps pass through here. A producer-supplied
+        ``event_ts`` is kept verbatim and does not move the high mark, so a
+        producer's clock -- or a backfill carrying a time far in the future --
+        cannot pin every later stamp on the stream to it.
+        """
+        start, stamp = self._reserve(1, stamp=True)
+        assert stamp is not None
+        return start, stamp
+
+    def _reserve(self, count: int, *, stamp: bool) -> tuple[int, float | None]:
         """Atomically reserve ``count`` contiguous offsets, returning the first.
+
+        Returns ``(start, stamp)``; ``stamp`` is ``None`` unless ``stamp=True``,
+        in which case it is the event time taken under the lock (see
+        :meth:`get_next_offset_and_stamp`).
 
         The reserved block is ``start .. start + count - 1``. ``count`` must be
         ``>= 1``. This is the single offset-allocation path shared by every
@@ -211,8 +245,20 @@ class Stream(models.Model):
         else:
             start = watermark.high + 1
         watermark.high = start + count - 1
-        watermark.save(update_fields=["high"])
-        return start
+        if not stamp:
+            watermark.save(update_fields=["high"])
+            return start, None
+        # Read the clock only now, with the lock held: a time read before it
+        # belongs to whichever writer got there first, not to this position.
+        now = time.time()
+        stamped = (
+            now
+            if watermark.last_event_ts is None
+            else max(watermark.last_event_ts, now)
+        )
+        watermark.last_event_ts = stamped
+        watermark.save(update_fields=["high", "last_event_ts"])
+        return start, stamped
 
 
 class StreamOffsetWatermark(models.Model):
@@ -228,6 +274,15 @@ class StreamOffsetWatermark(models.Model):
 
     stream_path = models.CharField(max_length=255, primary_key=True)
     high = models.BigIntegerField(default=0)
+    last_event_ts = models.FloatField(null=True, blank=True)
+    """The last ``event_ts`` rakaia itself stamped on this path, or ``None``.
+
+    Kept beside the high mark because it is advanced under the same lock, so a
+    stamp can never go backwards within a stream (#284). Like ``high`` it
+    survives deletion, so a recreated stream's stamps carry on from the old
+    ones. Producer-supplied times are not recorded here; see
+    ``Stream.get_next_offset_and_stamp``.
+    """
 
     class Meta:
         db_table = "rakaia_streamoffsetwatermark"

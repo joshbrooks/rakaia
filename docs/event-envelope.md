@@ -90,6 +90,16 @@ loaded. Ordering on the transport `timestamp` would collapse every backfilled
 event to ≈`now` and lose that order — which is why merge never uses it. See
 [multi-stream merge](multi-stream-merge.md#two-order-key-sources-pick-the-envelope-not-the-payload).
 
+When rakaia fills `event_ts` in itself — an append with no time set, or a
+`@stream_model` save — it takes the time *after* the event has its position, and
+never lets it go backwards within a stream: a clock that steps back repeats the
+stream's last time instead of dating a later event before an earlier one. So
+within any one stream, the times rakaia stamps agree with the order of the
+positions. A time the producer sets is stored exactly as sent and does not take
+part in that rule, which is what lets a backfill say "years ago". (The durable
+store's plain protocol append is the exception noted above: it stores `null`,
+and readers show the insert time.)
+
 The same rule applies to any *logical-time* value a handler writes (a soft-retire
 `resolved_at`, say): derive it from the triggering event's `event_ts`, not
 `now()`, or replay stops being reproducible.
