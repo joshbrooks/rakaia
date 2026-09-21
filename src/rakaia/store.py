@@ -24,6 +24,7 @@ from .json_mode import (
 )
 from .offsets import COMPOUND
 from .producer import is_producer_state_expired
+from .read_decision import page_of
 from .types import (
     AppendOptions,
     AppendResult,
@@ -499,12 +500,14 @@ class StreamStore:
     # =========================================================================
 
     def read(
-        self, path: str, offset: str | None = None
+        self, path: str, offset: str | None = None, *, limit: int | None = None
     ) -> tuple[list[StreamMessage], bool]:
         """
         Read messages from a stream starting at the given offset.
 
-        Returns (messages, up_to_date).
+        Returns (messages, up_to_date). With a `limit`, at most that many
+        messages, and `up_to_date` false when more remain (see
+        `StreamServerStore.read`).
 
         Raises:
             StreamNotFound: If stream doesn't exist or is expired.
@@ -518,16 +521,16 @@ class StreamStore:
 
         messages = self._messages.get(path, [])
         if not offset or offset == "-1":
-            return list(messages), True
+            return page_of(list(messages), limit)
 
         self._check_offset(offset)
 
         # Find messages after the given offset (lexicographic comparison)
         idx = self._find_offset_index(stream, offset)
         if idx == -1:
-            return [], True
+            return page_of([], limit)
 
-        return messages[idx:], True
+        return page_of(messages[idx:], limit)
 
     def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
         """

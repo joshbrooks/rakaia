@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from .json_mode import is_json_content_type
 from .offsets import is_syntactically_valid
@@ -112,6 +113,26 @@ class ReadVerdict:
     status: int
     headers: dict[str, str] = field(default_factory=dict)
     body: bytes | None = b""
+
+
+_T = TypeVar("_T")
+
+
+def page_of(messages: list[_T], limit: int | None) -> tuple[list[_T], bool]:
+    """Cut `messages` to one page: ``(page, up_to_date)``.
+
+    The one rule every store's paged `read` shares (#289). `limit=None` is no
+    page at all: everything, up to date. Otherwise at most `limit` messages,
+    and `up_to_date` false exactly when some were left over — so a store that
+    fetches ``limit + 1`` rows can tell "more remain" from "this was the last
+    page" without a second query. A `limit` below 1 is a caller error, not an
+    empty page: a server that asked for none would never make progress.
+    """
+    if limit is None:
+        return messages, True
+    if limit < 1:
+        raise ValueError(f"limit must be >= 1, got {limit}")
+    return messages[:limit], len(messages) <= limit
 
 
 def closed_at_tail(*, closed: bool, at_tail: bool, up_to_date: bool) -> bool:

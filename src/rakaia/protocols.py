@@ -180,6 +180,27 @@ class StreamServerStore(WritableStore, Protocol):
         """
         ...
 
+    def read(
+        self, path: str, offset: str | None = None, *, limit: int | None = None
+    ) -> tuple[list[StreamMessage], bool]:
+        """`ReadableStore.read`, plus a page size.
+
+        With `limit=None` this is exactly `ReadableStore.read`: every message
+        after `offset`, and `up_to_date` true. With a `limit` (at least 1) it
+        returns at most that many, oldest first, and `up_to_date` is false when
+        more messages remain after the last one returned — the protocol's
+        partial read, which the server answers without `Stream-Up-To-Date` so
+        the client carries on from the last offset (#289). A `limit` below 1
+        raises `ValueError`.
+
+        Widened here rather than on `ReadableStore` on purpose. The framework
+        callers of `read` — replay, rebuild, migration, subscriptions — take the
+        first element and ignore `up_to_date`, so a page handed to one of them
+        would be read as the whole stream and the rest silently dropped. Only
+        the protocol server, which does honour `up_to_date`, asks for pages.
+        """
+        ...
+
     def get(self, path: str) -> StreamMetadata | None:
         """The stream at `path`, or `None` if absent or expired.
 

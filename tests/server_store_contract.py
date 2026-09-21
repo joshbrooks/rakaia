@@ -28,6 +28,7 @@ drift while #214 was undecided. #214 decided it — both flatten, matching
 from __future__ import annotations
 
 import inspect
+import json
 
 import pytest
 
@@ -1056,6 +1057,62 @@ class ServerStoreContract:
         store.append("s", payload)
         messages, _ = store.read("s")
         assert [m.data for m in messages] == [payload]
+
+    # =========================================================================
+    # Paged reads (#289)
+    # =========================================================================
+
+    def _five(self, store):
+        store.create("s", content_type="application/json")
+        for i in range(5):
+            store.append("s", json.dumps({"id": i}).encode())
+
+    @staticmethod
+    def _ids(messages):
+        return [json.loads(m.data)["id"] for m in messages]
+
+    def test_a_page_stops_short_and_says_more_remain(self, store):
+        self._five(store)
+        page, up_to_date = store.read("s", limit=2)
+        assert self._ids(page) == [0, 1]
+        assert up_to_date is False
+
+    def test_pages_resume_from_the_last_offset_until_up_to_date(self, store):
+        self._five(store)
+        seen, offset, up_to_date = [], None, False
+        rounds = 0
+        while not up_to_date:
+            page, up_to_date = store.read("s", offset, limit=2)
+            seen += self._ids(page)
+            offset = page[-1].offset if page else offset
+            rounds += 1
+        assert seen == [0, 1, 2, 3, 4]
+        assert rounds == 3
+
+    def test_a_page_that_ends_exactly_at_the_tail_is_up_to_date(self, store):
+        # The boundary: nothing remains after the last message returned, so
+        # this is the final page and must say so -- not send the client back
+        # for an empty one.
+        self._five(store)
+        page, up_to_date = store.read("s", limit=5)
+        assert self._ids(page) == [0, 1, 2, 3, 4]
+        assert up_to_date is True
+        first, _ = store.read("s", limit=3)
+        rest, up_to_date = store.read("s", first[-1].offset, limit=2)
+        assert self._ids(rest) == [3, 4]
+        assert up_to_date is True
+
+    def test_no_limit_is_the_whole_stream(self, store):
+        self._five(store)
+        messages, up_to_date = store.read("s", limit=None)
+        assert self._ids(messages) == [0, 1, 2, 3, 4]
+        assert up_to_date is True
+
+    @pytest.mark.parametrize("limit", [0, -1, -2])
+    def test_a_limit_below_one_is_refused(self, store, limit):
+        self._five(store)
+        with pytest.raises(ValueError, match="limit"):
+            store.read("s", limit=limit)
 
     # =========================================================================
     # Offsets
