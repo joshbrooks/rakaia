@@ -1,4 +1,7 @@
+from django.conf import settings
+
 from rakaia import ServerOptions, create_app
+from rakaia.protocol_server import DEFAULT_READ_PAGE_SIZE
 from rakaia.protocols import StreamServerStore
 
 from .store import get_store
@@ -35,6 +38,15 @@ def get_asgi_app(
                 return await protocol_app(scope, receive, send)
             return await django_app(scope, receive, send)
     """
+    if options is None:
+        # The one server option a Django deployment sets from its settings: how
+        # many messages a catch-up read returns before the client is told to
+        # read on (#289). `None` turns paging off.
+        options = ServerOptions(
+            read_page_size=getattr(
+                settings, "RAKAIA_READ_PAGE_SIZE", DEFAULT_READ_PAGE_SIZE
+            )
+        )
     return create_app(
         store=store if store is not None else get_store(), options=options
     )

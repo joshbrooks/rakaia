@@ -9,6 +9,19 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **The protocol server answers a catch-up read a page at a time.** At most
+  `ServerOptions.read_page_size` messages per response, a thousand by default,
+  set in Django with `RAKAIA_READ_PAGE_SIZE`; `None` turns it off. A page that
+  stops short omits `Stream-Up-To-Date` and points `Stream-Next-Offset` at its
+  last message, which the protocol allows, so conforming clients read on without
+  change. On the durable store the page is a SQL `LIMIT`, so a first sync of a
+  large stream no longer loads all of it. Every store's `read` takes a `limit`
+  for this; code that reads a store directly still gets the whole stream by
+  default. A read of a stream with no TTL writes nothing; one with a TTL still
+  extends it, as the conformance suite requires. (#289)
+
 ### Fixed
 
 - **Two saves fanning into the same streams in opposite orders no longer

@@ -84,6 +84,7 @@ from .json_mode import (
 )
 from .offsets import PLAIN
 from .producer import is_producer_state_expired
+from .read_decision import page_of
 from .types import (
     AppendOptions,
     AppendResult,
@@ -1073,11 +1074,13 @@ class JsonlStreamStore:
     # =========================================================================
 
     def read(
-        self, path: str, offset: str | None = None
+        self, path: str, offset: str | None = None, *, limit: int | None = None
     ) -> tuple[list[StreamMessage], bool]:
         meta = self._require(path)
         self._touch(path, meta)
-        return self._read_since(path, offset), True
+        # The page is cut after the segment scan, so this bounds the response,
+        # not the read: the log is scanned from `offset` as before.
+        return page_of(self._read_since(path, offset), limit)
 
     def _read_since(self, path: str, offset: str | None) -> list[StreamMessage]:
         """The messages after `offset`, without extending the TTL window.

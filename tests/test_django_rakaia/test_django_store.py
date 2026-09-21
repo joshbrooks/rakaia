@@ -530,3 +530,91 @@ async def test_expiry_mid_long_poll_is_a_timeout_not_an_error():
 
     messages, timed_out, closed = await asyncio.wait_for(task, timeout=5.0)
     assert (messages, timed_out, closed) == ([], True, False)
+
+
+@pytest.mark.django_db
+class TestReadsDoNotLoadOrWriteMoreThanTheyMust:
+    """#289: a page is fetched with a SQL limit, and a read of a stream with no
+    TTL writes nothing."""
+
+    @staticmethod
+    def _selects_and_updates(fn):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            fn()
+        sql = [q["sql"].upper() for q in ctx.captured_queries]
+        return (
+            [q for q in sql if "RAKAIA_STREAMENTRY" in q and q.startswith("SELECT")],
+            [q for q in sql if q.startswith("UPDATE")],
+        )
+
+    def test_a_page_is_limited_in_the_query_not_after_it(self):
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json")
+        for i in range(5):
+            store.append("s", json.dumps({"id": i}).encode())
+
+        selects, _ = self._selects_and_updates(lambda: store.read("s", limit=2))
+        # One row past the page, so the store can tell "more remain" without
+        # a second query.
+        assert len(selects) == 1
+        assert "LIMIT 3" in selects[0]
+
+    def test_reading_a_stream_without_a_ttl_writes_nothing(self):
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json")
+        store.append("s", b'{"id": 1}')
+
+        _, updates = self._selects_and_updates(lambda: store.read("s"))
+        assert updates == []
+
+    def test_reading_a_stream_with_a_ttl_still_extends_it(self):
+        # The conformance suite requires it ("should extend TTL on read"), so
+        # the window keeps sliding on read; only streams without one skip it.
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json", ttl_seconds=60)
+        later = Stream.objects.get(stream_id="s").last_activity_at + 30
+        with patch("django_rakaia.django_store.time.time", return_value=later):
+            store.read("s")
+        assert Stream.objects.get(stream_id="s").last_activity_at == later
+
+    def test_a_refused_read_does_not_extend_the_ttl(self):
+        store = DjangoStreamStore()
+        store.create("s", content_type="application/json", ttl_seconds=60)
+        before = Stream.objects.get(stream_id="s").last_activity_at
+        later = before + 30
+        with (
+            patch("django_rakaia.django_store.time.time", return_value=later),
+            pytest.raises(ValueError, match="limit"),
+        ):
+            store.read("s", limit=0)
+        assert Stream.objects.get(stream_id="s").last_activity_at == before
+
+
+def test_the_django_entry_point_takes_its_page_size_from_settings(settings):
+    import asyncio
+
+    import httpx
+
+    from django_rakaia.integration import get_asgi_app
+    from rakaia import StreamStore
+
+    settings.RAKAIA_READ_PAGE_SIZE = 2
+    store = StreamStore()
+    store.create("/s", content_type="application/json")
+    for i in range(3):
+        store.append("/s", json.dumps({"id": i}).encode())
+
+    async def first_page() -> httpx.Response:
+        app = get_asgi_app(store=store)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            return await client.get("/s")
+
+    response = asyncio.run(first_page())
+    assert [m["id"] for m in response.json()] == [0, 1]
+    assert "Stream-Up-To-Date" not in response.headers

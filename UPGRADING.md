@@ -15,6 +15,25 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## Protocol reads come back in pages, and nothing says so unless you look
+
+A `GET` on a stream now returns at most a thousand messages. A client that
+follows the protocol — reading on until `Stream-Up-To-Date: true` — sees no
+difference. A client that treated one response as the whole stream now sees
+only its first thousand messages, and nothing fails. Check any hand-written
+client, or set `RAKAIA_READ_PAGE_SIZE = None` (Django) or
+`ServerOptions(read_page_size=None)` to keep the old behaviour while you do.
+
+If you wrote your own store to put under the protocol server, its `read` must
+now accept a keyword `limit`: the server passes it on every catch-up read, and a
+store without it fails with a `TypeError`. `limit=None` means everything; a
+number means at most that many, with the second return value `False` when more
+remain.
+
+---
+
 # 0.4.0
 
 ## Two module paths changed, and there is no shim

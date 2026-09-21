@@ -55,6 +55,7 @@ from rakaia.json_mode import (
     normalize_content_type,
     process_json_append,
 )
+from rakaia.read_decision import page_of
 from rakaia.types import (
     AppendOptions,
     AppendResult,
@@ -1121,30 +1122,49 @@ class DjangoStreamStore:
         broadcast_entries(stream_id, entries)
 
     def read(
-        self, path: str, offset: str | None = None
+        self, path: str, offset: str | None = None, *, limit: int | None = None
     ) -> tuple[list[StreamMessage], bool]:
         """Return ``(messages, up_to_date)`` ordered oldest-first.
 
         With no `offset`, returns every message; with one, returns the messages
-        strictly after it. Raises `StreamNotFound` if the stream does not exist
-        or has expired, and `InvalidOffset` if the offset is not one this store
-        issued. A read extends the sliding TTL window.
+        strictly after it. With a `limit`, at most that many, fetched with a SQL
+        ``LIMIT`` so a first sync of a large stream does not load all of it,
+        and `up_to_date` is false when more remain (#289). Raises
+        `StreamNotFound` if the stream does not exist or has expired, and
+        `InvalidOffset` if the offset is not one this store issued.
+
+        A read of a stream with a TTL extends its sliding window, which is a
+        write; the Durable Streams conformance suite requires it ("should extend
+        TTL on read"). A stream without a TTL has no window, and its reads write
+        nothing.
         """
         stream = self._require(path)
+        if limit is not None and limit < 1:
+            # After the lookup, so a missing stream is `StreamNotFound` as on
+            # every other store; before the TTL write, so a refused read extends
+            # nothing; and before `limit + 1` below turns -2 into a negative
+            # slice, which Django refuses with an error of its own.
+            raise ValueError(f"limit must be >= 1, got {limit}")
         self._touch(stream)
-        return self._read_since(stream, offset), True
+        if limit is None:
+            return self._read_since(stream, offset), True
+        # One row past the page is how "more remain" is known without a count.
+        return page_of(self._read_since(stream, offset, limit=limit + 1), limit)
 
     def _read_since(
-        self, stream: Stream, offset: str | None = None
+        self, stream: Stream, offset: str | None = None, *, limit: int | None = None
     ) -> list[StreamMessage]:
         """The messages after `offset`, without extending the TTL window.
 
         Split out from `read` so long-poll can check for new messages on every
-        tick without writing `last_activity_at` on every tick with it.
+        tick without writing `last_activity_at` on every tick with it. `limit`
+        caps the rows fetched; `None` fetches them all.
         """
         entries = stream.entries.select_related("event").order_by("offset")
         if offset not in (None, "", "-1"):
             entries = entries.filter(offset__gt=self._parse_offset(offset))
+        if limit is not None:
+            entries = entries[:limit]
 
         return [message_of(entry) for entry in entries]
 

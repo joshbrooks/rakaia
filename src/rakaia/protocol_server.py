@@ -265,6 +265,10 @@ def _fault_injection_enabled_by_env() -> bool:
     }
 
 
+DEFAULT_READ_PAGE_SIZE = 1000
+"""The default for `ServerOptions.read_page_size`, in messages."""
+
+
 @dataclass
 class ServerOptions:
     """Configuration for the ASGI handler."""
@@ -294,6 +298,32 @@ class ServerOptions:
     load-bearing switch: the module-level ``rakaia:app`` is built with default
     ``ServerOptions()``, so a constructor argument alone cannot reach it.
     """
+
+    read_page_size: int | None = DEFAULT_READ_PAGE_SIZE
+    """The most messages one catch-up read returns (#289).
+
+    A read that stops short answers without ``Stream-Up-To-Date``, and its
+    ``Stream-Next-Offset`` is the last message returned, so a client following
+    the protocol simply reads again from there; ``docs/protocol.md`` allows a
+    server-defined chunk size in exactly these words. Without a page a first
+    sync of a large stream is one response holding all of it, built in memory.
+    ``None`` turns paging off. The Django entry point sets this from the
+    ``RAKAIA_READ_PAGE_SIZE`` setting.
+    """
+
+    def __post_init__(self) -> None:
+        # Checked here rather than on first read: a page size taken from an
+        # environment variable arrives as a string, and would otherwise fail
+        # every GET with a 500 while the server starts cleanly. `bool` is an
+        # `int` subclass, so `True` would pass as a page of one without the
+        # explicit exclusion.
+        size = self.read_page_size
+        if size is not None and (
+            isinstance(size, bool) or not isinstance(size, int) or size < 1
+        ):
+            raise ValueError(
+                f"read_page_size must be None or an int >= 1, got {size!r}"
+            )
 
 
 def create_app(
@@ -626,7 +656,9 @@ async def _handle_read(
         return
 
     # Read current messages
-    messages, up_to_date = await store.run_sync(store.read, path, effective_offset)
+    messages, up_to_date = await store.run_sync(
+        store.read, path, effective_offset, limit=opts.read_page_size
+    )
 
     # Long-poll: wait if caught up and no messages
     client_caught_up = False
@@ -792,7 +824,7 @@ async def _handle_sse(
     # offset, vanished stream) must surface as its mapped 4xx, which is
     # impossible once http.response.start has been sent.
     pending_read: tuple[Any, bool] | None = await store.run_sync(
-        store.read, path, initial_offset
+        store.read, path, initial_offset, limit=opts.read_page_size
     )
 
     await start_streaming_response(send, 200, sse_headers)
@@ -807,8 +839,10 @@ async def _handle_sse(
             pending_read = None
         else:
             try:
+                # A page cut short comes back with `up_to_date` false, and the
+                # loop reads the next one straight away instead of waiting.
                 messages, up_to_date = await store.run_sync(
-                    store.read, path, current_offset
+                    store.read, path, current_offset, limit=opts.read_page_size
                 )
             except (KeyError, StreamError):
                 break

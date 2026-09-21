@@ -344,6 +344,13 @@ This is the same implementation the standalone server runs, so producer
 epoch/seq fencing, close, TTL, long-poll, ETag/304 and CORS all behave
 identically on either store.
 
+A catch-up read returns at most a page of messages — a thousand unless
+`RAKAIA_READ_PAGE_SIZE` says otherwise, and `None` turns paging off. A page that
+stops short leaves out `Stream-Up-To-Date` and sets `Stream-Next-Offset` to its
+last message, so a client that follows the protocol reads on from there without
+knowing a page size exists. The setting is read when `get_asgi_app()` is called
+without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
+
 > **Changed.** This used to be `django_rakaia.protocol_views`, a separate
 > implementation with verb-in-path URLs (`/streams/x/append`), newline-delimited
 > read responses, and no fencing, close, TTL or long-poll. It has been removed;
