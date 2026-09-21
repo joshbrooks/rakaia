@@ -591,3 +591,30 @@ class TestReadsDoNotLoadOrWriteMoreThanTheyMust:
         ):
             store.read("s", limit=0)
         assert Stream.objects.get(stream_id="s").last_activity_at == before
+
+
+def test_the_django_entry_point_takes_its_page_size_from_settings(settings):
+    import asyncio
+
+    import httpx
+
+    from django_rakaia.integration import get_asgi_app
+    from rakaia import StreamStore
+
+    settings.RAKAIA_READ_PAGE_SIZE = 2
+    store = StreamStore()
+    store.create("/s", content_type="application/json")
+    for i in range(3):
+        store.append("/s", json.dumps({"id": i}).encode())
+
+    async def first_page() -> httpx.Response:
+        app = get_asgi_app(store=store)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),  # type: ignore[arg-type]
+            base_url="http://test",
+        ) as client:
+            return await client.get("/s")
+
+    response = asyncio.run(first_page())
+    assert [m["id"] for m in response.json()] == [0, 1]
+    assert "Stream-Up-To-Date" not in response.headers

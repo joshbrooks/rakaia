@@ -253,6 +253,106 @@ class TestRead:
         assert response.status_code == 400
 
 
+class TestPagedRead:
+    """A catch-up read returns at most `read_page_size` messages (#289).
+
+    A page cut short answers without `Stream-Up-To-Date`, with its
+    `Stream-Next-Offset` at the last message returned, so a client reads on
+    from there -- what `docs/protocol.md` asks of a server-defined chunk size.
+    """
+
+    @staticmethod
+    def _client(page: int | None) -> httpx.AsyncClient:
+        from rakaia import create_app
+        from rakaia.protocol_server import ServerOptions
+
+        app = create_app(StreamStore(), ServerOptions(read_page_size=page))
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+
+    @staticmethod
+    async def _five(client: httpx.AsyncClient) -> None:
+        json_ct = {"content-type": "application/json"}
+        await client.put("/foo", headers=json_ct)
+        for i in range(5):
+            await client.post("/foo", headers=json_ct, content=f'{{"id":{i}}}')
+
+    async def test_a_short_page_omits_up_to_date_and_resumes(self):
+        async with self._client(2) as client:
+            await self._five(client)
+            seen, offset, pages = [], "-1", []
+            while True:
+                response = await client.get(f"/foo?offset={offset}")
+                assert response.status_code == 200
+                seen += [m["id"] for m in response.json()]
+                up_to_date = response.headers.get("Stream-Up-To-Date")
+                pages.append(up_to_date)
+                offset = response.headers["Stream-Next-Offset"]
+                if up_to_date == "true":
+                    break
+            assert seen == [0, 1, 2, 3, 4]
+            assert pages == [None, None, "true"]
+
+    async def test_no_page_size_returns_everything(self):
+        async with self._client(None) as client:
+            await self._five(client)
+            response = await client.get("/foo")
+            assert [m["id"] for m in response.json()] == [0, 1, 2, 3, 4]
+            assert response.headers.get("Stream-Up-To-Date") == "true"
+
+    async def test_sse_catch_up_reads_on_past_a_short_page(self):
+        """The live push must not stop, or wait, at the end of a page."""
+        async with self._client(2) as client:
+            text = {"content-type": "text/plain"}
+            await client.put("/foo", headers=text, content=b"a")
+            for body in (b"b", b"c", b"d"):
+                await client.post("/foo", headers=text, content=body)
+            await client.post(
+                "/foo", headers={**text, "Stream-Closed": "true"}, content=b"e"
+            )
+            response = await client.get("/foo?offset=-1&live=sse")
+            data = [
+                block.split("data:", 1)[1].strip()
+                for block in response.text.split("\n\n")
+                if block.startswith("event: data")
+            ]
+            assert data == ["a", "b", "c", "d", "e"]
+
+    async def test_sse_catch_up_asks_the_store_for_a_page(self):
+        """Every read the live push makes is bounded, not only the plain GET."""
+        from rakaia import create_app
+        from rakaia.protocol_server import ServerOptions
+
+        limits: list[int | None] = []
+
+        class RecordingStore(StreamStore):
+            def read(self, path, offset=None, *, limit=None):
+                limits.append(limit)
+                return super().read(path, offset, limit=limit)
+
+        app = create_app(RecordingStore(), ServerOptions(read_page_size=2))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            text = {"content-type": "text/plain"}
+            await client.put("/foo", headers=text, content=b"a")
+            await client.post("/foo", headers=text, content=b"b")
+            await client.post(
+                "/foo", headers={**text, "Stream-Closed": "true"}, content=b"c"
+            )
+            limits.clear()
+            await client.get("/foo?offset=-1&live=sse")
+        assert limits and set(limits) == {2}
+
+    @pytest.mark.parametrize("size", [0, -1, "2", 2.5, True])
+    async def test_a_bad_page_size_is_refused_when_the_options_are_built(self, size):
+        from rakaia.protocol_server import ServerOptions
+
+        with pytest.raises(ValueError, match="read_page_size"):
+            ServerOptions(read_page_size=size)
+
+
 # =============================================================================
 # DELETE
 # =============================================================================
