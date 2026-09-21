@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-21
+
 ### Changed
 
 - **The protocol server answers a catch-up read a page at a time.** At most

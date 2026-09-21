@@ -15,7 +15,7 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.6.0
 
 ## Protocol reads come back in pages, and nothing says so unless you look
 
@@ -31,6 +31,15 @@ now accept a keyword `limit`: the server passes it on every catch-up read, and a
 store without it fails with a `TypeError`. `limit=None` means everything; a
 number means at most that many, with the second return value `False` when more
 remain.
+
+## The durable store needs a migration
+
+`django_rakaia` migration `0012` adds a column to the offset watermark, where
+each stream now keeps the last event time rakaia stamped on it. Run
+`manage.py migrate django_rakaia` before the new code saves anything; until you
+do, a model save fails on the missing column. The change only adds a column
+that may be empty, and needs no backfill: a stream with no stamp recorded takes
+the clock on its next save.
 
 ---
 
