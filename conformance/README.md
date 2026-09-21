@@ -48,9 +48,17 @@ results against a committed baseline of expected failures:
   - **Expected** (failed, in the baseline) → the known gap; kept quiet.
 
 `conformance/run.sh` (and `just conformance`) runs the suite via `test:ci` and
-then `check-regressions.mjs` automatically. The check **exits 0** so the job
-stays informational; set `CONFORMANCE_FAIL_ON_REGRESSION=1` to make a regression
-exit non-zero.
+then `check-regressions.mjs` automatically. A regression exits non-zero only
+with `CONFORMANCE_FAIL_ON_REGRESSION=1`, which CI sets, so the job blocks there
+and a local run just reports.
+
+**A run that exercised none of the suite always fails** (exit 2), with or
+without that switch: when no test passed or failed, or when tests ran but not
+one baselined test was seen. With nothing run there are no NEW failures, so an
+empty run used to pass. A vitest upgrade the suite did not support once went
+green that way with zero tests collected (#300). If upstream has renamed every
+known failure, regenerating the baseline is the fix; `--write-baseline` still
+refuses a run where no test ran at all.
 
 **Regenerating the baseline** (after fork lands, or a suite-version bump):
 
