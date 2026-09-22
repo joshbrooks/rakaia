@@ -21,6 +21,7 @@ migrate themselves.
 * [partisipa_merge](partisipa-merge.md) - `merge_replay` deterministic order.
 * [partisipa_repeaters](partisipa-repeaters.md) - nested-repeater tree reconcile.
 * [partisipa_intake](partisipa-intake.md) - the consuming loop, durable reading position, outcome records.
+* [stream_coverage](stream-coverage.md) - `check_stream_coverage` finding a stream that fell behind its table.
 
 ## Live SSE (Django, browser)
 

@@ -21,6 +21,12 @@ runnable demo for each.
   `stream_coverage()` runs the same check from Python and returns a
   `StreamCoverage` report. Durable store only; three queries whatever the size
   of the table. See [the guide](docs/check-stream-coverage.md). (#285)
+- **A worked example of the coverage check (`examples/stream_coverage`).** A
+  small Django project that opens a gap between a table and its stream on
+  purpose — rows loaded with `bulk_create` and rows changed with `update()`,
+  neither of which writes an event — shows `check_stream_coverage` failing on
+  both and naming the rows, and passing again once they are saved through the
+  producer. It runs as part of `just demos`.
 - **`RAKAIA_PERMANENT_STREAMS` makes every durable stream permanent.** Off by
   default. With it on, the durable store refuses a create that asks for a TTL or
   an expiry (`ExpiryNotAllowed`, a protocol `400`), the protocol server refuses

@@ -796,6 +796,53 @@ name kept beside it, where a rename cannot rewrite what anyone has been counting
 → Deep dive: [Read a stream incrementally](subscriber-cursors.md) ·
 [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)
 
+## 24. A stream that fell behind its table is found before the rebuild
+
+**The problem.** A stream written from a table can stop keeping up with it and
+nothing fails. Rows that reach the table by a path that writes no event — a bulk
+import, a backfill nobody ran, an `update()` in a one-off script — are in the
+table and not in the stream, and nobody finds out until they rebuild from the
+stream and the result comes up short. In one consumer's production database the
+stream held 2,251 events where re-seeding from the rows produced 15,474, and the
+only thing that found it was a full rebuild on a restored copy.
+
+**What rakaia does.** `manage.py check_stream_coverage` compares each table you
+list with the stream written from it, and reports rows no event names
+(**missing**) and rows changed since their newest event (**stale**). Either one
+makes the command exit non-zero, so a nightly timer can alert on it. You tell it
+which table feeds which stream, and where in each event the row's id is:
+
+```python
+RAKAIA_COVERAGE_CHECKS = [
+    {
+        "model": "survey.Submission",
+        "stream_path": "submissions",
+        "subject_key": "submission",  # each event carries {"submission": <row id>}
+        "changed_field": "updated_at",
+    },
+]
+```
+
+```console
+$ python manage.py check_stream_coverage
+GAP submissions: rows=25 covered=20 missing=5 stale=2 extra=0 skipped=0
+    missing_sample: 21, 22, 23, 24, 25
+    stale_sample: 1, 2
+CommandError: 1 of 1 streams do not cover their table: submissions
+```
+
+**See it.** The example saves 20 rows the normal way and the check passes; loads
+5 more with `bulk_create` and changes 2 with `update()`, neither of which writes
+an event, and the check fails naming all seven; then saves those seven again and
+the check passes:
+
+```bash
+just coverage-demo
+```
+
+→ Deep dive: [Check a stream still matches its table](check-stream-coverage.md) ·
+[Examples](examples.md)
+
 ---
 
 ## Where to go next

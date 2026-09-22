@@ -1,5 +1,12 @@
 # Directory Update Log
 
+## 2026-09-22
+
+* **Creation**: [stream_coverage](examples/stream-coverage.md) — a stream that fell behind its
+  table, found by `check_stream_coverage` and repaired.
+* **Update**: [Django integration](concepts/django-integration.md) — `stream_coverage` and the
+  command, demonstrated by the new example.
+
 ## 2026-09-08
 
 * **Creation**: [Consuming a stream & failure records](concepts/consuming-and-outcomes.md) — a seventh
