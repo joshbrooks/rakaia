@@ -89,6 +89,7 @@ One command each: seed a stream, replay it, assert the projection.
 | [`partisipa_merge`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_merge) | `merge_replay` of N streams into one deterministic order; cross-stream rollup | `just partisipa-merge-demo` |
 | [`partisipa_repeaters`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_repeaters) | Nested-repeater tree reconcile — no deep orphans, no double-count | `just partisipa-tree-demo` |
 | [`partisipa_intake`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_intake) | The consuming loop — `django_consumer` / `run`, a durable reading position, and an outcome per refused, failed or skipped event | `just intake-demo` |
+| [`stream_coverage`](https://github.com/joshbrooks/rakaia/tree/main/examples/stream_coverage) | `check_stream_coverage` finding a stream that fell behind its table — rows loaded with `bulk_create` (missing) and changed with `update()` (stale) — and passing again after repair | `just coverage-demo` |
 
 ### Standalone (no Django)
 
@@ -168,6 +169,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)`, and naming a record with `subject_of` / `sequence_of` | `partisipa_intake` |
 | Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake` |
 | The outcome record — `Outcome`, `DjangoOutcomeStore`, the `append`/`project` stages and all three statuses | `partisipa_intake` |
+| Stream coverage — `RAKAIA_COVERAGE_CHECKS`, `manage.py check_stream_coverage`, missing and stale rows from a `changed_field` column | `stream_coverage` |
 
 ### Known gaps
 
@@ -213,10 +215,11 @@ No example exercises these yet — a good place to contribute a demo:
   (`docs/deployment.md`), and `partisipa_intake` now leaves four records for such
   a demo to prune — but no example runs it, so the operator's side of the outcome
   table is still undemonstrated.
-- `stream_coverage` and `manage.py check_stream_coverage`. No example lists its
-  streams in `RAKAIA_COVERAGE_CHECKS` or runs the check, so there is no demo of a
-  gap being found; the tests and `docs/check-stream-coverage.md` are the only
-  coverage.
+- Stream coverage with the change time taken from somewhere other than the
+  table. `stream_coverage` finds missing and stale rows against an `updated_at`
+  column, but no example points an entry at a `queryset` function that works the
+  time out from a history table, and none calls `stream_coverage` from Python
+  rather than through the command.
 
 ## Orientation for contributors
 

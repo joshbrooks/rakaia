@@ -27,6 +27,8 @@ From `django_rakaia`:
 * `DjangoExecutor`, `DjangoProjectionReader`, `replay_stream` — apply/replay
   against the ORM.
 * `diff_effects_against_rows` — migration/verification helper.
+* `stream_coverage` and `manage.py check_stream_coverage` — check that a stream
+  still has an event for every row of the table it is written from.
 * SSE views + Channels signals for live broadcast.
 
 # Demonstrated by
@@ -35,6 +37,7 @@ From `django_rakaia`:
 * [polyglot](../examples/polyglot.md) — `create_stream_event`, language-scoped streams, SSE.
 * [formkit_submissions (stream)](../examples/formkit-submission-stream.md) — durable `DjangoStreamStore`.
 * [partisipa_intake](../examples/partisipa-intake.md) — `django_consumer`, durable reading position, outcome records.
+* [stream_coverage](../examples/stream-coverage.md) — `check_stream_coverage` finding missing and stale rows, and passing after repair.
 
 # Deeper reference
 

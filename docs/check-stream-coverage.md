@@ -45,6 +45,11 @@ The sample is at most ten ids, which is enough to go and look at why those rows
 never produced an event. `--json` prints the same reports as a JSON list, for a
 script or a monitoring system to read.
 
+To watch it happen, run `just coverage-demo` in a checkout of rakaia. The
+[`stream_coverage`](https://github.com/joshbrooks/rakaia/tree/main/examples/stream_coverage) example opens a gap on purpose,
+shows the check failing on it, and shows it passing again once the rows are
+repaired.
+
 ## Catching rows that changed later
 
 A row can have an event and still be out of date, if it was edited later and the

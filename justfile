@@ -40,6 +40,7 @@ CLOSE_DIR       := "examples/partisipa_close"
 MERGE_DIR       := "examples/partisipa_merge"
 REPEATERS_DIR   := "examples/partisipa_repeaters"
 INTAKE_DIR      := "examples/partisipa_intake"
+COVERAGE_DIR    := "examples/stream_coverage"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -88,7 +89,7 @@ demo:
 # Run EVERY demo and fail on the first one that breaks.
 #
 # `just demo` is the narrated two-part tour for a human reader. This is the
-# regression gate: all twelve demos, no narration budget, non-zero exit on the
+# regression gate: all thirteen demos, no narration budget, non-zero exit on the
 # first failure. CI runs it, which is what makes the examples a tested surface
 # rather than a directory of prose that happened to compile.
 #
@@ -119,6 +120,8 @@ demos:
     @just partisipa-tree-demo
     @echo ">> partisipa intake — consuming loop, durable position and records"
     @just intake-demo
+    @echo ">> stream coverage — a stream that fell behind its table, found and repaired"
+    @just coverage-demo
     @echo ""
     @echo "All demos passed."
 
@@ -341,6 +344,13 @@ partisipa-tree-demo:
 intake-demo:
     cd {{INTAKE_DIR}} && uv run python manage.py migrate
     cd {{INTAKE_DIR}} && uv run python manage.py demo_intake
+
+# Stream coverage — open a gap between a table and its stream, find it with
+# check_stream_coverage, and repair it (examples/stream_coverage). The demo
+# flushes its own database first, so every run starts from nothing.
+coverage-demo:
+    cd {{COVERAGE_DIR}} && uv run python manage.py migrate
+    cd {{COVERAGE_DIR}} && uv run python manage.py demo_coverage
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
