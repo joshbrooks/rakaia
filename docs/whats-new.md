@@ -845,6 +845,110 @@ just coverage-demo
 
 ---
 
+## 25. A first sync no longer arrives as one huge response
+
+**The problem.** A catch-up read returned the whole stream in one response. A
+consumer coming to a year-old log for the first time asked for everything after
+offset zero and got everything — built in memory on the server, held in memory by
+the client, and retried from the start whenever it timed out. The stream was
+append-only, so this got worse every day it was used, and the first consumer to
+notice was whichever one had been offline longest.
+
+**What rakaia does.** A read answers with at most a page — a thousand messages
+unless you say otherwise. A page that stops short leaves out `Stream-Up-To-Date`
+and points `Stream-Next-Offset` at its last message, which the protocol allows in
+those words, so a client that reads on until it is told it is caught up needs no
+change and cannot tell a page size exists. On the durable store the page is a SQL
+`LIMIT`, so the rows for the rest of the log are never fetched:
+
+```python
+RAKAIA_READ_PAGE_SIZE = 1000  # the default; None turns paging off
+```
+
+```console
+$ curl -sD - 'http://localhost:8000/streams/submissions?offset=0' -o /dev/null
+HTTP/1.1 200 OK
+Stream-Next-Offset: 1000        # no Stream-Up-To-Date: read on from here
+```
+
+Reading a store directly from Python still gives you the whole stream by default;
+`read()` takes a `limit` when you want the same page behaviour yourself.
+
+**See it.** No example holds a stream long enough for a read to stop short, so
+this one is proved by the suite rather than a demo — `tests/test_rakaia/test_protocol_server.py`,
+and the upstream conformance tests, which pass unchanged with paging on.
+
+→ Deep dive: [Django integration](django-integration.md#protocol-http-api) ·
+[Protocol](protocol.md)
+
+---
+
+## 26. An event's time agrees with its position
+
+**The problem.** Rakaia stamped an event with the time before its position in the
+stream was settled. Two appends racing could therefore be stamped in one order
+and positioned in the other, and a host whose clock stepped backwards — an NTP
+correction, a suspended laptop — could date a later event earlier than one already
+written. Anything that put several streams in order by event time then read them
+out of the order they were written, which is exactly the case a merge replay
+exists to handle.
+
+**What rakaia does.** The stamp is taken after the position is locked in, and is
+never earlier than the last stamp on that stream: a clock going backwards repeats
+the previous time instead of contradicting it. A time your producer supplies is
+still stored exactly as sent — this governs only the stamp rakaia applies itself.
+On the durable store the stream's last stamp lives on the offset watermark, which
+is one migration:
+
+```console
+$ python manage.py migrate django_rakaia   # migration 0012
+```
+
+**See it.** `tests/test_rakaia/test_event_ts_stamp.py` walks a clock backwards
+and asserts the stream's times never do.
+
+→ Deep dive: [Event envelope](event-envelope.md) · [Multi-stream merge](multi-stream-merge.md)
+
+---
+
+## 27. A stream's payloads go when the stream does — or the stream never goes at all
+
+**The problem.** Deleting a durable stream left its events in the table. The
+stream row and its entries went, nothing pointed at the payloads any more, and
+they sat there — invisible to every query, counted by no report, still holding
+whatever the events held. A backfill that deletes and rebuilds a stream did this
+every run. The opposite worry is the same table from the other side: some
+deployments must be able to say that a stream, once written, cannot be removed by
+anyone holding an HTTP client.
+
+**What rakaia does.** Two things. Deleting a stream now deletes the events only
+that stream referred to, in the same transaction; an event that also appears in
+another stream is kept. And `RAKAIA_PERMANENT_STREAMS`, off by default, makes the
+durable store refuse anything that could remove a stream — a create asking for a
+TTL or an expiry (`ExpiryNotAllowed`, a protocol `400`), a client's `DELETE`
+(`DeleteNotAllowed`, a `405`) — and serve a stream whose expiry has already passed
+instead of removing it. Deleting from Python still works, so an operator keeps the
+ability an HTTP client has lost:
+
+```python
+RAKAIA_PERMANENT_STREAMS = True  # off unless you set it
+```
+
+Payloads orphaned by earlier deletes are still there, and go on request:
+
+```console
+$ python manage.py prune_orphan_events --dry-run
+```
+
+**See it.** No example turns the switch on, so this one is proved by the suite —
+`tests/test_django_rakaia/test_permanent_streams.py` and
+`tests/test_django_rakaia/test_prune_orphan_events_command.py`.
+
+→ Deep dive: [Django integration](django-integration.md) ·
+[Deployment](deployment.md) · [`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)
