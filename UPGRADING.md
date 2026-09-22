@@ -15,7 +15,7 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.7.0
 
 ## Deleting a stream now deletes its payloads
 

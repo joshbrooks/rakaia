@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-22
+
 ### Added
 
 - **A check that a stream still covers the table it is written from.**
