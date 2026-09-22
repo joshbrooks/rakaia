@@ -6,6 +6,18 @@
   table, found by `check_stream_coverage` and repaired.
 * **Update**: [Django integration](concepts/django-integration.md) — `stream_coverage` and the
   command, demonstrated by the new example.
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — paged catch-up
+  reads (`ServerOptions(read_page_size=…)`, `read(limit=…)`), the two permanent-stream
+  refusals (`ExpiryNotAllowed`, `DeleteNotAllowed`), a delete that takes the stream's own
+  events, and the stamp that now agrees with an event's position.
+* **Update**: [Django integration](concepts/django-integration.md) — the settings and
+  operator commands the bundle had never listed: `RAKAIA_READ_PAGE_SIZE`,
+  `RAKAIA_PERMANENT_STREAMS`, `manage.py prune_orphan_events`, and the stream lock order a
+  model save now shares with a protocol append.
+* **Note**: everything in the two entries above shipped in 0.6.0, 0.6.1 and 0.7.0, and none
+  of it reached this bundle before its release. Only examples are gated — a change that adds
+  a setting or a command without adding an example walks past the test that would have
+  caught it.
 
 ## 2026-09-08
 

@@ -98,7 +98,7 @@
   claims they modify.
 - Research notes live in `docs/research/` and are deliberately **not** in the
   nav. They are dated and are not decisions; decisions go in `docs/adr/`.
-- **A release updates four files, and a PR updates the first of them.** These
+- **A release updates five files, and a PR updates the first of them.** These
   drifted apart across `0.3.0`/`0.3.1`, which is what this rule exists to stop:
   - `CHANGELOG.md` — for anything a consumer of the library could notice, under
     `[Unreleased]`, in the PR that makes the change. Repo tooling is out of scope
@@ -112,10 +112,29 @@
     moves no data) belongs here even though it breaks no signature.
   - `docs/whats-new.md` — if a headline capability landed. It is a **cumulative**
     tour: append a numbered section, never rewrite the earlier ones. Every
-    section owes the reader a problem, a snippet, and a one-command demo.
+    section owes the reader a problem, a snippet, and a one-command demo — and
+    when no example covers the capability yet, name the tests that prove it
+    instead of inventing a command, the way section 18 does.
   - `docs/examples.md` — if an example changed, and always check *Known gaps*.
     A new public API with no example is a gap; say so there rather than letting
     the matrix imply coverage that does not exist.
+  - `okf/` — the machine-readable bundle. A new name, setting or command goes in
+    the concept page that owns it, and every such edit gets a dated entry in
+    `okf/log.md`. Only *examples* are gated (`test_docs_names_resolve.py` fails
+    when an `examples/` directory has no bundle page), so a change that ships a
+    setting or a command without shipping an example walks straight past the
+    suite.
+- **A new setting or management command is a feature, not plumbing.** The tour's
+  *headline capability* test reads as an invitation to skip anything that sounds
+  internal, and that is how `0.7.0` shipped: paged catch-up reads, the event
+  stamp that can no longer contradict an event's position, and
+  `RAKAIA_PERMANENT_STREAMS` with `manage.py prune_orphan_events` all reached
+  `CHANGELOG.md` and none of them reached `docs/whats-new.md` or `okf/` until
+  after the tag. If a consumer would change a setting, run a command, or get a
+  different answer from the same call, it belongs in the tour and the bundle.
+  Nothing checks either of those two files, so this is on whoever writes the PR;
+  the repair costs an afternoon of reading eleven commits back, which is what it
+  cost here.
 - **Tag a release `v<version>`, with the `v`.** `publish.yml` triggers on `v*`
   (plus a manual `workflow_dispatch`), so a tag named `0.4.0` publishes nothing — no failure, no output,
   just an absent release that looks like a slow PyPI. Worth stating because the

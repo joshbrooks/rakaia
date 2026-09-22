@@ -31,6 +31,22 @@ From `django_rakaia`:
   still has an event for every row of the table it is written from.
 * SSE views + Channels signals for live broadcast.
 
+Settings and operator commands:
+
+* `RAKAIA_READ_PAGE_SIZE` — the page a catch-up read answers with, applied when
+  `get_asgi_app()` is called without `options`; on the durable store the page is a
+  SQL `LIMIT`, so a first sync no longer loads the whole log.
+* `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the durable store
+  refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
+  client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream
+  instead of removing it. `DjangoStreamStore.delete()` from Python still works.
+* `manage.py prune_orphan_events` — delete events no stream refers to, with
+  `--dry-run`, `--batch-size` and `--database`. For payloads left behind by
+  deletes made before a stream's deletion took its events with it.
+* A model save locks its streams in path order, and before reserving their
+  offsets — the same order a protocol append takes them in, so the two cannot
+  deadlock each other on Postgres.
+
 # Demonstrated by
 
 * [chat](../examples/chat.md) — `@stream_model`, multi-stream events, live SSE.
