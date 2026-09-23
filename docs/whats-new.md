@@ -928,7 +928,8 @@ durable store refuse anything that could remove a stream — a create asking for
 TTL or an expiry (`ExpiryNotAllowed`, a protocol `400`), a client's `DELETE`
 (`DeleteNotAllowed`, a `405`) — and serve a stream whose expiry has already passed
 instead of removing it. Deleting from Python still works, so an operator keeps the
-ability an HTTP client has lost:
+ability an HTTP client has lost — though from the next release that operator has
+to say so explicitly, which is [section 28](#28-the-guard-covers-the-hand-run-reset-too):
 
 ```python
 RAKAIA_PERMANENT_STREAMS = True  # off unless you set it
@@ -946,6 +947,40 @@ $ python manage.py prune_orphan_events --dry-run
 
 → Deep dive: [Django integration](django-integration.md) ·
 [Deployment](deployment.md) · [`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md)
+
+---
+
+## 28. The guard covers the hand-run `--reset` too
+
+**The problem.** `RAKAIA_PERMANENT_STREAMS` refused a client's `DELETE` and
+stopped a clock from reaping a stream, but carried out a delete called from
+Python. The reasoning was that a Python call is already an operator's decision.
+It is — but so is a management command someone runs by hand on a pod against a
+production restore, and a backfill's `--reset` flag is one word away from a
+normal run. That is the likeliest way anyone actually loses a stream, and it was
+the one path the switch left open, while reading like protection against exactly
+it. A documented hazard is not a mitigated hazard.
+
+**What rakaia does.** With the switch on, `delete()` now refuses too, unless the
+decision is expressed:
+
+```python
+store.delete("submissions/tf611")  # DeleteNotAllowed
+store.delete("submissions/tf611", force=True)  # carried out, as before
+```
+
+`force=True` is accepted and does nothing while the switch is off, so a backfill
+that reseeds a stream can pass it unconditionally rather than branch on a
+setting — the same line works whether or not a deployment has turned permanence
+on. Nothing changes for anyone who has not set `RAKAIA_PERMANENT_STREAMS`, which
+is off by default.
+
+**See it.** `tests/test_django_rakaia/test_permanent_streams.py` — the refusal,
+the forced delete, and the check that a refused delete leaves both the stream and
+its events where they were.
+
+→ Deep dive: [Django integration](django-integration.md) ·
+[`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md)
 
 ---
 

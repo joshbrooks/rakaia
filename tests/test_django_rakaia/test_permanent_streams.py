@@ -73,13 +73,42 @@ class TestThePermanentStore:
         store.create("s", initial_data=b'{"id": 1}')
         assert [m.data for m in store.read("s")[0]] == [b'{"id": 1}']
 
-    def test_a_python_delete_still_works(self):
+    def test_a_plain_python_delete_is_refused(self):
+        """The hand-run `--reset` this switch exists to stop is a Python call.
+
+        Until #310 the switch refused a client's DELETE and carried out a
+        Python one, on the reading that a call from Python is an operator's
+        decision. A management command run by hand on a pod is a Python call
+        too, and is exactly the operation someone switching this on assumes it
+        covers, so the decision now has to be expressed rather than assumed.
+        """
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        with pytest.raises(DeleteNotAllowed):
+            store.delete("s")
+
+    def test_a_refused_delete_leaves_the_stream_and_its_events(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}')
+        with pytest.raises(DeleteNotAllowed):
+            store.delete("s")
+        assert store.has("s")
+        assert [m.data for m in store.read("s")[0]] == [b'{"id": 1}']
+        assert StreamEvent.objects.count() == 1
+
+    def test_a_forced_delete_still_works(self):
         """Application code rebuilding a stream on purpose relies on this."""
         store = DjangoStreamStore()
         store.create("s")
         store.append("s", b'{"id": 1}')
-        assert store.delete("s") is True
+        assert store.delete("s", force=True) is True
         assert not store.has("s")
+        assert StreamEvent.objects.count() == 0
+
+    def test_forcing_a_delete_of_a_missing_stream_is_still_false(self):
+        assert DjangoStreamStore().delete("never-existed", force=True) is False
 
     def test_an_expired_stream_is_read_not_reaped(self, settings):
         settings.RAKAIA_PERMANENT_STREAMS = False
@@ -215,6 +244,17 @@ class TestTheDefaultIsUnchanged:
 
         assert not hasattr(settings, "RAKAIA_PERMANENT_STREAMS")
 
+    def test_a_delete_needs_no_force_while_the_switch_is_off(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        assert store.delete("s") is True
+
+    def test_force_is_accepted_and_changes_nothing_while_the_switch_is_off(self):
+        """So a caller may pass it unconditionally rather than branch on a setting."""
+        store = DjangoStreamStore()
+        store.create("s")
+        assert store.delete("s", force=True) is True
+
     def test_a_create_with_an_expiry_is_accepted(self):
         store = DjangoStreamStore()
         store.create("a", ttl_seconds=60)
@@ -262,6 +302,13 @@ def either_way(request, settings) -> None:
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.usefixtures("either_way")
 class TestDeleteRemovesOrphanedEvents:
+    """The orphan rule holds whether the switch is on or off.
+
+    Every delete here passes `force=True` unconditionally, which is the
+    call shape an application should use: it is inert while the switch is
+    off, so the same line works either way without branching on a setting.
+    """
+
     def test_a_deleted_streams_events_are_gone(self):
         store = DjangoStreamStore()
         store.create("s")
@@ -269,7 +316,7 @@ class TestDeleteRemovesOrphanedEvents:
         store.append("s", b'{"id": 2}')
         assert StreamEvent.objects.count() == 2
 
-        store.delete("s")
+        store.delete("s", force=True)
 
         assert StreamEvent.objects.count() == 0
 
@@ -280,13 +327,13 @@ class TestDeleteRemovesOrphanedEvents:
         store.append("a", b'{"only": "a"}')
         shared = _fan_out("a", "b")
 
-        store.delete("a")
+        store.delete("a", force=True)
 
         assert StreamEvent.objects.filter(pk=shared.pk).exists()
         assert [m.data for m in store.read("b")[0]] == [b'{"shared": true}']
         assert StreamEvent.objects.count() == 1, "a's own event should be gone"
 
-        store.delete("b")
+        store.delete("b", force=True)
 
         assert not StreamEvent.objects.filter(pk=shared.pk).exists()
 
@@ -297,7 +344,7 @@ class TestDeleteRemovesOrphanedEvents:
         store.append("a", b'{"id": 1}')
         store.append("b", b'{"id": 2}')
 
-        store.delete("a")
+        store.delete("a", force=True)
 
         assert [m.data for m in store.read("b")[0]] == [b'{"id": 2}']
         assert StreamEvent.objects.count() == 1
@@ -309,7 +356,7 @@ class TestDeleteRemovesOrphanedEvents:
         store.append("s", b'{"id": 1}')
         stray = StreamEvent.objects.create(data={"stray": True}, event_type="append")
 
-        store.delete("s")
+        store.delete("s", force=True)
 
         assert list(StreamEvent.objects.values_list("pk", flat=True)) == [stray.pk]
 

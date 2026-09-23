@@ -15,6 +15,29 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## A permanent stream now refuses a delete from Python
+
+Only if you set `RAKAIA_PERMANENT_STREAMS`, which is off by default and new in
+0.7.0. With it on, `DjangoStreamStore.delete()` now raises `DeleteNotAllowed`
+unless you call it as `delete(path, force=True)`.
+
+0.7.0 refused a client's protocol DELETE and carried out a Python one, reasoning
+that a call from Python was already an operator's decision. But a management
+command run by hand against a production restore is a Python call, and it is the
+operation someone switching this on is most likely to think they have covered —
+which made the switch read as protection while giving none against the likeliest
+way to lose a stream.
+
+**What to do.** Add `force=True` to any `store.delete(...)` your own code makes
+on purpose — a backfill that reseeds a stream is the usual one. It is accepted
+and does nothing while the switch is off, so you can pass it unconditionally
+rather than branch on a setting, and the same line then works on both sides of
+the change. The failure is loud and immediate, so nothing gets past a first run.
+
+---
+
 # 0.7.0
 
 ## Deleting a stream now deletes its payloads
