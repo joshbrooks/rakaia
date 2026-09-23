@@ -618,3 +618,59 @@ def test_the_django_entry_point_takes_its_page_size_from_settings(settings):
     response = asyncio.run(first_page())
     assert [m["id"] for m in response.json()] == [0, 1]
     assert "Stream-Up-To-Date" not in response.headers
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAnAbsentKeyIsNotANullOne:
+    """A key nobody supplied and a key supplied as null are different events.
+
+    The durable store is the one that could lose this. The in-memory store keeps
+    payloads as opaque bytes, so a round trip there cannot collapse two JSON
+    documents that differ only in whether a key is present — it never parses
+    them. This store decodes into a `JSONField` and re-encodes on the way out,
+    which is where the distinction would go if anything normalised a payload.
+
+    `examples/formkit_emission` demonstrates the property against the in-memory
+    store, where it holds trivially. These are the tests that hold it where it
+    could actually break, because formkit-ninja's wire contract depends on it:
+    `parent_submission=None` says a row has no parent, and no `parent_submission`
+    key says only that nobody said.
+    """
+
+    def _round_trip(self, payload: dict[str, object]) -> dict[str, object]:
+        store = DjangoStreamStore()
+        if not store.has("s"):
+            store.create("s", content_type="application/json")
+        store.append("s", json.dumps(payload).encode())
+        messages, _ = store.read("s")
+        return json.loads(messages[-1].data)
+
+    def test_an_explicit_null_survives_as_a_present_key(self):
+        assert self._round_trip({"id": 1, "parent": None}) == {"id": 1, "parent": None}
+
+    def test_an_absent_key_stays_absent(self):
+        """Documentation, not a guard — no faithful mutation of the store kills it.
+
+        The encode/decode site can only *drop* keys, and this detects only the
+        opposite, a key being invented. Nothing on either path fabricates one, so
+        there is no mutation that turns this red. The direction it names is
+        covered by `test_the_two_are_still_different_after_the_store`, which dies
+        to both null-dropping mutations. Kept because the absent case deserves
+        saying out loud; recorded here so a later reader does not mistake it for
+        a test that pins something.
+        """
+        assert "parent" not in self._round_trip({"id": 1})
+
+    def test_the_two_are_still_different_after_the_store(self):
+        said_none = self._round_trip({"id": 1, "parent": None})
+        said_nothing = self._round_trip({"id": 2})
+        assert said_none != said_nothing
+        # The trap the distinction exists to name: `.get` answers None to both,
+        # so a consumer that reads that way loses what the store kept.
+        assert said_none.get("parent") == said_nothing.get("parent") is None
+        assert ("parent" in said_none) != ("parent" in said_nothing)
+
+    def test_a_nested_null_survives_too(self):
+        """`fields` is a consumer's own document; nothing may tidy inside it."""
+        payload = {"id": 1, "fields": {"answered": None, "other": 2}}
+        assert self._round_trip(payload)["fields"] == {"answered": None, "other": 2}
