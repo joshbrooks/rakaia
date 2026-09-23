@@ -24,6 +24,13 @@ runnable demo for each.
   differs between the tiers is notice, not timing, and the page now says so,
   tells you how to find out which tier you are on, and points at an exact pin as
   the only thing that is genuinely stricter.
+- **The server-store protocol now says its page size is not optional to
+  implement.** `StreamServerStore.read` declares `limit` with a default, which
+  reads as though a store may leave it out; the protocol server passes it on
+  every catch-up read, even with paging off, so a store without it fails with a
+  `TypeError`. The signature is unchanged — the default is what lets replay and
+  the other framework callers read the same store without one — and the
+  docstring now says both. Nothing changes for a store that already works.
 
 - **Permanent streams now refuse a delete from Python too, unless you say
   `force=True` — closing a hole in the 0.7.0 guard.** If you set

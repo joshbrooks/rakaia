@@ -345,6 +345,36 @@ class TestPagedRead:
             await client.get("/foo?offset=-1&live=sse")
         assert limits and set(limits) == {2}
 
+    async def test_the_page_size_is_passed_even_when_paging_is_off(self):
+        """`read_page_size=None` still passes `limit=None` by keyword (#312).
+
+        So a store whose `read` lacks the keyword cannot be rescued by turning
+        paging off; `StreamServerStore.read` says the same.
+        """
+        from rakaia import create_app
+        from rakaia.protocol_server import ServerOptions
+
+        calls: list[dict] = []
+
+        class RecordingStore(StreamStore):
+            def read(self, path, offset=None, **kwargs):
+                calls.append(kwargs)
+                return super().read(path, offset, **kwargs)
+
+        app = create_app(RecordingStore(), ServerOptions(read_page_size=None))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            text = {"content-type": "text/plain"}
+            await client.put("/foo", headers=text, content=b"a")
+            await client.post(
+                "/foo", headers={**text, "Stream-Closed": "true"}, content=b"b"
+            )
+            calls.clear()
+            await client.get("/foo")
+            await client.get("/foo?offset=-1&live=sse")
+        assert calls and all(c == {"limit": None} for c in calls)
+
     @pytest.mark.parametrize("size", [0, -1, "2", 2.5, True])
     async def test_a_bad_page_size_is_refused_when_the_options_are_built(self, size):
         from rakaia.protocol_server import ServerOptions
