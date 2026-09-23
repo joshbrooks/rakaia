@@ -984,6 +984,48 @@ its events where they were.
 
 ---
 
+## 29. The seam with formkit-ninja has a test on this side of it
+
+**The problem.** rakaia's `partisipa_*` examples all model a formkit submission:
+they invent an event shape, append it, and project it. None of them touched
+[formkit-ninja](https://github.com/catalpainternational/formkit-ninja)'s own
+decomposition, so a change to the shape those two libraries share could not make
+any example here fail. Nothing in this repository exercised that seam at all.
+
+**What rakaia does.** `examples/formkit_emission` imports the real
+`formkit_ninja.form_submission.emit` and `wire`, and appends what they produce.
+The property it holds is the one a log cannot recover from getting wrong: an
+absent key and a key set to `None` are different events. `parent_submission=None`
+says a row has no parent; no key says only that nobody said. Nothing type-checks
+that — a `TypedDict` cannot express "present iff supplied" — so it has to survive
+the round trip, and the demo checks it does:
+
+```
+said none     -> key present: 1       .get() returns: None
+said nothing  -> key present: 0       .get() returns: None
+```
+
+The store keeps them apart. `.get()` cannot, which is the trap: read with `in`,
+or give `.get` a sentinel default that is not `None`. The demo runs against the
+in-memory store, which holds payloads as bytes and never parses them; the
+durable store, which decodes into a `JSONField`, is held to the same property by
+`TestAnAbsentKeyIsNotANullOne` in `tests/test_django_rakaia/test_django_store.py`.
+
+**See it.**
+
+```console
+$ just formkit-emission-demo
+```
+
+formkit-ninja comes in through `uv run --with`, not a project extra — it pins
+`Django==4.*` where this project tests against Django 6, and uv resolves extras
+together, so an extra takes the whole environment down with it.
+
+→ Deep dive: [Examples](examples.md) ·
+[`examples/formkit_emission/README.md`](https://github.com/joshbrooks/rakaia/tree/main/examples/formkit_emission)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

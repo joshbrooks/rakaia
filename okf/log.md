@@ -2,6 +2,11 @@
 
 ## 2026-09-23
 
+* **Creation**: [formkit_emission](examples/formkit-emission.md) — formkit-ninja's own
+  `emit`/`wire` decomposition appended to a rakaia log, and the check that an absent key
+  and an explicit null come back as different events. The durable store is held to the
+  same property by `TestAnAbsentKeyIsNotANullOne`; the demo's own store keeps payloads as
+  opaque bytes and could not lose it.
 * **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_PERMANENT_STREAMS`
   now refuses `DjangoStreamStore.delete()` from Python unless it is called with
   `force=True`. The switch previously refused only a client's protocol DELETE, which left

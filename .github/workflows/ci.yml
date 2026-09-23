@@ -136,6 +136,14 @@ jobs:
     # asserts its own claims and exits non-zero when one does not hold, so this
     # job fails the moment a library change breaks a documented guarantee —
     # which is how `examples/` fell out of date before it was gated.
+    #
+    # One demo resolves a dependency at run time rather than at sync time:
+    # `formkit-emission-demo` pulls formkit-ninja through `uv run --with`,
+    # because that package pins `Django==4.*` and an extra would drag this whole
+    # environment off the Django this suite tests against. A consequence worth
+    # knowing when reading a red run: a formkit-ninja release inside `>=6.1,<7`
+    # can turn this job red with no change here, and that is the demo working —
+    # it exists to notice when the shape those two libraries share moves.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
