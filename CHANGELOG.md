@@ -19,12 +19,11 @@ runnable demo for each.
   `UPGRADING.md` entry. Nothing about the releases changes — the page was
   describing them wrongly.
 - **The advice to "pin harder" for Tier 2 is gone, because it did nothing.**
-  `==0.2.*` and `>=0.2,<0.3` are the same constraint under PEP 440, and at least
-  one consumer adopted the first believing it bought protection the second did
-  not. What actually differs between the tiers is notice, not timing, and the
-  page now says so and tells you how to find out which tier you are on.
-
-### Changed
+  Over every version rakaia has published, `==0.2.*` admits exactly the releases
+  `>=0.2,<0.3` does, so the tighter-looking spelling bought nothing. What actually
+  differs between the tiers is notice, not timing, and the page now says so,
+  tells you how to find out which tier you are on, and points at an exact pin as
+  the only thing that is genuinely stricter.
 
 - **Permanent streams now refuse a delete from Python too, unless you say
   `force=True` — closing a hole in the 0.7.0 guard.** If you set
