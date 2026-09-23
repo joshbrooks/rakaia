@@ -11,6 +11,21 @@ runnable demo for each.
 
 ### Changed
 
+- **The public API page now promises what the releases actually did.** It said a
+  stable name would not change meaning "without a major version bump"; four of
+  the six minors since it was written changed one, each with an upgrade note. The
+  promise is now the narrower one the history supports: a Tier 1 name does not
+  change on a patch, may change on a minor, and every change arrives with an
+  `UPGRADING.md` entry. Nothing about the releases changes — the page was
+  describing them wrongly.
+- **The advice to "pin harder" for Tier 2 is gone, because it did nothing.**
+  `==0.2.*` and `>=0.2,<0.3` are the same constraint under PEP 440, and at least
+  one consumer adopted the first believing it bought protection the second did
+  not. What actually differs between the tiers is notice, not timing, and the
+  page now says so and tells you how to find out which tier you are on.
+
+### Changed
+
 - **Permanent streams now refuse a delete from Python too, unless you say
   `force=True` — closing a hole in the 0.7.0 guard.** If you set
   `RAKAIA_PERMANENT_STREAMS` in 0.7.0 you were exposed to this; if you did not,
