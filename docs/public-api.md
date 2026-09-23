@@ -25,8 +25,42 @@ from rakaia import replay, Effect, HandlerRegistry, AppendOptions
 from django_rakaia import DjangoExecutor, DjangoProjectionReader, get_store
 ```
 
-These names will not be removed or change meaning without a **major** version
-bump and an entry in [`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md).
+**A Tier 1 name can change meaning on a minor release, and has.** Since this page
+was written at `0.1.0`: `Effect` became four types and
+`Stream` lost `messages` in `0.2.0`, `poll` began refusing a foreign cursor in
+`0.3.0`, `StreamServerStore.read` began requiring implementers to accept a page
+size in `0.6.0`, and `delete` began removing payloads in `0.7.0`. Each is written up in
+[`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md)
+with what to do about it.
+
+So the promise is narrower than "we will not break this", and it is the one the
+release history actually supports:
+
+- **A Tier 1 name does not change on a patch.** `0.x.Y` → `0.x.Y+1` is safe.
+- **It may change on a minor**, `0.X` → `0.X+1`.
+- **Every such change arrives with an `UPGRADING.md` entry** saying what to do.
+  That is what separates Tier 1 and Tier 2 from Tier 3, which changes with no
+  notice at all.
+
+Pre-1.0, that is the whole promise. It is deliberately not "best effort", which
+would be a claim you could neither check nor act on — each clause above is
+checkable against the releases behind it.
+
+**For the extension protocols, "change meaning" includes widening what an
+implementer must provide.** `ReadableStore`, `WritableStore`, `StreamServerStore`,
+`CursorStore`, `OutcomeStore` and `ProjectionReader` are Tier 1, and a method
+gaining an argument the server then passes breaks every implementation of it
+while breaking nobody who only calls it. That is what `0.6.0` did to
+`StreamServerStore.read` — though that release broke readers too, by a different
+route, which its `UPGRADING.md` entry covers.
+
+If you implement one of these rather than only calling it, the `*_contract.py`
+files under `tests/` are what tell you whether you still satisfy them. They ship
+in the sdist, not the wheel, so `pip download --no-binary :all:` or a checkout is
+how you get them. Read them before trusting one: `server_store_contract.py`
+exercises the page size directly, while `CursorStore` is currently held only by an
+`isinstance` check, which on a `runtime_checkable` Protocol compares method names
+and would not have caught the `0.6.0` widening.
 
 `django_rakaia`'s names resolve lazily, so importing the package does not pull in
 the ORM — that would raise `AppRegistryNotReady` during Django's own startup, and
@@ -125,30 +159,41 @@ this is written.
 Note the distribution is `rakaia-streams`; the import names are `rakaia` and
 `django_rakaia` (plain `rakaia` was already taken on PyPI).
 
-#### If you depend on Tier 2, pin harder
+#### There is no harder pin, so find out which tier you are on
 
-`>=0.2,<0.3` is the right bound for code living inside Tier 1. It is *not* enough
-if you also query the ORM models or import a submodule path directly, because the
-table shape and the module layout are both allowed to move within a minor:
+This page used to tell a Tier 2 consumer to "pin harder" with `==0.2.*`. **Over
+every version rakaia has published, that admits exactly the same releases as
+`>=0.2,<0.3`**, so it bought nothing. The two are not equivalent in general —
+`==0.2.*` also admits pre-releases such as `0.2.0rc1`, which `>=0.2` excludes —
+but rakaia has published none, so the distinction has never selected a different
+version here.
 
-```toml
-dependencies = ["rakaia-streams==0.2.*"]
-```
+There is no range bound that protects you from a minor while still admitting one,
+because a minor is exactly where both tiers may move. If you want more safety
+than that, the honest answer is a different thing from a range: pin an exact
+version and upgrade deliberately, accepting that you also stop taking patches.
 
-Assume this applies to you rather than assuming it does not. The first production
-consumer reached 127 import statements and roughly twenty direct ORM queries
-against `StreamEntry`/`Stream` before anyone asked which tier it was on — and the
-answer was Tier 2, plus one private symbol. Two questions settle it:
+What differs between the tiers is **notice, not timing**. A Tier 1 or Tier 2
+change reaches `UPGRADING.md`; a Tier 3 change does not. So the useful question
+is not how to spell your pin but which tier you are on, because that decides how
+much of `UPGRADING.md` you have to read on every minor — and whether anything
+will tell you at all.
+
+Assume Tier 2 applies to you rather than assuming it does not. The first
+production consumer reached 127 import statements and roughly twenty direct ORM
+queries against `StreamEntry`/`Stream` before anyone asked which tier it was on —
+and the answer was Tier 2, plus one private symbol. Two questions settle it:
 
 - Does anything you import begin with `_`, or come from a `django_rakaia`
   submodule that is not listed in `_EXPORTS`?
 - Do you query `django_rakaia.models` directly, or rely on `StreamEntry.offset`
   being an orderable integer column?
 
-A "yes" to either puts you outside the Tier 1 promise, and `==0.2.*` is the
-honest bound until what you need is promoted. Tell us what you are reaching for
-when that happens: a Tier 2 dependency is a gap in Tier 1, and the store protocol
-offering only `read(path, offset)` is the usual reason.
+A "yes" to either puts you outside the Tier 1 promise, which means reading
+`UPGRADING.md` in full on every minor rather than only the Tier 1 sections — and
+watching the migrations, since the table shape may move. Tell us what you are
+reaching for when that happens: a Tier 2 dependency is a gap in Tier 1, and the
+store protocol offering only `read(path, offset)` is the usual reason.
 
 **Whichever bound you pick, do not verify an upgrade by reading
 `rakaia.__version__` alone.** It reports the installed distribution version,
