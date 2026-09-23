@@ -173,6 +173,74 @@
   non-obvious constraint earns its own short paragraph; if it took a mutation to find,
   write it down.
 
+## Cross-repo claims are measured, not remembered
+
+This repository is one of three that make one product — partisipa-import,
+formkit-ninja and rakaia — plus `catalpainternational/ansible`, which alone
+records what each host actually runs. Any claim about what another one of them
+pins, requires or deploys is a **measurement with a date on it**, and it goes
+stale within a day or two. Your memory of it, and anything you read about it
+earlier in a session, are both worse than stale: they read exactly like
+something current.
+
+So before you assert cross-repo state — in an issue, a comment, a commit
+message, a plan, or a decision about what to work on — fetch and read it:
+
+```bash
+git -C <repo> fetch --all -q
+git -C <repo> show origin/main:backend/pyproject.toml   # what partisipa pins
+git -C <repo> show origin/main:backend/uv.lock          # what it resolves
+git -C ~/github/catalpainternational/ansible show \
+    origin/partisipa-staging:host_vars/partisipa-production.yaml   # what a host runs
+```
+
+Read from `origin/<branch>`, never from a working tree — yours or a sibling's —
+and never from a document that quotes it. A tag is not a release, a release is
+not a merge, and a merge is not a deploy; each of those gaps has been the answer
+to "why is this not working" at least once.
+
+**And never turn a release note into a consequence for another repository
+without opening that repository's code** — in either direction, whether you are
+reading their changelog or writing your own. A changelog says what changed in
+the package. It does not say what that means for a consumer, who may already do
+the thing, may not reach the code at all, or may hold a pin that makes it moot.
+
+Both halves cost real work on 2026-09-23. An agent reported partisipa-import as
+pinning `rakaia-streams==0.5.*`, from a checkout 134 commits behind
+`origin/main`, when that repo's own `main` had said `==0.6.*` for a day — and a
+second repo planned a version crossing against that premise before a third
+re-measured and caught it. Note where the damage is: not in the stale checkout,
+which is ordinary, but in the claim leaving the repo that could have checked it.
+The other half, the same day: a note that rakaia 0.7.0 "changes what a `--reset`
+backfill destroys" was carried into six pages before anyone opened
+partisipa-import's backfill commands and found they had been doing that delete
+themselves all along.
+
+This library is consumed and pre-1.0, and `docs/public-api.md` is the promise.
+Its bounds are conditional, which is the part that tells you what to check:
+`>=0.X,<0.X+1` is right for a consumer living inside Tier 1, but a consumer that
+queries the ORM models or imports a submodule path directly pins to an exact
+minor, because the table shape and the module layout are both allowed to move
+within a minor. partisipa-import is squarely in that second case —
+`django_rakaia.models.StreamEntry`/`StreamEvent` across seven backfill commands,
+and `rakaia.replay._reducer_wants_touched` in one test — so it pins `==0.6.*`.
+
+**So work out which tier you changed before writing that it reaches them.** A
+Tier 1 change is not supposed to arrive until a minor. A Tier 2 change — an ORM
+column, a module path — reaches anyone on an exact-minor pin the moment they
+move it, and nobody at all before, whatever the changelog says. That is a
+question you can answer here, in this repo, before you write the sentence.
+
+The `--reset` example above is not a mistake this repo made: it was a claim
+*about* rakaia propagating through other people's documents while nobody opened
+the consumer's code. It sits here as the worked example of the rule, because the
+answer was in partisipa-import's seven `_prepare_stream` sites and no amount of
+care with our own changelog would have produced it.
+
+The cross-repo state itself — version table, what each host runs, the shared
+ADRs — lives in `joshbrooks/shared` and is gated by `just check` there. Treat it
+the same way: a starting point to re-measure from, never an answer to quote.
+
 ## Agent skills
 
 ### Issue tracker
