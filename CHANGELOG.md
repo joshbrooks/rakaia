@@ -9,6 +9,23 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **Permanent streams now refuse a delete from Python too, unless you say
+  `force=True` — closing a hole in the 0.7.0 guard.** If you set
+  `RAKAIA_PERMANENT_STREAMS` in 0.7.0 you were exposed to this; if you did not,
+  nothing here affects you. The switch refused a client's protocol DELETE and
+  stopped expiry reaping, but carried out `DjangoStreamStore.delete()` called
+  from Python, on the reading that a Python call was already an operator's
+  decision. A management command run by hand against a production restore is a
+  Python call too, and a backfill's `--reset` flag is one word away from a normal
+  run — so the switch covered the two ways a stream goes that nobody worried
+  about and left open the one they did, while reading like protection against
+  exactly it. The decision is still the operator's; it now has to be expressed.
+  `delete(path, force=True)` behaves exactly as 0.7.0 did, and is accepted while
+  the switch is off, where it does nothing — so a caller can pass it
+  unconditionally rather than branch on a setting.
+
 ## [0.7.0] - 2026-09-22
 
 ### Added

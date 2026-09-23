@@ -1,5 +1,13 @@
 # Directory Update Log
 
+## 2026-09-23
+
+* **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_PERMANENT_STREAMS`
+  now refuses `DjangoStreamStore.delete()` from Python unless it is called with
+  `force=True`. The switch previously refused only a client's protocol DELETE, which left
+  the hand-run management command — the likeliest way to lose a stream — outside the guard
+  it looked like it covered.
+
 ## 2026-09-22
 
 * **Creation**: [stream_coverage](examples/stream-coverage.md) — a stream that fell behind its

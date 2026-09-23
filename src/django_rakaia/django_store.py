@@ -1278,7 +1278,7 @@ class DjangoStreamStore:
     def has(self, path: str) -> bool:
         return self._get_if_not_expired(path) is not None
 
-    def delete(self, path: str) -> bool:
+    def delete(self, path: str, *, force: bool = False) -> bool:
         """Delete a stream, its entries, and the events left in no stream at all.
 
         An event is deleted only when no entry in *any* stream still points at
@@ -1288,9 +1288,20 @@ class DjangoStreamStore:
         this path resumes numbering above the retired mark rather than reissuing
         offsets a subscriber has already seen. Returns whether the stream existed.
 
-        Works under `RAKAIA_PERMANENT_STREAMS` too. The switch refuses a client's
-        protocol DELETE (`check_protocol_delete`) and stops expiry reaping, but a
-        call from Python is an operator's decision and is carried out.
+        Under `RAKAIA_PERMANENT_STREAMS` this raises `DeleteNotAllowed` unless
+        `force=True`, which is how an application rebuilds a stream on purpose.
+        0.7.0 carried a Python delete out unconditionally, reasoning that a call
+        from Python was already an operator's decision; a management command run
+        by hand on a production restore is a Python call too, and it is the
+        operation someone switching this on is most likely to think they have
+        covered. The decision is still the operator's — it now has to be
+        expressed. `force` is accepted and does nothing while the switch is off,
+        so a caller may pass it unconditionally rather than branch on a setting.
+
+        Both internal callers are the expiry reap, and neither passes `force`.
+        Under the switch `_is_expired` is always false so neither is reachable;
+        if that ever stops being true, refusing is the right outcome and is
+        precisely what the switch promises.
 
         The entries are walked in primary-key order, `_ORPHAN_DELETE_CHUNK` at a
         time, reading only ids: each chunk's entries are deleted, then that
@@ -1299,6 +1310,11 @@ class DjangoStreamStore:
         cascade collector from loading payloads, so neither memory nor the
         query count grows with anything but the number of chunks.
         """
+        if _permanent_streams() and not force:
+            raise DeleteNotAllowed(
+                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} "
+                f"can only be deleted with delete(..., force=True)"
+            )
         with transaction.atomic(using=self._using):
             stream_pk = (
                 self._streams().filter(stream_id=path).values_list("pk", flat=True)

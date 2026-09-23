@@ -39,7 +39,10 @@ Settings and operator commands:
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the durable store
   refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream
-  instead of removing it. `DjangoStreamStore.delete()` from Python still works.
+  instead of removing it. `DjangoStreamStore.delete()` from Python is refused the
+  same way unless called as `delete(path, force=True)` — a management command run
+  by hand is a Python call, and is the likeliest way to lose a stream. `force` is
+  accepted and inert while the switch is off, so a caller need not branch on it.
 * `manage.py prune_orphan_events` — delete events no stream refers to, with
   `--dry-run`, `--batch-size` and `--database`. For payloads left behind by
   deletes made before a stream's deletion took its events with it.
