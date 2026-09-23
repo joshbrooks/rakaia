@@ -198,6 +198,14 @@ class StreamServerStore(WritableStore, Protocol):
         first element and ignore `up_to_date`, so a page handed to one of them
         would be read as the whole stream and the rest silently dropped. Only
         the protocol server, which does honour `up_to_date`, asks for pages.
+
+        The default is for callers, not implementers: an implementation must
+        accept both `read(path)` and `read(path, limit=…)`. The framework
+        callers above make the first call on the same store, and the protocol
+        server always makes the second — `limit=None` included, when
+        `read_page_size` is off — so a `read` without the keyword fails with
+        `TypeError` on the first catch-up read. Dropping the default here to say
+        so would break the override of `ReadableStore.read` (#312).
         """
         ...
 
