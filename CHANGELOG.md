@@ -26,6 +26,19 @@ runnable demo for each.
   the switch is off, where it does nothing — so a caller can pass it
   unconditionally rather than branch on a setting.
 
+### Added
+
+- **An example that drives formkit-ninja's real decomposition rather than a
+  model of it.** `examples/formkit_emission` imports
+  `formkit_ninja.form_submission.emit` and `wire` and appends what they produce
+  to a rakaia log, so the seam between the two libraries finally has a test on
+  this side of it — until now it was exercised only inside a consumer's private
+  code, and neither library went red when the other changed its mind. It checks
+  the property a log cannot recover from getting wrong: an absent key and a key
+  set to `None` are different events, and both survive the store unchanged. It
+  also pins the trap, which is that `.get()` answers `None` to both, so a
+  consumer has to read with `in`. `just formkit-emission-demo`.
+
 ## [0.7.0] - 2026-09-22
 
 ### Added

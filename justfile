@@ -122,6 +122,8 @@ demos:
     @just intake-demo
     @echo ">> stream coverage — a stream that fell behind its table, found and repaired"
     @just coverage-demo
+    @echo ">> formkit emission — the real formkit-ninja seam"
+    @just formkit-emission-demo
     @echo ""
     @echo "All demos passed."
 
@@ -367,6 +369,20 @@ protocol-demo:
 # Effect primitives (no Django): Ref, reconcile_aggregate(owns=), reconcile_by_key
 multi-owner-demo:
     cd examples/multi_owner && uv run python demo.py
+
+# formkit-ninja's real decomposition into a rakaia log (no Django, no database).
+#
+# `--with` rather than an extra in `pyproject.toml`, and that is not a
+# convenience. formkit-ninja pins `Django==4.*`; this project tests against
+# Django 6, and uv resolves every extra together, so declaring it as an extra
+# silently drags the whole environment down to Django 4.2 — CI included. It was
+# tried, and it turned five unrelated tests red (an out-of-range integer raises
+# `OverflowError` on 4.2 where 6.0 binds it). `--with` resolves in an overlay
+# that touches neither `.venv` nor `uv.lock`. The cap is here because `emit` is
+# Tier 1 upstream: a break arrives with a major bump, and this demo should be
+# what notices.
+formkit-emission-demo:
+    uv run --with 'formkit-ninja>=6.1,<7' python examples/formkit_emission/demo.py
 
 # ---------------------------------------------------------------------------
 # Durable Streams conformance suite

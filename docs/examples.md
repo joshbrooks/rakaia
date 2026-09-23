@@ -93,13 +93,16 @@ One command each: seed a stream, replay it, assert the projection.
 
 ### Standalone (no Django)
 
-Zero-dependency scripts — no database, no server. These cover the half of rakaia
-that isn't Django at all.
+Scripts with no database and no server. These cover the half of rakaia that
+isn't Django at all. All but the last are zero-dependency; `formkit_emission`
+pulls formkit-ninja in through `uv run --with`, because driving another
+library's real seam is the whole point of it.
 
 | Example | Proves | Run |
 |---|---|---|
 | [`protocol_streams`](https://github.com/joshbrooks/rakaia/tree/main/examples/protocol_streams) | `StreamStore` append/read, `append_if_changed`, producer fencing, `close`, `poll` subscriber cursors, CDN cursors | `just protocol-demo` |
 | [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, routing `ExternalEffect`s | `just multi-owner-demo` |
+| [`formkit_emission`](https://github.com/joshbrooks/rakaia/tree/main/examples/formkit_emission) | formkit-ninja's own `emit`/`wire` decomposition appended to a rakaia log; an absent key and an explicit `null` coming back as different events; `schema_version` never fabricated | `just formkit-emission-demo` |
 
 ## Concept → example coverage matrix
 
@@ -122,6 +125,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Concept | Demonstrated by |
 |---|---|
 | `AppendOptions(label=…, metadata=…)`, `provenance()` | `formkit_submissions`, `formkit_submissions` (stream) |
+| An absent JSON key kept distinct from an explicit `null` | `formkit_emission` |
 | History read-model — `history_effects`, materialized audit rows | `formkit_submissions`, `partisipa_history` |
 | Peak-snapshot recovery (blank-save repair, hand-rolled over audit rows) | `partisipa_history` |
 
@@ -195,8 +199,9 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
   Every example that serves the protocol takes the default page of a thousand,
   and none holds a stream long enough for a read to stop short.
-- `RAKAIA_PERMANENT_STREAMS`, its two refusals (`ExpiryNotAllowed`,
-  `DeleteNotAllowed`) and `manage.py prune_orphan_events`. No example turns the
+- `RAKAIA_PERMANENT_STREAMS`, its three refusals (`ExpiryNotAllowed`, and
+  `DeleteNotAllowed` for both a client's `DELETE` and a Python `delete()` without
+  `force=True`) and `manage.py prune_orphan_events`. No example turns the
   switch on or deletes a stream, so none shows a `DELETE` being refused or a
   deleted stream's events going with it.
 - `DriftLedger` as an object. `orders` triggers drift detection via
