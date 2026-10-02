@@ -60,6 +60,17 @@ runnable demo for each.
   also pins the trap, which is that `.get()` answers `None` to both, so a
   consumer has to read with `in`. `just formkit-emission-demo`.
 
+### Fixed
+
+- **Type checkers can see the public names again.** Both packages built their
+  list of public names at runtime, which works for Python but is invisible to a
+  type checker, since it reads the file without running it. Under `mypy --strict`,
+  or pyright before 1.1.410, every `from rakaia import ...` was reported as a
+  private import, and every `django_rakaia` name came through as `Any`, so code
+  using them was not really checked. The list is now written out, `django_rakaia`
+  declares the types of its names, and the build fails if either goes back.
+  Nothing changes at runtime.
+
 ## [0.7.0] - 2026-09-22
 
 ### Added

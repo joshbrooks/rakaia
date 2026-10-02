@@ -37,6 +37,8 @@ Public API:
       imported here because it pulls in the ORM before apps are ready)
 """
 
+from typing import TYPE_CHECKING
+
 default_app_config = "django_rakaia.apps.DjangoRakaiaConfig"
 
 # =============================================================================
@@ -138,7 +140,103 @@ _EXPORTS: dict[str, str] = {
     "ProvenanceMiddleware": "django_rakaia.middleware",
 }
 
-__all__ = sorted(_EXPORTS)
+if TYPE_CHECKING:
+    # For type checkers only: the runtime path is `__getattr__` below, which they
+    # cannot follow. Without this every name reads as `Any` to a consumer.
+    from .admin import register_stream_event_admin
+    from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
+    from .consumer import (
+        CallerTransactionOpen,
+        DjangoConsumer,
+        DjangoConsumerCursorStore,
+        django_consumer,
+    )
+    from .coverage import StreamCoverage, stream_coverage
+    from .decorators import create_stream_event, stream_model
+    from .django_store import DjangoStreamStore
+    from .effect_executor import DjangoExecutor
+    from .envelope import SCRATCH_PATH, append_event, fold_events
+    from .hermeticity import (
+        AmbientDatabaseAccess,
+        LiveWriteLeaked,
+        assert_no_live_writes,
+        deny_database_access,
+    )
+    from .history import materialize_history
+    from .integration import get_asgi_app
+    from .middleware import ProvenanceMiddleware
+    from .outcomes import DjangoOutcomeStore
+    from .projection_reader import DjangoProjectionReader
+    from .rebuild import GuardNotArmed, ScratchAliasNotEmpty, rebuild_and_verify
+    from .replay import replay_stream
+    from .store import get_store, reset_store_cache
+    from .streams import ModelStreamReader
+    from .subscription import commit_cursor, load_cursor, poll_consumer
+    from .verification import (
+        GREEN,
+        RED,
+        VACUOUS,
+        DiffReport,
+        FieldDiff,
+        PreloadedProjectionReader,
+        PreloadMismatch,
+        RowDiff,
+        VacuousVerification,
+        VerificationError,
+        diff_effects_against_rows,
+    )
+
+# Written out rather than computed from `_EXPORTS`, for the same reason as
+# rakaia's: a type checker only believes a literal list.
+__all__ = [
+    "AmbientDatabaseAccess",
+    "CallerTransactionOpen",
+    "DEFAULT_NORMALIZERS",
+    "DiffReport",
+    "DjangoConsumer",
+    "DjangoConsumerCursorStore",
+    "DjangoExecutor",
+    "DjangoOutcomeStore",
+    "DjangoProjectionReader",
+    "DjangoStreamStore",
+    "FieldDiff",
+    "GREEN",
+    "GuardNotArmed",
+    "LiveWriteLeaked",
+    "ModelStreamReader",
+    "Normalizer",
+    "PreloadMismatch",
+    "PreloadedProjectionReader",
+    "ProvenanceMiddleware",
+    "RED",
+    "RowDiff",
+    "SCRATCH_PATH",
+    "ScratchAliasNotEmpty",
+    "StreamCoverage",
+    "VACUOUS",
+    "VacuousVerification",
+    "VerificationError",
+    "append_event",
+    "assert_no_live_writes",
+    "canonical_value",
+    "commit_cursor",
+    "create_stream_event",
+    "deny_database_access",
+    "diff_effects_against_rows",
+    "django_consumer",
+    "fold_events",
+    "get_asgi_app",
+    "get_store",
+    "load_cursor",
+    "materialize_history",
+    "poll_consumer",
+    "rebuild_and_verify",
+    "register_stream_event_admin",
+    "replay_stream",
+    "reset_store_cache",
+    "stream_coverage",
+    "stream_model",
+]
 
 
 def __getattr__(name: str):

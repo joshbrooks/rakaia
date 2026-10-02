@@ -362,6 +362,85 @@ class TestTheLazyRootRefusesWhatItDoesNotExport:
     # depending on what else the test session had touched.
 
 
+def _package_tree(package: str):
+    import ast
+    import importlib.util
+    import pathlib
+
+    spec = importlib.util.find_spec(package)
+    assert spec is not None and spec.origin is not None
+    return ast.parse(pathlib.Path(spec.origin).read_text())
+
+
+def _type_checking_imports(package: str) -> set[str]:
+    import ast
+
+    for node in ast.walk(_package_tree(package)):
+        is_guard = (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+        )
+        if not is_guard:
+            continue
+        return {
+            alias.asname or alias.name
+            for child in ast.walk(node)
+            if isinstance(child, ast.ImportFrom)
+            for alias in child.names
+        }
+    raise AssertionError(f"no `if TYPE_CHECKING:` block in {package}/__init__.py")
+
+
+def _exports(package: str) -> dict[str, str]:
+    import importlib
+
+    return importlib.import_module(package)._EXPORTS
+
+
+@pytest.mark.parametrize("package", ["rakaia", "django_rakaia"])
+class TestAllIsWrittenOutForTypeCheckers:
+    """A type checker reads `__init__.py` without running it, and believes a
+    name is public only if a literal `__all__` lists it. Rakaia 0.7.0 built
+    `__all__` from `_EXPORTS` at runtime, which was correct for `import *` and
+    invisible to every checker: pyright before 1.1.410 and `mypy --strict`
+    rejected every `from rakaia import X` a consumer wrote.
+
+    Checked here by reading the file, because importing the package runs the
+    comprehension and so cannot tell the two apart.
+    """
+
+    def test_all_is_one_literal_list_of_strings(self, package):
+        import ast
+
+        assignments = [
+            node
+            for node in _package_tree(package).body
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign))
+            and any(
+                isinstance(t, ast.Name) and t.id == "__all__"
+                for t in (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+            )
+        ]
+        assert len(assignments) == 1, "assign `__all__` exactly once"
+        value = assignments[0].value
+        assert isinstance(value, ast.List) and all(
+            isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
+        ), f"{package}.__all__ must be written out as a list of names"
+
+    def test_all_lists_exactly_what_the_runtime_resolves(self, package):
+        import importlib
+
+        computed = {"app", "__version__"} if package == "rakaia" else set()
+
+        assert set(importlib.import_module(package).__all__) == (
+            set(_exports(package)) | computed
+        )
+
+
+@pytest.mark.parametrize("package", ["rakaia", "django_rakaia"])
 class TestTheLazyRootAndItsTypeCheckingBlockAgree:
     """The package root resolves exports lazily, so it carries the same list
     twice: `_EXPORTS`, which the runtime uses, and a `TYPE_CHECKING` block, which
@@ -369,38 +448,13 @@ class TestTheLazyRootAndItsTypeCheckingBlockAgree:
 
     Drift here is silent in the worst way. A name missing from the block still
     *works* — `__getattr__` returns it — but pyright types it as `Any`, so every
-    annotation checked against it stops being checked and nothing goes red. That
-    is also what `pyproject.toml`'s `F401` exemption for this file leans on: ruff
-    can no longer see the block's imports as used, so this is what keeps them
-    honest instead.
+    annotation checked against it stops being checked and nothing goes red.
     """
 
-    @staticmethod
-    def _type_checking_imports() -> set[str]:
-        import ast
-        import pathlib
+    def test_the_block_covers_every_lazily_resolved_name(self, package):
+        lazily_resolved = set(_exports(package)) - {"replay"}
 
-        source = pathlib.Path(rakaia.__file__).read_text()
-        for node in ast.walk(ast.parse(source)):
-            is_guard = (
-                isinstance(node, ast.If)
-                and isinstance(node.test, ast.Name)
-                and node.test.id == "TYPE_CHECKING"
-            )
-            if not is_guard:
-                continue
-            return {
-                alias.asname or alias.name
-                for child in ast.walk(node)
-                if isinstance(child, ast.ImportFrom)
-                for alias in child.names
-            }
-        raise AssertionError("no `if TYPE_CHECKING:` block in rakaia/__init__.py")
-
-    def test_the_block_covers_every_lazily_resolved_name(self):
-        lazily_resolved = set(rakaia._EXPORTS) - {"replay"}
-
-        missing = lazily_resolved - self._type_checking_imports()
+        missing = lazily_resolved - _type_checking_imports(package)
 
         assert not missing, (
             f"in `_EXPORTS` but not the TYPE_CHECKING block: {sorted(missing)}. "
@@ -408,22 +462,20 @@ class TestTheLazyRootAndItsTypeCheckingBlockAgree:
             "`Any` — add them to the block."
         )
 
-    def test_the_block_imports_nothing_that_is_not_exported(self):
-        """The other direction, which ruff used to catch and no longer can."""
-        extra = self._type_checking_imports() - set(rakaia._EXPORTS)
+    def test_the_block_imports_nothing_that_is_not_exported(self, package):
+        extra = _type_checking_imports(package) - set(_exports(package))
 
         assert not extra, (
-            f"imported for type checkers but not exported: {sorted(extra)}. "
-            "An unused import in that block is invisible to ruff now that the "
-            "file is F401-exempt."
+            f"imported for type checkers but not exported: {sorted(extra)}."
         )
 
-    def test_replay_is_bound_eagerly_rather_than_listed_in_the_block(self):
-        """`replay` is the one name that cannot be lazy, so it must not be in
-        the block: it is imported unconditionally, and a second import under
-        `TYPE_CHECKING` would be a redefinition that hides which one wins."""
-        assert "replay" not in self._type_checking_imports()
-        assert "replay" in rakaia._EXPORTS
+
+def test_replay_is_bound_eagerly_rather_than_listed_in_the_block():
+    """`replay` is the one name that cannot be lazy, so it must not be in
+    the block: it is imported unconditionally, and a second import under
+    `TYPE_CHECKING` would be a redefinition that hides which one wins."""
+    assert "replay" not in _type_checking_imports("rakaia")
+    assert "replay" in rakaia._EXPORTS
 
 
 class TestDjangoRakaiaSurface:
