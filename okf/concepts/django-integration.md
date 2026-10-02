@@ -46,6 +46,16 @@ Settings and operator commands:
 * `manage.py prune_orphan_events` — delete events no stream refers to, with
   `--dry-run`, `--batch-size` and `--database`. For payloads left behind by
   deletes made before a stream's deletion took its events with it.
+* Tags and a correlation id on events (see
+  [Event envelope & provenance](event-envelope-and-provenance.md)): stored as
+  `StreamEventTag` rows and an indexed `StreamEvent.correlation_id` column
+  (migration `0013`), looked up with `StreamEvent.objects.tagged(*tags)` (every
+  tag) and `.correlated(id)`. `api/events/` lists events across streams with
+  `label`, `tag` (repeatable), `correlation_id`, `stream_prefix`, `since`,
+  `until`, `after_id` and `limit`; `api/streams/<id>/` takes `tag` and `label`.
+  The event admin filters by tag and stream prefix and searches the
+  correlation id. `append_event(..., metadata=, tags=, correlation_id=)` returns
+  the `AppendResult`, whose `event_id` is the new row.
 * A model save locks its streams in path order, and before reserving their
   offsets — the same order a protocol append takes them in, so the two cannot
   deadlock each other on Postgres.

@@ -67,6 +67,19 @@ runnable demo for each.
   also pins the trap, which is that `.get()` answers `None` to both, so a
   consumer has to read with `in`. `just formkit-emission-demo`.
 
+- **Events can carry tags and a correlation id, and be found by them.** An append
+  takes `AppendOptions(tags=..., correlation_id=...)`, and every store reads both
+  back on `StreamMessage`. The correlation id can also come from
+  `provenance(correlation=...)`. On Django they are stored in a new table and
+  column (one migration), found with `StreamEvent.objects.tagged()` and
+  `.correlated()`, listed by a new `api/events/` endpoint, and filterable in the
+  admin and on `api/streams/<id>/`. A bad tag or id raises `ValueError` before
+  anything is written.
+- **An append on the Django store says which event it wrote.**
+  `AppendResult.event_id` is the new `StreamEvent` row's id. `append_event` returns
+  the `AppendResult` instead of `None`, and takes `metadata`, `tags` and
+  `correlation_id`.
+
 ### Fixed
 
 - **Type checkers can see the public names again.** Both packages built their
