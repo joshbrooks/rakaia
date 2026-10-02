@@ -25,12 +25,13 @@ models. The core package stays dependency-free.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
 from django.core.serializers.json import DjangoJSONEncoder
 
-from rakaia import AppendOptions, seed_stream
+from rakaia import AppendOptions, AppendResult, seed_stream
 from rakaia.protocols import ProjectionReader, WritableStore
 from rakaia.registry import HandlerRegistry
 from rakaia.replaying import replay
@@ -59,8 +60,14 @@ def append_event(
     label: str,
     actor: Any = None,
     event_ts: float | None = None,
-) -> None:
+    metadata: dict[str, Any] | None = None,
+    tags: Sequence[str] = (),
+    correlation_id: str | None = None,
+) -> AppendResult:
     """Append one enveloped event to ``stream_path``, creating the stream if absent.
+
+    Returns the store's `AppendResult`; from `DjangoStreamStore` its
+    ``event_id`` is the new `StreamEvent` row, for a caller that links to it.
 
     The envelope, fixed so every call site produces the same shape:
 
@@ -75,13 +82,14 @@ def append_event(
       actor `ProvenanceMiddleware` had already stamped on the block — turning
       the caller's silence into a positive assertion that nobody did this;
     * ``event_ts`` is passed through. ``None`` means "order by append time",
-      which is the pre-existing default, not a silent loss of ordering.
+      which is the pre-existing default, not a silent loss of ordering;
+    * ``metadata`` is recorded as given, with the actor laid over it under
+      ``user``; ``tags`` and ``correlation_id`` go to `AppendOptions` unchanged,
+      so an invalid one raises `ValueError` before anything is written.
 
-    The create-and-append itself is `rakaia.seed_stream`, handed the Django
-    encoder: this module's whole warning is about a second `json.dumps` rule
-    drifting from the first, so there is one and it lives in the core package.
-    What stays here is the Django-shaped part — which encoder, and where an
-    actor goes.
+    The payload is encoded as `rakaia.seed_stream` encodes it, handed the
+    Django encoder. This calls the store itself rather than `seed_stream` only
+    because `seed_stream` returns the store, and a caller here needs the result.
 
     ``create()`` is called unconditionally rather than guarded by ``has()``:
     creation is idempotent by contract and — as
@@ -89,20 +97,20 @@ def append_event(
     pins — a redundant create cannot truncate a populated stream or rewind its
     offsets. One round trip instead of two.
     """
-    seed_stream(
+    options = AppendOptions(
+        label=label,
+        metadata=(
+            {**(metadata or {}), "user": actor} if actor is not None else metadata
+        ),
+        event_ts=event_ts,
+        tags=tuple(tags),
+        correlation_id=correlation_id,
+    )
+    store.create(stream_path)
+    return store.append(
         stream_path,
-        [
-            (
-                payload,
-                AppendOptions(
-                    label=label,
-                    metadata={"user": actor} if actor is not None else None,
-                    event_ts=event_ts,
-                ),
-            )
-        ],
-        store=store,
-        encoder=DjangoJSONEncoder,
+        json.dumps(payload, cls=DjangoJSONEncoder).encode("utf-8"),
+        options,
     )
 
 
