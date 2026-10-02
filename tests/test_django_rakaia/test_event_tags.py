@@ -3,7 +3,7 @@ are found, and what still has to fail loudly around them.
 
 What every store must do with them on read is in `tests/store_contract.py`. This
 file covers what only the database has: the tag table and the column, the two
-lookups, and `append_event`.
+lookups, `append_event`, the event listing endpoint and the admin.
 """
 
 from __future__ import annotations
@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db.models import ProtectedError
+from django.test import Client
 
 from django_rakaia import append_event
 from django_rakaia.django_store import DjangoStreamStore
@@ -153,6 +155,155 @@ class TestAppendEvent:
             append_event(store, "s", {"a": 1}, label="x", tags=("",))
 
         assert not StreamEvent.objects.exists()
+
+
+@pytest.fixture
+def client(db) -> Client:  # noqa: ARG001 - needs the database
+    client = Client()
+    client.force_login(User.objects.create_user("reader"))
+    return client
+
+
+@pytest.mark.django_db
+class TestTheEventListing:
+    URL = "/streams/api/events/"
+
+    @pytest.fixture(autouse=True)
+    def events(self, store):
+        self.loss = _append(
+            store, "ida/tf611/1", {"a": 1}, tags=("loss",), correlation_id="INC-5"
+        ).event_id
+        self.audit = _append(
+            store, "ida/tf611/2", {"a": 2}, tags=("loss", "audit"), label="incident"
+        ).event_id
+        self.other = _append(store, "chat/room", {"a": 3}).event_id
+
+    def _ids(self, client, **params):
+        """The ids listed, ignoring events this fixture did not write: the test
+        app streams a save of a `User`, so logging the client in adds some."""
+        response = client.get(self.URL, params)
+        assert response.status_code == 200, response.content
+        ours = {self.loss, self.audit, self.other}
+        return [e["id"] for e in response.json()["events"] if e["id"] in ours]
+
+    def test_unfiltered_lists_everything_oldest_first(self, client):
+        assert self._ids(client) == [self.loss, self.audit, self.other]
+
+    def test_each_filter(self, client):
+        assert self._ids(client, tag="loss") == [self.loss, self.audit]
+        assert self._ids(client, tag=["loss", "audit"]) == [self.audit]
+        assert self._ids(client, correlation_id="INC-5") == [self.loss]
+        assert self._ids(client, label="incident") == [self.audit]
+        assert self._ids(client, stream_prefix="ida/") == [self.loss, self.audit]
+
+    def test_since_and_until(self, client):
+        assert self._ids(client, since="2000-01-01") == [
+            self.loss,
+            self.audit,
+            self.other,
+        ]
+        assert self._ids(client, until="2000-01-01T00:00:00+00:00") == []
+        # A trailing `Z`. Only Python 3.10 rejects it without the view's own
+        # handling, so this can go red only on 3.10; later versions pass anyway.
+        assert self._ids(client, until="2000-01-01T00:00:00Z") == []
+        assert self._ids(client, until="2000-01-01T00:00:00z") == []
+        assert self._ids(client, since="2000-01-01T00:00:00Z") == [
+            self.loss,
+            self.audit,
+            self.other,
+        ]
+
+    def test_paging(self, client):
+        two = client.get(self.URL, {"tag": "loss", "limit": 2}).json()
+        assert [e["id"] for e in two["events"]] == [self.loss, self.audit]
+        assert two["next_after_id"] == self.audit  # the last on the page
+
+        params = {"stream_prefix": "ida/", "limit": 1}
+        first = client.get(self.URL, params).json()
+        assert [e["id"] for e in first["events"]] == [self.loss]
+        assert first["has_more"] is True
+
+        rest = client.get(
+            self.URL, {**params, "limit": 2, "after_id": first["next_after_id"]}
+        ).json()
+        assert [e["id"] for e in rest["events"]] == [self.audit]
+        assert rest["has_more"] is False
+
+    def test_an_event_says_its_tags_correlation_and_streams(self, client):
+        (event,) = client.get(self.URL, {"correlation_id": "INC-5"}).json()["events"]
+
+        assert event["tags"] == ["loss"]
+        assert event["correlation_id"] == "INC-5"
+        assert event["streams"] == ["ida/tf611/1"]
+
+    def test_a_page_is_at_most_200(self, store, client):
+        store.create("ida/bulk")
+        store.append_many(
+            "ida/bulk", [(b'{"a": 1}', AppendOptions(tags=("bulk",)))] * 201
+        )
+
+        page = client.get(self.URL, {"tag": "bulk", "limit": 500}).json()
+
+        assert page["count"] == 200
+        assert page["has_more"] is True
+
+    @pytest.mark.parametrize(
+        "params", [{"limit": "x"}, {"after_id": "x"}, {"since": "yesterday"}]
+    )
+    def test_a_bad_parameter_is_a_400(self, client, params):
+        assert client.get(self.URL, params).status_code == 400
+
+    def test_it_needs_a_login(self):
+        assert Client().get(self.URL).status_code == 302
+
+
+@pytest.mark.django_db
+class TestTheStreamListingFilters:
+    def test_tag_and_label(self, store, client):
+        _append(store, "s", {"a": 1}, tags=("loss",), label="incident")
+        _append(store, "s", {"a": 2}, tags=("loss",))
+        _append(store, "s", {"a": 3}, label="incident")
+
+        def offsets(**params):
+            return [
+                e["offset"]
+                for e in client.get("/streams/api/streams/s/", params).json()["events"]
+            ]
+
+        assert offsets(tag="loss") == [1, 2]
+        assert offsets(label="incident") == [1, 3]
+        assert offsets(tag="loss", label="incident") == [1]
+
+
+@pytest.mark.django_db
+class TestTheAdmin:
+    @pytest.fixture
+    def admin(self, db) -> Client:  # noqa: ARG002 - needs the database
+        client = Client()
+        client.force_login(User.objects.create_superuser("admin"))
+        return client
+
+    def test_the_changelist_filters_by_tag_and_stream_prefix(self, store, admin):
+        _append(store, "ida/tf611/1", {"a": 1}, tags=("loss",), correlation_id="INC-6")
+        _append(store, "chat/room", {"a": 2})
+        url = "/admin/django_rakaia/streamevent/"
+
+        assert admin.get(url).status_code == 200
+        tagged = admin.get(url, {"tag": "loss"})
+        assert tagged.context["cl"].result_count == 1
+        prefixed = admin.get(url, {"stream_prefix": "chat/"})
+        assert prefixed.context["cl"].result_count == 1
+        searched = admin.get(url, {"q": "INC-6"})
+        assert searched.context["cl"].result_count == 1
+
+    def test_the_change_page_shows_the_envelope(self, store, admin):
+        result = _append(store, "s", {"a": 1}, tags=("loss",), correlation_id="INC-7")
+
+        page = admin.get(f"/admin/django_rakaia/streamevent/{result.event_id}/change/")
+
+        assert page.status_code == 200
+        assert b"INC-7" in page.content
+        assert b"loss" in page.content
 
 
 @pytest.mark.django_db(transaction=True)
