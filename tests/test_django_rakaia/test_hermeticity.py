@@ -18,7 +18,7 @@ from django_rakaia.hermeticity import AmbientDatabaseAccess, deny_database_acces
 from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 

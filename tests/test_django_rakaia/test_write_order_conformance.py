@@ -22,7 +22,7 @@ from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import ApplyReport, Delete, Effect, Upsert
 from rakaia.executors import InMemoryProjections
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 
@@ -30,7 +30,7 @@ from rakaia.store import StreamStore
 # the `replay` *function* under that name, so the attribute lookup would hand
 # back a function and every assertion below would be about the wrong object.
 effects_module = import_module("rakaia.effects")
-replay_module = import_module("rakaia.replay")
+replay_module = import_module("rakaia.replaying")
 batching_module = import_module("rakaia.batching")
 executors_module = import_module("rakaia.executors")
 effect_executor = import_module("django_rakaia.effect_executor")

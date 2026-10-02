@@ -21,7 +21,7 @@ from django_rakaia.projection_reader import DjangoProjectionReader
 from rakaia.effects import Effect, ExternalEffect, Upsert
 from rakaia.projections import reconcile_by_key
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 
 from .models import Alert

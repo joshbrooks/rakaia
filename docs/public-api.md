@@ -68,10 +68,11 @@ is why the package exported nothing for so long.
 
 !!! warning "Import from the package, not the module it lives in"
 
-    `from rakaia.replay import replay` works and will keep working, but it pins
-    the module **layout** rather than the surface. Splitting a file internally
-    would break you even though `__all__` never changed. Prefer
-    `from rakaia import replay`.
+    Importing from a module path pins the module **layout** rather than the
+    surface, and the layout can move even though `__all__` never changed. This
+    has happened: `from rakaia.replay import replay` stopped working in 0.8,
+    when the replay engine moved to `rakaia.replaying`. `from rakaia import replay`
+    worked before that change and still works.
 
     Older docs and examples used the submodule form for names that are exported;
     that was our inconsistency, not a second sanctioned spelling.

@@ -12,7 +12,7 @@ from django_rakaia.models import Stream, StreamEntry, StreamEvent
 from django_rakaia.streams import ModelStreamReader
 from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 
 from .models import Area
 

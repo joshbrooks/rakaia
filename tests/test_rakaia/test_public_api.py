@@ -452,7 +452,7 @@ class TestTheLazyRootAndItsTypeCheckingBlockAgree:
     """
 
     def test_the_block_covers_every_lazily_resolved_name(self, package):
-        lazily_resolved = set(_exports(package)) - {"replay"}
+        lazily_resolved = set(_exports(package))
 
         missing = lazily_resolved - _type_checking_imports(package)
 
@@ -468,14 +468,6 @@ class TestTheLazyRootAndItsTypeCheckingBlockAgree:
         assert not extra, (
             f"imported for type checkers but not exported: {sorted(extra)}."
         )
-
-
-def test_replay_is_bound_eagerly_rather_than_listed_in_the_block():
-    """`replay` is the one name that cannot be lazy, so it must not be in
-    the block: it is imported unconditionally, and a second import under
-    `TYPE_CHECKING` would be a redefinition that hides which one wins."""
-    assert "replay" not in _type_checking_imports("rakaia")
-    assert "replay" in rakaia._EXPORTS
 
 
 class TestDjangoRakaiaSurface:
@@ -563,39 +555,29 @@ class TestTierTwoIsDeliberatelyNotExported:
         assert Stream and StreamEntry and StreamEvent
 
 
-class TestTheReplayModuleIsShadowed:
-    """`rakaia.replay` the attribute is the function, not the module (#161 item 1).
+class TestNoExportSharesASubmoduleName:
+    """A public name that is also a submodule name is a function or a module
+    depending on import order (#161 item 1).
 
-    The package root does `from .replay import … replay`, rebinding the package
-    attribute. Harmless for imports, but a `monkeypatch.setattr` aimed at
-    `"rakaia.replay.<name>"` lands on the function object and patches nothing —
-    a call-count assertion then reads zero and passes. That cost a wrong
-    measurement while verifying #156.
-
-    Renaming either would break `rakaia.__all__`, so the sharp edge is documented
-    in `replay.py` rather than removed. These two cases pin the *shape* — that the
-    attribute is the function and the module is still importable — so a future
-    change that quietly fixed or worsened the shadowing shows up here.
-
-    There was a third case asserting the word "monkeypatch" appeared in
-    `replay.py`'s docstring. It is gone: a substring check on module source is
-    satisfied by a passing mention in a comment, which is the exact reason the
-    closed-outcome assertions were deleted from `test_producer.py` in the same
-    change. Keeping one while deleting the other was the inconsistency.
+    Importing a submodule sets it as an attribute of its package, and from then
+    on `__getattr__` is never asked. Until 0.8 the replay engine was
+    `rakaia.replay`, and the package root rebound that attribute to the function
+    to make `from rakaia import replay` deterministic. That left a
+    `monkeypatch.setattr("rakaia.replay.<name>", ...)` landing on the function
+    and patching nothing, which cost a wrong measurement while verifying #156.
+    The module is now `rakaia.replaying`, and these cases keep the clash from
+    coming back.
     """
 
-    def test_the_package_attribute_is_the_function(self):
-        import rakaia
+    def test_no_public_name_is_also_a_submodule(self):
+        import pkgutil
 
-        assert callable(rakaia.replay)
-        assert not hasattr(rakaia.replay, "build_pipeline")
+        submodules = {m.name for m in pkgutil.iter_modules(rakaia.__path__)}
 
-    def test_the_module_is_still_reachable_by_import(self):
-        import sys
+        assert not submodules & set(rakaia.__all__)
 
-        from rakaia import replay as replay_module_attr  # the function
-        from rakaia.replay import replay as replay_fn
+    def test_replay_is_the_function_after_the_engine_module_loads(self):
+        import rakaia.replaying as engine
 
-        assert replay_module_attr is replay_fn
-        assert sys.modules["rakaia.replay"].__name__ == "rakaia.replay"
-        assert hasattr(sys.modules["rakaia.replay"], "build_pipeline")
+        assert rakaia.replay is engine.replay
+        assert hasattr(engine, "build_pipeline")

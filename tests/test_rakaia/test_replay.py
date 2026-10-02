@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 
 import pytest
 
@@ -24,7 +23,7 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import (
+from rakaia.replaying import (
     ENVELOPE_TS,
     TouchedSubject,
     _synth_transitions,
@@ -1434,15 +1433,9 @@ class TestSynthTransitions:
         shared definition is what distinguishes them: if the orchestrator went
         back to assembling its own, the substitution would have no effect.
 
-        The patch goes through `sys.modules`, not the dotted string form.
-        ``monkeypatch.setattr("rakaia.replay.transition_payload", …)`` would
-        resolve `rakaia.replay` to the *function* — see this module's docstring
-        and item 1 of #161 — and silently patch nothing, which is the exact trap
-        that once produced a wrong measurement.
         """
-        replay_module = sys.modules["rakaia.replay"]
         monkeypatch.setattr(
-            replay_module, "transition_payload", lambda *_: {"sentinel": 1}
+            "rakaia.replaying.transition_payload", lambda *_: {"sentinel": 1}
         )
 
         rows = [{"stream_key": "s", "alert_type": "a"}]

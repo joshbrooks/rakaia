@@ -1,5 +1,12 @@
 # Directory Update Log
 
+## 2026-10-02
+
+* **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) — the
+  engine module is now `src/rakaia/replaying.py`. `from rakaia import replay` is unchanged; the
+  module path `rakaia.replay` is gone, so the function is no longer shadowed by a module of the
+  same name.
+
 ## 2026-09-23
 
 * **Creation**: [formkit_emission](examples/formkit-emission.md) — formkit-ninja's own

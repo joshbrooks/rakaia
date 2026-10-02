@@ -11,6 +11,12 @@ runnable demo for each.
 
 ### Changed
 
+- **The replay engine module is renamed from `rakaia.replay` to
+  `rakaia.replaying`.** `from rakaia import replay` is unchanged. Code that
+  imported from the module path now fails at import, and `UPGRADING.md` says
+  what to change. The old name matched the function inside it, so `rakaia.replay`
+  could be either one depending on import order. Patching anything inside the
+  module through its dotted name silently did nothing.
 - **The public API page now promises what the releases actually did.** It said a
   stable name would not change meaning "without a major version bump"; four of
   the six minors since it was written changed one, each with an upgrade note. The

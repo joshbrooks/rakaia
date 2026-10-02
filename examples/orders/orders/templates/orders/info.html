@@ -213,7 +213,7 @@ def _update(eff):
         the registered handlers and upcasters do the rest.
     </p>
     {% verbatim %}
-    <pre><code>from rakaia.replay import replay
+    <pre><code>from rakaia import replay
 from django_rakaia import DjangoExecutor
 
 replay(store=store, stream_path="orders", executor=DjangoExecutor())

@@ -120,7 +120,7 @@ page is the contract.
 | `ProjectionReader` | `rakaia` | `(*args, **kwargs)` | Read-only view over materialised projections. |
 | `DjangoProjectionReader` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Read-only projection accessor over `apps.get_model(...).objects`. |
 | `PreloadedProjectionReader` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, using: 'str \| None' = None) -> 'None'` | A :class:`DjangoProjectionReader` that bulk-fetches, up front, the rows a batch of effects will look up — so each :meth:`get` serves from an in-memory snapshot instead of issuing one ``SELECT``… |
-| `ModelStreamReader` | `django_rakaia` | `(*, queryset_for: 'Callable[[str], QuerySet[Any]]', order_by: 'str', to_payload: 'Callable[[Any], dict[str, Any]]', chunk_size: 'int' = 1000) -> 'None'` | A read-only adapter that satisfies the subset of the `StreamStore` interface that `rakaia.replay.replay` uses. |
+| `ModelStreamReader` | `django_rakaia` | `(*, queryset_for: 'Callable[[str], QuerySet[Any]]', order_by: 'str', to_payload: 'Callable[[Any], dict[str, Any]]', chunk_size: 'int' = 1000) -> 'None'` | A read-only adapter that satisfies the subset of the `StreamStore` interface that `rakaia.replay` uses. |
 
 ## Rehearsing a rebuild safely
 

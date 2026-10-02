@@ -46,7 +46,7 @@ FRAMEWORK = {
     "projections",
     "registration_log",
     "registry",
-    "replay",
+    "replaying",
     "seed",
     "source_hash",
 }

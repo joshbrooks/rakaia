@@ -18,7 +18,7 @@ from django.test.utils import CaptureQueriesContext
 from django_rakaia.effect_executor import DjangoExecutor
 from rakaia.effects import Update, Upsert
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 

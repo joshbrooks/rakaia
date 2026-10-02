@@ -37,7 +37,7 @@ from .source_hash import hash_function_source
 
 # Deliberately the logger `replay()` has always warned through: `RAKAIA_DRIFT`
 # lines keep arriving on the name operators already filter on.
-_log = logging.getLogger("rakaia.replay")
+_log = logging.getLogger("rakaia.replaying")
 
 OnDriftPolicy = Literal["warn", "raise"]
 """What to do when a rule's source no longer matches its registered hash."""

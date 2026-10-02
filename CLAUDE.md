@@ -223,7 +223,8 @@ queries the ORM models or imports a submodule path directly pins to an exact
 minor, because the table shape and the module layout are both allowed to move
 within a minor. partisipa-import is squarely in that second case —
 `django_rakaia.models.StreamEntry`/`StreamEvent` across seven backfill commands,
-and `rakaia.replay._reducer_wants_touched` in one test — so it pins `==0.6.*`.
+and `rakaia.replaying._reducer_wants_touched` (`rakaia.replay` before 0.8) in one
+test — so it pins `==0.6.*`.
 
 **So work out which tier you changed before writing that it reaches them.** A
 Tier 1 change is not supposed to arrive until a minor. A Tier 2 change — an ORM
