@@ -204,7 +204,11 @@ class Upsert(RowEffect):
     materialises, so a sibling effect can bind to it via ``Ref(produces)``
     without a staging split or a natural-key reader lookup. Only an upsert has
     it: an :class:`Update` can match many rows and a delete/retire produces
-    none."""
+    none.
+
+    Never stored, and unrelated to an event's ``correlation_id``
+    (`AppendOptions.correlation_id`), which names a business correlation such as
+    an incident and is kept with the event."""
 
 
 @dataclass(frozen=True)

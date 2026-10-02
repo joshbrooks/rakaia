@@ -94,6 +94,20 @@ class TestBetweenTwoEntryCountingStores:
             (m.label, m.metadata, m.event_ts) for m in original
         ]
 
+    def test_tags_and_correlation_cross_too(self, files, other_files):
+        files.create(PATH)
+        files.append(
+            PATH, b'{"a": 1}', AppendOptions(tags=("loss",), correlation_id="INC-1")
+        )
+        files.append(PATH, b'{"a": 2}')
+
+        migrate_stream(files, other_files, PATH)
+
+        assert [(m.tags, m.correlation_id) for m in other_files.read(PATH)[0]] == [
+            (("loss",), "INC-1"),
+            ((), None),
+        ]
+
     def test_the_logical_timestamp_is_not_reset_to_the_migration(
         self, files, other_files
     ):

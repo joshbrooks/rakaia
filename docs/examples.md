@@ -204,6 +204,10 @@ No example exercises these yet — a good place to contribute a demo:
   `force=True`) and `manage.py prune_orphan_events`. No example turns the
   switch on or deletes a stream, so none shows a `DELETE` being refused or a
   deleted stream's events going with it.
+- `AppendOptions(tags=..., correlation_id=...)`, `AppendResult.event_id`, the
+  `StreamEvent.objects.tagged()` / `.correlated()` lookups and the `api/events/`
+  endpoint. No example records an incident or looks one up; the tests in
+  `tests/test_django_rakaia/test_event_tags.py` are the only demonstration.
 - `DriftLedger` as an object. `orders` triggers drift detection via
   `on_drift="raise"` but never reads the ledger.
 - The file-backed and in-memory outcome stores (`JsonlOutcomeStore`,

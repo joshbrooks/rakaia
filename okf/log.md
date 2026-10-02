@@ -2,6 +2,12 @@
 
 ## 2026-10-02
 
+* **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) —
+  `AppendOptions`/`StreamMessage` gain `tags` and `correlation_id`, `AppendResult` gains
+  `event_id`, and `provenance(correlation=...)` supplies an ambient correlation id.
+* **Update**: [Django integration](concepts/django-integration.md) — the `StreamEventTag` table
+  and `correlation_id` column (migration `0013`), the `tagged()`/`correlated()` lookups, the
+  `api/events/` endpoint, the admin filters, and `append_event`'s new arguments and result.
 * **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) — the
   engine module is now `src/rakaia/replaying.py`. `from rakaia import replay` is unchanged; the
   module path `rakaia.replay` is gone, so the function is no longer shadowed by a module of the

@@ -75,7 +75,7 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
     fcntl = None  # type: ignore[assignment]
 
 from .append_decision import StreamFacts, decide_append, decide_append_batch
-from .context import merge_provenance
+from .context import merge_provenance, tags_and_correlation
 from .json_mode import (
     format_json_response,
     is_json_content_type,
@@ -602,6 +602,8 @@ class JsonlStreamStore:
                         event_ts=record.get("event_ts"),
                         label=record.get("label", ""),
                         metadata=record.get("metadata"),
+                        tags=tuple(record.get("tags", ())),
+                        correlation_id=record.get("correlation_id"),
                     )
                 )
         return out
@@ -799,6 +801,8 @@ class JsonlStreamStore:
         label: str = "",
         metadata: dict | None = None,
         event_ts: float | None = None,
+        tags: tuple[str, ...] = (),
+        correlation_id: str | None = None,
     ) -> StreamMessage | None:
         """Turn one append into one or more buffered records.
 
@@ -837,6 +841,12 @@ class JsonlStreamStore:
                 "metadata": metadata,
                 **self._encode(payload),
             }
+            # Written only when set, so a record without them is byte-for-byte
+            # what 0.7 wrote and reads back the same.
+            if tags:
+                record["tags"] = list(tags)
+            if correlation_id is not None:
+                record["correlation_id"] = correlation_id
             buffer.append(record)
             message = StreamMessage(
                 data=payload,
@@ -845,6 +855,8 @@ class JsonlStreamStore:
                 event_ts=record["event_ts"],
                 label=label,
                 metadata=metadata,
+                tags=tags,
+                correlation_id=correlation_id,
             )
         return message
 
@@ -881,6 +893,7 @@ class JsonlStreamStore:
                         stream_closed=verdict.stream_closed,
                         producer_result=verdict.producer_result,
                     )
+                tags, correlation_id = tags_and_correlation(opts)
                 message = self._write(
                     meta,
                     buffer,
@@ -888,6 +901,8 @@ class JsonlStreamStore:
                     label=opts.label,
                     metadata=merge_provenance(opts.metadata),
                     event_ts=opts.event_ts,
+                    tags=tags,
+                    correlation_id=correlation_id,
                 )
                 self._touch(path, meta)
                 self._commit_producer(meta, verdict.producer_result)
@@ -956,8 +971,12 @@ class JsonlStreamStore:
                     },
                     now=time.time(),
                 )
+                # Every item's envelope is checked before the first is buffered.
+                envelopes = [tags_and_correlation(o) for _d, o in items]
                 results: list[AppendResult] = []
-                for (data, opts), verdict in zip(items, batch.verdicts, strict=True):
+                for index, ((data, opts), verdict) in enumerate(
+                    zip(items, batch.verdicts, strict=True)
+                ):
                     if not verdict.write:
                         results.append(
                             AppendResult(
@@ -975,6 +994,8 @@ class JsonlStreamStore:
                         label=o.label,
                         metadata=merge_provenance(o.metadata),
                         event_ts=o.event_ts,
+                        tags=envelopes[index][0],
+                        correlation_id=envelopes[index][1],
                     )
                     results.append(
                         AppendResult(

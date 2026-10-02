@@ -165,6 +165,54 @@ ambient actor, so `metadata['user']` is absent — the history read-model
 [falls back](history-read-model.md#labels-and-actors) to the payload's own owner
 FK.
 
+## Tags and a correlation id — finding events again
+
+An event can carry **tags**, short labels to find it by, and a **correlation id**,
+the one thing it belongs to: an incident number, an import batch. Every store reads
+both back, and `migrate_stream` carries them.
+
+```python
+from rakaia import AppendOptions
+from rakaia.context import provenance
+
+store.append(
+    path,
+    data,
+    AppendOptions(label="incident", tags=("data-loss",), correlation_id="INC-42"),
+)
+
+# Or set the correlation once for a block, as you would the actor:
+with provenance(correlation="INC-42"):
+    store.append(path, data, AppendOptions(label="incident", tags=("recovery",)))
+```
+
+`message.tags` comes back sorted with duplicates removed, and `message.correlation_id`
+is `None` when there was none. An explicit `correlation_id` wins over the ambient one.
+A tag must be a non-empty string of at most 100 characters, and a correlation id at
+most 128. A bad one raises `ValueError` before anything is written.
+
+On the Django store the tags are rows in their own table and the correlation id is
+an indexed column, so finding them is an index lookup:
+
+```python
+from django_rakaia.models import StreamEvent
+
+StreamEvent.objects.tagged("data-loss")  # carries every tag given
+StreamEvent.objects.correlated("INC-42")
+```
+
+The same filters are on the dashboard's `api/events/` endpoint (`tag`, `label`,
+`correlation_id`, `stream_prefix`, `since`, `until`), and in the admin.
+
+`DjangoStreamStore.append` also returns the id of the event row it wrote, as
+`AppendResult.event_id`, for a table of your own that points at it. The in-memory
+and JSONL stores have no event rows and return `None`.
+
+!!! note "Not the correlation in `rakaia.effects`"
+
+    `Upsert(produces=...)` correlates effects inside one replay batch, and is never
+    stored. The two are unrelated.
+
 ## `append_if_changed` — suppress no-op appends
 
 `django-pghistory` only records a history row when the row actually changed

@@ -7,6 +7,7 @@ and protocol constants.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
@@ -208,6 +209,16 @@ class StreamMessage:
     ``url``, ``causation``, …; see `EnvelopeMetadata`). None for pure-protocol
     messages; ignored by the transport."""
 
+    tags: tuple[str, ...] = ()
+    """Envelope tags the producer attached (``AppendOptions.tags``), sorted.
+    Empty when there were none."""
+
+    correlation_id: str | None = None
+    """The business correlation this event belongs to — an incident number, a
+    batch import — from ``AppendOptions.correlation_id`` or the ambient
+    ``provenance(correlation=...)``. Unrelated to the batch-local correlation of
+    ``Upsert(produces=...)`` in `rakaia.effects`."""
+
 
 @dataclass
 class ProducerState:
@@ -356,6 +367,48 @@ ProducerValidationResult = (
 # =============================================================================
 
 
+#: Longest tag `AppendOptions.tags` accepts; the Django column is this wide.
+MAX_TAG_LENGTH = 100
+#: Longest `AppendOptions.correlation_id`; the Django column is this wide.
+MAX_CORRELATION_ID_LENGTH = 128
+
+
+def clean_tags(tags: Iterable[str]) -> tuple[str, ...]:
+    """`tags` sorted with duplicates removed, or `ValueError` for a bad one.
+
+    A tag is a non-empty string of at most `MAX_TAG_LENGTH` characters. Sorting
+    is what lets every store hand back the same tuple for the same set, whatever
+    order the producer listed them in.
+    """
+    if isinstance(tags, str):
+        raise ValueError("tags must be a collection of strings, not one string")
+    cleaned = set()
+    for tag in tags:
+        if not isinstance(tag, str) or not tag or len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(
+                f"a tag must be a non-empty string of at most {MAX_TAG_LENGTH} "
+                f"characters, not {tag!r}"
+            )
+        cleaned.add(tag)
+    return tuple(sorted(cleaned))
+
+
+def check_correlation_id(value: Any) -> str | None:
+    """`value` if it is a usable correlation id (or None), else `ValueError`."""
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_CORRELATION_ID_LENGTH
+    ):
+        raise ValueError(
+            "a correlation id must be a non-empty string of at most "
+            f"{MAX_CORRELATION_ID_LENGTH} characters, not {value!r}"
+        )
+    return value
+
+
 @dataclass
 class AppendOptions:
     """Options for append operations."""
@@ -378,6 +431,16 @@ class AppendOptions:
     time when unset. This is the deterministic merge key
     (``merge_replay(order_key=ENVELOPE_TS)``), kept distinct from the transport
     ``StreamMessage.timestamp``."""
+    tags: tuple[str, ...] = ()
+    """Envelope tags, read back as ``StreamMessage.tags``. Checked and sorted when
+    the options are built, so a bad tag raises before anything is written."""
+    correlation_id: str | None = None
+    """The business correlation id, read back as ``StreamMessage.correlation_id``.
+    When None, an append takes the ambient ``provenance(correlation=...)``."""
+
+    def __post_init__(self) -> None:
+        self.tags = clean_tags(self.tags)
+        check_correlation_id(self.correlation_id)
 
 
 @dataclass
@@ -387,6 +450,10 @@ class AppendResult:
     message: StreamMessage | None = None
     producer_result: ProducerValidationResult | None = None
     stream_closed: bool = False
+    event_id: int | None = None
+    """The primary key of the `StreamEvent` row the append wrote, from
+    `DjangoStreamStore`; None from a store with no event table, and None when
+    nothing was written."""
 
 
 @dataclass
