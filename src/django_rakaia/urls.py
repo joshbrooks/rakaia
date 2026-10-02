@@ -36,7 +36,13 @@ URLconf before any setting is consulted (#230). It now loads through
 from django.urls import path
 
 from .sse_gate import sse_import
-from .views import stream_detail, stream_events_api, streams_api, streams_index
+from .views import (
+    events_api,
+    stream_detail,
+    stream_events_api,
+    streams_api,
+    streams_index,
+)
 
 app_name = "django_rakaia"
 
@@ -44,6 +50,7 @@ urlpatterns = [
     # Dashboard index and the API, before the catch-all below.
     path("", streams_index, name="streams_index"),
     path("api/streams/", streams_api, name="streams_api"),
+    path("api/events/", events_api, name="events_api"),
 ]
 
 # SSE endpoint (Django Channels), only where this deployment wants it. Ahead of

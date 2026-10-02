@@ -17,7 +17,13 @@ from django_rakaia.event_message import (
     event_label,
     event_label_display,
 )
-from django_rakaia.models import ConsumerOutcome, Stream, StreamEntry, StreamEvent
+from django_rakaia.models import (
+    ConsumerOutcome,
+    Stream,
+    StreamEntry,
+    StreamEvent,
+    StreamEventTag,
+)
 from rakaia.outcomes import Outcome, decode_outcome
 
 
@@ -158,6 +164,62 @@ def _event_data_preview(data: Any, payload_encoding: str | None) -> str:
         return str(data)
 
 
+class StreamEventTagInline(admin.TabularInline):
+    """The tags on one event, read-only: an event's envelope is never edited."""
+
+    model = StreamEventTag
+    fields = ["tag"]
+    readonly_fields = ["tag"]
+    extra = 0
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None) -> bool:  # noqa: ARG002
+        return False
+
+
+class TagListFilter(admin.SimpleListFilter):
+    """Filter events by one tag, offering the tags in use."""
+
+    title = "tag"
+    parameter_name = "tag"
+
+    def lookups(self, request, model_admin):  # noqa: ARG002
+        tags = (
+            StreamEventTag.objects.values_list("tag", flat=True)
+            .distinct()
+            .order_by("tag")
+        )
+        return [(tag, tag) for tag in tags[:200]]
+
+    def queryset(self, request, queryset):  # noqa: ARG002
+        if self.value():
+            return queryset.filter(tags__tag=self.value())
+        return queryset
+
+
+class StreamPrefixListFilter(admin.SimpleListFilter):
+    """Filter events by the first segment of the streams they appear in.
+
+    Stream ids are paths such as ``ida_forms/tf611/42``, so the first segment
+    names a family of streams; the filter offers each family in use.
+    """
+
+    title = "stream"
+    parameter_name = "stream_prefix"
+
+    def lookups(self, request, model_admin):  # noqa: ARG002
+        ids = Stream.objects.values_list("stream_id", flat=True)
+        prefixes = sorted({sid.split("/", 1)[0] + "/" for sid in ids if "/" in sid})
+        return [(prefix, prefix) for prefix in prefixes[:200]]
+
+    def queryset(self, request, queryset):  # noqa: ARG002
+        if self.value():
+            return queryset.filter(
+                entries__stream__stream_id__startswith=self.value()
+            ).distinct()
+        return queryset
+
+
 @admin.register(StreamEvent)
 class StreamEventAdmin(admin.ModelAdmin):
     """Admin interface for StreamEvent model."""
@@ -167,11 +229,26 @@ class StreamEventAdmin(admin.ModelAdmin):
         "event_type_badge",
         "data_preview",
         "stream_count",
+        "correlation_id",
         "created_at",
     ]
-    list_filter = [_EVENT_TYPE_FILTER, "created_at"]
-    search_fields = ["data"]
-    readonly_fields = ["data", "event_type", "created_at", "streams_list"]
+    list_filter = [
+        _EVENT_TYPE_FILTER,
+        TagListFilter,
+        StreamPrefixListFilter,
+        "created_at",
+    ]
+    search_fields = ["data", "correlation_id"]
+    readonly_fields = [
+        "data",
+        "event_type",
+        "created_at",
+        "event_ts",
+        "correlation_id",
+        "metadata",
+        "streams_list",
+    ]
+    inlines = [StreamEventTagInline]
     ordering = ["-created_at"]
     list_per_page = 50
 
