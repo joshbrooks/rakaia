@@ -9,7 +9,7 @@ from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.store import get_store
 from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import merge_replay, replay
+from rakaia.replaying import merge_replay, replay
 from rakaia.seed import seed_stream
 
 from .models import Area

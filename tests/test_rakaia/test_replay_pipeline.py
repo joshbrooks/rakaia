@@ -31,7 +31,7 @@ import pytest
 from rakaia.effects import Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import ReplayResult, merge_replay, replay
+from rakaia.replaying import ReplayResult, merge_replay, replay
 from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 

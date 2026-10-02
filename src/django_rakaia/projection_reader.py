@@ -5,7 +5,7 @@ Django implementation of rakaia's `ProjectionReader`.
 during staged replay, so the handler can resolve facts that earlier stages
 committed. This reader is a thin, read-only accessor over the Django ORM:
 
-    from rakaia.replay import replay
+    from rakaia.replaying import replay
     from django_rakaia.effect_executor import DjangoExecutor
     from django_rakaia.projection_reader import DjangoProjectionReader
 

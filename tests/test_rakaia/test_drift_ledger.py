@@ -31,7 +31,7 @@ from rakaia.drift import DriftLedger, HandlerDriftError
 from rakaia.effects import Upsert
 from rakaia.executors import InMemoryProjections
 from rakaia.registry import HandlerRegistry, UpcasterRegistry, upcast
-from rakaia.replay import merge_replay, replay
+from rakaia.replaying import merge_replay, replay
 from rakaia.seed import seed_stream
 from rakaia.source_hash import hash_function_source
 from rakaia.store import StreamStore

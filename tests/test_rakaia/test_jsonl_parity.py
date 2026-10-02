@@ -23,7 +23,7 @@ from rakaia import CollectingExecutor
 from rakaia.effects import Upsert
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.subscription import poll
 from rakaia.types import AppendOptions, InvalidJson, StreamNotFound

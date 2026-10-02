@@ -31,7 +31,7 @@ from rakaia.errors import REASON_CODES, UNHANDLED, RakaiaError
 from rakaia.executors import CollectingExecutor
 from rakaia.outcomes import InMemoryOutcomeStore, Outcome
 from rakaia.registry import HandlerGapError, UpcasterChainError
-from rakaia.replay import MergeKeyError, MissingReaderError, UndecodableEventError
+from rakaia.replaying import MergeKeyError, MissingReaderError, UndecodableEventError
 from rakaia.store import StreamStore
 from rakaia.subscription import consume
 from rakaia.types import StreamMessage
@@ -218,7 +218,7 @@ class TestTheSetIsClosed:
 class TestTheRealRaisingSitesRaiseTheNewTypes:
     def test_a_staged_replay_with_no_reader_raises_missing_reader(self) -> None:
         from rakaia.registry import HandlerRegistry, UpcasterRegistry
-        from rakaia.replay import build_pipeline, require_reader
+        from rakaia.replaying import build_pipeline, require_reader
 
         registry = HandlerRegistry()
 
@@ -237,14 +237,14 @@ class TestTheRealRaisingSitesRaiseTheNewTypes:
             require_reader(ctx)
 
     def test_an_undecodable_event_raises_undecodable_event(self) -> None:
-        from rakaia.replay import _decode_event
+        from rakaia.replaying import _decode_event
 
         with pytest.raises(UndecodableEventError):
             _decode_event(b"not json at all", "s", 0)
 
     def test_a_missing_merge_key_raises_merge_key(self) -> None:
         from rakaia.registry import HandlerRegistry, UpcasterRegistry
-        from rakaia.replay import merge_replay
+        from rakaia.replaying import merge_replay
 
         store = StreamStore()
         store.create("a")

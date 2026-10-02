@@ -1,7 +1,7 @@
 """
 Django-side ``replay`` convenience.
 
-``rakaia.replay.replay()`` is framework-agnostic: it takes an executor and, for
+``rakaia.replay()`` is framework-agnostic: it takes an executor and, for
 staged replays, a reader. From Django both of those are always the same pair —
 ``DjangoExecutor`` writes the projections and ``DjangoProjectionReader`` reads
 them back for stage > 0 handlers and reducers. ``replay_stream`` fills those in
@@ -13,7 +13,7 @@ caller didn't wire the Django reader by hand (see issue #68).
     replay_stream("submissions:42")                 # applies via the ORM
     replay_stream("submissions:42", executor=CollectingExecutor())  # dry run
 
-Everything else is forwarded to ``rakaia.replay.replay`` unchanged.
+Everything else is forwarded to ``rakaia.replay`` unchanged.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from __future__ import annotations
 from rakaia.effects import Executor
 from rakaia.protocols import ProjectionReader, ReadableStore
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import OnDriftPolicy, ReplayResult, replay
+from rakaia.replaying import OnDriftPolicy, ReplayResult, replay
 
 from .effect_executor import DjangoExecutor
 from .projection_reader import DjangoProjectionReader
@@ -46,7 +46,7 @@ def replay_stream(
     ``executor`` defaults to ``DjangoExecutor()`` (pass a ``CollectingExecutor``
     for a dry run) and ``reader`` to ``DjangoProjectionReader()``, so a staged
     replay works without the caller wiring the reader. ``store`` defaults to the
-    Django global store. All other arguments match ``rakaia.replay.replay``.
+    Django global store. All other arguments match ``rakaia.replay``.
     """
     return replay(
         store=store if store is not None else get_store(),

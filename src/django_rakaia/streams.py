@@ -21,7 +21,7 @@ label, metadata, event timestamp and offset those rows genuinely hold, inverts
 live here and returned the payload alone, so a replay through it silently lost
 all of that; it had no callers and was deleted (#186).
 
-Satisfies the subset of the `StreamStore` interface `rakaia.replay.replay` calls:
+Satisfies the subset of the `StreamStore` interface `rakaia.replay` calls:
 `read(path)` -> `(list[message], bool)`, and `has(path)`.
 """
 
@@ -37,7 +37,7 @@ from django.db.models import QuerySet
 
 @dataclass(frozen=True)
 class _ReaderMessage:
-    """Minimal message shape that satisfies what `rakaia.replay` reads."""
+    """Minimal message shape that satisfies what `rakaia.replaying` reads."""
 
     data: bytes
 
@@ -45,7 +45,7 @@ class _ReaderMessage:
 class ModelStreamReader:
     """
     A read-only adapter that satisfies the subset of the `StreamStore`
-    interface that `rakaia.replay.replay` uses.
+    interface that `rakaia.replay` uses.
 
     Args:
         queryset_for: Maps a stream path (e.g. "submissions:SF_1_2") to the

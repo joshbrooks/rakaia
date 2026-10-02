@@ -33,7 +33,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from rakaia import AppendOptions, seed_stream
 from rakaia.protocols import ProjectionReader, WritableStore
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 
 #: The in-memory stream path a live fold replays through.
 #:

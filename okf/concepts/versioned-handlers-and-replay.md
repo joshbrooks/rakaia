@@ -53,4 +53,4 @@ Imported from `rakaia`:
 # Deeper reference
 
 * Human docs: `docs/versioned-handlers.md`, `docs/staged-replay.md`, `docs/multi-stream-merge.md`.
-* Source: `src/rakaia/registry.py`, `src/rakaia/replay.py`.
+* Source: `src/rakaia/registry.py`, `src/rakaia/replaying.py`.
