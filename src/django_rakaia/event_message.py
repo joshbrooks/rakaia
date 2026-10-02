@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from rakaia.json_mode import is_json_content_type
@@ -149,7 +150,9 @@ def payload_fields(data: Any, payload_encoding: str | None) -> dict[str, Any]:
     return fields
 
 
-def message_of(entry: StreamEntry) -> StreamMessage:
+def message_of(
+    entry: StreamEntry, *, tags: tuple[str, ...] | None = None
+) -> StreamMessage:
     """The event a stored entry represents.
 
     The single definition. Reverses the three storage facts — payload encoding,
@@ -158,7 +161,9 @@ def message_of(entry: StreamEntry) -> StreamMessage:
     through `read()`, a channel-layer frame, the dashboard or the admin.
 
     Reads `entry.event`; pass an entry that already has it loaded (or was
-    fetched with `select_related("event")`) to avoid a query per row.
+    fetched with `select_related("event")`) to avoid a query per row. The tags
+    come from `event.tags`, so a reader of many entries prefetches
+    ``"event__tags"``; a writer that has just stored them passes `tags` instead.
     """
     event = entry.event
     written_at = entry.created_at.timestamp()
@@ -171,6 +176,8 @@ def message_of(entry: StreamEntry) -> StreamMessage:
         event_ts=event.event_ts if event.event_ts is not None else written_at,
         label=event_label(event.event_type),
         metadata=event.metadata or None,
+        tags=(tuple(sorted(t.tag for t in event.tags.all())) if tags is None else tags),
+        correlation_id=event.correlation_id,
     )
 
 
@@ -183,6 +190,9 @@ def event_view(
     event_id: int | None = None,
     offset: int | None = None,
     stream_id: str | None = None,
+    tags: Iterable[str] | None = None,
+    correlation_id: str | None = None,
+    streams: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """One event, as a JSON object. The wire counterpart to `message_of`.
 
@@ -226,8 +236,15 @@ def event_view(
         view["stream_id"] = stream_id
     if offset is not None:
         view["offset"] = offset
+    if streams is not None:
+        view["streams"] = sorted(streams)
     view["event_type"] = event_label(event_type)
     view["created_at"] = created_at.isoformat() if created_at else None
+    # Opt-in like the identity keys, so the frames that predate them are
+    # unchanged; the cross-stream event listing asks for both.
+    if tags is not None:
+        view["tags"] = sorted(tags)
+        view["correlation_id"] = correlation_id
     view.update(payload_fields(data, payload_encoding))
     return view
 

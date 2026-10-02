@@ -313,3 +313,162 @@ class StoreContract:
         assert store.append_many("s", []) == []
         messages, _ = store.read("s")
         assert messages == []
+
+    # -- tags and correlation id ----------------------------------------------
+    #
+    # The producer's own words about an event: tags to find it by, and the
+    # business correlation (an incident, an import) it belongs to. Every store
+    # hands both back on read, so code written against the in-memory store sees
+    # what the durable one stores.
+
+    #: Whether `AppendResult.event_id` names a stored event row.
+    records_event_ids = False
+
+    def test_tags_come_back_sorted_without_duplicates(self, store):
+        store.create("s")
+        store.append("s", b'{"a": 1}', AppendOptions(tags=("loss", "audit", "loss")))
+
+        (message,), _ = store.read("s")
+
+        assert message.tags == ("audit", "loss")
+
+    def test_an_untagged_append_reads_back_with_no_tags(self, store):
+        store.create("s")
+        store.append("s", b'{"a": 1}')
+
+        (message,), _ = store.read("s")
+
+        assert message.tags == ()
+        assert message.correlation_id is None
+
+    def test_an_explicit_correlation_id_is_recorded(self, store):
+        store.create("s")
+        store.append("s", b'{"a": 1}', AppendOptions(correlation_id="INC-7"))
+
+        (message,), _ = store.read("s")
+
+        assert message.correlation_id == "INC-7"
+
+    def test_the_ambient_correlation_is_used_when_none_is_given(self, store):
+        from rakaia.context import provenance
+
+        store.create("s")
+        with provenance(correlation="INC-8"):
+            store.append("s", b'{"a": 1}')
+            store.append("s", b'{"a": 2}', AppendOptions(correlation_id="INC-9"))
+
+        first, second = store.read("s")[0]
+
+        assert first.correlation_id == "INC-8"
+        assert second.correlation_id == "INC-9"  # explicit wins over ambient
+
+    def test_append_many_takes_the_ambient_correlation_too(self, store):
+        from rakaia.context import provenance
+
+        store.create("s")
+        with provenance(correlation="INC-10"):
+            store.append_many("s", [(b'{"a": 1}', None)])
+
+        (message,), _ = store.read("s")
+
+        assert message.correlation_id == "INC-10"
+
+    def test_append_many_keeps_each_items_own_tags(self, store):
+        store.create("s")
+        store.append_many(
+            "s",
+            [
+                (b'{"a": 1}', AppendOptions(tags=("x",), correlation_id="c1")),
+                (b'{"a": 2}', AppendOptions()),
+                (b'{"a": 3}', AppendOptions(tags=("y", "x"))),
+            ],
+        )
+
+        messages, _ = store.read("s")
+
+        assert [(m.tags, m.correlation_id) for m in messages] == [
+            (("x",), "c1"),
+            ((), None),
+            (("x", "y"), None),
+        ]
+
+    def test_the_append_result_carries_the_tags_it_wrote(self, store):
+        store.create("s")
+        result = store.append("s", b'{"a": 1}', AppendOptions(tags=("b", "a")))
+
+        assert result.message.tags == ("a", "b")
+
+    def test_event_id(self, store):
+        store.create("s")
+        first = store.append("s", b'{"a": 1}')
+        (second,) = store.append_many("s", [(b'{"a": 2}', None)])
+
+        if self.records_event_ids:
+            assert isinstance(first.event_id, int)
+            assert isinstance(second.event_id, int)
+            assert second.event_id != first.event_id
+        else:
+            assert first.event_id is None
+            assert second.event_id is None
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"tags": ("",)},
+            {"tags": ("x" * 101,)},
+            {"tags": "a-string"},
+            {"correlation_id": ""},
+            {"correlation_id": "x" * 129},
+        ],
+    )
+    def test_a_bad_tag_or_correlation_id_is_refused_before_writing(
+        self, store, options
+    ):
+        store.create("s")
+
+        with pytest.raises(ValueError):
+            store.append("s", b'{"a": 1}', AppendOptions(**options))
+
+        assert store.read("s")[0] == []
+
+    @pytest.mark.parametrize(
+        ("field", "value"), [("tags", ["ok", ""]), ("correlation_id", "x" * 129)]
+    )
+    def test_a_value_set_after_the_options_were_built_is_still_refused(
+        self, store, field, value
+    ):
+        """The options check their fields when built, and a caller can set one
+        afterwards; the store checks again, so that cannot reach the log."""
+        options = AppendOptions()
+        setattr(options, field, value)
+        store.create("s")
+
+        with pytest.raises(ValueError):
+            store.append("s", b'{"a": 1}', options)
+
+        assert store.read("s")[0] == []
+
+    def test_one_bad_item_refuses_the_whole_batch(self, store):
+        bad = AppendOptions()
+        bad.correlation_id = "x" * 129
+        store.create("s")
+
+        with pytest.raises(ValueError):
+            store.append_many(
+                "s", [(b'{"a": 1}', AppendOptions(tags=("ok",))), (b'{"a": 2}', bad)]
+            )
+
+        assert store.read("s")[0] == []
+
+    def test_append_many_returns_each_items_tags(self, store):
+        store.create("s")
+        first, second = store.append_many(
+            "s",
+            [
+                (b'{"a": 1}', AppendOptions(tags=("b", "a"))),
+                (b'{"a": 2}', AppendOptions(correlation_id="c")),
+            ],
+        )
+
+        assert (first.message.tags, first.message.correlation_id) == (("a", "b"), None)
+        assert (second.message.tags, second.message.correlation_id) == ((), "c")

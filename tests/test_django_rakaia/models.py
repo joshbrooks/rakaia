@@ -470,5 +470,19 @@ class CoverageRowChange(models.Model):
         app_label = "test_django_rakaia"
 
 
+class IncidentRecord(models.Model):
+    """A consumer's own record of an event it must never lose.
+
+    Stands in for a consumer table that points one-to-one at a `StreamEvent`
+    and protects it, so that deleting a stream, or pruning orphaned events,
+    has to fail loudly rather than take the record with it.
+    """
+
+    event = models.OneToOneField(StreamEvent, on_delete=models.PROTECT)
+
+    class Meta:
+        app_label = "test_django_rakaia"
+
+
 # Register the admin interface for AppStreamEvent
 register_stream_event_admin(AppStreamEvent)

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .append_decision import StreamFacts, decide_append, decide_append_batch
-from .context import merge_provenance
+from .context import merge_provenance, tags_and_correlation
 from .json_mode import (
     format_json_response,
     is_json_content_type,
@@ -263,6 +263,7 @@ class StreamStore:
             ContentTypeMismatch / SequenceConflict: On the respective conflict.
         """
         opts = options or AppendOptions()
+        tags, correlation_id = tags_and_correlation(opts)
         stream = self._get_if_not_expired(path)
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
@@ -299,6 +300,8 @@ class StreamStore:
             label=opts.label,
             metadata=merge_provenance(opts.metadata),
             event_ts=opts.event_ts,
+            tags=tags,
+            correlation_id=correlation_id,
         )
 
         # === STATE MUTATION (only after successful append) ===
@@ -391,6 +394,10 @@ class StreamStore:
                 },
                 now=time.time(),
             )
+        # Checked for every item before the first is written, which the loop
+        # below cannot do: it would store the prefix and raise on the bad item.
+        for _data, options in items:
+            tags_and_correlation(options)
         return [self.append(path, data, options) for data, options in items]
 
     async def append_with_producer(
@@ -650,6 +657,8 @@ class StreamStore:
         label: str = "",
         metadata: dict | None = None,
         event_ts: float | None = None,
+        tags: tuple[str, ...] = (),
+        correlation_id: str | None = None,
     ) -> StreamMessage | None:
         """Append data to a stream, handling JSON mode processing."""
         # One payload per stored message. Outside JSON mode the body is the
@@ -704,6 +713,8 @@ class StreamStore:
                 event_ts=event_ts,
                 label=label,
                 metadata=metadata,
+                tags=tags,
+                correlation_id=correlation_id,
             )
             self._messages.setdefault(stream.path, []).append(message)
             stream.current_offset = new_offset
