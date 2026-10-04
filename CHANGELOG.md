@@ -79,6 +79,11 @@ runnable demo for each.
   `AppendResult.event_id` is the new `StreamEvent` row's id. `append_event` returns
   the `AppendResult` instead of `None`, and takes `metadata`, `tags` and
   `correlation_id`.
+- **A notebook that teaches rakaia from scratch.** `notebooks/how_rakaia_works.py`
+  walks through fourteen ideas, from what a stream is to the protocol server and
+  the Django integration. Each section has an example you can change and a short
+  quiz. It runs the library from your checkout, in memory, with nothing else set
+  up: `marimo edit --sandbox notebooks/how_rakaia_works.py`.
 
 ### Fixed
 

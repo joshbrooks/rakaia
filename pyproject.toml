@@ -197,6 +197,9 @@ ignore = [
 # A Django `TestCase` in this example uses `assertEqual`/`assertRaises`, which is
 # the framework's own idiom rather than pytest's.
 "examples/formkit_submissions/**" = ["PT009", "PT027"]
+# A marimo cell shows the value of its last bare expression, so that expression
+# is the cell's output rather than a mistake.
+"notebooks/**" = ["B018"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rakaia", "django_rakaia"]

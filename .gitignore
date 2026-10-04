@@ -65,5 +65,5 @@ conformance-server.log
 .claude/worktrees/
 .gstack/
 
-# marimo writes cell outputs here when a notebook runs
+# marimo writes a session cache beside each notebook it opens.
 __marimo__/
