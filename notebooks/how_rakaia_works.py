@@ -34,6 +34,7 @@ with app.setup(hide_code=True):
         CollectingExecutor,
         Consumer,
         Delete,
+        HandlerGapError,
         HandlerRegistry,
         InMemoryConsumerCursorStore,
         InMemoryOutcomeStore,
@@ -95,11 +96,14 @@ with app.setup(hide_code=True):
         rows = []
         for e in effects:
             values = getattr(e, "defaults", None) or getattr(e, "patch", None) or ""
+            spare = getattr(e, "spare", None)
+            spared = getattr(spare, "lookup", None) or getattr(spare, "keys", None)
             rows.append(
                 {
                     "change": type(e).__name__,
                     "table": e.model_label,
                     "which row": json.dumps(e.lookup),
+                    "except": json.dumps(spared) if spared else "",
                     "values": json.dumps(values) if values else "",
                 }
             )
@@ -682,9 +686,9 @@ def _():
 
     **You can rehearse.** Hand replay a `CollectingExecutor` and it records every
     effect without applying any of them. You get a list of what a rebuild *would*
-    write. The Django side goes further: its rehearsal blocks writes to the
-    database outright, and its rebuild check refuses to call a run that compared
-    nothing a pass.
+    write. The Django side goes further: its rebuild check refuses any query to
+    the live database while the rules run, fails if the live tables gained or lost
+    rows, and refuses to call a run that compared nothing a pass.
 
     Move the slider to replay the same stream more times.
     """)
@@ -889,7 +893,7 @@ def _():
                 "It leaves it for a cleanup job",
             ],
             "answer": "One delete for the order's lines that spares the positions still present",
-            "why": "That is the `Delete` with `Exclude(idx__in=[...])` in the table above.",
+            "why": "That is the `Delete` in the table above, whose *except* column spares the positions still present.",
         },
         {
             "q": "What identifies a line row to `reconcile_children`?",
@@ -985,7 +989,7 @@ def _(s7_from, s7_gap):
     try:
         replay(_store, "orders", _table, handler_registry=_rules)
         _out = show(_table.rows("shop.Order"))
-    except Exception as _error:
+    except HandlerGapError as _error:
         _out = mo.callout(
             mo.md(f"**{type(_error).__name__}**: {_error}"), kind="danger"
         )
@@ -1189,7 +1193,7 @@ def _(s8_how):
             upcaster_registry=_upcasters,
         )
         _out = show(_table.rows("shop.Order"))
-    except Exception as _error:
+    except KeyError as _error:
         _out = mo.callout(
             mo.md(
                 f"**{type(_error).__name__}: {_error}**. The range sent position "
@@ -1338,9 +1342,10 @@ def _():
     block of work, such as a whole web request or a whole recovery job, and every
     append inside it is stamped.
 
-    On Django, tags and the correlation id are their own table and indexed column,
-    not keys inside the metadata. That is so they can be found quickly on both
-    SQLite and Postgres. A bad value, such as an empty tag or one over 100
+    On Django, tags get their own table and the correlation id its own indexed
+    column, so both can be found quickly on SQLite and Postgres. (`provenance`
+    also keeps `correlation` in the metadata, which is why it shows up in two
+    columns above.) A bad value, such as an empty tag or one over 100
     characters, is refused *before* anything is written.
 
     Fill in the job below. Two appends run inside the `provenance` block and one
@@ -2330,9 +2335,9 @@ def _(
             mo.md(f"## Your total: **{_total} / {3 * len(_scores)}**"),
             mo.ui.altair_chart(_chart),
             mo.md(
-                "Where next: [the tutorial](../docs/tutorial.md) builds a real Django "
+                "Where next: [the tutorial](https://github.com/joshbrooks/rakaia/blob/main/docs/tutorial.md) builds a real Django "
                 "table and rebuilds it after a bug, and the "
-                "[glossary](../docs/glossary.md) has every term used here."
+                "[glossary](https://github.com/joshbrooks/rakaia/blob/main/docs/glossary.md) has every term used here."
             ),
         ]
     )
