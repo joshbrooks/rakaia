@@ -1345,7 +1345,7 @@ def _():
     On Django, tags get their own table and the correlation id its own indexed
     column, so both can be found quickly on SQLite and Postgres. (`provenance`
     also keeps `correlation` in the metadata, which is why it shows up in two
-    columns above.) A bad value, such as an empty tag or one over 100
+    columns below.) A bad value, such as an empty tag or one over 100
     characters, is refused *before* anything is written.
 
     Fill in the job below. Two appends run inside the `provenance` block and one
@@ -1363,9 +1363,7 @@ def _():
         value=["backup-restore"],
         label="Tags",
     )
-    s9_extra = mo.ui.text(
-        value="", label="One more tag (try a blank or a very long one)"
-    )
+    s9_extra = mo.ui.text(value="", label="One more tag (try a very long one)")
     mo.vstack(
         [mo.hstack([s9_user, s9_incident], justify="start", gap=2), s9_tags, s9_extra]
     )
@@ -1424,7 +1422,7 @@ def _(s9_extra, s9_incident, s9_tags, s9_user):
 def _():
     q9 = [
         {
-            "q": "Why are tags and the correlation id fields of their own, rather than keys inside the metadata?",
+            "q": "Why do tags and the correlation id get fields of their own, rather than living only in the metadata?",
             "options": [
                 "So Django can find them with an indexed lookup on any database",
                 "Metadata can't hold lists",
