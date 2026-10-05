@@ -42,6 +42,19 @@ class _AnnotatedStream(Protocol):
     last_event: datetime | None
 
 
+def _refuse_nul(params, *extra: str) -> JsonResponse | None:
+    """A 400 if any query parameter (or `extra` value) contains a NUL.
+
+    Postgres cannot compare against a NUL and fails the whole query, where
+    SQLite simply matches nothing; refusing it here keeps the two answering the
+    same.
+    """
+    values = [v for _, vs in params.lists() for v in vs] + list(extra)
+    if any("\x00" in value for value in values):
+        return JsonResponse({"error": "a parameter contains a NUL"}, status=400)
+    return None
+
+
 @login_required
 @require_GET
 def streams_index(_request: Any) -> HttpResponse:
@@ -192,6 +205,9 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
 
     Supports pagination and filtering by offset.
     """
+    if _nul_refused := _refuse_nul(_request.GET, stream_id):
+        return _nul_refused
+
     # Get parameters
     after_offset = _request.GET.get("after_offset")
     try:
@@ -308,9 +324,8 @@ def events_api(request: Any) -> Any:
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
-    if any("\x00" in value for _, values in params.lists() for value in values):
-        # Postgres cannot compare against a NUL and would fail the query.
-        return JsonResponse({"error": "a parameter contains a NUL"}, status=400)
+    if _nul_refused := _refuse_nul(params):
+        return _nul_refused
 
     events = StreamEvent.objects.all()
     if params.get("label"):

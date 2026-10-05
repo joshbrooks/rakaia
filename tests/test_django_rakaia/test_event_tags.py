@@ -313,6 +313,12 @@ class TestTheStreamListingFilters:
         assert offsets(label="incident") == [1, 3]
         assert offsets(tag="loss", label="incident") == [1]
 
+    @pytest.mark.parametrize("params", [{"tag": "a\x00b"}, {"label": "a\x00b"}])
+    def test_a_nul_in_a_filter_is_a_400(self, store, client, params):
+        _append(store, "s", {"a": 1})
+
+        assert client.get("/streams/api/streams/s/", params).status_code == 400
+
 
 @pytest.mark.django_db
 class TestTheAdmin:
