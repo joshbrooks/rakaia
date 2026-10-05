@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
 ### Changed
 
 - **The replay engine module is renamed from `rakaia.replay` to

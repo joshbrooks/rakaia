@@ -15,7 +15,7 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.8.0
 
 ## One migration, and an append that now returns something
 
