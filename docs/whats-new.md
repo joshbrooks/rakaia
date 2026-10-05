@@ -1026,6 +1026,50 @@ together, so an extra takes the whole environment down with it.
 
 ---
 
+## 30. Tag an event, file it under an incident, and find it again
+
+**The problem.** A consumer recording a data loss, or a recovery from a backup, as
+events in the ordinary log had nowhere to say "these belong to incident 42" except
+inside the free-form metadata, where finding them again meant a JSON query that
+SQLite and Postgres spell differently and neither can index. Linking its own table
+to the event it had just written meant guessing: the store knew the event's id and
+did not say.
+
+**What rakaia does.** An append takes `tags` and a `correlation_id`, and every store
+hands both back on read. The correlation can be set once for a block with
+`provenance(correlation=...)`, like the actor. On Django they are a table and an
+indexed column, with two lookups, a filtered `api/events/` endpoint and admin
+filters, and the append now returns the event row's id.
+
+```python
+result = append_event(
+    store,
+    "ida/incidents",
+    {"form": 311},
+    label="incident",
+    tags=("data-loss",),
+    correlation_id="INC-42",
+)
+IncidentLink.objects.create(event_id=result.event_id)
+
+StreamEvent.objects.tagged("data-loss").correlated("INC-42")
+```
+
+**See it.** No example covers this yet. The tests that prove it are
+`tests/store_contract.py` (the `tags and correlation id` block, run against all
+three stores), `tests/test_django_rakaia/test_event_tags.py`, and
+`TestBetweenTwoEntryCountingStores.test_tags_and_correlation_cross_too` in
+`tests/test_rakaia/test_migrate.py`.
+
+```console
+$ uv run pytest tests/test_django_rakaia/test_event_tags.py -q
+```
+
+→ Deep dive: [The event envelope](event-envelope.md) ·
+[ADR 0008](adr/0008-tags-and-a-correlation-id-on-the-envelope.md)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

@@ -405,7 +405,12 @@ class TestDeleteCost:
         per_chunk = (costs[40] - costs[20]) / 2
         assert per_chunk > 0
         assert costs[40] - costs[20] == 2 * per_chunk
-        assert costs[40] < 40, costs
+        # Cheaper than a query per event: a chunk of 10 costs fewer than 10.
+        # Each table that points at an event (entries, tags, and any consumer
+        # table) adds a fixed statement per chunk, which is the point of
+        # chunking; a fixed ceiling on the total only measured how many such
+        # tables there happened to be.
+        assert per_chunk < 10, costs
 
     def test_the_ids_are_read_a_chunk_at_a_time(self):
         """The stream's ids are never held in one piece: one read per chunk."""

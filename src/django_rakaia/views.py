@@ -7,7 +7,7 @@ Uses the normalized Stream/StreamEvent/StreamEntry model structure.
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 
 from django.contrib.auth.decorators import login_required
@@ -40,6 +40,19 @@ class _AnnotatedStream(Protocol):
     min_offset: int | None
     max_offset: int | None
     last_event: datetime | None
+
+
+def _refuse_nul(params, *extra: str) -> JsonResponse | None:
+    """A 400 if any query parameter (or `extra` value) contains a NUL.
+
+    Postgres cannot compare against a NUL and fails the whole query, where
+    SQLite simply matches nothing; refusing it here keeps the two answering the
+    same.
+    """
+    values = [v for _, vs in params.lists() for v in vs] + list(extra)
+    if any("\x00" in value for value in values):
+        return JsonResponse({"error": "a parameter contains a NUL"}, status=400)
+    return None
 
 
 @login_required
@@ -192,6 +205,9 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
 
     Supports pagination and filtering by offset.
     """
+    if _nul_refused := _refuse_nul(_request.GET, stream_id):
+        return _nul_refused
+
     # Get parameters
     after_offset = _request.GET.get("after_offset")
     try:
@@ -208,6 +224,11 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
 
     # Build query
     query = stream.entries.select_related("event").order_by("offset")
+    label = _request.GET.get("label")
+    if label:
+        query = query.filter(event__event_type=label)
+    for tag in _request.GET.getlist("tag"):
+        query = query.filter(event__tags__tag=tag)
 
     if after_offset:
         # Parsed by the durable store's own strict check, not `int()`: this
@@ -254,6 +275,99 @@ def stream_events_api(_request: Any, stream_id: str) -> Any:
             "events": serialized_events,
             "count": len(serialized_events),
             "has_more": len(entries) == limit,
+        }
+    )
+
+
+def _parse_time(value: str | None, name: str) -> datetime | None:
+    """`value` as an aware datetime, or `ValueError` naming the parameter."""
+    if not value:
+        return None
+    # A trailing `Z` is what most clients send; `fromisoformat` takes it only
+    # from Python 3.11, and this package supports 3.10.
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{name} must be an ISO 8601 date or time") from None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when
+
+
+@login_required
+@require_GET
+def events_api(request: Any) -> Any:
+    """Events across every stream, filtered by what their producer said.
+
+    ``label``, ``tag`` (repeatable: an event must carry every one),
+    ``correlation_id``, ``stream_prefix`` (the event appears in at least one
+    stream whose id starts with it), and ``since``/``until`` (ISO 8601, on when
+    the event was recorded; a time with no offset is UTC, and an offset's ``+``
+    must be sent as ``%2B``, since a bare one in a query string is a space).
+    Ordered oldest first
+    by event id; ``after_id`` continues from the last page and ``limit`` caps it
+    (default 50, at most 200).
+    """
+    params = request.GET
+    try:
+        limit = max(1, min(int(params.get("limit", 50)), 200))
+        after_id = int(params["after_id"]) if params.get("after_id") else None
+    except ValueError:
+        return JsonResponse(
+            {"error": "limit and after_id must be integers"}, status=400
+        )
+    try:
+        since = _parse_time(params.get("since"), "since")
+        until = _parse_time(params.get("until"), "until")
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    if _nul_refused := _refuse_nul(params):
+        return _nul_refused
+
+    events = StreamEvent.objects.all()
+    if params.get("label"):
+        events = events.filter(event_type=params["label"])
+    tags = params.getlist("tag")
+    if tags:
+        events = events.tagged(*tags)
+    if params.get("correlation_id"):
+        events = events.correlated(params["correlation_id"])
+    if params.get("stream_prefix"):
+        events = events.filter(
+            entries__stream__stream_id__startswith=params["stream_prefix"]
+        ).distinct()
+    if since is not None:
+        events = events.filter(created_at__gte=since)
+    if until is not None:
+        events = events.filter(created_at__lt=until)
+    if after_id is not None:
+        events = events.filter(id__gt=after_id)
+
+    page = list(
+        events.order_by("id").prefetch_related("tags", "entries__stream")[:limit]
+    )
+    serialized = [
+        event_view(
+            event_type=event.event_type,
+            data=event.data,
+            payload_encoding=event.payload_encoding,
+            created_at=event.created_at,
+            event_id=event.id,
+            tags=[t.tag for t in event.tags.all()],
+            correlation_id=event.correlation_id,
+            streams=[entry.stream.stream_id for entry in event.entries.all()],
+        )
+        for event in page
+    ]
+    return JsonResponse(
+        {
+            "events": serialized,
+            "count": len(serialized),
+            "has_more": len(page) == limit,
+            "next_after_id": page[-1].id if page else after_id,
         }
     )
 

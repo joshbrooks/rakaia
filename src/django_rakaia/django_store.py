@@ -49,7 +49,7 @@ from rakaia.append_decision import (
     decide_append,
     decide_append_batch,
 )
-from rakaia.context import merge_provenance
+from rakaia.context import correlation_for, merge_provenance, tags_and_correlation
 from rakaia.json_mode import (
     format_json_response,
     is_json_content_type,
@@ -69,6 +69,7 @@ from rakaia.types import (
     StreamConfigConflict,
     StreamMessage,
     StreamNotFound,
+    clean_tags,
 )
 from rakaia.types import Stream as ProtocolStream
 
@@ -85,6 +86,7 @@ from .models import (
     Stream,
     StreamEntry,
     StreamEvent,
+    StreamEventTag,
     StreamOffsetWatermark,
     StreamProducer,
 )
@@ -114,6 +116,8 @@ def write_enveloped_event(
     event_ts: float | None = None,
     stamp_event_ts: bool = False,
     payload_encoding: str | None = None,
+    tags: tuple[str, ...] = (),
+    correlation_id: str | None = None,
 ) -> tuple[StreamEvent, list[StreamEntry]]:
     """Write one enveloped event into `streams`. The **only** writer of one.
 
@@ -207,7 +211,12 @@ def write_enveloped_event(
         metadata=merge_provenance(metadata) or {},
         event_ts=event_ts,
         payload_encoding=payload_encoding,
+        correlation_id=correlation_for(correlation_id),
     )
+    if tags:
+        StreamEventTag.objects.using(using).bulk_create(
+            StreamEventTag(event=event, tag=tag) for tag in clean_tags(tags)
+        )
     entries = [
         StreamEntry.objects.using(using).create(
             stream=stream,
@@ -757,10 +766,12 @@ class DjangoStreamStore:
             # A JSON-mode array append writes several messages; the result
             # carries the last, whose offset is the stream's new head — which
             # is what a caller resumes from.
+            message, event_id = messages[-1] if messages else (None, None)
             return AppendResult(
-                message=messages[-1] if messages else None,
+                message=message,
                 stream_closed=close,
                 producer_result=verdict.producer_result,
+                event_id=event_id,
             )
 
     # =========================================================================
@@ -822,8 +833,9 @@ class DjangoStreamStore:
         opts: Any,
         *,
         is_initial_create: bool = False,
-    ) -> list[StreamMessage]:
-        """Persist one append and return its messages in protocol shape.
+    ) -> list[tuple[StreamMessage, int]]:
+        """Persist one append and return its messages in protocol shape, each
+        with the id of the `StreamEvent` row it became.
 
         One message per stored payload — more than one only for a JSON-mode
         array append (see `_payloads_for`). The envelope on `opts` is copied
@@ -839,18 +851,21 @@ class DjangoStreamStore:
 
         label = getattr(opts, "label", "") or ""
         event_ts = getattr(opts, "event_ts", None)
+        tags, correlation_id = tags_and_correlation(opts)
 
-        messages: list[StreamMessage] = []
+        messages: list[tuple[StreamMessage, int]] = []
         for value, encoding in payloads:
-            _event, (entry,) = write_enveloped_event(
+            event, (entry,) = write_enveloped_event(
                 [stream],
                 value,
                 label=label,
                 metadata=getattr(opts, "metadata", None),
                 event_ts=event_ts,
                 payload_encoding=encoding,
+                tags=tags,
+                correlation_id=correlation_id,
             )
-            messages.append(message_of(entry))
+            messages.append((message_of(entry, tags=tags), event.id))
         return messages
 
     # =========================================================================
@@ -1057,10 +1072,13 @@ class DjangoStreamStore:
             # `merge_provenance` stays per *item*, so the events one item
             # flattens into share its ambient provenance.
             groups: list[list[StreamEvent]] = []
+            group_tags: list[tuple[str, ...]] = []
             for data, options in written:
                 metadata = merge_provenance(getattr(options, "metadata", None)) or {}
                 event_type = (getattr(options, "label", "") or "") or _APPEND_EVENT_TYPE
                 event_ts = getattr(options, "event_ts", None)
+                item_tags, correlation_id = tags_and_correlation(options)
+                group_tags.append(item_tags)
                 groups.append(
                     [
                         StreamEvent(
@@ -1069,6 +1087,7 @@ class DjangoStreamStore:
                             metadata=metadata,
                             event_ts=event_ts,
                             payload_encoding=encoding,
+                            correlation_id=correlation_id,
                         )
                         for value, encoding in self._payloads_for(
                             stream, data, is_initial_create=False
@@ -1081,6 +1100,14 @@ class DjangoStreamStore:
             # the watermark lock held (#284).
             start = stream.get_next_offset_block(len(stream_events))
             self._events().bulk_create(stream_events)
+            # Needs the ids `bulk_create` just set, which every supported
+            # backend returns (Postgres always; SQLite from 3.35).
+            StreamEventTag.objects.using(self._using).bulk_create(
+                StreamEventTag(event=event, tag=tag)
+                for group, tags in zip(groups, group_tags, strict=True)
+                for event in group
+                for tag in tags
+            )
 
             entries = [
                 StreamEntry(stream=stream, event=event, offset=start + i)
@@ -1120,7 +1147,7 @@ class DjangoStreamStore:
             for group in groups:
                 grouped.append(entries[cursor : cursor + len(group)])
                 cursor += len(group)
-            persisted = iter(grouped)
+            persisted = iter(zip(grouped, group_tags, strict=True))
             results: list[AppendResult] = []
             for (_data, options), verdict in zip(items, verdicts, strict=True):
                 if not verdict.write:
@@ -1132,11 +1159,14 @@ class DjangoStreamStore:
                         )
                     )
                     continue
+                item_entries, item_tags = next(persisted)
+                last = item_entries[-1]
                 results.append(
                     AppendResult(
-                        message=message_of(next(persisted)[-1]),
+                        message=message_of(last, tags=item_tags),
                         stream_closed=bool(getattr(options, "close", False)),
                         producer_result=verdict.producer_result,
+                        event_id=last.event.id,
                     )
                 )
             return results
@@ -1201,7 +1231,11 @@ class DjangoStreamStore:
         tick without writing `last_activity_at` on every tick with it. `limit`
         caps the rows fetched; `None` fetches them all.
         """
-        entries = stream.entries.select_related("event").order_by("offset")
+        entries = (
+            stream.entries.select_related("event")
+            .prefetch_related("event__tags")
+            .order_by("offset")
+        )
         if offset not in (None, "", "-1"):
             entries = entries.filter(offset__gt=self._parse_offset(offset))
         if limit is not None:

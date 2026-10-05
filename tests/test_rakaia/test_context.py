@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rakaia.context import get_provenance, merge_provenance, provenance
 from rakaia.store import StreamStore
 from rakaia.types import AppendOptions
@@ -54,3 +56,24 @@ class TestAppendPicksUpProvenance:
             store.create("s", content_type="application/json", initial_data=b'{"a": 1}')
         messages, _ = store.read("s")
         assert messages[0].metadata is None
+
+
+class TestAnAmbientCorrelationIsCheckedWhereItIsSet:
+    """`provenance(correlation=...)` becomes the correlation id of every append in
+    the block, and of every `@stream_model` save. A save's event is written in
+    ``post_save``, after the row, so a bad value refused at the append would
+    leave the row saved and its event lost. It is refused on entry instead."""
+
+    @pytest.mark.parametrize("value", [5, "", "x" * 129])
+    def test_a_bad_value_raises_before_the_block_runs(self, value):
+        ran = []
+
+        with pytest.raises(ValueError), provenance(correlation=value):
+            ran.append(True)
+
+        assert ran == []
+        assert get_provenance() == {}
+
+    def test_a_good_value_is_accepted(self):
+        with provenance(correlation="INC-1"):
+            assert get_provenance() == {"correlation": "INC-1"}

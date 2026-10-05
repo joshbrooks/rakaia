@@ -6,14 +6,14 @@ for efficient querying and real-time updates via Unix sockets.
 """
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import unquote
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from django.db.models import Max
 
-from rakaia.types import ClosedBy
+from rakaia.types import MAX_CORRELATION_ID_LENGTH, MAX_TAG_LENGTH, ClosedBy
 
 from .event_message import event_label_display
 from .offsets import format_offset
@@ -323,6 +323,23 @@ class StreamProducer(models.Model):
         return f"{self.producer_id}@{self.epoch}:{self.last_seq}"
 
 
+class StreamEventQuerySet(models.QuerySet["StreamEvent"]):
+    """The two ways an event is looked up by what its producer said about it."""
+
+    def tagged(self, *tags: str) -> "StreamEventQuerySet":
+        """Events carrying every one of `tags`."""
+        if not tags:
+            raise ValueError("tagged() needs at least one tag")
+        queryset = self
+        for tag in tags:
+            queryset = queryset.filter(tags__tag=tag)
+        return queryset.distinct()
+
+    def correlated(self, correlation_id: str) -> "StreamEventQuerySet":
+        """Events recorded under the business correlation `correlation_id`."""
+        return self.filter(correlation_id=correlation_id)
+
+
 class StreamEvent(models.Model):
     """
     An event containing data that can appear in one or more streams.
@@ -340,6 +357,14 @@ class StreamEvent(models.Model):
     if TYPE_CHECKING:
         id: int
         entries: RelatedManager["StreamEntry"]
+        tags: RelatedManager["StreamEventTag"]
+        # A manager proxies its queryset's methods, `tagged` and `correlated`
+        # included; typing it as the queryset is what lets a checker see them.
+        # The stubs declare `Model.objects` as a plain manager, and an override
+        # that narrows a class variable is reported however it is spelled.
+        objects: ClassVar[StreamEventQuerySet]  # pyright: ignore[reportIncompatibleVariableOverride]
+    else:
+        objects = StreamEventQuerySet.as_manager()
 
     data = models.JSONField(encoder=DjangoJSONEncoder)  # type: ignore[assignment]
     """The event payload. Encoded with ``DjangoJSONEncoder`` so the types Django
@@ -383,10 +408,25 @@ class StreamEvent(models.Model):
     which can be absent, and from a payload's shape, which can be forged: a
     JSON-mode stream may legitimately contain any object, including one shaped
     like a marker."""
+    correlation_id = models.CharField(
+        max_length=MAX_CORRELATION_ID_LENGTH, null=True, blank=True
+    )
+    """The business correlation the producer recorded this event under — an
+    incident number, an import batch (`AppendOptions.correlation_id`, else the
+    ambient ``provenance(correlation=...)``). `null` when there was none.
+
+    Unrelated to `Upsert(produces=...)`, which correlates effects inside one
+    replay batch and is never stored."""
 
     class Meta:
         db_table = "rakaia_streamevent"
         ordering = ["-created_at"]
+        # Declared here rather than with `db_index=True`, which on Postgres also
+        # builds a second, `LIKE`-only index. The id is only matched exactly, and
+        # each index on this table is a full scan to build on a large log.
+        indexes = [
+            models.Index(fields=["correlation_id"], name="rakaia_event_correlation"),
+        ]
 
     def __str__(self) -> str:
         # The label a reader sees, not the column: this is the change-form header
@@ -402,6 +442,38 @@ class StreamEvent(models.Model):
             .values_list("stream__stream_id", flat=True)
             .order_by("stream__stream_id")
         )
+
+
+class StreamEventTag(models.Model):
+    """One tag a producer attached to an event (`AppendOptions.tags`).
+
+    A table rather than a JSON list on the event, so that finding every event
+    with a tag is an index lookup on SQLite and Postgres alike.
+    """
+
+    if TYPE_CHECKING:
+        id: int
+        event_id: int
+
+    # No `db_index` on either field: the unique constraint below already leads
+    # with `event`, and on Postgres `db_index=True` on a CharField also builds a
+    # second, LIKE-only index nothing here queries. `tag` gets one plain index.
+    event = models.ForeignKey(
+        StreamEvent, on_delete=models.CASCADE, related_name="tags", db_index=False
+    )
+    tag = models.CharField(max_length=MAX_TAG_LENGTH)
+
+    class Meta:
+        db_table = "rakaia_streameventtag"
+        indexes = [models.Index(fields=["tag"], name="rakaia_streameventtag_tag")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "tag"], name="rakaia_streameventtag_unique"
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tag} on event #{self.event_id}"
 
 
 class StreamEntry(models.Model):

@@ -97,6 +97,8 @@ def _options_for(message: StreamMessage, *, seq: str | None = None) -> AppendOpt
         label=message.label,
         metadata=message.metadata,
         event_ts=message.event_ts,
+        tags=message.tags,
+        correlation_id=message.correlation_id,
         seq=seq,
     )
 

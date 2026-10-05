@@ -17,6 +17,40 @@ ones you are crossing.
 
 # Unreleased
 
+## One migration, and an append that now returns something
+
+`django_rakaia` 0.8 adds migration `0013_event_tags_and_correlation`. It only adds:
+a new `rakaia_streameventtag` table, and a nullable `correlation_id` column on
+`rakaia_streamevent` with an index. Nothing is backfilled, and no existing column
+changes, so every existing event reads back with no tags and no correlation id.
+
+**The one cost to plan for** is that index. On Postgres, building it reads the whole
+event table and blocks writes to it until it finishes. That is quick on a small log
+and is not on a large one, so run `migrate` in a quiet window.
+`sqlmigrate django_rakaia 0013` prints the exact statements if you want to see
+what will run first. Adding the column itself is instant: it is nullable and has
+no default.
+
+Two return values change, and neither breaks code that ignored the old one:
+
+- `AppendResult` has a new `event_id` field. `DjangoStreamStore` fills it in; the
+  in-memory and JSONL stores leave it `None`.
+- `django_rakaia.append_event` returns the store's `AppendResult` instead of `None`.
+
+**One quiet change.** A `correlation` key in `provenance(...)` used to be ordinary
+metadata. It still lands in `metadata`, but it now also becomes the event's
+correlation id, on every append and every `@stream_model` save inside the block. If
+you already used that key for something that is not a string of 1 to 128
+characters, with no NUL and valid UTF-8, the `provenance(...)` block itself now raises `ValueError` as it
+opens, before anything inside it runs. Rename your key. The value also stays in
+`metadata["correlation"]` as before, so an append that passes its own
+`correlation_id` inside such a block carries both, and they can differ.
+
+If you query the models directly (Tier 2), `StreamEvent` has a new column and a
+`tags` reverse relation, and its default manager now has `tagged()` and
+`correlated()`. `Stream` and `StreamEntry` are unchanged, and so are the related
+names between the three.
+
 ## The replay engine module is now `rakaia.replaying`
 
 `from rakaia.replay import ...` raises `ModuleNotFoundError`. The function
