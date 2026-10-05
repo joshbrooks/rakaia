@@ -36,6 +36,9 @@ such as a private helper a test leans on, import it from `rakaia.replaying`.
 Patch targets of the form `"rakaia.replay.<name>"` become
 `"rakaia.replaying.<name>"`, and now work.
 
+The drift warnings (`RAKAIA_DRIFT`) still go to the `rakaia.replay` logger, so
+a log filter or alert on that name keeps working.
+
 ## A permanent stream now refuses a delete from Python
 
 Only if you set `RAKAIA_PERMANENT_STREAMS`, which is off by default and new in
@@ -251,8 +254,9 @@ imported. Import the submodule explicitly instead:
 import rakaia.jsonl_store  # not: import rakaia; rakaia.jsonl_store...
 ```
 
-`rakaia.replay` is deliberately exempt and stays bound eagerly, because it is both
-an export and a submodule, and resolving it lazily would return a function or a
+`rakaia.replay` is deliberately exempt and stays bound eagerly (until 0.8, which
+renamed the module to `rakaia.replaying`), because it is both an export and a
+submodule, and resolving it lazily would return a function or a
 module depending on import order.
 
 ## A third-party store behind the protocol server no longer has its positions refused

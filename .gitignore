@@ -64,3 +64,6 @@ conformance-server.log
 # Agent worktrees — transient checkouts, never part of the tree
 .claude/worktrees/
 .gstack/
+
+# marimo writes cell outputs here when a notebook runs
+__marimo__/

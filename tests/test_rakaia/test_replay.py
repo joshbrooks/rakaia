@@ -409,6 +409,25 @@ class TestDrift:
         assert result.drift_detected.count("h") == 1
         assert any("RAKAIA_DRIFT" in w for w in result.warnings)
 
+    def test_drift_warns_on_the_logger_operators_filter_on(
+        self, store: StreamStore, caplog: pytest.LogCaptureFixture
+    ):
+        """The logger kept its name when the module became `rakaia.replaying`."""
+        reg = HandlerRegistry()
+
+        def h(event):  # noqa: ARG001
+            return None
+
+        version = reg.register("h", "s", h, 0, None)
+        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        seed_stream("s", [{"id": 1}], store=store)
+
+        with caplog.at_level("WARNING"):
+            replay(store, "s", CaptureExecutor(), handler_registry=reg)
+
+        drift = [r for r in caplog.records if "RAKAIA_DRIFT" in r.getMessage()]
+        assert [r.name for r in drift] == ["rakaia.replay"]
+
     def test_handler_drift_is_reported_once_not_once_per_event(
         self, store: StreamStore
     ):

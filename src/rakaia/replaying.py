@@ -60,8 +60,8 @@ from .batching import _drain, _StageBuffer
 from .drift import DriftLedger
 
 # `HandlerDriftError` and `OnDriftPolicy` live in `rakaia.drift` with the check
-# they govern, and are re-exported here because `from rakaia.replaying import
-# OnDriftPolicy` is where callers (and `django_rakaia`) have always found them.
+# they govern, and are re-exported here because callers (and `django_rakaia`)
+# have always imported them from the replay engine module.
 from .drift import HandlerDriftError as HandlerDriftError
 from .drift import OnDriftPolicy as OnDriftPolicy
 from .effects import (
