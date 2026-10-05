@@ -41,7 +41,7 @@ Two return values change, and neither breaks code that ignored the old one:
 metadata. It still lands in `metadata`, but it now also becomes the event's
 correlation id, on every append and every `@stream_model` save inside the block. If
 you already used that key for something that is not a string of 1 to 128
-characters, the `provenance(...)` block itself now raises `ValueError` as it
+characters, with no NUL and valid UTF-8, the `provenance(...)` block itself now raises `ValueError` as it
 opens, before anything inside it runs. Rename your key. The value also stays in
 `metadata["correlation"]` as before, so an append that passes its own
 `correlation_id` inside such a block carries both, and they can differ.

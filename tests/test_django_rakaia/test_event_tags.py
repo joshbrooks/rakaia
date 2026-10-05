@@ -280,7 +280,14 @@ class TestTheEventListing:
         assert page["has_more"] is True
 
     @pytest.mark.parametrize(
-        "params", [{"limit": "x"}, {"after_id": "x"}, {"since": "yesterday"}]
+        "params",
+        [
+            {"limit": "x"},
+            {"after_id": "x"},
+            {"since": "yesterday"},
+            {"tag": "a\x00b"},
+            {"correlation_id": "a\x00b"},
+        ],
     )
     def test_a_bad_parameter_is_a_400(self, client, params):
         assert client.get(self.URL, params).status_code == 400
@@ -317,7 +324,9 @@ class TestTheAdmin:
 
     def test_the_changelist_filters_by_tag_and_stream_prefix(self, store, admin):
         _append(store, "ida/tf611/1", {"a": 1}, tags=("loss",), correlation_id="INC-6")
+        _append(store, "ida/tf611/2", {"a": 3})
         _append(store, "chat/room", {"a": 2})
+        _append(store, "no-slash", {"a": 4})
         url = "/admin/django_rakaia/streamevent/"
 
         assert admin.get(url).status_code == 200
@@ -329,8 +338,12 @@ class TestTheAdmin:
             for spec in changelist.filter_specs
             if isinstance(spec, StreamPrefixListFilter)
         )
-        offered = {value for value, _ in prefix_filter.lookup_choices}
-        assert {"ida/", "chat/"} <= offered
+        offered = [value for value, _ in prefix_filter.lookup_choices]
+        assert [p for p in offered if p in {"ida/", "chat/", "", "no-slash"}] == [
+            "chat/",
+            "ida/",
+        ]
+        assert len(offered) == len(set(offered))
         prefixed = admin.get(url, {"stream_prefix": "chat/"})
         assert prefixed.context["cl"].result_count == 1
         searched = admin.get(url, {"q": "INC-6"})
@@ -373,11 +386,14 @@ class TestAProtectedEventStillStopsADelete:
         assert not Area.objects.exists()
         assert not StreamEvent.objects.exists()
 
-    def test_a_nul_in_the_ambient_correlation_is_refused_before_the_save(self):
-        """Postgres refuses a NUL only once the event is being written, after
-        the row it audits has been saved; SQLite would store it. Refusing it on
-        entry is what keeps the two databases agreeing."""
-        with pytest.raises(ValueError), provenance(correlation="a\x00b"):
+    @pytest.mark.parametrize("correlation", ["a\x00b", "a\ud800b"])
+    def test_an_unstorable_ambient_correlation_is_refused_before_the_save(
+        self, correlation
+    ):
+        """A NUL or a lone surrogate fails only once the event is being written,
+        after the row it audits has been saved (a NUL only on Postgres).
+        Refusing it on entry keeps the row and its event together."""
+        with pytest.raises(ValueError), provenance(correlation=correlation):
             Area.objects.create(name="north")
 
         assert not Area.objects.exists()

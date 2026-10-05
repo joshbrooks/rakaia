@@ -23,7 +23,8 @@ Imported from `rakaia`:
 * Envelope fields on `AppendOptions(label, metadata, event_ts, tags,
   correlation_id)` and `StreamMessage(label, metadata, event_ts, tags,
   correlation_id)`. Tags read back sorted and de-duplicated; a tag is at most
-  100 characters and a correlation id at most 128, neither containing NUL,
+  100 characters and a correlation id at most 128, neither containing NUL or
+  invalid UTF-8,
   checked before anything is written (`ValueError`).
 * `AppendResult.event_id` — the `StreamEvent` id from `DjangoStreamStore`;
   `None` from the in-memory and JSONL stores.

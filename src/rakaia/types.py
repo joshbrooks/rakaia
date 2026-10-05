@@ -373,12 +373,26 @@ MAX_TAG_LENGTH = 100
 MAX_CORRELATION_ID_LENGTH = 128
 
 
+def _storable(text: str) -> bool:
+    """Whether every database can store `text` as written.
+
+    Postgres refuses a NUL and anything that does not encode as UTF-8 (a lone
+    surrogate), and refuses it only once the write is under way.
+    """
+    if "\x00" in text:
+        return False
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def clean_tags(tags: Iterable[str]) -> tuple[str, ...]:
     """`tags` sorted with duplicates removed, or `ValueError` for a bad one.
 
-    A tag is a non-empty string of at most `MAX_TAG_LENGTH` characters, with no
-    NUL character (Postgres cannot store one, and would refuse it only after the
-    event was on its way in). Sorting
+    A tag is a non-empty string of at most `MAX_TAG_LENGTH` characters that every
+    database can store (`_storable`: no NUL, valid UTF-8). Sorting
     is what lets every store hand back the same tuple for the same set, whatever
     order the producer listed them in.
     """
@@ -390,11 +404,11 @@ def clean_tags(tags: Iterable[str]) -> tuple[str, ...]:
             not isinstance(tag, str)
             or not tag
             or len(tag) > MAX_TAG_LENGTH
-            or "\x00" in tag
+            or not _storable(tag)
         ):
             raise ValueError(
                 f"a tag must be a non-empty string of at most {MAX_TAG_LENGTH} "
-                f"characters with no NUL, not {tag!r}"
+                f"characters, with no NUL and valid UTF-8, not {tag!r}"
             )
         cleaned.add(tag)
     return tuple(sorted(cleaned))
@@ -403,7 +417,7 @@ def clean_tags(tags: Iterable[str]) -> tuple[str, ...]:
 def check_correlation_id(value: Any) -> str | None:
     """`value` if it is a usable correlation id (or None), else `ValueError`.
 
-    The same shape as a tag (see `clean_tags`), NUL included, at most
+    The same shape as a tag (see `clean_tags`), at most
     `MAX_CORRELATION_ID_LENGTH` characters.
     """
     if value is None:
@@ -412,11 +426,12 @@ def check_correlation_id(value: Any) -> str | None:
         not isinstance(value, str)
         or not value
         or len(value) > MAX_CORRELATION_ID_LENGTH
-        or "\x00" in value
+        or not _storable(value)
     ):
         raise ValueError(
             "a correlation id must be a non-empty string of at most "
-            f"{MAX_CORRELATION_ID_LENGTH} characters with no NUL, not {value!r}"
+            f"{MAX_CORRELATION_ID_LENGTH} characters, with no NUL and valid "
+            f"UTF-8, not {value!r}"
         )
     return value
 

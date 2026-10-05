@@ -44,8 +44,8 @@ query for the newest entry in the stream, which is wrong as soon as two writers 
    because a caller can set a field after building the options. An ambient correlation is checked when its `provenance`
    block opens, so a model save inside it never runs, rather than saving its row
    and then failing to write the event. Both limits match the column widths: 100
-   and 128 characters. A NUL character is refused too, because Postgres cannot
-   store one and would fail only once the event was being written.
+   and 128 characters. A NUL character or a lone surrogate is refused too, because
+   Postgres cannot store either and would fail only once the event was being written.
 5. **The append says which event it wrote.** `AppendResult.event_id` is the
    `StreamEvent` primary key from `DjangoStreamStore`, and `None` from the stores
    that have no event table.

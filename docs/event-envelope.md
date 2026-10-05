@@ -189,7 +189,8 @@ with provenance(correlation="INC-42"):
 `message.tags` comes back sorted with duplicates removed, and `message.correlation_id`
 is `None` when there was none. An explicit `correlation_id` wins over the ambient one.
 A tag must be a non-empty string of at most 100 characters, and a correlation id at
-most 128; neither may contain a NUL character, which Postgres cannot store. A bad one
+most 128; neither may contain a NUL character or anything that is not valid UTF-8, which
+Postgres cannot store. A bad one
 raises `ValueError` before anything is written.
 
 On the Django store the tags are rows in their own table and the correlation id is

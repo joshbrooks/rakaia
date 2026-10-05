@@ -308,6 +308,10 @@ def events_api(request: Any) -> Any:
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
+    if any("\x00" in value for _, values in params.lists() for value in values):
+        # Postgres cannot compare against a NUL and would fail the query.
+        return JsonResponse({"error": "a parameter contains a NUL"}, status=400)
+
     events = StreamEvent.objects.all()
     if params.get("label"):
         events = events.filter(event_type=params["label"])
