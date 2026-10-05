@@ -124,6 +124,8 @@ demos:
     @just coverage-demo
     @echo ">> formkit emission — the real formkit-ninja seam"
     @just formkit-emission-demo
+    @echo ">> notebook — every cell of the teaching notebook runs"
+    @just notebook-demo
     @echo ""
     @echo "All demos passed."
 
@@ -383,6 +385,12 @@ multi-owner-demo:
 # what notices.
 formkit-emission-demo:
     uv run --with 'formkit-ninja>=6.1,<7' python examples/formkit_emission/demo.py
+
+# Run every cell of the teaching notebook headless; a cell that raises exits
+# non-zero. marimo and the chart libraries come in through `--with`, pinned to
+# the notebook's own header, so they never enter `.venv` or `uv.lock`.
+notebook-demo:
+    uv run --with marimo==0.25.1 --with altair==5.5.0 --with httpx==0.28.1 python notebooks/how_rakaia_works.py
 
 # ---------------------------------------------------------------------------
 # Durable Streams conformance suite

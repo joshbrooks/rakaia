@@ -220,6 +220,10 @@ to repeat.
 - [Why Rakaia exists](why-rakaia.md) — what this buys you beyond the toy case.
 - [Versioned handlers](versioned-handlers.md) — for when the rule *should*
   change over time rather than being fixed.
+- **The notebook** — `marimo edit --sandbox notebooks/how_rakaia_works.py`
+  walks through fourteen ideas, from streams to the protocol server, each with an
+  example you can change and a short quiz. It runs from your checkout with nothing
+  else set up.
 
 ---
 
