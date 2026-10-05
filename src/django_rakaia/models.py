@@ -455,13 +455,17 @@ class StreamEventTag(models.Model):
         id: int
         event_id: int
 
+    # No `db_index` on either field: the unique constraint below already leads
+    # with `event`, and on Postgres `db_index=True` on a CharField also builds a
+    # second, LIKE-only index nothing here queries. `tag` gets one plain index.
     event = models.ForeignKey(
-        StreamEvent, on_delete=models.CASCADE, related_name="tags"
+        StreamEvent, on_delete=models.CASCADE, related_name="tags", db_index=False
     )
-    tag = models.CharField(max_length=MAX_TAG_LENGTH, db_index=True)
+    tag = models.CharField(max_length=MAX_TAG_LENGTH)
 
     class Meta:
         db_table = "rakaia_streameventtag"
+        indexes = [models.Index(fields=["tag"], name="rakaia_streameventtag_tag")]
         constraints = [
             models.UniqueConstraint(
                 fields=["event", "tag"], name="rakaia_streameventtag_unique"

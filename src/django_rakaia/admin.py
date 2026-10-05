@@ -9,6 +9,8 @@ import json
 from typing import Any, cast
 
 from django.contrib import admin
+from django.db.models import Value
+from django.db.models.functions import StrIndex, Substr
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString, mark_safe
 
@@ -208,9 +210,18 @@ class StreamPrefixListFilter(admin.SimpleListFilter):
     parameter_name = "stream_prefix"
 
     def lookups(self, request, model_admin):  # noqa: ARG002
-        ids = Stream.objects.values_list("stream_id", flat=True)
-        prefixes = sorted({sid.split("/", 1)[0] + "/" for sid in ids if "/" in sid})
-        return [(prefix, prefix) for prefix in prefixes[:200]]
+        # Worked out by the database: a stream per submission means far too
+        # many ids to pull into Python on every page load. Django takes an
+        # expression as the length; django-stubs only admits `Value | int`.
+        up_to_slash = StrIndex("stream_id", Value("/"))
+        prefixes = (
+            Stream.objects.filter(stream_id__contains="/")
+            .annotate(prefix=Substr("stream_id", 1, up_to_slash))  # pyright: ignore[reportArgumentType]
+            .order_by("prefix")
+            .values_list("prefix", flat=True)
+            .distinct()[:200]
+        )
+        return [(prefix, prefix) for prefix in prefixes]
 
     def queryset(self, request, queryset):  # noqa: ARG002
         if self.value():

@@ -1,6 +1,6 @@
 # ADR 0008 — Tags and a correlation id belong to the envelope, and are stored as columns
 
-- **Status:** Accepted (implemented on branch `event-tags`, for 0.8.0)
+- **Status:** Accepted (0.8.0)
 - **Date:** 2026-10-02
 - **Deciders:** rakaia maintainers, with partisipa-import as the first consumer
 - **Related:** [ADR 0005](./0005-stream-positions-stay-a-counted-offset.md) (an event
@@ -44,7 +44,8 @@ query for the newest entry in the stream, which is wrong as soon as two writers 
    because a caller can set a field after building the options. An ambient correlation is checked when its `provenance`
    block opens, so a model save inside it never runs, rather than saving its row
    and then failing to write the event. Both limits match the column widths: 100
-   and 128 characters.
+   and 128 characters. A NUL character is refused too, because Postgres cannot
+   store one and would fail only once the event was being written.
 5. **The append says which event it wrote.** `AppendResult.event_id` is the
    `StreamEvent` primary key from `DjangoStreamStore`, and `None` from the stores
    that have no event table.

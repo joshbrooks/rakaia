@@ -1,5 +1,10 @@
 # Directory Update Log
 
+## 2026-10-06
+
+* **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — a tag
+  or correlation id containing a NUL character is refused, like an empty or over-long one.
+
 ## 2026-10-02
 
 * **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) —

@@ -29,7 +29,7 @@ class Migration(migrations.Migration):
                         verbose_name="ID",
                     ),
                 ),
-                ("tag", models.CharField(db_index=True, max_length=100)),
+                ("tag", models.CharField(max_length=100)),
             ],
             options={
                 "db_table": "rakaia_streameventtag",
@@ -50,10 +50,15 @@ class Migration(migrations.Migration):
             model_name="streameventtag",
             name="event",
             field=models.ForeignKey(
+                db_index=False,
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="tags",
                 to="django_rakaia.streamevent",
             ),
+        ),
+        migrations.AddIndex(
+            model_name="streameventtag",
+            index=models.Index(fields=["tag"], name="rakaia_streameventtag_tag"),
         ),
         migrations.AddConstraint(
             model_name="streameventtag",

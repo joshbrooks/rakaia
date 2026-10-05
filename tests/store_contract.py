@@ -417,8 +417,10 @@ class StoreContract:
             {"tags": ("",)},
             {"tags": ("x" * 101,)},
             {"tags": "a-string"},
+            {"tags": ("a\x00b",)},
             {"correlation_id": ""},
             {"correlation_id": "x" * 129},
+            {"correlation_id": "a\x00b"},
         ],
     )
     def test_a_bad_tag_or_correlation_id_is_refused_before_writing(

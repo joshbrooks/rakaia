@@ -17,6 +17,7 @@ from django.db.models import ProtectedError
 from django.test import Client
 
 from django_rakaia import append_event
+from django_rakaia.admin import StreamPrefixListFilter
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.models import Stream, StreamEntry, StreamEvent, StreamEventTag
 from rakaia import AppendOptions
@@ -90,6 +91,36 @@ class TestWhereTheyAreStored:
 
         assert not StreamEventTag.objects.exists()
         assert not StreamEvent.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+class TestOnAnotherDatabase:
+    """Tag rows go to the store's database, not `default`, on both write paths."""
+
+    def test_append_writes_its_tags_there(self):
+        store = DjangoStreamStore(using="overlay")
+        result = _append(store, "s", {"a": 1}, tags=("loss",))
+
+        assert list(
+            StreamEventTag.objects.using("overlay")
+            .filter(event_id=result.event_id)
+            .values_list("tag", flat=True)
+        ) == ["loss"]
+        assert not StreamEventTag.objects.using("default").exists()
+
+    def test_append_many_writes_its_tags_there(self):
+        store = DjangoStreamStore(using="overlay")
+        store.create("s")
+        (result,) = store.append_many(
+            "s", [(b'{"a": 1}', AppendOptions(tags=("audit",)))]
+        )
+
+        assert list(
+            StreamEventTag.objects.using("overlay")
+            .filter(event_id=result.event_id)
+            .values_list("tag", flat=True)
+        ) == ["audit"]
+        assert not StreamEventTag.objects.using("default").exists()
 
 
 @pytest.mark.django_db
@@ -197,6 +228,7 @@ class TestTheEventListing:
         assert self._ids(client, stream_prefix="ida/") == [self.loss, self.audit]
 
     def test_since_and_until(self, client):
+        assert self._ids(client, since="2999-01-01") == []
         assert self._ids(client, since="2000-01-01") == [
             self.loss,
             self.audit,
@@ -291,6 +323,14 @@ class TestTheAdmin:
         assert admin.get(url).status_code == 200
         tagged = admin.get(url, {"tag": "loss"})
         assert tagged.context["cl"].result_count == 1
+        changelist = admin.get(url).context["cl"]
+        (prefix_filter,) = (
+            spec
+            for spec in changelist.filter_specs
+            if isinstance(spec, StreamPrefixListFilter)
+        )
+        offered = {value for value, _ in prefix_filter.lookup_choices}
+        assert {"ida/", "chat/"} <= offered
         prefixed = admin.get(url, {"stream_prefix": "chat/"})
         assert prefixed.context["cl"].result_count == 1
         searched = admin.get(url, {"q": "INC-6"})
@@ -328,6 +368,16 @@ class TestAProtectedEventStillStopsADelete:
         """Refused when the block opens, so the save never runs, rather than
         saving the row and then failing to write its event in ``post_save``."""
         with pytest.raises(ValueError), provenance(correlation=5):
+            Area.objects.create(name="north")
+
+        assert not Area.objects.exists()
+        assert not StreamEvent.objects.exists()
+
+    def test_a_nul_in_the_ambient_correlation_is_refused_before_the_save(self):
+        """Postgres refuses a NUL only once the event is being written, after
+        the row it audits has been saved; SQLite would store it. Refusing it on
+        entry is what keeps the two databases agreeing."""
+        with pytest.raises(ValueError), provenance(correlation="a\x00b"):
             Area.objects.create(name="north")
 
         assert not Area.objects.exists()
