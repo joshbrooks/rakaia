@@ -17,6 +17,28 @@ ones you are crossing.
 
 # Unreleased
 
+## The replay engine module is now `rakaia.replaying`
+
+`from rakaia.replay import ...` raises `ModuleNotFoundError`. The function
+itself has not moved: `from rakaia import replay` worked before this change and
+still does, and so does every other name the package exports.
+
+The module was named after the function it holds, so the package attribute
+`rakaia.replay` was either the function or the module, depending on which was
+bound last. The package made the function win, which left the module
+unreachable as an attribute. A `monkeypatch.setattr("rakaia.replay.<name>", ...)`
+then patched nothing and raised nothing.
+
+**What to do.** Change `from rakaia.replay import X` to `from rakaia import X`
+for any `X` in `rakaia.__all__`, which includes `replay`, `merge_replay`,
+`ReplayResult` and `TouchedSubject`. For a name the package does not export,
+such as a private helper a test leans on, import it from `rakaia.replaying`.
+Patch targets of the form `"rakaia.replay.<name>"` become
+`"rakaia.replaying.<name>"`, and now work.
+
+The drift warnings (`RAKAIA_DRIFT`) still go to the `rakaia.replay` logger, so
+a log filter or alert on that name keeps working.
+
 ## A permanent stream now refuses a delete from Python
 
 Only if you set `RAKAIA_PERMANENT_STREAMS`, which is off by default and new in
@@ -232,8 +254,9 @@ imported. Import the submodule explicitly instead:
 import rakaia.jsonl_store  # not: import rakaia; rakaia.jsonl_store...
 ```
 
-`rakaia.replay` is deliberately exempt and stays bound eagerly, because it is both
-an export and a submodule, and resolving it lazily would return a function or a
+`rakaia.replay` is deliberately exempt and stays bound eagerly (until 0.8, which
+renamed the module to `rakaia.replaying`), because it is both an export and a
+submodule, and resolving it lazily would return a function or a
 module depending on import order.
 
 ## A third-party store behind the protocol server no longer has its positions refused

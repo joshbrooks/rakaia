@@ -149,7 +149,7 @@ if TYPE_CHECKING:
         reset_default_registries,
         upcast,
     )
-    from .replay import (
+    from .replaying import (
         ENVELOPE_TS,
         MergeKeyError,
         MissingReaderError,
@@ -157,6 +157,7 @@ if TYPE_CHECKING:
         TouchedSubject,
         UndecodableEventError,
         merge_replay,
+        replay,
     )
     from .response_cursor import (
         CursorOptions,
@@ -195,22 +196,12 @@ if TYPE_CHECKING:
         StreamNotFound,
     )
 
-# `replay` is bound eagerly, and is the one name that has to be.
-#
-# It is the only export whose name is also a submodule name (asserted by
-# `test_public_api.py`), and that collision cannot be resolved lazily. Importing
-# `rakaia.replay` makes the import system set `replay` on this package to the
-# *module*; once that attribute exists, `__getattr__` is never consulted, so
-# `from rakaia import replay` would hand back a module or a function depending
-# on whether anything else in the process had imported the submodule first.
-#
-# Binding here reproduces exactly what the eager version did — the submodule
-# loads, then this rebinds the name to the function, and nothing rebinds it
-# afterwards. The function wins deterministically, which is the documented
-# sharp edge of #161 item 1 and the status quo this change must not alter.
-# The cost is that `rakaia.replay` (framework tier) always loads; measured at
-# well under a millisecond, and it pulls no protocol-server module.
-from .replay import replay
+# No export shares its name with a submodule. Importing a submodule sets it as
+# an attribute of this package, and once that attribute exists `__getattr__` is
+# never consulted, so a clash would make the name a function or a module
+# depending on what else had been imported. The replay engine lives in
+# `rakaia.replaying` rather than `rakaia.replay` for exactly this reason;
+# `test_public_api.py` keeps it that way.
 
 #: name -> the module that defines it.
 _EXPORTS: dict[str, str] = {
@@ -327,14 +318,14 @@ _EXPORTS: dict[str, str] = {
     "HANDLERS_META_STREAM": "rakaia.registry",
     "UPCASTERS_META_STREAM": "rakaia.registry",
     # Versioned handlers — replay
-    "replay": "rakaia.replay",
-    "merge_replay": "rakaia.replay",
-    "ENVELOPE_TS": "rakaia.replay",
-    "ReplayResult": "rakaia.replay",
-    "MissingReaderError": "rakaia.replay",
-    "UndecodableEventError": "rakaia.replay",
-    "MergeKeyError": "rakaia.replay",
-    "TouchedSubject": "rakaia.replay",
+    "replay": "rakaia.replaying",
+    "merge_replay": "rakaia.replaying",
+    "ENVELOPE_TS": "rakaia.replaying",
+    "ReplayResult": "rakaia.replaying",
+    "MissingReaderError": "rakaia.replaying",
+    "UndecodableEventError": "rakaia.replaying",
+    "MergeKeyError": "rakaia.replaying",
+    "TouchedSubject": "rakaia.replaying",
     "DriftLedger": "rakaia.drift",
     # Subscriber cursors
     "poll": "rakaia.subscription",
@@ -364,7 +355,140 @@ _EXPORTS: dict[str, str] = {
     # "__version__" is computed, not imported — see __getattr__.
 }
 
-__all__ = [*sorted(_EXPORTS), "app", "__version__"]
+# Written out rather than computed from `_EXPORTS`: a type checker reads this
+# file without running it, and only a literal list tells it what is public.
+# `test_public_api.py` fails if the two disagree.
+__all__ = [
+    "AnyEffect",
+    "AppendOptions",
+    "AppendResult",
+    "ChangeLabel",
+    "CloseResult",
+    "ClosedBy",
+    "CollectingExecutor",
+    "Consumed",
+    "Consumer",
+    "ConsumerCursorStore",
+    "ContentTypeMismatch",
+    "CursorOptions",
+    "CursorStore",
+    "Delete",
+    "DeleteNotAllowed",
+    "DriftLedger",
+    "DuplicateProducesError",
+    "ENVELOPE_TS",
+    "EXCEPTION_TYPE_KEY",
+    "Effect",
+    "EffectCollisionError",
+    "EmptyJsonArray",
+    "EnvelopeMetadata",
+    "Exclude",
+    "Executor",
+    "ExpiryNotAllowed",
+    "ExternalEffect",
+    "ForeignOffset",
+    "HANDLERS_META_STREAM",
+    "HandlerDriftError",
+    "HandlerGapError",
+    "HandlerOverlapError",
+    "HandlerRegistry",
+    "HandlerVersion",
+    "InMemoryConsumerCursorStore",
+    "InMemoryOutcomeStore",
+    "InMemoryProjections",
+    "InvalidJson",
+    "InvalidOffset",
+    "JsonlOutcomeStore",
+    "JsonlStreamStore",
+    "MergeKeyError",
+    "Migration",
+    "MissingReaderError",
+    "OnErrorPolicy",
+    "Outcome",
+    "OutcomeStatus",
+    "OutcomeStore",
+    "Poll",
+    "PollStatus",
+    "ProducerAccepted",
+    "ProducerDuplicate",
+    "ProducerInvalidEpochSeq",
+    "ProducerSequenceGap",
+    "ProducerStaleEpoch",
+    "ProducerState",
+    "ProducerStreamClosed",
+    "ProducerValidationResult",
+    "ProjectionReader",
+    "REASON_CODES",
+    "REDUCERS_META_STREAM",
+    "RakaiaError",
+    "ReadableStore",
+    "RecordingExecutor",
+    "ReducerVersion",
+    "Ref",
+    "RefResolver",
+    "ReplayResult",
+    "Retire",
+    "RowEffect",
+    "SequenceConflict",
+    "ServerOptions",
+    "SpareKeys",
+    "Stage",
+    "Stream",
+    "StreamConfigConflict",
+    "StreamError",
+    "StreamMessage",
+    "StreamNotFound",
+    "StreamServerStore",
+    "StreamStore",
+    "TouchedSubject",
+    "Transition",
+    "UNHANDLED",
+    "UPCASTERS_META_STREAM",
+    "UndecodableEventError",
+    "UnresolvedRefError",
+    "UpcasterChainError",
+    "UpcasterConflictError",
+    "UpcasterRegistry",
+    "UpcasterVersion",
+    "Update",
+    "Upsert",
+    "WritableStore",
+    "append_if_changed",
+    "calculate_cursor",
+    "check_disjoint_defaults",
+    "consume",
+    "create_app",
+    "decode_outcome",
+    "encode_outcome",
+    "envelope_actor",
+    "generate_response_cursor",
+    "get_default_registry",
+    "get_default_upcaster_registry",
+    "get_provenance",
+    "history_effects",
+    "label_marker",
+    "merge_replay",
+    "migrate_all",
+    "migrate_stream",
+    "poll",
+    "project_latest",
+    "provenance",
+    "reconcile_aggregate",
+    "reconcile_by_key",
+    "reconcile_children",
+    "reconcile_tree",
+    "register_handler",
+    "register_reducer",
+    "register_simple",
+    "register_upcaster",
+    "replay",
+    "reset_default_registries",
+    "seed_stream",
+    "snapshots_equal",
+    "upcast",
+    "app",
+    "__version__",
+]
 
 
 def _installed_version() -> str:

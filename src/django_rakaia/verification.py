@@ -13,7 +13,7 @@ the same diff plus the same normalization (a UUID column read back as a
 this module re-exports for the import path it used to own.
 
     from rakaia.executors import CollectingExecutor
-    from rakaia.replay import replay
+    from rakaia.replaying import replay
     from django_rakaia.verification import diff_effects_against_rows
 
     ex = CollectingExecutor()

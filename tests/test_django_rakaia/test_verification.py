@@ -21,7 +21,7 @@ from django_rakaia.verification import (
 from rakaia.effects import Delete, Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 
 from .models import FinanceLine, Measure

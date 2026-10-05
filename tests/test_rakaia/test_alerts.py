@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from rakaia.effects import AnyEffect, Effect, ExternalEffect, Upsert
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.store import StreamStore
 

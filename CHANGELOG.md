@@ -11,6 +11,13 @@ runnable demo for each.
 
 ### Changed
 
+- **The replay engine module is renamed from `rakaia.replay` to
+  `rakaia.replaying`.** `from rakaia import replay` is unchanged. Code that
+  imported from the module path now fails at import, and `UPGRADING.md` says
+  what to change. The old name matched the function inside it, so `rakaia.replay`
+  could be either one depending on import order. Patching anything inside the
+  module through its dotted name silently did nothing. Drift warnings still go
+  to the `rakaia.replay` logger.
 - **The public API page now promises what the releases actually did.** It said a
   stable name would not change meaning "without a major version bump"; four of
   the six minors since it was written changed one, each with an upgrade note. The
@@ -59,6 +66,17 @@ runnable demo for each.
   set to `None` are different events, and both survive the store unchanged. It
   also pins the trap, which is that `.get()` answers `None` to both, so a
   consumer has to read with `in`. `just formkit-emission-demo`.
+
+### Fixed
+
+- **Type checkers can see the public names again.** Both packages built their
+  list of public names at runtime, which works for Python but is invisible to a
+  type checker, since it reads the file without running it. Under `mypy --strict`,
+  or pyright before 1.1.410, every `from rakaia import ...` was reported as a
+  private import, and every `django_rakaia` name came through as `Any`, so code
+  using them was not really checked. The list is now written out, `django_rakaia`
+  declares the types of its names, and the build fails if either goes back.
+  Nothing changes at runtime.
 
 ## [0.7.0] - 2026-09-22
 

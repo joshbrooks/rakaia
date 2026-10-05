@@ -264,7 +264,7 @@ class TestTheLogCanComeFromTheDisposableAliasToo:
         from django_rakaia.django_store import DjangoStreamStore
         from django_rakaia.effect_executor import DjangoExecutor
         from rakaia.registry import HandlerRegistry
-        from rakaia.replay import replay
+        from rakaia.replaying import replay
 
         self._seed("overlay", "fin")
 

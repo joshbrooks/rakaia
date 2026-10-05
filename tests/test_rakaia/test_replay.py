@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 
 import pytest
 
@@ -24,7 +23,7 @@ from rakaia.registry import (
     HandlerRegistry,
     UpcasterRegistry,
 )
-from rakaia.replay import (
+from rakaia.replaying import (
     ENVELOPE_TS,
     TouchedSubject,
     _synth_transitions,
@@ -409,6 +408,25 @@ class TestDrift:
         # One entry per drifted handler name (deduplicated)
         assert result.drift_detected.count("h") == 1
         assert any("RAKAIA_DRIFT" in w for w in result.warnings)
+
+    def test_drift_warns_on_the_logger_operators_filter_on(
+        self, store: StreamStore, caplog: pytest.LogCaptureFixture
+    ):
+        """The logger kept its name when the module became `rakaia.replaying`."""
+        reg = HandlerRegistry()
+
+        def h(event):  # noqa: ARG001
+            return None
+
+        version = reg.register("h", "s", h, 0, None)
+        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        seed_stream("s", [{"id": 1}], store=store)
+
+        with caplog.at_level("WARNING"):
+            replay(store, "s", CaptureExecutor(), handler_registry=reg)
+
+        drift = [r for r in caplog.records if "RAKAIA_DRIFT" in r.getMessage()]
+        assert [r.name for r in drift] == ["rakaia.replay"]
 
     def test_handler_drift_is_reported_once_not_once_per_event(
         self, store: StreamStore
@@ -1434,15 +1452,9 @@ class TestSynthTransitions:
         shared definition is what distinguishes them: if the orchestrator went
         back to assembling its own, the substitution would have no effect.
 
-        The patch goes through `sys.modules`, not the dotted string form.
-        ``monkeypatch.setattr("rakaia.replay.transition_payload", …)`` would
-        resolve `rakaia.replay` to the *function* — see this module's docstring
-        and item 1 of #161 — and silently patch nothing, which is the exact trap
-        that once produced a wrong measurement.
         """
-        replay_module = sys.modules["rakaia.replay"]
         monkeypatch.setattr(
-            replay_module, "transition_payload", lambda *_: {"sentinel": 1}
+            "rakaia.replaying.transition_payload", lambda *_: {"sentinel": 1}
         )
 
         rows = [{"stream_key": "s", "alert_type": "a"}]

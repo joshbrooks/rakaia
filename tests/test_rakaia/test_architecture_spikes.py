@@ -16,12 +16,10 @@ Epic: #152.
 
 from __future__ import annotations
 
-import pytest
-
 from rakaia.effects import Upsert
 from rakaia.executors import CollectingExecutor
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.store import StreamStore
 
 
@@ -132,17 +130,13 @@ def test_a_handler_source_is_hashed_once_per_replay(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING 9 (#161): `from .replay import replay` in rakaia/__init__.py "
-        "rebinds the `replay` attribute on the package from the submodule to "
-        "the function, so `import rakaia.replay as rp; rp.anything` fails. "
-        "Low value, but it silently misdirects monkeypatches."
-    ),
-)
 def test_importing_the_replay_submodule_yields_the_module() -> None:
-    """`import x.y as z` should bind the submodule, as it does for every other one."""
-    import rakaia.replay as replay_module
+    """`import x.y as z` binds the submodule, as it does for every other one.
+
+    FINDING 9 (#161): this failed while the engine was `rakaia.replay`, because
+    the package rebound that attribute to the function. Fixed by renaming the
+    module to `rakaia.replaying`.
+    """
+    import rakaia.replaying as replay_module
 
     assert hasattr(replay_module, "build_pipeline")

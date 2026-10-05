@@ -20,7 +20,7 @@ from django_rakaia.store import get_store
 from rakaia.effects import Ref, Upsert
 from rakaia.offsets import format_of
 from rakaia.registry import HandlerRegistry, UpcasterRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.subscription import poll
 

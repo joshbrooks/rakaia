@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 
 from rakaia.effects import Executor
 from rakaia.executors import RecordingExecutor
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.types import StreamMessage
 
 from .hermeticity import (
@@ -56,7 +56,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from rakaia.protocols import ReadableStore
     from rakaia.registry import HandlerRegistry, UpcasterRegistry
-    from rakaia.replay import OnDriftPolicy
+    from rakaia.replaying import OnDriftPolicy
 
 __all__ = [
     "GuardNotArmed",
@@ -89,7 +89,7 @@ class _Drained:
     """The stream's messages, held off the database being guarded.
 
     A one-method :class:`~rakaia.protocols.ReadableStore`, which is all
-    :func:`~rakaia.replay.replay` asks of a store. Holding the messages verbatim
+    :func:`~rakaia.replay` asks of a store. Holding the messages verbatim
     — rather than re-appending them into an in-memory
     :class:`~rakaia.store.StreamStore` — keeps offsets and the whole envelope
     (label, metadata, ``event_ts``) exactly as the durable log recorded them,
@@ -180,7 +180,7 @@ def rebuild_and_verify(
             hermetic rebuild must not read the database it is reconstructing.
         live_using: The alias holding production, guarded and diffed against.
         registry, upcaster_registry, event_match, on_drift: Forwarded to
-            :func:`~rakaia.replay.replay`.
+            :func:`~rakaia.replay`.
         normalizers: Forwarded to
             :func:`~django_rakaia.verification.diff_effects_against_rows`.
 

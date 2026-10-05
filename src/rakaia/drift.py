@@ -35,8 +35,9 @@ from typing import Any, Literal
 from .errors import RakaiaError
 from .source_hash import hash_function_source
 
-# Deliberately the logger `replay()` has always warned through: `RAKAIA_DRIFT`
-# lines keep arriving on the name operators already filter on.
+# Deliberately the logger `replay()` has always warned through, and not renamed
+# with the module in 0.8: `RAKAIA_DRIFT` lines keep arriving on the name
+# operators already filter on.
 _log = logging.getLogger("rakaia.replay")
 
 OnDriftPolicy = Literal["warn", "raise"]

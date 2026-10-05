@@ -18,7 +18,7 @@ from django_rakaia.models import (
 from rakaia import CollectingExecutor
 from rakaia.effects import Upsert
 from rakaia.registry import HandlerRegistry
-from rakaia.replay import replay
+from rakaia.replaying import replay
 from rakaia.seed import seed_stream
 from rakaia.types import AppendOptions, SequenceConflict, StreamConfigConflict
 

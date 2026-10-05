@@ -105,7 +105,7 @@ Implementation notes:
   so the `@register_*` decorators populate the process-wide registries with no
   manual wiring.
 * **`management/commands/demo_orders.py`** — seeds the in-memory stream and calls
-  `rakaia.replay.replay(...)` with the `DjangoExecutor`, which applies the
+  `rakaia.replay(...)` with the `DjangoExecutor`, which applies the
   produced effects (an `Upsert` for the order rows, an `Update` for the
   loyalty bonus).
 * **`models.py` / `views.py`** — `OrderSummary` is the materialized projection;
