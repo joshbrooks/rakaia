@@ -41,8 +41,8 @@ stores, as it already did not on the database one.
 This only reaches you if you wrote your own `StreamServerStore` to put the
 protocol server on a backend rakaia does not ship. If you only call
 `create_app` with `StreamStore`, `JsonlStreamStore` or `DjangoStreamStore`, or
-call the stores' methods directly, there is nothing to do here except one
-rename below.
+call the stores' methods directly, there is nothing to do here except the
+direct-caller changes below.
 
 The server now does the waiting and the response framing itself, so a store
 answers plain synchronous questions and keeps
@@ -80,7 +80,15 @@ one async method, `run_sync`, which says how to call it from the event loop.
 Both are synchronous, so from async code on a database store go through
 `await store.run_sync(...)`, as before.
 
-## Four quiet changes to what an append records
+**`wait_for_messages` and `format_response` are gone from the shipped stores
+too**, and calling either now raises `AttributeError`. Neither has a public
+replacement: waiting for new messages and framing a response are the protocol
+server's job now, so serve the stream and read it over HTTP rather than waiting
+on the store from Python. Do not stand in `peek` for the old wait: it exists so
+the server can watch a stream without keeping it alive, and a reader that only
+peeks lets a stream with a TTL expire under it.
+
+## Five quiet changes to what an append records
 
 Nothing here raises, which is why it is written down.
 
@@ -105,8 +113,17 @@ Nothing here raises, which is why it is written down.
   raised `ValueError` there, while the database store and a single append on the file
   store answered "closed". Every store now checks them
   only for an append that will be written, as it already did for the body.
-- **A stream's initial `PUT` body no longer records the ambient `provenance()` on
-  `DjangoStreamStore`.** The other two stores never did.
+- **A stream's initial `PUT` body no longer records the ambient `provenance()` or
+  correlation id on `DjangoStreamStore`.** A create inside
+  `with provenance(correlation=...)` used to fill that first event's
+  `correlation_id` and metadata; both are now empty, as the other two stores
+  always left them. The same body is now stamped like any append, where it used
+  to store `NULL` in `event_ts`.
+- **Unstamped items in one batch share one `event_ts` on the in-memory and file
+  stores.** Each used to take its own stamp a moment after the last; a batch is
+  now stamped once, the same on every store. Order within a stream is still its
+  offsets, so only code that treats `event_ts` as unique inside a stream
+  notices.
 
 ---
 

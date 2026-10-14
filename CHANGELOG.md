@@ -40,9 +40,11 @@ runnable demo for each.
   `DjangoStreamStore` now stamps an append that sets no `event_ts` instead of
   storing `null`; a bad tag or correlation id is only refused on an append that
   will be written, so a closed stream answers "closed" on every store; and a
-  stream's initial `PUT` body no longer records the ambient `provenance()` on the
-  database store. The database store also writes every event through one batch
-  writer, so a single append and `@stream_model` publish their entries the same
+  stream's initial `PUT` body no longer records the ambient `provenance()` or
+  correlation id on the database store. One change is new on every store:
+  unstamped items in one batch now share one stamp, where the in-memory and file
+  stores gave each its own. The database store also writes every event through
+  one batch writer, so a single append and `@stream_model` publish their entries the same
   way a batch does — and, like a batch, no longer fire `post_save` on the event
   and entry rows. See `UPGRADING.md`.
 
@@ -55,8 +57,10 @@ runnable demo for each.
   without extending a stream's TTL. `check_protocol_delete` is now part of the
   protocol rather than looked up by name. `run_sync` is the only async method
   left. Anyone who implements their own store has changes to make; see
-  `UPGRADING.md`. Nothing a client relies on changes over HTTP, and code that
-  uses the stores rakaia ships needs no change.
+  `UPGRADING.md`. Nothing a client relies on changes over HTTP. Code that calls
+  the stores rakaia ships directly needs no change unless it called one of those
+  four methods, which are gone from them too: the two fenced writes have a
+  direct replacement, and the wait and the response formatting have none.
 
 ## [0.8.1] - 2026-10-14
 

@@ -11,6 +11,12 @@
   store stamps an append that sets no `event_ts` (the durable store used to leave it null), and
   tags and correlation ids are checked only on an append that will be written.
 
+* **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — a
+  batch's unstamped items share one stamp, and a stream's initial `PUT` body records no ambient
+  provenance or correlation id on any store. [Django integration](concepts/django-integration.md)
+  — every store's `delete()` is refused on a permanent store without `force=True`, not only the
+  durable one's.
+
 ## 2026-10-06
 
 * **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — a tag
