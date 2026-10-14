@@ -17,6 +17,7 @@ from rakaia.effects import (
     Ref,
     Retire,
     Transition,
+    UnresolvedRefError,
     Update,
     Upsert,
 )
@@ -76,6 +77,20 @@ def test_consecutive_updates_are_handed_over_as_one_run():
     rec.apply([Update("a.M", {"k": i}, {"n": 1}) for i in range(3)])
     assert rec.kinds() == ["updates"]
     assert len(rec.calls[0][1]) == 3
+
+
+def test_a_run_with_an_unresolvable_ref_is_never_handed_over():
+    """The whole run is resolved before the executor sees any of it, so an
+    executor that applies a run one update at a time cannot half-apply it."""
+    rec = _Recorder()
+    with pytest.raises(UnresolvedRefError):
+        rec.apply(
+            [
+                Update("a.M", {"k": 1}, {"n": 1}),
+                Update("a.M", {"k": 2}, {"n": Ref("nope")}),
+            ]
+        )
+    assert rec.calls == []
 
 
 def test_a_run_of_updates_ends_at_an_upsert():

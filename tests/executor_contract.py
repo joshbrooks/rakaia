@@ -189,6 +189,29 @@ class ExecutorContract:
         for key in ("a", "b"):
             assert seam.reader.get(seam.model, field_key=key).severity == "warning"
 
+    def test_a_run_with_an_unresolvable_ref_applies_none_of_it(self, seam):
+        """An update ahead of the bad `Ref` in the same run is not applied
+        either. The in-memory executor used to write it before raising."""
+        seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
+
+        with pytest.raises(UnresolvedRefError):
+            seam.executor.apply(
+                [
+                    Update(
+                        model_label=seam.model,
+                        lookup={"field_key": "a"},
+                        defaults={"severity": "warning"},
+                    ),
+                    Update(
+                        model_label=seam.model,
+                        lookup={"field_key": "b"},
+                        defaults={"dismissed_version": Ref("nope")},
+                    ),
+                ]
+            )
+
+        assert seam.reader.get(seam.model, field_key="a").severity == "error"
+
     def test_update_with_empty_defaults_is_a_noop(self, seam):
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
