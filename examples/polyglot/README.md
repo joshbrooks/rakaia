@@ -101,8 +101,8 @@ rather the point of running the stress command with a tab open.
   mounted on `/protocol/` over the same folder. This is what serves SSE.
   Django's own SSE endpoint replays from `StreamEntry` rows and waits on
   the channel layer, and neither exists here; the protocol server reads
-  through the store interface and blocks in `wait_for_messages`, which
-  the file-backed store answers by watching the directory.
+  through the store interface, and its long-poll re-reads the folder
+  until something new is there.
 * `polyglot/templates/polyglot/landing.html` — split layout, an
   `EventSource` on `/protocol/translations/{lang}?live=sse&offset=0`,
   DOM updates by `data-msgid`. The frames are the protocol server's

@@ -9,6 +9,20 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **The protocol server now does its own waiting and response framing, and a
+  store only answers plain questions.** `StreamServerStore` loses
+  `append_with_producer`, `close_stream_with_producer`, `wait_for_messages` and
+  `format_response`. A fenced append is `append` with the producer options, a
+  fenced close is `close_stream` with `producer_id`, `producer_epoch` and
+  `producer_seq`, and the server long-polls through the new `peek`, which reads
+  without extending a stream's TTL. `check_protocol_delete` is now part of the
+  protocol rather than looked up by name. `run_sync` is the only async method
+  left. Anyone who implements their own store has changes to make; see
+  `UPGRADING.md`. Nothing changes over HTTP, or for code that uses the stores
+  rakaia ships.
+
 ## [0.8.1] - 2026-10-14
 
 ### Fixed

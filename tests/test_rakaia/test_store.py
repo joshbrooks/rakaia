@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+from rakaia import protocol_server
+from rakaia.protocol_server import _wait_for_messages
 from rakaia.store import StreamStore
 from rakaia.types import (
     INITIAL_OFFSET,
@@ -443,24 +445,6 @@ class TestRead:
         with pytest.raises(KeyError):
             store.read("missing")
 
-    def test_format_response_binary(self, store: StreamStore):
-        store.create("foo", content_type="application/octet-stream")
-        store.append("foo", b"hello")
-        store.append("foo", b"world")
-        messages, _ = store.read("foo")
-        assert store.format_response("foo", messages) == b"helloworld"
-
-    def test_format_response_json(self, store: StreamStore):
-        store.create("foo", content_type="application/json")
-        store.append("foo", b'{"a":1}')
-        store.append("foo", b'{"b":2}')
-        messages, _ = store.read("foo")
-        result = store.format_response("foo", messages)
-        assert result.startswith(b"[")
-        assert result.endswith(b"]")
-        assert b'"a"' in result
-        assert b'"b"' in result
-
 
 # =============================================================================
 # Long-poll
@@ -468,11 +452,14 @@ class TestRead:
 
 
 class TestLongPoll:
+    """The server's long-poll loop against the in-memory store, which is the
+    one store that signals new messages rather than being polled."""
+
     async def test_returns_immediately_if_messages(self, store: StreamStore):
         store.create("foo", content_type="application/octet-stream")
         store.append("foo", b"data")
-        messages, timed_out, closed = await store.wait_for_messages(
-            "foo", offset=INITIAL_OFFSET, timeout_seconds=5.0
+        messages, timed_out, closed = await _wait_for_messages(
+            store, "foo", offset=INITIAL_OFFSET, timeout_seconds=5.0
         )
         assert len(messages) == 1
         assert timed_out is False
@@ -482,13 +469,18 @@ class TestLongPoll:
         store.create("foo", content_type="application/octet-stream")
         stream = store.get("foo")
         assert stream is not None
-        messages, timed_out, _ = await store.wait_for_messages(
-            "foo", offset=stream.current_offset, timeout_seconds=0.1
+        messages, timed_out, _ = await _wait_for_messages(
+            store, "foo", offset=stream.current_offset, timeout_seconds=0.1
         )
         assert messages == []
         assert timed_out is True
 
-    async def test_returns_on_notification(self, store: StreamStore):
+    async def test_returns_on_notification(
+        self, store: StreamStore, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A poll interval longer than the wait: only the store's event can
+        # deliver the append inside the timeout.
+        monkeypatch.setattr(protocol_server, "_POLL_INTERVAL_SECONDS", 60.0)
         store.create("foo", content_type="application/octet-stream")
         stream = store.get("foo")
         assert stream is not None
@@ -499,8 +491,8 @@ class TestLongPoll:
             store.append("foo", b"new")
 
         push_task = asyncio.create_task(push())
-        messages, timed_out, _ = await store.wait_for_messages(
-            "foo", offset=start_offset, timeout_seconds=2.0
+        messages, timed_out, _ = await _wait_for_messages(
+            store, "foo", offset=start_offset, timeout_seconds=2.0
         )
         await push_task
         assert len(messages) == 1
@@ -511,15 +503,15 @@ class TestLongPoll:
         store.close_stream("foo")
         stream = store.get("foo")
         assert stream is not None
-        _messages, _timed_out, closed = await store.wait_for_messages(
-            "foo", offset=stream.current_offset, timeout_seconds=0.1
+        _messages, _timed_out, closed = await _wait_for_messages(
+            store, "foo", offset=stream.current_offset, timeout_seconds=0.1
         )
         assert closed is True
 
     async def test_missing_stream_raises(self, store: StreamStore):
         with pytest.raises(KeyError):
-            await store.wait_for_messages(
-                "missing", offset=INITIAL_OFFSET, timeout_seconds=0.1
+            await _wait_for_messages(
+                store, "missing", offset=INITIAL_OFFSET, timeout_seconds=0.1
             )
 
 
@@ -545,59 +537,29 @@ class TestClose:
     def test_close_missing_returns_none(self, store: StreamStore):
         assert store.close_stream("missing") is None
 
-    async def test_close_with_producer_accepts_new(self, store: StreamStore):
+    def test_close_with_producer_accepts_new(self, store: StreamStore):
         store.create("foo", content_type="application/octet-stream")
-        result = await store.close_stream_with_producer("foo", "p1", 1, 0)
+        result = store.close_stream(
+            "foo", producer_id="p1", producer_epoch=1, producer_seq=0
+        )
         assert result is not None
         assert isinstance(result.producer_result, ProducerAccepted)
 
-    async def test_close_with_producer_duplicate_returns_duplicate(
-        self, store: StreamStore
-    ):
+    def test_close_with_producer_duplicate_returns_duplicate(self, store: StreamStore):
         store.create("foo", content_type="application/octet-stream")
-        await store.close_stream_with_producer("foo", "p1", 1, 0)
-        result = await store.close_stream_with_producer("foo", "p1", 1, 0)
+        store.close_stream("foo", producer_id="p1", producer_epoch=1, producer_seq=0)
+        result = store.close_stream(
+            "foo", producer_id="p1", producer_epoch=1, producer_seq=0
+        )
         assert result is not None
         assert result.already_closed is True
         assert isinstance(result.producer_result, ProducerDuplicate)
 
-    async def test_close_with_producer_missing(self, store: StreamStore):
-        result = await store.close_stream_with_producer("missing", "p1", 1, 0)
-        assert result is None
-
-
-# =============================================================================
-# Concurrent producer
-# =============================================================================
-
-
-class TestConcurrentProducer:
-    async def test_append_with_producer_serializes(self, store: StreamStore):
-        store.create("foo", content_type="application/octet-stream")
-
-        # Two parallel appends with same producer
-        results = await asyncio.gather(
-            store.append_with_producer(
-                "foo",
-                b"a",
-                AppendOptions(producer_id="p1", producer_epoch=1, producer_seq=0),
-            ),
-            store.append_with_producer(
-                "foo",
-                b"b",
-                AppendOptions(producer_id="p1", producer_epoch=1, producer_seq=1),
-            ),
+    def test_close_with_producer_missing(self, store: StreamStore):
+        result = store.close_stream(
+            "missing", producer_id="p1", producer_epoch=1, producer_seq=0
         )
-        # Both should succeed (one accepted at seq 0, then seq 1)
-        accepted = [
-            r for r in results if isinstance(r.producer_result, ProducerAccepted)
-        ]
-        assert len(accepted) == 2
-
-    async def test_append_with_producer_no_id_falls_through(self, store: StreamStore):
-        store.create("foo", content_type="application/octet-stream")
-        result = await store.append_with_producer("foo", b"data", AppendOptions())
-        assert result.message is not None
+        assert result is None
 
 
 class TestGloballyMonotonicOffsets:

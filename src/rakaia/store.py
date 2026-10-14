@@ -17,7 +17,6 @@ from typing import Any
 from .append_decision import StreamFacts, decide_append, decide_append_batch
 from .context import merge_provenance, tags_and_correlation
 from .json_mode import (
-    format_json_response,
     is_json_content_type,
     normalize_content_type,
     process_json_append,
@@ -50,7 +49,9 @@ class StreamStore:
     """
     In-memory store for durable streams.
 
-    Thread-safe via asyncio locks for producer serialization.
+    Not thread-safe, and does not need to be: its `run_sync` calls straight
+    through, so the protocol server runs every call on the event loop, and a
+    call has no `await` inside it for another to interleave at.
     """
 
     def __init__(self) -> None:
@@ -61,7 +62,6 @@ class StreamStore:
         # permanently empty there, which made it a lie in the shared type.
         self._messages: dict[str, list[StreamMessage]] = {}
         self._notify_events: dict[str, asyncio.Event] = {}
-        self._producer_locks: dict[str, asyncio.Lock] = {}
         # Highest read_seq (offset generation) ever retired at a path, so a
         # recreate issues offsets strictly greater than any prior one (#34).
         self._retired_seq: dict[str, int] = {}
@@ -229,6 +229,9 @@ class StreamStore:
             self._messages.pop(path, None)
             return True
         return False
+
+    def check_protocol_delete(self, path: str) -> None:
+        """Every stream here may be deleted over the protocol."""
 
     def clear(self) -> None:
         """Clear all streams and cancel all pending waits."""
@@ -400,28 +403,21 @@ class StreamStore:
             tags_and_correlation(options)
         return [self.append(path, data, options) for data, options in items]
 
-    async def append_with_producer(
-        self,
-        path: str,
-        data: bytes,
-        options: AppendOptions | None = None,
-    ) -> AppendResult:
-        """Append with producer serialization for concurrent request handling."""
-        options = options or AppendOptions()
-        if not options.producer_id:
-            return self.append(path, data, options)
-
-        lock = self._get_producer_lock(path, options.producer_id)
-        async with lock:
-            return self.append(path, data, options)
-
     # =========================================================================
     # Close operations
     # =========================================================================
 
-    def close_stream(self, path: str) -> CloseResult | None:
+    def close_stream(
+        self,
+        path: str,
+        *,
+        producer_id: str | None = None,
+        producer_epoch: int | None = None,
+        producer_seq: int | None = None,
+    ) -> CloseResult | None:
         """
-        Close a stream without appending data.
+        Close a stream without appending data, fenced when all three producer
+        arguments are given.
 
         Returns None if stream doesn't exist.
         """
@@ -429,78 +425,65 @@ class StreamStore:
         if stream is None:
             return None
 
-        already_closed = stream.closed
-        stream.closed = True
-
-        # A close extends the sliding TTL window.
-        self._touch(stream)
-
-        self._notify_closed(path)
-
-        return CloseResult(
-            final_offset=stream.current_offset,
-            already_closed=already_closed,
-        )
-
-    async def close_stream_with_producer(
-        self,
-        path: str,
-        producer_id: str,
-        producer_epoch: int,
-        producer_seq: int,
-    ) -> CloseResult | None:
-        """Close a stream with producer headers for idempotent close."""
-        lock = self._get_producer_lock(path, producer_id)
-        async with lock:
-            stream = self._get_if_not_expired(path)
-            if stream is None:
-                return None
-
-            # A close is admitted on the same terms as a fenced append with no
-            # body: already closed is reported (as a duplicate for a retry of
-            # the closing tuple), then the producer is fenced.
-            verdict = decide_append(
-                StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
-                AppendOptions(
-                    producer_id=producer_id,
-                    producer_epoch=producer_epoch,
-                    producer_seq=producer_seq,
-                ),
-                producer_state=self._producer_state(stream, producer_id),
-                now=time.time(),
-            )
-            if not verdict.write:
-                return CloseResult(
-                    final_offset=stream.current_offset,
-                    already_closed=verdict.stream_closed,
-                    producer_result=verdict.producer_result,
-                )
-            producer_result = verdict.producer_result
-            # `decide_append` leaves `producer_result` unset only when no
-            # producer tuple was supplied. This method's producer parameters
-            # are required, so fencing always ran and a verdict always exists.
-            assert producer_result is not None
-
-            # Commit and close
-            self._commit_producer_state(stream, producer_result)
+        if producer_id is None or producer_epoch is None or producer_seq is None:
+            already_closed = stream.closed
             stream.closed = True
 
             # A close extends the sliding TTL window.
             self._touch(stream)
 
-            from .types import ClosedBy
-
-            stream.closed_by = ClosedBy(
-                producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
-            )
-
             self._notify_closed(path)
 
             return CloseResult(
                 final_offset=stream.current_offset,
-                already_closed=False,
-                producer_result=producer_result,
+                already_closed=already_closed,
             )
+
+        # A close is admitted on the same terms as a fenced append with no
+        # body: already closed is reported (as a duplicate for a retry of the
+        # closing tuple), then the producer is fenced.
+        verdict = decide_append(
+            StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
+            AppendOptions(
+                producer_id=producer_id,
+                producer_epoch=producer_epoch,
+                producer_seq=producer_seq,
+            ),
+            producer_state=self._producer_state(stream, producer_id),
+            now=time.time(),
+        )
+        if not verdict.write:
+            return CloseResult(
+                final_offset=stream.current_offset,
+                already_closed=verdict.stream_closed,
+                producer_result=verdict.producer_result,
+            )
+        producer_result = verdict.producer_result
+        # `decide_append` leaves `producer_result` unset only when no producer
+        # tuple was supplied, and this branch has all three, so fencing always
+        # ran and a verdict always exists.
+        assert producer_result is not None
+
+        # Commit and close
+        self._commit_producer_state(stream, producer_result)
+        stream.closed = True
+
+        # A close extends the sliding TTL window.
+        self._touch(stream)
+
+        from .types import ClosedBy
+
+        stream.closed_by = ClosedBy(
+            producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
+        )
+
+        self._notify_closed(path)
+
+        return CloseResult(
+            final_offset=stream.current_offset,
+            already_closed=False,
+            producer_result=producer_result,
+        )
 
     # =========================================================================
     # Read operations
@@ -526,82 +509,30 @@ class StreamStore:
         # A read extends the sliding TTL window.
         self._touch(stream)
 
-        messages = self._messages.get(path, [])
+        return page_of(self._messages_after(stream, offset), limit)
+
+    def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
+        """`read` without extending the TTL window; see `StreamServerStore.peek`."""
+        stream = self._get_if_not_expired(path)
+        if stream is None:
+            raise StreamNotFound(f"Stream not found: {path}")
+        return self._messages_after(stream, offset)
+
+    def _messages_after(
+        self, stream: Stream, offset: str | None
+    ) -> list[StreamMessage]:
+        messages = self._messages.get(stream.path, [])
         if not offset or offset == "-1":
-            return page_of(list(messages), limit)
+            return list(messages)
 
         self._check_offset(offset)
 
         # Find messages after the given offset (lexicographic comparison)
         idx = self._find_offset_index(stream, offset)
         if idx == -1:
-            return page_of([], limit)
+            return []
 
-        return page_of(messages[idx:], limit)
-
-    def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
-        """
-        Format messages for HTTP response.
-        For JSON mode, wraps concatenated data in array brackets.
-        """
-        stream = self._get_if_not_expired(path)
-        if stream is None:
-            raise StreamNotFound(f"Stream not found: {path}")
-
-        if is_json_content_type(stream.content_type):
-            # Framing lives here, not in what was stored.
-            return format_json_response([m.data for m in messages])
-
-        return b"".join(m.data for m in messages)
-
-    async def wait_for_messages(
-        self,
-        path: str,
-        offset: str,
-        timeout_seconds: float,
-    ) -> tuple[list[StreamMessage], bool, bool]:
-        """
-        Wait for new messages (long-poll).
-
-        Returns (messages, timed_out, stream_closed).
-
-        Raises:
-            StreamNotFound: If stream doesn't exist.
-        """
-        stream = self._get_if_not_expired(path)
-        if stream is None:
-            raise StreamNotFound(f"Stream not found: {path}")
-
-        # Check for existing messages first
-        messages, _ = self.read(path, offset)
-        if len(messages) > 0:
-            return messages, False, False
-
-        # If closed and at tail, return immediately
-        if stream.closed and offset == stream.current_offset:
-            return [], False, True
-
-        # Wait for notification
-        event = self._get_or_create_notify_event(path)
-        try:
-            await asyncio.wait_for(self._wait_for_event(event), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            # Check if stream was closed during wait
-            current = self._get_if_not_expired(path)
-            closed = current.closed if current else False
-            return [], True, closed
-
-        # Re-read after notification
-        try:
-            messages, _ = self.read(path, offset)
-        except KeyError:
-            return [], False, False
-
-        # Check closure
-        current = self._get_if_not_expired(path)
-        closed = current is not None and current.closed and len(messages) == 0
-
-        return messages, False, closed
+        return messages[idx:]
 
     def get_current_offset(self, path: str) -> str | None:
         """Get the current offset for a stream."""
@@ -744,19 +675,13 @@ class StreamStore:
                 return i
         return -1
 
-    def _get_producer_lock(self, path: str, producer_id: str) -> asyncio.Lock:
-        """Get or create a lock for serialized producer operations."""
-        key = f"{path}:{producer_id}"
-        if key not in self._producer_locks:
-            self._producer_locks[key] = asyncio.Lock()
-        return self._producer_locks[key]
-
     # =========================================================================
     # Long-poll notification
     # =========================================================================
 
-    def _get_or_create_notify_event(self, path: str) -> asyncio.Event:
-        """Get or create an asyncio.Event for long-poll notification."""
+    def new_messages_event(self, path: str) -> asyncio.Event:
+        """An event set on the next append, close or delete at `path`; see
+        `SignalsNewMessages`."""
         if path not in self._notify_events:
             self._notify_events[path] = asyncio.Event()
         return self._notify_events[path]
@@ -778,7 +703,3 @@ class StreamStore:
         event = self._notify_events.pop(path, None)
         if event:
             event.set()
-
-    async def _wait_for_event(self, event: asyncio.Event) -> None:
-        """Wait for an asyncio.Event to be set."""
-        await event.wait()

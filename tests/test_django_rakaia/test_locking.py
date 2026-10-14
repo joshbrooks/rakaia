@@ -590,13 +590,10 @@ class TestTheTransactionIsOpenedOnTheStoresAlias:
 
     @requires_row_locks
     def test_a_fenced_append_on_the_alias_opens_its_own_transaction(self) -> None:
-        # The sync inner method, not the async wrapper: the atomic lives here and
-        # `append_with_producer` only marshals into it, so this tests the site
-        # rather than the thread hop.
         store = DjangoStreamStore(using="overlay")
         store.create("alias-fenced")
 
-        result = store._append_with_producer_sync(
+        result = store.append(
             "alias-fenced",
             b'{"x": 1}',
             AppendOptions(producer_id="p", producer_epoch=1, producer_seq=0),
@@ -610,7 +607,9 @@ class TestTheTransactionIsOpenedOnTheStoresAlias:
         store = DjangoStreamStore(using="overlay")
         store.create("alias-fenced-close")
 
-        result = store._close_with_producer_sync("alias-fenced-close", "p", 1, 0)
+        result = store.close_stream(
+            "alias-fenced-close", producer_id="p", producer_epoch=1, producer_seq=0
+        )
 
         assert result is not None
         stream = store.get("alias-fenced-close")

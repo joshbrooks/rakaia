@@ -77,7 +77,6 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
 from .append_decision import StreamFacts, decide_append, decide_append_batch
 from .context import merge_provenance, tags_and_correlation
 from .json_mode import (
-    format_json_response,
     is_json_content_type,
     normalize_content_type,
     process_json_append,
@@ -98,8 +97,6 @@ from .types import (
     StreamMessage,
     StreamNotFound,
 )
-
-_POLL_INTERVAL_SECONDS = 0.05
 
 _DEFAULT_SEGMENT_SIZE = 10_000
 
@@ -311,7 +308,6 @@ class JsonlStreamStore:
         self.fsync = fsync
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / _RETIRED_DIR).mkdir(exist_ok=True)
-        self._producer_locks: dict[str, asyncio.Lock] = {}
 
     # =========================================================================
     # Paths on disk
@@ -773,6 +769,9 @@ class JsonlStreamStore:
         d.rmdir()
         return True
 
+    def check_protocol_delete(self, path: str) -> None:
+        """Every stream here may be deleted over the protocol."""
+
     def clear(self) -> None:
         for child in self.root.iterdir():
             if child.is_dir() and child.name != _RETIRED_DIR:
@@ -1017,28 +1016,26 @@ class JsonlStreamStore:
             self.delete(path)
             raise StreamNotFound(f"Stream not found: {path}") from None
 
-    def _get_producer_lock(self, path: str, producer_id: str) -> asyncio.Lock:
-        key = f"{path}:{producer_id}"
-        if key not in self._producer_locks:
-            self._producer_locks[key] = asyncio.Lock()
-        return self._producer_locks[key]
-
-    async def append_with_producer(
-        self, path: str, data: bytes, options: Any = None
-    ) -> AppendResult:
-        # The write takes the file lock, so it runs in a thread like every
-        # other call the server makes; see `run_sync`.
-        opts = options or AppendOptions()
-        if not opts.producer_id:
-            return await self.run_sync(self.append, path, data, opts)
-        async with self._get_producer_lock(path, opts.producer_id):
-            return await self.run_sync(self.append, path, data, opts)
-
     # =========================================================================
     # Close
     # =========================================================================
 
-    def close_stream(self, path: str) -> CloseResult | None:
+    def close_stream(
+        self,
+        path: str,
+        *,
+        producer_id: str | None = None,
+        producer_epoch: int | None = None,
+        producer_seq: int | None = None,
+    ) -> CloseResult | None:
+        if (
+            producer_id is not None
+            and producer_epoch is not None
+            and producer_seq is not None
+        ):
+            return self._close_with_producer(
+                path, producer_id, producer_epoch, producer_seq
+            )
         if self._live_meta(path) is None:
             return None
         try:
@@ -1053,23 +1050,9 @@ class JsonlStreamStore:
             self.delete(path)
             return None
 
-    async def close_stream_with_producer(
+    def _close_with_producer(
         self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
     ) -> CloseResult | None:
-        async with self._get_producer_lock(path, producer_id):
-            return await self.run_sync(
-                self._close_with_producer_sync,
-                path,
-                producer_id,
-                producer_epoch,
-                producer_seq,
-            )
-
-    def _close_with_producer_sync(
-        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
-    ) -> CloseResult | None:
-        """The fenced close itself. It takes the file lock, so the coroutine
-        above runs it in a thread."""
         if self._live_meta(path) is None:
             return None
         try:
@@ -1118,13 +1101,12 @@ class JsonlStreamStore:
         # not the read: the log is scanned from `offset` as before.
         return page_of(self._read_since(path, offset), limit)
 
-    def _read_since(self, path: str, offset: str | None) -> list[StreamMessage]:
-        """The messages after `offset`, without extending the TTL window.
+    def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
+        """`read` without extending the TTL window; see `StreamServerStore.peek`."""
+        self._require(path)
+        return self._read_since(path, offset)
 
-        Split out from `read` for the same reason as
-        `DjangoStreamStore._read_since`: long-poll checks for new messages on
-        every tick and must not write the activity file on every tick with it.
-        """
+    def _read_since(self, path: str, offset: str | None) -> list[StreamMessage]:
         if not offset or offset == "-1":
             return self._messages(path)
         # `PLAIN.key` is the strict parse: it raises `ForeignOffset` for the
@@ -1135,52 +1117,6 @@ class JsonlStreamStore:
     def get_current_offset(self, path: str) -> str | None:
         meta = self._live_meta(path)
         return None if meta is None else PLAIN.render(meta.head)
-
-    def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
-        meta = self._require(path)
-        if is_json_content_type(meta.content_type):
-            return format_json_response([m.data for m in messages])
-        return b"".join(m.data for m in messages)
-
-    async def wait_for_messages(
-        self, path: str, offset: str, timeout_seconds: float
-    ) -> tuple[list[StreamMessage], bool, bool]:
-        """Long-poll by polling the log.
-
-        No `asyncio.Event`: the whole point of a file-backed store is that the
-        appends come from another process, which an in-process event would never
-        see. Same shape as `DjangoStreamStore.wait_for_messages`, including the
-        two asymmetries — an absent stream on the *first* pass is a
-        `StreamNotFound`, but a stream that expires *mid-wait* is an ordinary
-        timeout rather than a 404.
-        """
-        deadline = time.monotonic() + timeout_seconds
-        entered = False
-        while True:
-            # Every tick's file access goes through a thread, for the same
-            # reason `run_sync` does: a poll that reads a large segment on the
-            # event loop stalls every other connection while it does.
-            meta = await asyncio.to_thread(self._live_meta, path)
-            if meta is None:
-                if not entered:
-                    raise StreamNotFound(f"Stream not found: {path}")
-                return [], True, False
-            entered = True
-
-            messages = await asyncio.to_thread(self._read_since, path, offset)
-            if messages:
-                # Once, on the way out — not on every tick. Polling through
-                # `read` would rewrite the activity file twenty times a second
-                # for every waiter on a stream with a TTL.
-                await asyncio.to_thread(self._touch, path, meta)
-                return messages, False, False
-            if meta.closed:
-                return [], False, True
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return [], True, False
-            await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.

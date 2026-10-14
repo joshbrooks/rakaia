@@ -429,9 +429,9 @@ register_stream_event_admin(MyStreamEvent)
 report every stream as live, which is the one question each read and write path
 asks before reaping, so none of them reaps. A create is refused before anything
 is written, including an idempotent re-create of a stream that already has the
-same expiry. The protocol server refuses `DELETE` by calling the store's optional
-`check_protocol_delete(path)` before `delete`; a store without that method is
-never refused. A `DELETE` of a stream that does not exist is still `404`, and the
+same expiry. The protocol server refuses `DELETE` by calling the store's
+`check_protocol_delete(path)` before `delete`; the in-memory and file stores
+never refuse. A `DELETE` of a stream that does not exist is still `404`, and the
 `405` carries an `Allow` header without `DELETE` in it, whether the refusal came
 from that check or from `delete()` itself. A stream that was given an expiry
 earlier reports none (`get()` returns no TTL or expiry), so `HEAD` does not send

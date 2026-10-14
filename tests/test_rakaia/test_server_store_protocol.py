@@ -97,11 +97,10 @@ class TestTheDeclaredSurfaceMatchesTheImplementation:
             "get",
             "touch",
             "delete",
-            "format_response",
-            "append_with_producer",
             "close_stream",
-            "close_stream_with_producer",
-            "wait_for_messages",
+            "peek",
+            "check_protocol_delete",
+            "run_sync",
         }
 
     def test_the_in_memory_store_satisfies_the_protocol(self) -> None:

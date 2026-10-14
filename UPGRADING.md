@@ -15,6 +15,51 @@ ones you are crossing.
 
 ---
 
+# 0.9.0
+
+## A custom protocol store is synchronous now
+
+This only reaches you if you wrote your own `StreamServerStore` to put the
+protocol server on a backend rakaia does not ship. If you only call
+`create_app` with `StreamStore`, `JsonlStreamStore` or `DjangoStreamStore`, or
+call the stores' methods directly, there is nothing to do here except one
+rename below.
+
+The server now does the waiting, the response framing and the producer
+serialisation itself, so a store answers plain synchronous questions and keeps
+one async method, `run_sync`, which says how to call it from the event loop.
+
+- **Delete** `append_with_producer`, `close_stream_with_producer`,
+  `wait_for_messages` and `format_response`. The server no longer calls them.
+- **A fenced append is `append`.** The server passes the producer triple on the
+  `AppendOptions`, so your `append` must check the producer inside the same lock
+  that orders its writes. The three stores rakaia ships already did; a per-producer
+  `asyncio.Lock` held around the call is no longer there to cover for one that
+  does not.
+- **A fenced close is `close_stream`**, which now takes keyword-only
+  `producer_id`, `producer_epoch` and `producer_seq` and fences when all three
+  are given. A store that has not been updated fails with a `TypeError` on the
+  first fenced close rather than quietly closing unfenced.
+- **Add `peek(path, offset)`**: the messages after `offset`, like `read` but
+  without extending the TTL window, raising `StreamNotFound` for an absent or
+  expired stream. The server's long-poll calls it every 50 ms.
+- **Add `check_protocol_delete(path)`.** It was optional and found by name; it is
+  part of the protocol now. A store that never refuses a client's `DELETE`
+  implements it as a no-op.
+- **Optionally add `new_messages_event(path) -> asyncio.Event`** if appends to
+  your store happen in the server's own process. The server waits on that event
+  instead of polling. `StreamStore` has one; the file and database stores do not.
+
+**The rename, for direct callers.** Code calling
+`await store.append_with_producer(path, data, options)` calls
+`store.append(path, data, options)`; code calling
+`await store.close_stream_with_producer(path, pid, epoch, seq)` calls
+`store.close_stream(path, producer_id=pid, producer_epoch=epoch, producer_seq=seq)`.
+Both are synchronous, so from async code on a database store go through
+`await store.run_sync(...)`, as before.
+
+---
+
 # 0.8.0
 
 ## One migration, and an append that now returns something

@@ -8,8 +8,8 @@ and recognised the idempotent close-duplicate, while `DjangoStreamStore.append`
 ignored `options.producer_id` entirely, all while its docstring claimed
 "outcomes, all now matching the in-memory store".
 
-Nothing caught that because every producer test routed through
-`append_with_producer`. `WritableStore.append` is public and its `AppendOptions`
+Nothing caught that because every producer test routed through a separate
+fenced-append method. `WritableStore.append` is public and its `AppendOptions`
 carries those fields, so a consumer calling it directly got adapter-dependent
 behaviour.
 

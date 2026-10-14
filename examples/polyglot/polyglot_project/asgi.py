@@ -8,8 +8,7 @@ That mount is what makes live updates work over the file-backed store. Django's
 own SSE endpoint (`django_rakaia.channels_views`) replays history from
 `StreamEntry` rows and waits on the channel layer, and neither exists when the
 log is a folder of files. The protocol server reads through the store interface
-instead and blocks in `store.wait_for_messages(...)`, which the file-backed
-store implements by watching the directory. So the page gets real SSE, over a
+instead, and its long-poll re-reads the folder until something new is there. So the page gets real SSE, over a
 log no database has seen, and it works across processes — the stress command's
 `--direct` mode now reaches open browsers, which it could not under an
 in-memory channel layer.

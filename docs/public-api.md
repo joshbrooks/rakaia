@@ -29,7 +29,8 @@ from django_rakaia import DjangoExecutor, DjangoProjectionReader, get_store
 was written at `0.1.0`: `Effect` became four types and
 `Stream` lost `messages` in `0.2.0`, `poll` began refusing a foreign cursor in
 `0.3.0`, `StreamServerStore.read` began requiring implementers to accept a page
-size in `0.6.0`, and `delete` began removing payloads in `0.7.0`. Each is written up in
+size in `0.6.0`, `delete` began removing payloads in `0.7.0`, and
+`StreamServerStore` became synchronous apart from `run_sync` in `0.9.0`. Each is written up in
 [`UPGRADING.md`](https://github.com/joshbrooks/rakaia/blob/main/UPGRADING.md)
 with what to do about it.
 
