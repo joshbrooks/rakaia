@@ -91,8 +91,9 @@ build-backend = "hatchling.build"
 # `<0.12` — `brew install uv` could no longer produce anything satisfying it.
 # Bumping is a coordinated edit of this line and the five workflow pins; check
 # first that the new version leaves `uv.lock` untouched (0.11.32 and 0.12.10
-# were verified to emit byte-identical lockfiles, both at `revision = 3`).
-required-version = ">=0.12.10,<0.13"
+# were verified to emit byte-identical lockfiles, both at `revision = 3`; so
+# were 0.12.10 and 0.13.0).
+required-version = ">=0.13.0,<0.14"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rakaia", "src/django_rakaia"]
