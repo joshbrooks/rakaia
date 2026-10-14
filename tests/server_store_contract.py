@@ -224,6 +224,21 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert [json.loads(m.data) for m in messages] == [{"id": 1}]
 
+    def test_a_create_body_records_no_ambient_provenance(self, store):
+        """A `PUT` body is not an append, so no store copies the surrounding
+        `provenance()` onto it. The durable store used to record both the
+        metadata and the correlation id; the other two never did."""
+        from rakaia.context import provenance
+
+        with provenance(user=7, correlation="INC-1"):
+            store.create(
+                "s", content_type="application/json", initial_data=b'{"id": 1}'
+            )
+
+        (message,), _ = store.read("s")
+        assert message.correlation_id is None
+        assert not message.metadata
+
     # =========================================================================
     # Append
     # =========================================================================
@@ -980,6 +995,22 @@ class ServerStoreContract:
         await task
         assert timed_out is False
         assert [json.loads(m.data) for m in messages] == [{"id": 1}]
+
+    async def test_a_wait_that_returns_messages_extends_the_ttl_window(self, store):
+        """The wait reads with `peek`, which does not touch, so it must touch on
+        the way out with messages. Without that, a stream kept alive by
+        long-polling readers alone would expire under them."""
+        import asyncio
+
+        await store.run_sync(store.create, "s", ttl_seconds=1)
+        await store.run_sync(store.append, "s", b'{"id": 1}')
+        await asyncio.sleep(0.6)
+        messages, _, _ = await _wait_for_messages(store, "s", "-1", 5.0)
+        assert messages
+        await asyncio.sleep(0.6)
+        assert await store.run_sync(store.get, "s") is not None, (
+            "the wait did not extend the window"
+        )
 
     async def test_wait_on_a_missing_stream_raises(self, store):
         with pytest.raises(StreamNotFound):

@@ -91,11 +91,10 @@ def correlation_for(explicit: str | None) -> str | None:
 def tags_and_correlation(options: Any) -> tuple[tuple[str, ...], str | None]:
     """The tags and correlation id an append with `options` records, checked.
 
-    Every store calls this before it writes, so a bad value refuses the append,
-    or the whole batch, with nothing written. Stores differ only in an item the
-    batch would refuse anyway, such as one after a close: the in-memory and
-    JSONL stores check it too, and the Django store skips it. `options` may be None or any object with the
-    `AppendOptions` fields.
+    `plan_appends` calls this for every item it will write, so a bad value
+    refuses the append, or the whole batch, with nothing written; an item refused
+    anyway, such as one after a close, is never checked. `options` may be None or
+    any object with the `AppendOptions` fields.
     """
     from .types import clean_tags
 
