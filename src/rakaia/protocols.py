@@ -287,7 +287,9 @@ class SignalsNewMessages(Protocol):
     The server's long-poll otherwise polls with `peek`. A store with this
     method hands back an event that is set when the next message lands on
     `path` (or the stream is closed or deleted), and the server waits on that
-    instead. The server asks for the event before it reads, so a message
+    instead. The event must be set on the server's event loop, so this suits
+    a store whose `run_sync` calls straight through, and not one that hops to
+    a thread. The server asks for the event before it reads, so a message
     landing between the read and the wait still wakes it.
     """
 

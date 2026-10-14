@@ -1341,8 +1341,9 @@ class DjangoStreamStore:
 
         The protocol server calls this before `delete`, and the server answers
         the refusal with `405 Method Not Allowed`. It refuses every path while
-        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off; `delete()`
-        itself never asks.
+        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off. `delete()`
+        refuses as well unless called with `force=True`; this is the check for
+        a client's request, made before that.
         """
         if _permanent_streams():
             raise DeleteNotAllowed(

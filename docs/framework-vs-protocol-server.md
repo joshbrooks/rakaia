@@ -114,7 +114,7 @@ Two divergences between the stores are **intentional and pinned**, not gaps:
 - **`DjangoStreamStore` implements both store surfaces.** It satisfies
   `WritableStore` + `CursorStore` (the framework surface) *and*
   `StreamServerStore` (the protocol-server surface: producer epoch/seq fencing,
-  stream close, TTL, long-poll, response formatting). Those Tier-2 concerns used
+  stream close, TTL, and the reads long-poll is built from). Those Tier-2 concerns used
   to be deliberately absent; they are present now, which is what lets
   `rakaia.create_app` serve the protocol straight off the database. Both stores
   are held to the same two contracts — `tests/store_contract.py` and

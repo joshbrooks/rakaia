@@ -285,7 +285,7 @@ class TestFailureBecomesStatus:
     async def test_a_delete_refused_by_delete_itself_still_says_allow(self) -> None:
         """A 405 names the methods that are allowed, whichever call refused.
 
-        A store may refuse from `delete()` rather than from the optional
+        A store may refuse from `delete()` rather than from
         `check_protocol_delete`; the response must be the same.
         """
         store = StreamStore()
@@ -301,6 +301,24 @@ class TestFailureBecomesStatus:
         assert "GET" in resp.headers["allow"]
         assert "DELETE" not in resp.headers["allow"]
 
+    async def test_the_server_asks_check_protocol_delete_before_deleting(
+        self,
+    ) -> None:
+        """A store that refuses a client's DELETE only through the check, with
+        a `delete()` that would succeed, keeps its stream."""
+        store = StreamStore()
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise DeleteNotAllowed("no")
+
+        async with asgi_client(store) as ac:
+            await ac.put("/s")
+            store.check_protocol_delete = _refuse  # type: ignore[method-assign]
+            resp = await ac.delete("/s")
+        assert resp.status_code == 405
+        assert store.has("/s")
+
+    @pytest.mark.asyncio
     async def test_message_text_is_not_load_bearing(self) -> None:
         """Reword a failure's message; the status must not move.
 

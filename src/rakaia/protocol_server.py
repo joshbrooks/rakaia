@@ -645,7 +645,9 @@ async def _wait_for_messages(
 
     A store offering `new_messages_event` is waited on rather than polled. The
     event is taken before the read, so a message landing between the read and
-    the wait has already set it.
+    the wait has already set it. The event must be set on the event loop, which
+    `asyncio.Event` requires; a store whose writes run in a thread cannot offer
+    one.
     """
     deadline = time.monotonic() + timeout_seconds
     first = True
@@ -655,6 +657,9 @@ async def _wait_for_messages(
             if isinstance(store, SignalsNewMessages)
             else None
         )
+        # The stream before the messages, never after: an append that also
+        # closes, landing between the two, would otherwise read as closed with
+        # its message never delivered.
         stream = await store.run_sync(store.get, path)
         if stream is None:
             if first:

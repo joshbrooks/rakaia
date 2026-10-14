@@ -20,8 +20,8 @@ runnable demo for each.
   without extending a stream's TTL. `check_protocol_delete` is now part of the
   protocol rather than looked up by name. `run_sync` is the only async method
   left. Anyone who implements their own store has changes to make; see
-  `UPGRADING.md`. Nothing changes over HTTP, or for code that uses the stores
-  rakaia ships.
+  `UPGRADING.md`. Nothing a client relies on changes over HTTP, and code that
+  uses the stores rakaia ships needs no change.
 
 ## [0.8.1] - 2026-10-14
 

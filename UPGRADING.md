@@ -25,8 +25,8 @@ protocol server on a backend rakaia does not ship. If you only call
 call the stores' methods directly, there is nothing to do here except one
 rename below.
 
-The server now does the waiting, the response framing and the producer
-serialisation itself, so a store answers plain synchronous questions and keeps
+The server now does the waiting and the response framing itself, so a store
+answers plain synchronous questions and keeps
 one async method, `run_sync`, which says how to call it from the event loop.
 
 - **Delete** `append_with_producer`, `close_stream_with_producer`,
@@ -46,9 +46,12 @@ one async method, `run_sync`, which says how to call it from the event loop.
 - **Add `check_protocol_delete(path)`.** It was optional and found by name; it is
   part of the protocol now. A store that never refuses a client's `DELETE`
   implements it as a no-op.
-- **Optionally add `new_messages_event(path) -> asyncio.Event`** if appends to
-  your store happen in the server's own process. The server waits on that event
-  instead of polling. `StreamStore` has one; the file and database stores do not.
+- **Optionally add `new_messages_event(path) -> asyncio.Event`** if your store's
+  writes run on the server's event loop, as `StreamStore`'s do: its `run_sync`
+  calls straight through. The server waits on that event instead of polling.
+  A store whose `run_sync` hops to a thread cannot offer one, because an
+  `asyncio.Event` may only be set from its own loop; the file and database
+  stores are polled.
 
 **The rename, for direct callers.** Code calling
 `await store.append_with_producer(path, data, options)` calls

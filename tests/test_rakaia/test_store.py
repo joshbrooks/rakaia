@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -478,8 +479,8 @@ class TestLongPoll:
     async def test_returns_on_notification(
         self, store: StreamStore, monkeypatch: pytest.MonkeyPatch
     ):
-        # A poll interval longer than the wait: only the store's event can
-        # deliver the append inside the timeout.
+        # A poll interval longer than the wait, so a loop that polls instead of
+        # waiting on the store's event sleeps until the timeout.
         monkeypatch.setattr(protocol_server, "_POLL_INTERVAL_SECONDS", 60.0)
         store.create("foo", content_type="application/octet-stream")
         stream = store.get("foo")
@@ -491,12 +492,17 @@ class TestLongPoll:
             store.append("foo", b"new")
 
         push_task = asyncio.create_task(push())
+        started = time.monotonic()
         messages, timed_out, _ = await _wait_for_messages(
             store, "foo", offset=start_offset, timeout_seconds=2.0
         )
+        waited = time.monotonic() - started
         await push_task
         assert len(messages) == 1
         assert timed_out is False
+        # A polling loop also finds the append, but only after sleeping out the
+        # whole timeout; the event delivers it as soon as it lands.
+        assert waited < 0.5, f"woke after {waited:.2f}s: the event was not used"
 
     async def test_closed_at_tail_returns_closed(self, store: StreamStore):
         store.create("foo", content_type="application/octet-stream")
