@@ -207,7 +207,7 @@ class TestDjangoStreamStore:
         messages, _ = DjangoStreamStore().read("s")
         assert [json.loads(m.data) for m in messages] == [{"id": 42}]
 
-    def test_append_many_byte_identical_to_append_loop(self):
+    def test_append_many_byte_identical_to_append_loop(self, monkeypatch):
         # Acceptance criterion: append_many([...]) produces byte-identical
         # persisted state (event data/type/metadata/event_ts + contiguous
         # offsets) to a loop of append(...). Build one stream each way and
@@ -218,6 +218,8 @@ class TestDjangoStreamStore:
             (b'{"id": 3}', AppendOptions(event_ts=1_600_000_000.5)),
         ]
 
+        # A still clock, so the stamp a raw item takes is the same on both paths.
+        monkeypatch.setattr("time.time", lambda: 2_000_000_000.0)
         store = DjangoStreamStore()
         store.create("loop")
         for data, options in batch:
@@ -318,11 +320,12 @@ class TestDjangoStreamStore:
         with pytest.raises(KeyError):
             store.append_many("missing", [(b'{"id": 1}', None)])
 
-    def test_append_many_preserves_distinct_per_item_envelopes(self):
+    def test_append_many_preserves_distinct_per_item_envelopes(self, monkeypatch):
         # Sharpens the "identical to N appends" claim on the envelope: every
         # item carries its OWN label/metadata/event_ts (not a uniform batch),
-        # and a raw-append item keeps the default label / empty metadata / null
-        # ts — asserted row-by-row.
+        # and a raw-append item keeps the default label / empty metadata and
+        # takes the store's own stamp — asserted row-by-row.
+        monkeypatch.setattr("time.time", lambda: 2_000_000_000.0)
         store = DjangoStreamStore()
         store.create("s")
         batch = [
@@ -346,7 +349,7 @@ class TestDjangoStreamStore:
         assert rows == [
             ({"id": 1}, "create", {"a": 1}, 1000.0),
             ({"id": 2}, "update", {"b": 2}, 2000.0),
-            ({"id": 3}, "append", {}, None),
+            ({"id": 3}, "append", {}, 2_000_000_000.0),
         ]
 
     def test_append_many_rolls_back_atomically_on_failure(self):
@@ -485,7 +488,7 @@ class TestExpiryReaping:
         `create` reaps inside its transaction and normally gets away with it: it
         goes on to insert the replacement row and commit, so the delete commits
         with it. Not if the `initial_data` it was handed then fails validation —
-        `_payloads_for` raises before any *event* row is written, having already
+        the shared split raises before any *event* row is written, having already
         inserted the replacement stream row, and the rollback that reports the
         bad body takes the reap back out with it. That is the one case
         `create`'s pre-transaction `_reap_if_expired` is still there for, and

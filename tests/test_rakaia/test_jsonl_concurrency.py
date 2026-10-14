@@ -41,6 +41,7 @@ import time
 
 import pytest
 
+from rakaia.append_decision import plan_initial_write
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.protocol_server import _wait_for_messages
 from rakaia.types import (
@@ -146,7 +147,9 @@ def test_a_second_writer_blocks_until_the_first_has_written(store, root):
 
     def writer_a() -> None:
         with store._locked(PATH) as (meta, buffer):
-            store._write(meta, buffer, b'{"w": "a"}')
+            store._write_plan(
+                meta, buffer, plan_initial_write(meta.content_type, b'{"w": "a"}')
+            )
             got["a"] = meta_head(meta)
             a_holding.set()
             # Stay inside the lock until B has had a fair chance to reach it.
@@ -377,7 +380,9 @@ def test_a_batch_waits_for_an_append_in_flight(store, root):
 
     def appender() -> None:
         with store._locked(PATH) as (meta, buffer):
-            store._write(meta, buffer, b'{"single": true}')
+            store._write_plan(
+                meta, buffer, plan_initial_write(meta.content_type, b'{"single": true}')
+            )
             got["single"] = [meta_head(meta)]
             holding.set()
             assert batch_started.wait(timeout=10)
@@ -612,7 +617,9 @@ async def test_a_write_blocked_on_the_lock_does_not_stall_the_event_loop(store, 
 
     def holder() -> None:
         with store._locked(PATH) as (meta, buffer):
-            store._write(meta, buffer, b'{"holder": true}')
+            store._write_plan(
+                meta, buffer, plan_initial_write(meta.content_type, b'{"holder": true}')
+            )
             holding.set()
             assert release.wait(timeout=10)
 
@@ -676,7 +683,9 @@ async def test_a_fenced_write_blocked_on_the_lock_does_not_stall_the_event_loop(
 
     def holder() -> None:
         with store._locked(served) as (meta, buffer):
-            store._write(meta, buffer, b'{"holder": true}')
+            store._write_plan(
+                meta, buffer, plan_initial_write(meta.content_type, b'{"holder": true}')
+            )
             holding.set()
             assert release.wait(timeout=10)
 

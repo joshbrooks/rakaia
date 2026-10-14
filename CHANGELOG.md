@@ -11,6 +11,19 @@ runnable demo for each.
 
 ### Changed
 
+- **The three stores now work out what an append writes in one shared place.**
+  Stamping, provenance, tags, the incident number, the JSON array split and what
+  the append changes about the stream were each written separately in the
+  in-memory, file and database stores, and had started to differ. Three
+  differences are settled, each toward what most stores already did:
+  `DjangoStreamStore` now stamps an append that sets no `event_ts` instead of
+  storing `null`; a bad tag or correlation id is only refused on an append that
+  will be written, so a closed stream answers "closed" on every store; and a
+  stream's initial `PUT` body no longer records the ambient `provenance()` on the
+  database store. The database store also writes every event through one batch
+  writer, so a single append and `@stream_model` publish their entries the same
+  way a batch does. See `UPGRADING.md`.
+
 - **The protocol server now does its own waiting and response framing, and a
   store only answers plain questions.** `StreamServerStore` loses
   `append_with_producer`, `close_stream_with_producer`, `wait_for_messages` and

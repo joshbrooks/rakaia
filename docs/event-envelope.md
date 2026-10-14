@@ -54,7 +54,8 @@ store.append(
 On the durable store, the envelope is persisted on the `StreamEvent` row:
 `event_type` doubles as the **label**, a `metadata` JSON column holds the rest,
 and an `event_ts` column holds the logical timestamp. A pure-protocol append (no
-envelope) simply leaves `metadata` empty and `event_ts` null.
+envelope) leaves `metadata` empty, and gets rakaia's own `event_ts` like any other
+append that sets none.
 
 ## The envelope timestamp
 
@@ -96,9 +97,9 @@ never lets it go backwards within a stream: a clock that steps back repeats the
 stream's last time instead of dating a later event before an earlier one. So
 within any one stream, the times rakaia stamps agree with the order of the
 positions. A time the producer sets is stored exactly as sent and does not take
-part in that rule, which is what lets a backfill say "years ago". (The durable
-store's plain protocol append is the exception noted above: it stores `null`,
-and readers show the insert time.)
+part in that rule, which is what lets a backfill say "years ago". Every store
+follows this rule, the durable one included since `0.9.0`; before that, its plain
+protocol append stored `null` and readers showed the insert time.
 
 The same rule applies to any *logical-time* value a handler writes (a soft-retire
 `resolved_at`, say): derive it from the triggering event's `event_ts`, not

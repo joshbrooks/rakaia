@@ -187,3 +187,65 @@ class TestParityBetweenTheTwoPaths:
         single_frames = await _drain(layer, channel, expected=2)
 
         assert len(bulk_frames) == len(single_frames) == 2
+
+
+class TestEachEntryIsPublishedOnce:
+    """Every write path now writes with `bulk_create` and publishes itself
+    (#321), while the `post_save` receiver stays for entries written through
+    the ORM elsewhere. A path that did both would send every frame twice, and
+    the draining tests above, which stop at the count they expect, cannot see
+    a duplicate. So this counts every entry handed to the publisher."""
+
+    @pytest.fixture
+    def published(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        from django_rakaia import channels_signals
+
+        seen: list[int] = []
+        original = channels_signals.broadcast_entries
+
+        def counting(stream_id, entries):
+            seen.extend(entry.pk for entry in entries)
+            return original(stream_id, entries)
+
+        monkeypatch.setattr(channels_signals, "broadcast_entries", counting)
+        return seen
+
+    def test_an_append(self, published: list[int]) -> None:
+        from django_rakaia.models import StreamEntry
+
+        store = DjangoStreamStore()
+        store.create(PATH, content_type="application/json")
+        store.append(PATH, b"[1, 2]")
+        assert sorted(published) == sorted(
+            StreamEntry.objects.values_list("pk", flat=True)
+        )
+        assert len(published) == 2
+
+    def test_a_batch(self, published: list[int]) -> None:
+        from django_rakaia.models import StreamEntry
+
+        store = DjangoStreamStore()
+        store.create(PATH)
+        store.append_many(PATH, [(b'{"n": 1}', None), (b'{"n": 2}', None)])
+        assert sorted(published) == sorted(
+            StreamEntry.objects.values_list("pk", flat=True)
+        )
+        assert len(published) == 2
+
+    def test_a_model_save_fanned_out_to_several_streams(
+        self, published: list[int]
+    ) -> None:
+        from django.contrib.auth.models import User
+
+        from django_rakaia.models import StreamEntry
+
+        from .models import Area, Project
+
+        user = User.objects.create(username="u")
+        area = Area.objects.create(name="north")
+        published.clear()
+        before = set(StreamEntry.objects.values_list("pk", flat=True))
+        Project.objects.create(name="p", area=area, created_by=user)
+        written = set(StreamEntry.objects.values_list("pk", flat=True)) - before
+        assert len(written) == 2, "a project lands in its user's and its area's stream"
+        assert sorted(published) == sorted(written)

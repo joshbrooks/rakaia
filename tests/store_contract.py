@@ -168,18 +168,9 @@ class StoreContract:
         assert messages[-1].event_ts == logical
         assert messages[-1].timestamp != logical
 
-    # Whether a raw append with no producer-set time gets a stamp this store
-    # takes itself. The durable store is the exception: it stores NULL, and its
-    # readers fall back to the row's database insert time, which the clock
-    # below does not reach. Its own stamp -- the one `@stream_model` asks for --
-    # is pinned in `tests/test_django_rakaia/test_event_ts_stamp.py`.
-    stamps_raw_appends = True
-
     @pytest.fixture
     def clock(self, monkeypatch):
         """A wall clock the test sets by hand, including backwards."""
-        if not self.stamps_raw_appends:
-            pytest.skip("this store does not stamp a raw append's event_ts itself")
         now = [2_000_000_000.0]
         monkeypatch.setattr("time.time", lambda: now[0])
         return now

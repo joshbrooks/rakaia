@@ -452,7 +452,7 @@ class ServerStoreContract:
         onwards — a batch of one is still a batch.
 
         Named for the raise and nothing more, because that is all it can see.
-        Deleting the pre-flight's `check_payload` leaves this test green on both
+        Deleting the pre-flight's payload check leaves this test green on all
         backends: with one item there is no prefix to strand, so "refused by the
         pre-flight" and "raised by the write that followed" leave identical
         state. The sibling above is what pins the pre-flight; this pins only

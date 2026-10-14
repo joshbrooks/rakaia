@@ -81,15 +81,16 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
     The one implementation of "an append reaches subscribers". Two callers reach
     it, because there are two ways an entry gets written:
 
-    * the `post_save` receiver below, for entries written through the ORM —
-      `@stream_model` and anything else that does not go through the store;
-    * `DjangoStreamStore` directly, for its own appends.
+    * `django_store.write_events`, the one writer of rakaia's own events — every
+      store append and every `@stream_model` save;
+    * the `post_save` receiver below, for an entry written through the ORM by
+      anything else.
 
-    The store has to call it rather than lean on the signal: `append_many`
-    persists with `bulk_create`, which does not fire `post_save`, so every bulk
-    append was silently invisible to subscribers (issue #82). Restoring the
-    signal by saving rows one at a time would undo the reason `append_many`
-    exists; publishing explicitly keeps the batch write a batch write.
+    The writer has to call it rather than lean on the signal: it persists with
+    `bulk_create`, which does not fire `post_save` — which once made every bulk
+    append silently invisible to subscribers (issue #82). Restoring the signal
+    by saving rows one at a time would undo the reason the writer is a batch
+    write; publishing explicitly keeps it one.
 
     A no-op when the channel layer is absent, so a framework-tier consumer that
     never installed `channels` is unaffected.
@@ -117,7 +118,7 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
     # Outside a transaction Django runs the callback immediately, so an append in
     # autocommit still publishes synchronously.
     #
-    # The alias is taken from the entries, the way `write_enveloped_event` takes
+    # The alias is taken from the entries, the way `write_events` takes
     # it from the streams. An entry written to another database commits on *that*
     # connection, so queuing against the default one would be queuing on a
     # connection that is not in a transaction at all — Django then runs the
@@ -138,13 +139,11 @@ def broadcast_entries(stream_id: str, entries: Sequence[StreamEntry]) -> None:
 def handle_stream_entry_created(sender, instance, created, **kwargs):  # noqa: ARG001
     """Broadcast an ORM-written stream entry to the stream's channel group.
 
-    Covers every entry written through the ORM: `@stream_model`, and
-    `DjangoStreamStore.append`, which persists one entry with `create()`.
-
-    It does *not* cover `DjangoStreamStore.append_many`, which persists with
-    `bulk_create` — that path calls `broadcast_entries` itself. So the two
-    mechanisms partition the write paths rather than overlapping, and no entry is
-    published twice.
+    Covers an entry saved one at a time through the ORM by something other than
+    rakaia. rakaia's own writer, `django_store.write_events`, persists with
+    `bulk_create`, which fires no `post_save`, and calls `broadcast_entries`
+    itself. So the two mechanisms partition the write paths rather than
+    overlapping, and no entry is published twice.
     """
     # Skip fixture rows. Beyond the phantom frame, the `instance.stream` /
     # `instance.event` dereferences are separate queries that raise DoesNotExist

@@ -61,6 +61,25 @@ one async method, `run_sync`, which says how to call it from the event loop.
 Both are synchronous, so from async code on a database store go through
 `await store.run_sync(...)`, as before.
 
+## Three quiet changes to what an append records
+
+Nothing here raises, which is why it is written down.
+
+- **`DjangoStreamStore` stamps an append that sets no `event_ts`.** It stored
+  `NULL` in `StreamEvent.event_ts` for a plain protocol append, and readers fell
+  back to the row's insert time; it now stores the same stamp the other two
+  stores and `@stream_model` take, `max(the stream's last stamp, now)`. Anything
+  reading `StreamMessage.event_ts` sees nearly the same value as before. Code that
+  queries the column directly and treats `NULL` as "a raw append" will find new
+  rows filled in; existing rows are not touched, so no migration runs.
+- **A bad tag or correlation id on an append that is refused anyway is no longer
+  an error on the in-memory store.** It checked them before deciding, so a bad tag
+  on a closed stream raised `ValueError` there and returned "closed" on the file
+  store. Every store now checks them only for an append that will be written, as
+  it already did for the body.
+- **A stream's initial `PUT` body no longer records the ambient `provenance()` on
+  `DjangoStreamStore`.** The other two stores never did.
+
 ---
 
 # 0.8.0

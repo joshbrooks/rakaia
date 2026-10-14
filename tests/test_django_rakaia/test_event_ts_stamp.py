@@ -103,10 +103,10 @@ def test_a_fan_out_brings_lagging_streams_up_on_their_own_database(
     behind = Stream.objects.using("overlay").create(stream_id="behind")
     # Callers hold a transaction on the streams' alias; the offset lock needs one.
     with transaction.atomic(using="overlay"):
-        write_enveloped_event([ahead], {"id": 1}, stamp_event_ts=True)
+        write_enveloped_event([ahead], {"id": 1})
     clock[0] -= 100
     with transaction.atomic(using="overlay"):
-        write_enveloped_event([ahead, behind], {"id": 2}, stamp_event_ts=True)
+        write_enveloped_event([ahead, behind], {"id": 2})
     watermark = StreamOffsetWatermark.objects.using("overlay").get(stream_path="behind")
     assert watermark.last_event_ts == T0
 
@@ -114,19 +114,18 @@ def test_a_fan_out_brings_lagging_streams_up_on_their_own_database(
 @pytest.mark.usefixtures("clock")
 def test_a_supplied_time_is_kept_and_does_not_move_the_stamp() -> None:
     stream = Stream.objects.create(stream_id="areas")
-    event, _ = write_enveloped_event(
-        [stream], {"id": 1}, event_ts=3_000_000_000.0, stamp_event_ts=True
-    )
+    event, _ = write_enveloped_event([stream], {"id": 1}, event_ts=3_000_000_000.0)
     assert event.event_ts == 3_000_000_000.0
     assert _save("areas") == T0
 
 
 @pytest.mark.usefixtures("clock")
-def test_a_raw_protocol_append_still_stores_no_time() -> None:
-    # The durable store's protocol append is not stamped: NULL means "the
-    # producer set no time", and readers fall back to the insert time.
+def test_a_raw_protocol_append_is_stamped_too() -> None:
+    # It used to store NULL and leave readers to fall back to the insert time,
+    # the one store of three that did (#321). It now takes the same stamp a
+    # `@stream_model` save does, under the same lock.
     store = DjangoStreamStore()
     store.create("raw")
     store.append("raw", b'{"id": 1}')
     event = Stream.objects.get(stream_id="raw").entries.get().event
-    assert event.event_ts is None
+    assert event.event_ts == T0

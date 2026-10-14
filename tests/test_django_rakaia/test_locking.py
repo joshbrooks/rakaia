@@ -541,7 +541,9 @@ class TestTheTransactionIsOpenedOnTheStoresAlias:
         store.create("alias-rollback")
 
         with (
-            patch.object(DjangoStreamStore, "_touch", side_effect=RuntimeError("boom")),
+            patch.object(
+                DjangoStreamStore, "_save_changes", side_effect=RuntimeError("boom")
+            ),
             pytest.raises(RuntimeError, match="boom"),
         ):
             store.append("alias-rollback", b'{"x": 1}')

@@ -14,7 +14,6 @@ from tests.store_contract import StoreContract
 
 @pytest.mark.django_db
 class TestDjangoStreamStoreContract(StoreContract):
-    stamps_raw_appends = False
     records_event_ids = True
 
     @pytest.fixture

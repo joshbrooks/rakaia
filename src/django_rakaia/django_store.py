@@ -20,22 +20,24 @@ payloads *do* round-trip byte for byte. See `encode_payload`.
 
 Scope: the whole `rakaia.StreamServerStore` surface. As well as the
 event-sourcing read/emit path, it implements the protocol lifecycle — producer
-epoch/seq fencing, close, the TTL sliding window, long-poll and response
-formatting — so `rakaia.create_app` can serve the Durable Streams protocol
+epoch/seq fencing, close, the TTL sliding window, and the reads long-poll is
+built from — so `rakaia.create_app` can serve the Durable Streams protocol
 directly off the database. That is what removed the need for a second,
 partial implementation of the protocol in the Django integration.
 
-Both stores are held to one shared conformance suite
-(`tests/server_store_contract.py`), and the fencing rules themselves are a
-single pure module (`rakaia.producer`) that both call, so the two cannot drift.
+Every store is held to one shared conformance suite
+(`tests/server_store_contract.py`), and what an append may do and what it writes
+are decided by one pure module (`rakaia.append_decision`) that every store
+calls, so they cannot drift.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -44,16 +46,16 @@ from django.conf import settings
 from django.db import transaction
 
 from rakaia.append_decision import (
+    AppendPlan,
+    PlannedWrite,
     StreamFacts,
     decide_append,
-    decide_append_batch,
+    own_stamp,
+    plan_appends,
+    plan_initial_write,
 )
-from rakaia.context import correlation_for, merge_provenance, tags_and_correlation
-from rakaia.json_mode import (
-    is_json_content_type,
-    normalize_content_type,
-    process_json_append,
-)
+from rakaia.context import correlation_for, merge_provenance
+from rakaia.json_mode import is_json_content_type, normalize_content_type
 from rakaia.read_decision import page_of
 from rakaia.types import (
     AppendOptions,
@@ -85,7 +87,6 @@ from .models import (
     StreamEntry,
     StreamEvent,
     StreamEventTag,
-    StreamOffsetWatermark,
     StreamProducer,
     delete_events,
 )
@@ -103,7 +104,122 @@ __all__ = [
     "format_offset",
     "message_of",
     "write_enveloped_event",
+    "write_events",
 ]
+
+
+@dataclass(frozen=True)
+class NewEvent:
+    """One event row to write, every column already decided.
+
+    ``event_ts`` None means "stamp it": `write_events` fills in rakaia's own
+    time, under the offset locks.
+    """
+
+    data: Any
+    event_type: str = _APPEND_EVENT_TYPE
+    metadata: dict[str, Any] | None = None
+    event_ts: float | None = None
+    payload_encoding: str | None = None
+    tags: tuple[str, ...] = ()
+    correlation_id: str | None = None
+
+
+def write_events(
+    streams: Sequence[Stream],
+    events: Sequence[NewEvent],
+    *,
+    using: str | None = None,
+) -> tuple[list[StreamEvent], list[list[StreamEntry]]]:
+    """Write `events` into every one of `streams`. The **only** writer of events.
+
+    Returns the `StreamEvent` rows in `events` order, and the `StreamEntry` rows
+    per stream, in `streams` order, each list in `events` order. A protocol append is one stream and one event, a batch is one
+    stream and many, and `@stream_model`'s fan-out is one event and many streams:
+    one `StreamEvent` with one envelope and an entry in each stream, each with its
+    own offset there — not several events that happen to look alike.
+
+    The caller must already hold the `streams` rows' locks, taken in `stream_id`
+    order, inside a transaction on their database. This locks the offset
+    watermarks — also in `stream_id` order, whatever order `streams` is in, so
+    two fan-outs over the same streams cannot deadlock each other (#293) — and
+    inserting an entry then needs the stream row, so a caller that skipped the
+    row lock could deadlock against a protocol append, which takes the row first
+    (#298).
+
+    **Event time.** An event with no `event_ts` gets rakaia's own stamp,
+    `own_stamp(the latest last stamp across the streams, now)`, with `now` read
+    once the locks are held, so it agrees with the offset order in every stream
+    the event lands in (#284). Every watermark is brought up to it, or a stream
+    whose last stamp was earlier could stamp its next event before this one.
+
+    Everything is `bulk_create`d — events, tags, entries — so the statement count
+    does not grow with the batch, and the entries are published to live
+    subscribers explicitly, since `bulk_create` fires no `post_save`.
+
+    There used to be two of this: one event at a time for an append and for
+    `@stream_model`, and an inline bulk version in `append_many`. Changes to how
+    events are stamped and tagged reached the two unevenly (#324).
+    """
+    streams = list(streams)
+    if not events:
+        return [], [[] for _ in streams]
+    # The event is written to whatever database its streams came from, so one
+    # save is never split across two (#159).
+    if streams:
+        using = streams[0]._state.db
+    order = sorted(range(len(streams)), key=lambda i: streams[i].stream_id)
+    watermarks = {i: streams[i].lock_watermark() for i in order}
+
+    stamp: float | None = None
+    if any(e.event_ts is None for e in events):
+        # Read the clock only now, with the locks held: a time read before them
+        # belongs to whichever writer got there first, not to these positions.
+        last = [w.last_event_ts for w in watermarks.values() if w.last_event_ts]
+        stamp = own_stamp(max(last) if last else None, time.time())
+    starts: dict[int, int] = {}
+    for i in order:
+        watermark = watermarks[i]
+        starts[i] = watermark.high + 1
+        watermark.high += len(events)
+        fields = ["high"]
+        if stamp is not None:
+            watermark.last_event_ts = stamp
+            fields.append("last_event_ts")
+        watermark.save(update_fields=fields)
+
+    rows = [
+        StreamEvent(
+            data=e.data,
+            event_type=e.event_type,
+            metadata=e.metadata if e.metadata is not None else {},
+            event_ts=e.event_ts if e.event_ts is not None else stamp,
+            payload_encoding=e.payload_encoding,
+            correlation_id=e.correlation_id,
+        )
+        for e in events
+    ]
+    # The entries and tags link to these by the ids `bulk_create` sets, which
+    # every supported backend returns (Postgres always; SQLite from 3.35).
+    StreamEvent.objects.using(using).bulk_create(rows)
+    StreamEventTag.objects.using(using).bulk_create(
+        StreamEventTag(event=row, tag=tag)
+        for row, e in zip(rows, events, strict=True)
+        for tag in e.tags
+    )
+    per_stream = [
+        [
+            StreamEntry(stream=stream, event=row, offset=starts[i] + n)
+            for n, row in enumerate(rows)
+        ]
+        for i, stream in enumerate(streams)
+    ]
+    StreamEntry.objects.using(using).bulk_create(
+        entry for entries in per_stream for entry in entries
+    )
+    for stream, entries in zip(streams, per_stream, strict=True):
+        _publish(stream.stream_id, entries)
+    return rows, per_stream
 
 
 def write_enveloped_event(
@@ -113,118 +229,54 @@ def write_enveloped_event(
     label: str = "",
     metadata: Any = None,
     event_ts: float | None = None,
-    stamp_event_ts: bool = False,
     payload_encoding: str | None = None,
     tags: tuple[str, ...] = (),
     correlation_id: str | None = None,
 ) -> tuple[StreamEvent, list[StreamEntry]]:
-    """Write one enveloped event into `streams`. The **only** writer of one.
+    """Write one event into `streams` with its envelope resolved here: the door
+    `@stream_model` uses, which has no `AppendOptions` to plan from.
 
-    Returns the `StreamEvent` and its `StreamEntry` rows, in `streams` order.
-
-    The caller must already hold the `streams` rows' locks, taken in
-    `stream_id` order, inside a transaction on their database. This function
-    locks only the offset watermarks; inserting an entry then needs the stream
-    row, so a caller that skipped the row lock could deadlock against a
-    protocol append on the same stream, which takes the row first (#298).
-
-    Every rule that turns an envelope into columns is resolved here, once:
-
-    * **the label** becomes `event_type`, with a labelless event recorded under
-      the stable `"append"` sentinel that `_read_since` inverts. `event_type` is
-      required metadata for the dashboard, so there is no "no type" to write;
-    * **the metadata** is merged with the ambient `provenance()` block —
-      explicit over ambient — and stored as `{}` rather than NULL when there is
-      none;
-    * **`event_ts`** is passed through, NULL included. NULL means "no logical
-      time was set", and readers surface the append time instead. The caller
-      decides whether to set one: a raw protocol append has none unless the
-      producer supplied it, while `@stream_model` asks for one with
-      ``stamp_event_ts=True``. That stamp is taken here, under the offset
-      locks, as ``max(the stream's last stamp, now)`` — so it agrees with the
-      offset order in every stream the event lands in (#284). A supplied
-      ``event_ts`` always wins over the stamp and is stored verbatim;
-    * **the offsets** come from `Stream.get_next_offset`, which locks the
-      per-path high-water — so this must run inside a transaction. The locks
-      are taken in `stream_id` order, whatever order `streams` is in, so two
-      fan-outs over the same streams cannot deadlock each other (#293).
-
-    **Fan-out is `streams`, plural.** One event appearing in several streams is
-    one `StreamEvent` with one envelope and N `StreamEntry` rows, each with its
-    own offset in its own stream — not N events that happen to look alike. The
-    protocol store only ever passes one stream; `@stream_model` passes as many
-    as its `stream_paths` resolved to.
-
-    This exists because there were two of it. `DjangoStreamStore._write` and
-    `create_stream_event` each had a copy, and the copies disagreed about the
-    sentinel and about which offset helper to call — the drift
-    `django_rakaia.envelope`'s module docstring warns about, in the module it
-    warns about it in (#131).
+    The label becomes `event_type` (the `"append"` sentinel when there is none);
+    the metadata has the ambient `provenance()` block merged under it; the tags
+    and correlation id are checked, the correlation falling back to the ambient
+    one. Returns the event and its entries, in `streams` order. See
+    `write_events` for the locking it relies on and the event time it stamps.
     """
     streams = list(streams)
-    # The event is written to whatever database its streams came from, rather
-    # than always to the default one. A save routed elsewhere used to put its
-    # row on one database and its event on another — one save, split across two
-    # (#159). Deriving the alias from the streams means it follows the data and
-    # no caller has to remember to pass it.
     using = streams[0]._state.db if streams else None
-    # Offsets are allocated in one agreed order -- by stream path -- and not
-    # in the order the caller listed the streams. Each allocation holds that
-    # stream's watermark lock until the transaction ends, so two events fanned
-    # into the same streams in opposite orders would each take one lock and
-    # wait for the other's, and Postgres would abort one of them (#293). The
-    # entries still come back in the caller's order.
-    #
-    # Allocation comes *before* the event row, so that everything about the
-    # event that carries a time -- the stamp, and `created_at`, which readers
-    # fall back to when there is no stamp -- is taken once the locks are held
-    # rather than before them (#284).
-    stamp = stamp_event_ts and event_ts is None
-    offsets: dict[int, int] = {}
-    stamps: dict[str, float] = {}
-    for i in sorted(range(len(streams)), key=lambda i: streams[i].stream_id):
-        if stamp:
-            offsets[i], stamps[streams[i].stream_id] = streams[
-                i
-            ].get_next_offset_and_stamp()
-        else:
-            offsets[i] = streams[i].get_next_offset()
-    if stamp and not stamps:
-        # A save whose paths resolved to no streams has no lock to stamp under
-        # and no stream to keep in order; it still gets a time.
-        event_ts = time.time()
-    elif stamp:
-        # One event has one time, so a fan-out takes the latest of its
-        # streams' stamps. Any stream whose own stamp was earlier is brought up
-        # to it, still under the lock this transaction holds, or its next event
-        # could be stamped before this one.
-        event_ts = max(stamps.values())
-        behind = [path for path, ts in stamps.items() if ts < event_ts]
-        if behind:
-            StreamOffsetWatermark.objects.using(using).filter(
-                stream_path__in=behind
-            ).update(last_event_ts=event_ts)
-    event = StreamEvent.objects.using(using).create(
-        data=data,
-        event_type=label or _APPEND_EVENT_TYPE,
-        metadata=merge_provenance(metadata) or {},
-        event_ts=event_ts,
-        payload_encoding=payload_encoding,
-        correlation_id=correlation_for(correlation_id),
+    (event,), per_stream = write_events(
+        streams,
+        [
+            NewEvent(
+                data=data,
+                event_type=label or _APPEND_EVENT_TYPE,
+                metadata=merge_provenance(metadata),
+                event_ts=event_ts,
+                payload_encoding=payload_encoding,
+                tags=clean_tags(tags),
+                correlation_id=correlation_for(correlation_id),
+            )
+        ],
+        using=using,
     )
-    if tags:
-        StreamEventTag.objects.using(using).bulk_create(
-            StreamEventTag(event=event, tag=tag) for tag in clean_tags(tags)
-        )
-    entries = [
-        StreamEntry.objects.using(using).create(
-            stream=stream,
-            event=event,
-            offset=offsets[i],
-        )
-        for i, stream in enumerate(streams)
-    ]
-    return event, entries
+    return event, [entries[0] for entries in per_stream]
+
+
+def _publish(stream_id: str, entries: list[StreamEntry]) -> None:
+    """Publish appended entries to live subscribers.
+
+    Delegates to `channels_signals.broadcast_entries`, the single definition of
+    the wire frame. Imported lazily and tolerantly: `channels` is an optional
+    extra (ADR 0002 / #41), and a framework-tier consumer that never installed
+    it must still be able to append.
+    """
+    if not entries:
+        return
+    try:
+        from .channels_signals import broadcast_entries
+    except ImportError:
+        return
+    broadcast_entries(stream_id, entries)
 
 
 # How many event ids `DjangoStreamStore.delete` removes per statement. Well
@@ -295,7 +347,7 @@ class DjangoStreamStore:
 
         It also fixes the alias for rows *derived* from a stream: the write path
         takes its alias from the stream row it was handed
-        (`write_enveloped_event`, #159), and `Stream.get_next_offset_block` from
+        (`write_events`, #159), and `Stream.lock_watermark` from
         ``self._state.db``. Loading the stream on the right alias is therefore
         what puts its event, its entry and its offset high-water there too.
         """
@@ -457,57 +509,37 @@ class DjangoStreamStore:
             last_seq=stream.last_seq,
         )
 
-    def _record_write(
-        self,
-        stream: Stream,
-        *,
-        producer_commits: Iterable[ProducerAccepted] = (),
-        last_seq: str | None = None,
-        closing_opts: Any = None,
-    ) -> None:
-        """Record what a write that has already landed leaves behind.
+    def _save_changes(self, stream: Stream, plan: AppendPlan) -> None:
+        """Record what an append that has already landed changes about the
+        stream, as `plan_appends` decided it.
 
-        **The order is the rule, not a matter of style**, which is why it is
-        written down once here rather than learned from reading three
-        implementations (#183). Every step is downstream of the rows being
-        written, and must stay that way:
-
-        1. **Producer state, and only for a write that succeeded.** This is what
-           a later writer is fenced against, so advancing it for a write that
-           did not happen would reject the retry that legitimately follows. One
-           commit per producer, not per event: the batch rule hands back the last
-           accepted outcome for each, and `append_many` promises a query count
-           that does not grow with the batch.
-        2. **`Stream-Seq`**, and only when it moved. An unconditional save costs
-           a statement on every append that does not use the header, which is
-           most of them.
-        3. **The close**, after the events, because a close is the statement
-           that nothing further follows *these* rows. Closing first would make
-           the stream's own admission rule refuse the write it is part of.
-        4. **The TTL window**, last, because an expiry clock extended before the
-           write could be extended for a write that then failed — and every step
-           above is a write that can fail.
-
-        Callers pass what their own decision produced; a step whose argument is
-        absent is skipped, which is how a plain unfenced append reaches the same
-        code as a fenced batch.
-
-        `create` is the one write path that does not come through here, and
-        deliberately: its `initial_data` cannot be fenced, sequenced or closing —
-        the stream did not exist to have a producer, a `Stream-Seq` or a close
-        against — and it stamps `last_activity_at` on the row it inserts, so
-        every step would be a no-op or a second write of what `create` just
-        wrote. It is in the routing test below as the exception, not as an
-        omission.
+        Producer state is one row per producer, and the batch rule hands back
+        only the last accepted outcome for each, so the count of writes does not
+        grow with the batch. Everything on the stream row itself — `Stream-Seq`,
+        the close and its producer tuple, the TTL window — is one save, and only
+        of the columns that moved: an append that changes none of them costs no
+        statement here, which is most of them.
         """
-        for result in producer_commits:
-            self._commit_producer(stream, result)
-        if last_seq is not None and last_seq != stream.last_seq:
-            stream.last_seq = last_seq
-            stream.save(update_fields=["last_seq"])
-        if closing_opts is not None:
-            self._close_from_append(stream, closing_opts)
-        self._touch(stream)
+        for accepted in plan.producer_commits.values():
+            self._commit_producer(stream, accepted)
+        fields: list[str] = []
+        if plan.last_seq != stream.last_seq:
+            stream.last_seq = plan.last_seq
+            fields.append("last_seq")
+        if plan.close:
+            stream.closed = True
+            stream.closed_at = time.time()
+            fields += ["closed", "closed_at"]
+            if plan.closed_by is not None:
+                stream.closed_by_producer_id = plan.closed_by.producer_id
+                stream.closed_by_epoch = plan.closed_by.epoch
+                stream.closed_by_seq = plan.closed_by.seq
+                fields += ["closed_by_producer_id", "closed_by_epoch", "closed_by_seq"]
+        if plan.writes_anything and stream.ttl_seconds is not None:
+            stream.last_activity_at = time.time()
+            fields.append("last_activity_at")
+        if fields:
+            stream.save(update_fields=fields)
 
     @staticmethod
     def _touch(stream: Stream) -> None:
@@ -588,8 +620,8 @@ class DjangoStreamStore:
                 closed=closed,
             )
             if initial_data:
-                self._write(
-                    stream, initial_data, AppendOptions(), is_initial_create=True
+                self._write_plan(
+                    stream, plan_initial_write(stream.content_type, initial_data)
                 )
             return stream
 
@@ -693,173 +725,56 @@ class DjangoStreamStore:
             )
 
     def append(self, path: str, data: bytes, options: Any = None) -> AppendResult:
-        """Append one event, assigning the next monotonic offset.
-
-        Returns an `AppendResult`, matching the in-memory store — this is what
-        lets one protocol server run on either. (It used to return the
-        `StreamEntry` row; the row is still reachable via `read`.)
-
-        The event-sourcing envelope on `options` (an `AppendOptions`) is
-        persisted: `label` maps to `event_type` (a raw append keeps the stable
-        `"append"` label) and `metadata` to the JSON column.
-
-        Runs in the transaction `_locked_write` opens, so `get_next_offset()`
-        can lock the offset high-water: concurrent appends serialize on offset
-        allocation instead of racing to the same value and failing
-        `unique_together(stream, offset)`.
-
-        Admission (closed / content-type / producer fencing / Stream-Seq) is
-        decided by `rakaia.append_decision`, shared with the in-memory store, so
-        the two cannot reach different verdicts on the same options.
-
-        Outcomes, all matching the in-memory store:
-
-        - Raises `StreamNotFound` if the stream is absent or expired.
-        - Returns `AppendResult(stream_closed=True, message=None)` if closed.
-        - Raises `ContentTypeMismatch` / `SequenceConflict` / `InvalidJson` /
-          `EmptyJsonArray` for the corresponding failures.
-        - Honours `options.close`: the append and the close are one atomic
-          step, and the result reports `stream_closed=True`.
-        """
-        opts = options if options is not None else AppendOptions()
-        with self._locked_write(path) as stream:
-            # Admission is decided in `rakaia.append_decision`, shared with the
-            # in-memory store. This path used to inline its own shorter sequence
-            # and ignore `opts.producer_id` entirely, so the same options
-            # reached different verdicts on the two stores while this method's
-            # docstring claimed they matched.
-            verdict = decide_append(
-                self._facts(stream),
-                opts,
-                producer_state=self._producer_state(
-                    stream, getattr(opts, "producer_id", None)
-                ),
-                now=time.time(),
-            )
-            if not verdict.write:
-                return AppendResult(
-                    message=None,
-                    stream_closed=verdict.stream_closed,
-                    producer_result=verdict.producer_result,
-                )
-
-            messages = self._write(stream, data, opts)
-
-            close = bool(getattr(opts, "close", False))
-            self._record_write(
-                stream,
-                producer_commits=(
-                    [verdict.producer_result]
-                    if isinstance(verdict.producer_result, ProducerAccepted)
-                    else []
-                ),
-                last_seq=getattr(opts, "seq", None),
-                closing_opts=opts if close else None,
-            )
-            # A JSON-mode array append writes several messages; the result
-            # carries the last, whose offset is the stream's new head — which
-            # is what a caller resumes from.
-            message, event_id = messages[-1] if messages else (None, None)
-            return AppendResult(
-                message=message,
-                stream_closed=close,
-                producer_result=verdict.producer_result,
-                event_id=event_id,
-            )
-
-    # =========================================================================
-    # Append helpers
-    # =========================================================================
+        """Append one event: a batch of one. See `append_many`."""
+        return self.append_many(path, [(data, options)])[0]
 
     @staticmethod
-    def _close_from_append(stream: Stream, opts: Any) -> None:
-        """Close the stream as the final step of an append (`Stream-Closed: true`).
+    def _stored_value(
+        content_type: str | None, payload: bytes
+    ) -> tuple[Any, str | None]:
+        """One stored payload as the `data` column holds it, with its encoding.
 
-        Records the closing producer tuple when there is one, exactly as the
-        in-memory store does, so a retried close-with-body is recognisable as a
-        duplicate.
+        A JSON-mode payload is a standalone JSON document and is stored parsed;
+        anything else goes through `encode_payload`.
         """
-        stream.closed = True
-        stream.closed_at = time.time()
-        fields = ["closed", "closed_at"]
-        producer_id = getattr(opts, "producer_id", None)
-        if producer_id is not None:
-            stream.closed_by_producer_id = producer_id
-            stream.closed_by_epoch = getattr(opts, "producer_epoch", None) or 0
-            stream.closed_by_seq = getattr(opts, "producer_seq", None) or 0
-            fields += ["closed_by_producer_id", "closed_by_epoch", "closed_by_seq"]
-        stream.save(update_fields=fields)
+        if is_json_content_type(content_type):
+            return json.loads(payload), None
+        return encode_payload(payload, content_type)
 
-    @staticmethod
-    def _payloads_for(
-        stream: Stream, data: bytes, *, is_initial_create: bool
-    ) -> list[tuple[Any, str | None]]:
-        """The stored payloads one append produces, in order.
-
-        Usually one. In JSON mode an array append produces one per element:
-        the protocol flattens a top-level array so that `[a, b]` is two
-        messages, not one message that happens to be an array — the same
-        one-level flatten `rakaia.json_mode.process_json_append` performs for
-        the in-memory store. Storing the array whole would also hand a *list*
-        to everything that reads `StreamEvent.data` expecting an object.
-
-        Validation happens here, before any row is written, so a malformed body
-        raises `InvalidJson` / `EmptyJsonArray` rather than leaving a partial
-        append behind.
-        """
-        if not is_json_content_type(stream.content_type):
-            return [encode_payload(data, stream.content_type)]
-
-        # `process_json_append` validates and flattens, and now returns one
-        # payload per message rather than a framed blob — so its result is the
-        # split, and this no longer re-parses the body to redo the same work.
-        payloads = process_json_append(data, is_initial_create=is_initial_create)
-        if not payloads:
-            # An empty array on create: a stream with no messages yet.
-            return []
-        return [(json.loads(payload), None) for payload in payloads]
-
-    def _write(
-        self,
-        stream: Stream,
-        data: bytes,
-        opts: Any,
-        *,
-        is_initial_create: bool = False,
-    ) -> list[tuple[StreamMessage, int]]:
-        """Persist one append and return its messages in protocol shape, each
-        with the id of the `StreamEvent` row it became.
-
-        One message per stored payload — more than one only for a JSON-mode
-        array append (see `_payloads_for`). The envelope on `opts` is copied
-        onto each, as the in-memory store does when it flattens.
-
-        The rows themselves are written by `write_enveloped_event`, shared with
-        `@stream_model`; what stays here is turning the written rows back into
-        protocol messages.
-        """
-        payloads = self._payloads_for(stream, data, is_initial_create=is_initial_create)
-        if not payloads:
-            return []
-
-        label = getattr(opts, "label", "") or ""
-        event_ts = getattr(opts, "event_ts", None)
-        tags, correlation_id = tags_and_correlation(opts)
-
-        messages: list[tuple[StreamMessage, int]] = []
-        for value, encoding in payloads:
-            event, (entry,) = write_enveloped_event(
-                [stream],
-                value,
-                label=label,
-                metadata=getattr(opts, "metadata", None),
-                event_ts=event_ts,
+    def _write_plan(
+        self, stream: Stream, plan: AppendPlan
+    ) -> list[tuple[StreamMessage, int] | None]:
+        """Write the plan's events, returning per item the last message it
+        became, with its event id — the stream's new head, which is what a
+        caller resumes from — or None for an item that writes nothing."""
+        writes: list[PlannedWrite] = [w for w in plan.writes if w is not None]
+        events = [
+            NewEvent(
+                data=value,
+                event_type=write.label or _APPEND_EVENT_TYPE,
+                metadata=write.metadata,
+                event_ts=write.event_ts,
                 payload_encoding=encoding,
-                tags=tags,
-                correlation_id=correlation_id,
+                tags=write.tags,
+                correlation_id=write.correlation_id,
             )
-            messages.append((message_of(entry, tags=tags), event.id))
-        return messages
+            for write in writes
+            for value, encoding in (
+                self._stored_value(stream.content_type, payload)
+                for payload in write.payloads
+            )
+        ]
+        _rows, (entries,) = write_events([stream], events)
+        results: list[tuple[StreamMessage, int] | None] = []
+        cursor = 0
+        for write in plan.writes:
+            if write is None or not write.payloads:
+                results.append(None)
+                continue
+            cursor += len(write.payloads)
+            last = entries[cursor - 1]
+            results.append((message_of(last, tags=write.tags), last.event.id))
+        return results
 
     # =========================================================================
     # Producer fencing
@@ -903,85 +818,42 @@ class DjangoStreamStore:
     def append_many(
         self, path: str, events: Iterable[tuple[bytes, Any]]
     ) -> list[AppendResult]:
-        """Append an ordered batch in ONE transaction, returning the entries in
-        input order.
+        """Append an ordered batch in ONE transaction, returning one result per
+        item in input order.
 
-        Semantically identical to calling :meth:`append` once per item — same
-        event rows, same envelope mapping (``label``->``event_type``,
-        per-event ``merge_provenance`` for ``metadata``, ``event_ts``), and the
-        same frames delivered to live subscribers — but it
-        locks the stream's high-water once, allocates a single contiguous offset
-        block for the whole batch (so ``unique_together(stream, offset)`` still
-        holds and concurrent writers serialize exactly as ``append`` does), and
-        ``bulk_create``s the events then the entries. This collapses an N-append
-        seed/replay from N transactions into **one** transaction with a bounded
-        number of queries: the events and entries are each ``bulk_create``d,
-        chunked under the driver's bind-parameter cap, so it is a handful of
-        INSERTs regardless of N (not the 2N a loop of ``append`` issues).
+        Semantically a loop of :meth:`append` — the same rows, the same envelope,
+        the same frames delivered to live subscribers — because both are this:
+        `rakaia.append_decision.plan_appends` decides every item and resolves what
+        it writes, shared with the other two stores, and `write_events` writes it.
+        A refusal anywhere in the batch (a conflict, a body the stream cannot
+        hold, a bad tag) raises before a row is written; a fencing outcome comes
+        back in its own item's slot instead; an item with ``close=True`` closes
+        the stream for the items after it.
 
-        The entries link to the just-created events by instance, which relies on
-        ``bulk_create`` populating primary keys — backends with
-        ``INSERT ... RETURNING`` (Postgres, and the modern SQLite used in CI).
-        The durable store targets Postgres, where this holds.
+        It locks the stream's high-water once and ``bulk_create``s the events,
+        tags and entries, so a batch of N items is a handful of statements
+        rather than the 2N of N transactions. One ``append_many`` holds the
+        watermark lock for the whole batch, which is ideal for exclusive
+        backfills; on a live, high-throughput stream a very large batch would
+        stall concurrent appends, so chunk it caller-side if that matters.
 
-        One ``append_many`` holds the watermark lock for the whole batch, which
-        is ideal for exclusive backfills; on a live, high-throughput stream a
-        very large batch would stall concurrent appends, so chunk it caller-side
-        if that matters.
-
-        Each item is a ``(data, options)`` tuple where ``options`` is an
-        ``AppendOptions`` or ``None`` (a raw append). An empty batch is a no-op
-        that returns ``[]`` without touching the database (so it never raises
-        for a missing stream). A non-empty batch raises ``StreamNotFound`` if
-        the stream does not exist, like :meth:`append`, and returns one
-        ``AppendResult`` per item in input order — one per *item*, not per row:
-        in JSON mode an item whose body is a top-level array flattens into one
-        row per element, exactly as :meth:`append` flattens it, so a batch of N
-        items can write more than N rows and that item's result carries the last
-        of them (#214).
-
-        The rest of :meth:`append`'s semantics hold per item too, because the
-        same ``decide_append`` rule decides every item: a closed stream refuses
-        every item with ``stream_closed=True``; per-item ``content_type`` and
-        ``seq`` are validated, and so is every admitted item's *body* against
-        the stream's content type (the whole batch, before any row is written —
-        a refusal raises and writes nothing, so a JSON-mode stream can no longer
-        take a body that is not JSON, #214); **producer fencing applies per
-        item**, with an item's outcome returned in its own slot rather than
-        aborting its siblings; and an item with ``close=True`` closes the
-        stream, refusing the items after it, exactly as a loop of ``append``
-        would.
-
-        Fencing used to be the exception: this method hand-rolled a shorter
-        admission check that read content type and ``Stream-Seq`` and nothing
-        else, so a batch was never fenced and never recorded the producer state
-        it established (#154). Then the per-item rule was shared but the
-        *batch* rule was still written twice, and the two versions disagreed
-        (#181) — this one short-circuited a closed stream before consulting the
-        rule, so a producer re-sending the append that closed the stream was
-        told a bare "closed" instead of "duplicate". Both levels now go through
-        ``rakaia.append_decision``.
+        An empty batch is a no-op that returns ``[]`` without touching the
+        database, so it never raises for a missing stream; a non-empty one raises
+        ``StreamNotFound`` for one. In JSON mode an item whose body is a
+        top-level array flattens into one row per element, so a batch of N items
+        can write more than N rows, and that item's result carries the last.
         """
         items = list(events)
         if not items:
             return []
 
         with self._locked_write(path) as stream:
-            # Admission, decided by the same rule the in-memory store's batch
-            # path uses, so the two cannot drift on what a batch may do. It owns
-            # both batch-level rules: all-or-nothing on a conflict, and how the
-            # facts advance from item to item — `Stream-Seq` and producer state
-            # only for items actually written, and a close taking effect for the
-            # items after it. Conflicts propagate out (caller errors, and the
-            # whole batch is abandoned); fencing outcomes come back per item, so
-            # a refused item becomes a refusal in its own slot rather than
-            # aborting its siblings.
             producer_ids = {
                 pid
                 for _d, o in items
                 if (pid := getattr(o, "producer_id", None)) is not None
             }
-            batch = decide_append_batch(
+            plan = plan_appends(
                 self._facts(stream),
                 [options for _data, options in items],
                 payloads=[data for data, _options in items],
@@ -990,163 +862,29 @@ class DjangoStreamStore:
                 },
                 now=time.time(),
             )
-            verdicts = batch.verdicts
-
-            # An item the rule refused is not written, but it keeps its slot in
-            # the results so callers still get one answer per input item.
-            admitted = [
-                (item, v) for item, v in zip(items, verdicts, strict=True) if v.write
-            ]
-            written = [item for item, _v in admitted]
-
-            if not batch.writes_anything:
-                # Every item was refused — by the fence, by a close earlier in
-                # the batch, or because the stream was already closed. There is
-                # nothing to allocate an offset block for, and asking for a
-                # block of zero is an error. Each item still gets its own
-                # answer, fencing outcome included.
-                return [
-                    AppendResult(
-                        message=None,
-                        stream_closed=v.stream_closed,
-                        producer_result=v.producer_result,
-                    )
-                    for v in verdicts
-                ]
-
-            # Mirror `append`'s per-event envelope mapping and payload split,
-            # through the same `_payloads_for` — so a JSON array flattens here
-            # exactly as it does there (#214). It used to decline the flatten,
-            # on the grounds that a batch item is one event whose payload may be
-            # a list; that made `append_many` stop being a loop of `append`
-            # within this backend, which is what both surfaces promise, and left
-            # a list in `StreamEvent.data` where `replay()` raises on it.
-            #
-            # So an item can write more than one row, and a batch of N items can
-            # write more than N. Each item keeps exactly one result, carrying the
-            # last of the messages it became — the offset a caller resumes from.
-            # `merge_provenance` stays per *item*, so the events one item
-            # flattens into share its ambient provenance.
-            groups: list[list[StreamEvent]] = []
-            group_tags: list[tuple[str, ...]] = []
-            for data, options in written:
-                metadata = merge_provenance(getattr(options, "metadata", None)) or {}
-                event_type = (getattr(options, "label", "") or "") or _APPEND_EVENT_TYPE
-                event_ts = getattr(options, "event_ts", None)
-                item_tags, correlation_id = tags_and_correlation(options)
-                group_tags.append(item_tags)
-                groups.append(
-                    [
-                        StreamEvent(
-                            data=value,
-                            event_type=event_type,
-                            metadata=metadata,
-                            event_ts=event_ts,
-                            payload_encoding=encoding,
-                            correlation_id=correlation_id,
-                        )
-                        for value, encoding in self._payloads_for(
-                            stream, data, is_initial_create=False
-                        )
-                    ]
-                )
-            stream_events = [event for group in groups for event in group]
-            # The block is reserved before the events are inserted, as
-            # `write_enveloped_event` does, so their `created_at` is taken with
-            # the watermark lock held (#284).
-            start = stream.get_next_offset_block(len(stream_events))
-            self._events().bulk_create(stream_events)
-            # Needs the ids `bulk_create` just set, which every supported
-            # backend returns (Postgres always; SQLite from 3.35).
-            StreamEventTag.objects.using(self._using).bulk_create(
-                StreamEventTag(event=event, tag=tag)
-                for group, tags in zip(groups, group_tags, strict=True)
-                for event in group
-                for tag in tags
+            # An all-refused plan writes nothing and allocates nothing: a refused
+            # append costs only the read that refused it.
+            written = (
+                self._write_plan(stream, plan)
+                if plan.writes_anything
+                else [None] * len(items)
             )
+            self._save_changes(stream, plan)
 
-            entries = [
-                StreamEntry(stream=stream, event=event, offset=start + i)
-                for i, event in enumerate(stream_events)
-            ]
-            self._entries().bulk_create(entries)
-            # `bulk_create` does not fire `post_save`, so the receiver that
-            # publishes single appends never sees these rows — every bulk append
-            # used to be invisible to subscribers (issue #82). Publish them
-            # explicitly rather than saving one at a time, which would undo the
-            # reason this method exists. Inside the transaction, matching the
-            # receiver's existing timing on the `append` path.
-            self._publish(stream.stream_id, entries)
-
-            # Steps 6-9, through the same method `append` uses, so a batch
-            # cannot record its consequences in a different order from a single
-            # write. The batch rule has already reduced the per-item outcomes to
-            # exactly what belongs here: one producer commit each rather than one
-            # per event, the sequence the last written item reached, and the
-            # options of whichever item closed the stream.
-            self._record_write(
-                stream,
-                producer_commits=batch.producer_commits.values(),
-                last_seq=batch.last_seq,
-                closing_opts=batch.closing_opts,
-            )
-
-            # One result per input item, in input order. An item the rule
-            # refused keeps its slot with the outcome to report, rather than
-            # vanishing from the results and shifting every later item's answer
-            # onto the wrong input.
-            # One entry group per written item, in the order the groups were
-            # flattened, so an item that became several messages takes several
-            # entries here and still yields one result.
-            grouped: list[list[StreamEntry]] = []
-            cursor = 0
-            for group in groups:
-                grouped.append(entries[cursor : cursor + len(group)])
-                cursor += len(group)
-            persisted = iter(zip(grouped, group_tags, strict=True))
             results: list[AppendResult] = []
-            for (_data, options), verdict in zip(items, verdicts, strict=True):
-                if not verdict.write:
-                    results.append(
-                        AppendResult(
-                            message=None,
-                            stream_closed=verdict.stream_closed,
-                            producer_result=verdict.producer_result,
-                        )
-                    )
-                    continue
-                item_entries, item_tags = next(persisted)
-                last = item_entries[-1]
+            for verdict, write, landed in zip(
+                plan.verdicts, plan.writes, written, strict=True
+            ):
+                message, event_id = landed if landed is not None else (None, None)
                 results.append(
                     AppendResult(
-                        message=message_of(last, tags=item_tags),
-                        stream_closed=bool(getattr(options, "close", False)),
+                        message=message,
+                        stream_closed=write.close if write else verdict.stream_closed,
                         producer_result=verdict.producer_result,
-                        event_id=last.event.id,
+                        event_id=event_id,
                     )
                 )
             return results
-
-    @staticmethod
-    def _publish(stream_id: str, entries: list[StreamEntry]) -> None:
-        """Publish appended entries to live subscribers.
-
-        The store's own publish step. Delegates to
-        `channels_signals.broadcast_entries`, the single definition of the wire
-        frame, which the `post_save` receiver also uses — so the two write paths
-        cannot describe the same event differently.
-
-        Imported lazily and tolerantly: `channels` is an optional extra
-        (ADR 0002 / #41), and a framework-tier consumer that never installed it
-        must still be able to append.
-        """
-        if not entries:
-            return
-        try:
-            from .channels_signals import broadcast_entries
-        except ImportError:
-            return
-        broadcast_entries(stream_id, entries)
 
     def read(
         self, path: str, offset: str | None = None, *, limit: int | None = None
@@ -1360,7 +1098,7 @@ class DjangoStreamStore:
         or above its retired high mark even before the first re-append, so a
         stale subscriber cursor reads as ``caught_up`` rather than a spurious
         ``rewound`` (#34, Defect #2). Reads the high-water the same way
-        ``Stream.get_next_offset_block`` allocates from it — the watermark row,
+        ``Stream.lock_watermark`` reads it for allocation — the watermark row,
         falling back to the entries only when it has never been advanced — so
         allocation and tail-reporting cannot name different heads.
 

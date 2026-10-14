@@ -1,22 +1,13 @@
-"""Every write path records its consequences through one method, in one order.
+"""What a durable append leaves behind, asserted from the outside.
 
 #183: the durable store had four entry points that write an event, each
-repeating the same nine steps — expire, transaction, lock, admit, write, record
-the producer, save the sequence, close if asked, touch the clock. Two of them
-were near line-for-line copies. The order of those steps is a *rule*, and it was
-written down nowhere, so the only way to learn it was to read three
-implementations. That had already gone wrong: one entry point admitted less than
-the others (#154), and another never read `closed_by` (#167).
-
-Admission became shared first (#167 for a single write, #181 for a batch). What
-was left was the recording half, which is what `_record_write` now owns and this
-file pins. The two claims here are different in kind:
-
-* **Routing** — every write path goes *through* that method. This is the tripwire
-  a fifth entry point trips: hand-rolling the four steps still passes every
-  behavioural test in the suite, exactly as the two copies did for months.
-* **Order** — the steps happen in the order the method documents, asserted from
-  the outside where the order is observable.
+repeating the same steps — admit, write, record the producer, save the sequence,
+close if asked, touch the clock — and the copies drifted (#154, #167). #321 moved
+all of the deciding into `rakaia.append_decision.plan_appends`, which is pinned
+by table tests in `tests/test_rakaia/test_append_decision.py`; every write path
+is now a plan applied by one method, so the routing tripwire that lived here has
+nothing left to catch. What stays is the behaviour the plan promises, observed on
+the database.
 """
 
 from __future__ import annotations
@@ -34,88 +25,6 @@ pytestmark = pytest.mark.django_db
 
 def _producer(pid: str, epoch: int, seq: int, **kw) -> AppendOptions:
     return AppendOptions(producer_id=pid, producer_epoch=epoch, producer_seq=seq, **kw)
-
-
-class TestEveryWritePathRecordsThroughOneMethod:
-    """The routing claim, per entry point.
-
-    Asserted by counting calls rather than by checking the rows: the rows are
-    identical whether a path calls the shared method or repeats its four steps
-    inline, which is precisely why the copies survived. What must be true is that
-    there is only one copy left.
-    """
-
-    @pytest.fixture
-    def counted(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-        calls: list[dict] = []
-        original = DjangoStreamStore._record_write
-
-        def recording(self, stream, **kwargs):
-            calls.append(kwargs)
-            return original(self, stream, **kwargs)
-
-        monkeypatch.setattr(DjangoStreamStore, "_record_write", recording)
-        return calls
-
-    def test_a_plain_append_records_through_it(self, counted: list[dict]) -> None:
-        store = DjangoStreamStore()
-        store.create("s", content_type="application/json")
-
-        store.append("s", b'{"n": 1}')
-
-        assert len(counted) == 1
-
-    def test_a_fenced_append_records_through_it(self, counted: list[dict]) -> None:
-        store = DjangoStreamStore()
-        store.create("s", content_type="application/json")
-
-        store.append("s", b'{"n": 1}', _producer("p", 1, 0))
-
-        assert len(counted) == 1
-
-    def test_a_batch_records_through_it_once_for_the_whole_batch(
-        self, counted: list[dict]
-    ) -> None:
-        """Once, not once per item: the recording is per *write*, and a batch is
-        one write. Per-item would restore the query cost `append_many` exists to
-        avoid."""
-        store = DjangoStreamStore()
-        store.create("s", content_type="application/json")
-
-        store.append_many(
-            "s", [(b'{"n": 1}', AppendOptions()), (b'{"n": 2}', AppendOptions())]
-        )
-
-        assert len(counted) == 1
-
-    def test_create_with_a_body_is_the_documented_exception(
-        self, counted: list[dict]
-    ) -> None:
-        """The one write path that does not come through it, asserted rather than
-        assumed: `create`'s `initial_data` has no producer, no `Stream-Seq` and
-        no close to record, and the row it inserts carries `last_activity_at`
-        already. Here so the docstring's exception is a checked claim — if
-        `create` ever grows one of those, this test is what says so."""
-        store = DjangoStreamStore()
-
-        store.create("s", content_type="application/json", initial_data=b'{"n": 1}')
-
-        assert counted == []
-        assert StreamEntry.objects.count() == 1
-        assert Stream.objects.get(stream_id="s").last_activity_at is not None
-
-    def test_a_refused_write_records_nothing(self, counted: list[dict]) -> None:
-        """Nothing landed, so there is nothing whose consequences to record —
-        and advancing the producer here would reject the retry that legitimately
-        follows."""
-        store = DjangoStreamStore()
-        store.create("s", content_type="application/json")
-        store.close_stream("s")
-
-        result = store.append("s", b'{"n": 1}')
-
-        assert result.stream_closed and result.message is None
-        assert counted == []
 
 
 class TestAFencedAppendIsAnAppend:
@@ -142,11 +51,9 @@ class TestAFencedAppendIsAnAppend:
 class TestTheOrderIsTheRule:
     """The steps whose position is observable from outside.
 
-    Not all four are. `_record_write` runs inside one transaction, so swapping
-    the close and the TTL touch produces identical rows — that ordering is
-    rationale for a reader, argued in the method's docstring, and deliberately
-    not asserted here. Claiming a test for it would be worse than having none:
-    the two steps below *are* pinned, and each was checked by breaking it.
+    The stream row's own changes — sequence, close, TTL — are one save since
+    #321, so there is no order among them left to observe. The two below *are*
+    observable, and each was checked by breaking it.
     """
 
     def test_a_closing_append_lands_its_own_event(self) -> None:
