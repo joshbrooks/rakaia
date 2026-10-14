@@ -97,11 +97,13 @@ def test_a_ref_is_resolved_to_the_row_a_sibling_produced():
             Upsert("a.Parent", {"k": 1}, {}, produces="p"),
             Update("a.Child", {"parent_id": Ref("p")}, {"n": 1}),
             Delete("a.Child", {"parent_id": Ref("p"), "gone": True}),
+            Retire("a.Child", {"parent_id": Ref("p")}, patch={"open": False}),
         ]
     )
-    (_, updates), (_, deleted) = rec.calls[1], rec.calls[2]
+    (_, updates), (_, deleted), (_, retired) = rec.calls[1], rec.calls[2], rec.calls[3]
     assert updates[0].lookup == {"parent_id": 101}
     assert deleted.lookup == {"parent_id": 101, "gone": True}
+    assert retired.lookup == {"parent_id": 101}
 
 
 def test_the_report_counts_what_each_upsert_did():

@@ -53,9 +53,10 @@ def apply_effects(
 
     A run of consecutive `Update`s within a pass is handed over in one call, so
     an executor can collapse a fanned-out change into one statement (#199). The
-    run ends at the first effect of any other kind, which is what keeps a `Ref`
-    in an update's lookup resolvable: it binds to a row an earlier `Upsert`
-    materialised, and the run is handed over before that upsert's successors.
+    run ends at the first effect of any other kind, so the writes still land in
+    the order they were emitted: an update emitted before an upsert is applied
+    before it. A run whose `Ref` cannot be resolved raises before any of it is
+    handed over.
     """
     effects_list = list(effects)
     check_disjoint_defaults(effects_list)

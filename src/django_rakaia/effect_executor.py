@@ -258,8 +258,7 @@ class DjangoExecutor:
           the column. Guarding the key closed one of those; this closes all of
           them, since each needs a non-idempotent write to become visible.
         * Order *between* groups is preserved, and a run ends at the first
-          non-update, so nothing moves across an `Upsert` — which is what keeps a
-          `Ref` in a later lookup resolvable.
+          non-update, so no update moves across an `Upsert` emitted after it.
 
         The run arrives with its Refs resolved, which grouping needs: two effects
         are only alike once a `Ref` standing in for a sibling's row has been
