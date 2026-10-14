@@ -144,3 +144,27 @@ def test_the_database_option_prunes_that_alias_only():
 
     assert _all("overlay") == kept
     assert _all() == {on_default}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_protected_subclassed_orphan_is_kept_whole():
+    """A protected event stops the prune with nothing deleted, including the
+    subclass row an app keeps its own columns in. Those rows are deleted in a
+    step of their own before the events, and once committed on their own before
+    the protection was found."""
+    from django.db.models import ProtectedError
+
+    from tests.test_django_rakaia.models import (
+        AppStreamEvent,
+        IncidentRecord,
+        subclass_every_event,
+    )
+
+    orphan = _orphan(1)
+    subclass_every_event()
+    IncidentRecord.objects.create(event_id=orphan)
+
+    with pytest.raises(ProtectedError):
+        call_command("prune_orphan_events", stdout=io.StringIO())
+
+    assert AppStreamEvent.objects.filter(pk=orphan).exists()

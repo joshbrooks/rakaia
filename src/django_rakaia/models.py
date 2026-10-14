@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import unquote
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Max
 
 from rakaia.types import MAX_CORRELATION_ID_LENGTH, MAX_TAG_LENGTH, ClosedBy
@@ -454,6 +454,9 @@ def delete_events(events: "models.QuerySet[StreamEvent]") -> int:
     subclass first and in bulk, keeping their parents; by the time the events
     themselves are deleted there is nothing below them left to walk. Returns how
     many `StreamEvent` rows were deleted.
+
+    Both steps share one transaction on the queryset's alias, so a protected
+    event that stops the second step leaves its subclass row in place too.
     """
     from django.apps import apps
     from django.db.models.deletion import Collector
@@ -468,16 +471,19 @@ def delete_events(events: "models.QuerySet[StreamEvent]") -> int:
         and not model._meta.proxy
     ]
     subclasses.sort(key=lambda model: len(model._meta.get_parent_list()), reverse=True)
-    for model in subclasses:
-        collector = Collector(using=alias)
-        collector.collect(
-            model._meta.base_manager.using(alias).filter(pk__in=pks).only("pk"),
-            keep_parents=True,
-        )
-        # The stubs declare `Collector.collect` but not the `delete` that
-        # `QuerySet.delete` itself calls on it.
-        collector.delete()  # pyright: ignore[reportAttributeAccessIssue]
-    _, per_model = events.only("pk").delete()
+    # No savepoint: inside a caller's transaction (a stream delete, chunk by
+    # chunk) one would add two statements per chunk and buy nothing.
+    with transaction.atomic(using=alias, savepoint=False):
+        for model in subclasses:
+            collector = Collector(using=alias)
+            collector.collect(
+                model._meta.base_manager.using(alias).filter(pk__in=pks).only("pk"),
+                keep_parents=True,
+            )
+            # The stubs declare `Collector.collect` but not the `delete` that
+            # `QuerySet.delete` itself calls on it.
+            collector.delete()  # pyright: ignore[reportAttributeAccessIssue]
+        _, per_model = events.only("pk").delete()
     return per_model.get(StreamEvent._meta.label, 0)
 
 
