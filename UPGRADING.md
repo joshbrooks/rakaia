@@ -82,8 +82,8 @@ Nothing here raises, which is why it is written down.
   rows filled in; existing rows are not touched, so no migration runs.
 - **A bad tag or correlation id on an append that is refused anyway is no longer
   an error.** The stores disagreed: the in-memory store, and a batch on the file
-  store, checked them before deciding, so a bad tag on a closed stream raised
-  `ValueError` there, while the database store and a single append on the file
+  store, checked them whatever the decision, so a bad tag on a closed stream
+  raised `ValueError` there, while the database store and a single append on the file
   store answered "closed". Every store now checks them
   only for an append that will be written, as it already did for the body.
 - **A stream's initial `PUT` body no longer records the ambient `provenance()` on

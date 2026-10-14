@@ -180,14 +180,14 @@ def test_fanning_into_the_same_streams_in_opposite_orders_does_not_deadlock(
 ) -> None:
     """Two events fanned into the same two streams, listed in opposite orders.
 
-    Each allocation holds its stream's watermark lock until the transaction
+    Each watermark lock is held until the transaction
     ends. If `write_enveloped_event` locks in the order the caller listed the
     streams, writer A takes `left` and writer B takes `right`, and then each
     waits for the other's: Postgres aborts one of them with a deadlock error.
     Locking in one agreed order (by stream path) makes the second writer queue
     behind the first on its very first lock instead.
 
-    The interleave is forced, not hoped for. After its first allocation each
+    The interleave is forced, not hoped for. After its first watermark lock each
     writer announces it and waits -- briefly, and without failing if the wait
     runs out -- for the other writer to announce too. When locks are taken in
     caller order both writers get there, both go on to their second stream,
@@ -265,7 +265,7 @@ def test_a_model_save_and_a_protocol_append_on_one_stream_do_not_deadlock(
 
     The interleave is forced the same way as the fan-out test above: the save
     announces once it holds the watermark, the append announces once it holds
-    the row and is about to reserve, and each waits briefly, without failing,
+    the row and is about to lock the watermark, and each waits briefly, without failing,
     for the other. With the old order both get there and deadlock every time;
     with the fix the second is still blocked on the row, the first's wait runs
     out, and both commit.
