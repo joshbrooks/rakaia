@@ -89,6 +89,7 @@ from .models import (
     StreamEventTag,
     StreamOffsetWatermark,
     StreamProducer,
+    delete_events,
 )
 
 # Re-exported: the payload helpers used to live here, and `format_offset` has
@@ -1374,9 +1375,12 @@ class DjangoStreamStore:
                     break
                 last = chunk[-1][0]
                 self._entries().filter(pk__in=[pk for pk, _ in chunk]).delete()
-                self._events().filter(
-                    pk__in={event_id for _, event_id in chunk}, entries__isnull=True
-                ).only("pk").delete()
+                delete_events(
+                    self._events().filter(
+                        pk__in={event_id for _, event_id in chunk},
+                        entries__isnull=True,
+                    )
+                )
             self._streams().filter(pk=stream_pk).delete()
         return True
 

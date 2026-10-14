@@ -98,6 +98,31 @@ class TestPruneOrphanEventsCommand:
         sql = [q["sql"] for q in ctx.captured_queries]
         assert [q for q in sql if '"data"' in q or '"metadata"' in q] == []
 
+    def test_a_subclassed_event_model_costs_no_query_per_event(self):
+        """#305: an app that extends `StreamEvent` has a subclass row under each
+        orphan, and Django deletes those by fetching every parent row, payload
+        included, one query each."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from tests.test_django_rakaia.models import (
+            AppStreamEvent,
+            subclass_every_event,
+        )
+
+        costs = {}
+        for n in (1, 20):
+            for i in range(n):
+                _orphan(i)
+            subclass_every_event()
+            with CaptureQueriesContext(connection) as ctx:
+                call_command("prune_orphan_events", stdout=io.StringIO())
+            sql = [q["sql"] for q in ctx.captured_queries]
+            assert [q for q in sql if '"data"' in q] == []
+            costs[n] = len(sql)
+        assert not AppStreamEvent.objects.exists()
+        assert costs[1] == costs[20], costs
+
     def test_a_batch_size_below_one_is_refused(self):
         from django.core.management.base import CommandError
 
@@ -119,3 +144,27 @@ def test_the_database_option_prunes_that_alias_only():
 
     assert _all("overlay") == kept
     assert _all() == {on_default}
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+@pytest.mark.parametrize("using", ["default", "overlay"])
+def test_a_protected_subclassed_orphan_is_kept_whole(using):
+    """A protected event stops the prune with nothing deleted, including the
+    subclass row an app keeps its own columns in, on whichever database the
+    prune was pointed at."""
+    from django.db.models import ProtectedError
+
+    from tests.test_django_rakaia.models import (
+        AppStreamEvent,
+        IncidentRecord,
+        subclass_every_event,
+    )
+
+    orphan = _orphan(1, using)
+    subclass_every_event(using)
+    IncidentRecord.objects.using(using).create(event_id=orphan)
+
+    with pytest.raises(ProtectedError):
+        call_command("prune_orphan_events", "--database", using, stdout=io.StringIO())
+
+    assert AppStreamEvent.objects.using(using).filter(pk=orphan).exists()
