@@ -633,9 +633,13 @@ class DjangoStreamStore:
         safely repeat its close.
         """
         if producer_id is None or producer_epoch is None or producer_seq is None:
-            return await sync_to_async(self.close_stream)(path)
-        return await sync_to_async(self._close_with_producer_sync)(
-            path, producer_id, producer_epoch, producer_seq
+            return await self.run_sync(self.close_stream, path)
+        return await self.run_sync(
+            self._close_with_producer_sync,
+            path,
+            producer_id,
+            producer_epoch,
+            producer_seq,
         )
 
     def _close_with_producer_sync(
@@ -697,7 +701,10 @@ class DjangoStreamStore:
                     "closed_by_seq",
                 ]
             )
-            return CloseResult(final_offset=stream.current_offset)
+            return CloseResult(
+                final_offset=stream.current_offset,
+                producer_result=verdict.producer_result,
+            )
 
     def append(self, path: str, data: bytes, options: Any = None) -> AppendResult:
         """Append one event, assigning the next monotonic offset.
@@ -917,7 +924,7 @@ class DjangoStreamStore:
         durable stream are typically different processes, which an in-process
         lock would not see.
         """
-        return await sync_to_async(self._append_with_producer_sync)(path, data, options)
+        return await self.run_sync(self._append_with_producer_sync, path, data, options)
 
     def _append_with_producer_sync(
         self, path: str, data: bytes, options: Any = None
@@ -1419,7 +1426,7 @@ class DjangoStreamStore:
         deadline = time.monotonic() + timeout_seconds
         entered = False
         while True:
-            stream = await sync_to_async(self._get_if_not_expired)(path)
+            stream = await self.run_sync(self._get_if_not_expired, path)
             if stream is None:
                 if not entered:
                     raise StreamNotFound(f"Stream not found: {path}")
@@ -1429,12 +1436,12 @@ class DjangoStreamStore:
                 return [], True, False
             entered = True
 
-            messages = await sync_to_async(self._read_since)(stream, offset)
+            messages = await self.run_sync(self._read_since, stream, offset)
             if messages:
                 # The TTL window is extended once, on the way out — not on
                 # every tick. Polling through `read` wrote `last_activity_at`
                 # 20 times a second for each waiter on a stream with a TTL.
-                await sync_to_async(self._touch)(stream)
+                await self.run_sync(self._touch, stream)
                 return messages, False, False
 
             if stream.closed:

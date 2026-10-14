@@ -644,3 +644,62 @@ async def test_a_write_blocked_on_the_lock_does_not_stall_the_event_loop(store, 
         "lock — the wait was taken on the loop instead of in a thread"
     )
     assert len(_offsets_on_disk(root)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", ["append", "close"])
+async def test_a_fenced_write_blocked_on_the_lock_does_not_stall_the_event_loop(
+    store, root, call
+):
+    """The same property for a producer's fenced append and fenced close.
+
+    Every fenced write the server receives goes through these two coroutines
+    rather than `run_sync`, so they have to make the thread hop themselves.
+    Both once called the locked write directly, which parked the event loop on
+    `flock` for as long as another writer held the file.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+
+    def holder() -> None:
+        with store._locked(PATH) as (meta, buffer):
+            store._write(meta, buffer, b'{"holder": true}')
+            holding.set()
+            assert release.wait(timeout=10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert holding.wait(timeout=10)
+
+        ticks = 0
+        done = asyncio.Event()
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not done.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        async def blocked_writer() -> None:
+            other = JsonlStreamStore(root, segment_size=8)
+            await asyncio.sleep(0.05)
+            asyncio.get_running_loop().call_later(0.3, release.set)
+            if call == "append":
+                opts = AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)
+                await other.append_with_producer(PATH, b'{"waiter": true}', opts)
+            else:
+                await other.close_stream_with_producer(PATH, "p", 0, 0)
+            done.set()
+
+        tick_task = asyncio.create_task(ticker())
+        await asyncio.wait_for(blocked_writer(), timeout=15)
+        await tick_task
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+    assert ticks > 10, (
+        f"the event loop only ticked {ticks} times while a fenced {call} waited "
+        "on the lock — the wait was taken on the loop instead of in a thread"
+    )

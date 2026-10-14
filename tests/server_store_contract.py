@@ -691,6 +691,18 @@ class ServerStoreContract:
         by = (await self._sync(store.get, "s")).closed_by
         assert by is not None and by.producer_id == "p1", "closed_by must not move"
 
+    async def test_a_fenced_close_reports_the_producer_accepted(self, store):
+        """A close that lands says so, the way a fenced append does.
+
+        The server reads a missing result as accepted, so this never showed over
+        HTTP; a caller of the store saw `None` from one store and
+        `ProducerAccepted` from the other two.
+        """
+        await self._sync(store.create, "s")
+        result = await store.close_stream_with_producer("s", "p", 0, 0)
+        assert result.already_closed is False
+        assert isinstance(result.producer_result, ProducerAccepted)
+
     async def test_a_retried_closing_tuple_is_a_duplicate(self, store):
         await self._sync(store.create, "s")
         await store.close_stream_with_producer("s", "p", 0, 0)

@@ -194,6 +194,39 @@ async def test_run_sync_guard_does_not_block_an_unguarded_alias():
 
 
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("call", ["append", "close", "wait"])
+async def test_the_guard_survives_the_store_s_own_async_calls(call):
+    """The fenced writes and long-poll carry the guard across their thread hop.
+
+    They are coroutines the server awaits directly rather than through
+    `run_sync`, and all three once hopped with a bare `sync_to_async`, which
+    stepped past the guard exactly the way `run_sync` did before #147.
+
+    The `wait` case pins only that the long-poll is guarded at all: its first
+    database call raises, so the later ones are never reached here.
+    """
+    from django_rakaia.django_store import DjangoStreamStore
+    from rakaia.types import AppendOptions
+
+    store = DjangoStreamStore()
+    await store.run_sync(store.create, "guarded-async")
+
+    with deny_database_access("default"), pytest.raises(AmbientDatabaseAccess):
+        if call == "append":
+            opts = AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)
+            await store.append_with_producer("guarded-async", b'{"x": 1}', opts)
+        elif call == "close":
+            await store.close_stream_with_producer("guarded-async", "p", 0, 0)
+        else:
+            await store.wait_for_messages("guarded-async", "-1", 0.01)
+
+    stream = await store.run_sync(store.get, "guarded-async")
+    assert stream.closed is False
+    messages, _up_to_date = await store.run_sync(store.read, "guarded-async")
+    assert messages == []
+
+
+@pytest.mark.django_db(transaction=True)
 def test_deny_database_access_does_hold_on_the_calling_thread():
     """The control for the test above: same guard, no thread hop, blocks."""
     from django_rakaia.django_store import DjangoStreamStore
