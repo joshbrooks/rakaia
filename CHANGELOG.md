@@ -22,7 +22,8 @@ runnable demo for each.
   stream's initial `PUT` body no longer records the ambient `provenance()` on the
   database store. The database store also writes every event through one batch
   writer, so a single append and `@stream_model` publish their entries the same
-  way a batch does. See `UPGRADING.md`.
+  way a batch does — and, like a batch, no longer fire `post_save` on the event
+  and entry rows. See `UPGRADING.md`.
 
 - **The protocol server now does its own waiting and response framing, and a
   store only answers plain questions.** `StreamServerStore` loses

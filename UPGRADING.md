@@ -61,9 +61,17 @@ one async method, `run_sync`, which says how to call it from the event loop.
 Both are synchronous, so from async code on a database store go through
 `await store.run_sync(...)`, as before.
 
-## Three quiet changes to what an append records
+## Four quiet changes to what an append records
 
 Nothing here raises, which is why it is written down.
+
+- **The rows rakaia writes no longer fire `post_save`.** A single append and a
+  `@stream_model` save created their `StreamEvent` and `StreamEntry` rows one at a
+  time, so a receiver on either model ran for them; a batch never fired it. Every
+  path now writes in bulk, as the batch did. rakaia's own live-update publishing
+  does not depend on the signal. A receiver of your own on those two models stops
+  seeing rakaia's writes: read the stream, or subscribe to its channel group,
+  instead.
 
 - **`DjangoStreamStore` stamps an append that sets no `event_ts`.** It stored
   `NULL` in `StreamEvent.event_ts` for a plain protocol append, and readers fell
