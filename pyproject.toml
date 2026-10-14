@@ -3,7 +3,7 @@
 # PyPI by an unrelated placeholder. The import name is unaffected:
 #   pip install rakaia-streams   ->   import rakaia
 name = "rakaia-streams"
-version = "0.8.0"
+version = "0.8.1"
 description = "Python server implementation of the Durable Streams protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -91,8 +91,9 @@ build-backend = "hatchling.build"
 # `<0.12` — `brew install uv` could no longer produce anything satisfying it.
 # Bumping is a coordinated edit of this line and the five workflow pins; check
 # first that the new version leaves `uv.lock` untouched (0.11.32 and 0.12.10
-# were verified to emit byte-identical lockfiles, both at `revision = 3`; so
-# were 0.12.10 and 0.13.0).
+# were verified to emit byte-identical lockfiles, both at `revision = 3`).
+# 0.13.0 leaves a current lock alone but writes `revision = 5` on any change; the
+# first lock it wrote was 0.8.1's version bump, which carried that one line.
 required-version = ">=0.13.0,<0.14"
 
 [tool.hatch.build.targets.wheel]

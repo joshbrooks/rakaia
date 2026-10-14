@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-14
+
 ### Fixed
 
 - **A producer's write to a file-backed stream no longer stalls the server.**
