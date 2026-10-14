@@ -76,6 +76,13 @@ class AppStreamEvent(StreamEvent):
         db_table = "test_app_streamevent"
 
 
+def subclass_every_event() -> None:
+    """Give every existing event an `AppStreamEvent` row, as an app that extends
+    the event model would have. Only the subclass row is written."""
+    for event in StreamEvent.objects.all():
+        AppStreamEvent(streamevent_ptr=event).save_base(raw=True)
+
+
 def to_user_data(instance: User) -> UserData:
     """Convert User model to UserData dataclass."""
     return UserData(

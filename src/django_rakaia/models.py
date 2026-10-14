@@ -444,6 +444,43 @@ class StreamEvent(models.Model):
         )
 
 
+def delete_events(events: "models.QuerySet[StreamEvent]") -> int:
+    """Delete `events`, any subclass rows included, in a fixed number of queries.
+
+    Django deletes an event that has a multi-table subclass row by fetching each
+    subclass row's parent one at a time, payload and all, so a delete cost one
+    query per event on any app that extends `StreamEvent` (#305). Preloading the
+    parent link does not stop it. The subclass rows go first instead, deepest
+    subclass first and in bulk, keeping their parents; by the time the events
+    themselves are deleted there is nothing below them left to walk. Returns how
+    many `StreamEvent` rows were deleted.
+    """
+    from django.apps import apps
+    from django.db.models.deletion import Collector
+
+    alias = events.db
+    pks = events.values("pk")
+    subclasses = [
+        model
+        for model in apps.get_models()
+        if issubclass(model, StreamEvent)
+        and model is not StreamEvent
+        and not model._meta.proxy
+    ]
+    subclasses.sort(key=lambda model: len(model._meta.get_parent_list()), reverse=True)
+    for model in subclasses:
+        collector = Collector(using=alias)
+        collector.collect(
+            model._meta.base_manager.using(alias).filter(pk__in=pks).only("pk"),
+            keep_parents=True,
+        )
+        # The stubs declare `Collector.collect` but not the `delete` that
+        # `QuerySet.delete` itself calls on it.
+        collector.delete()  # pyright: ignore[reportAttributeAccessIssue]
+    _, per_model = events.only("pk").delete()
+    return per_model.get(StreamEvent._meta.label, 0)
+
+
 class StreamEventTag(models.Model):
     """One tag a producer attached to an event (`AppendOptions.tags`).
 

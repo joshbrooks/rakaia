@@ -28,6 +28,7 @@ from django_rakaia.django_store import DjangoStreamStore, write_enveloped_event
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
 from rakaia.types import DeleteNotAllowed, ExpiryNotAllowed
 from tests.asgi_client import asgi_client
+from tests.test_django_rakaia.models import AppStreamEvent, subclass_every_event
 
 JSON = {"content-type": "application/json"}
 
@@ -411,6 +412,21 @@ class TestDeleteCost:
         # chunking; a fixed ceiling on the total only measured how many such
         # tables there happened to be.
         assert per_chunk < 10, costs
+
+    def test_a_subclassed_event_model_still_costs_a_query_per_chunk(self):
+        """#305: an app that extends `StreamEvent` has a subclass row under each
+        event, and Django deletes those by fetching every parent row, payload
+        included, one query each."""
+        costs = {}
+        for n in (11, 20):
+            StreamEvent.objects.all().delete()
+            store = _stream_of(n, f"s{n}")
+            subclass_every_event()
+            queries = _delete_queries(store, f"s{n}")
+            assert [q for q in queries if '"data"' in q] == []
+            costs[n] = len(queries)
+        assert not AppStreamEvent.objects.exists()
+        assert costs[11] == costs[20], costs
 
     def test_the_ids_are_read_a_chunk_at_a_time(self):
         """The stream's ids are never held in one piece: one read per chunk."""

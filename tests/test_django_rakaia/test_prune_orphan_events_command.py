@@ -98,6 +98,31 @@ class TestPruneOrphanEventsCommand:
         sql = [q["sql"] for q in ctx.captured_queries]
         assert [q for q in sql if '"data"' in q or '"metadata"' in q] == []
 
+    def test_a_subclassed_event_model_costs_no_query_per_event(self):
+        """#305: an app that extends `StreamEvent` has a subclass row under each
+        orphan, and Django deletes those by fetching every parent row, payload
+        included, one query each."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from tests.test_django_rakaia.models import (
+            AppStreamEvent,
+            subclass_every_event,
+        )
+
+        costs = {}
+        for n in (1, 20):
+            for i in range(n):
+                _orphan(i)
+            subclass_every_event()
+            with CaptureQueriesContext(connection) as ctx:
+                call_command("prune_orphan_events", stdout=io.StringIO())
+            sql = [q["sql"] for q in ctx.captured_queries]
+            assert [q for q in sql if '"data"' in q] == []
+            costs[n] = len(sql)
+        assert not AppStreamEvent.objects.exists()
+        assert costs[1] == costs[20], costs
+
     def test_a_batch_size_below_one_is_refused(self):
         from django.core.management.base import CommandError
 

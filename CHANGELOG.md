@@ -23,6 +23,10 @@ runnable demo for each.
   and long-poll.** They moved their database work to a thread without carrying
   the guard, the same gap #147 closed for `run_sync`, so a hermetic check could
   pass while they wrote.
+- **Deleting a stream, or running `prune_orphan_events`, no longer costs a query
+  per event for an app that extends `StreamEvent`.** Django fetched each
+  subclass row's parent one at a time, payload included; the subclass rows are
+  now deleted in bulk first, so the cost is per batch again.
 
 ## [0.8.0] - 2026-10-06
 

@@ -10,7 +10,7 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import DEFAULT_DB_ALIAS
 
-from django_rakaia.models import StreamEvent
+from django_rakaia.models import StreamEvent, delete_events
 
 
 class Command(BaseCommand):
@@ -75,8 +75,7 @@ class Command(BaseCommand):
                 # No re-check for an entry here: entries are only ever written
                 # with a new event, in its own transaction, so an orphan cannot
                 # gain one.
-                _, per_model = events.filter(pk__in=pks).only("pk").delete()
-                count += per_model.get(StreamEvent._meta.label, 0)
+                count += delete_events(events.filter(pk__in=pks))
 
         mode = "DRY RUN" if dry_run else "DELETED"
         self.stdout.write(
