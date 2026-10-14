@@ -9,6 +9,21 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A producer's write to a file-backed stream no longer stalls the server.**
+  Fenced appends and fenced closes on `JsonlStreamStore` took the file lock on
+  the server's event loop, so while another process held the file every open
+  connection waited. They now run in a thread like the store's other calls.
+- **A fenced close on `DjangoStreamStore` now reports the producer as
+  accepted**, as the other two stores already did. The server treated the
+  missing result as accepted, so nothing changed over HTTP; code calling the
+  store directly got `None` instead of `ProducerAccepted`.
+- **`deny_database_access` now also guards `DjangoStreamStore`'s fenced writes
+  and long-poll.** They moved their database work to a thread without carrying
+  the guard, the same gap #147 closed for `run_sync`, so a hermetic check could
+  pass while they wrote.
+
 ## [0.8.0] - 2026-10-06
 
 ### Changed

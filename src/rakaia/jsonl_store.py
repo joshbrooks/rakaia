@@ -1026,11 +1026,13 @@ class JsonlStreamStore:
     async def append_with_producer(
         self, path: str, data: bytes, options: Any = None
     ) -> AppendResult:
+        # The write takes the file lock, so it runs in a thread like every
+        # other call the server makes; see `run_sync`.
         opts = options or AppendOptions()
         if not opts.producer_id:
-            return self.append(path, data, opts)
+            return await self.run_sync(self.append, path, data, opts)
         async with self._get_producer_lock(path, opts.producer_id):
-            return self.append(path, data, opts)
+            return await self.run_sync(self.append, path, data, opts)
 
     # =========================================================================
     # Close
@@ -1055,40 +1057,53 @@ class JsonlStreamStore:
         self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
     ) -> CloseResult | None:
         async with self._get_producer_lock(path, producer_id):
-            if self._live_meta(path) is None:
-                return None
-            try:
-                with self._locked(path) as (meta, _buffer):
-                    verdict = decide_append(
-                        StreamFacts(closed=meta.closed, closed_by=meta.closed_by),
-                        AppendOptions(
-                            producer_id=producer_id,
-                            producer_epoch=producer_epoch,
-                            producer_seq=producer_seq,
-                        ),
-                        producer_state=self._producer_state(meta, producer_id),
-                        now=time.time(),
-                    )
-                    if not verdict.write:
-                        return CloseResult(
-                            final_offset=PLAIN.render(meta.head),
-                            already_closed=verdict.stream_closed,
-                            producer_result=verdict.producer_result,
-                        )
-                    self._commit_producer(meta, verdict.producer_result)
-                    meta.closed = True
-                    meta.closed_by = ClosedBy(
-                        producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
-                    )
-                    self._touch(path, meta)
+            return await self.run_sync(
+                self._close_with_producer_sync,
+                path,
+                producer_id,
+                producer_epoch,
+                producer_seq,
+            )
+
+    def _close_with_producer_sync(
+        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
+    ) -> CloseResult | None:
+        """The fenced close itself. It takes the file lock, so the coroutine
+        above runs it in a thread."""
+        if self._live_meta(path) is None:
+            return None
+        try:
+            with self._locked(path) as (meta, _buffer):
+                verdict = decide_append(
+                    StreamFacts(closed=meta.closed, closed_by=meta.closed_by),
+                    AppendOptions(
+                        producer_id=producer_id,
+                        producer_epoch=producer_epoch,
+                        producer_seq=producer_seq,
+                    ),
+                    producer_state=self._producer_state(meta, producer_id),
+                    now=time.time(),
+                )
+                if not verdict.write:
                     return CloseResult(
                         final_offset=PLAIN.render(meta.head),
-                        already_closed=False,
+                        already_closed=verdict.stream_closed,
                         producer_result=verdict.producer_result,
                     )
-            except _Expired:
-                self.delete(path)
-                return None
+                self._commit_producer(meta, verdict.producer_result)
+                meta.closed = True
+                meta.closed_by = ClosedBy(
+                    producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
+                )
+                self._touch(path, meta)
+                return CloseResult(
+                    final_offset=PLAIN.render(meta.head),
+                    already_closed=False,
+                    producer_result=verdict.producer_result,
+                )
+        except _Expired:
+            self.delete(path)
+            return None
 
     # =========================================================================
     # Read
