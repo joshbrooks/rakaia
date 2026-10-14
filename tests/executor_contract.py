@@ -171,8 +171,9 @@ class ExecutorContract:
         assert seam.reader.get(seam.model, field_key="a").severity == "warning"
 
     def test_every_update_in_a_run_is_applied(self, seam):
-        """Consecutive updates reach the executor as one run; none may be lost,
-        whether it applies them one by one or collapses them."""
+        """Consecutive updates reach the executor as one run, and none may be
+        lost. The seams here apply them one by one; Django's collapse of a run
+        is pinned in `tests/test_django_rakaia/test_update_batching.py`."""
         seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
         seam.executor.apply(
             [
