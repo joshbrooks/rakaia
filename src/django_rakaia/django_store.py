@@ -38,31 +38,27 @@ import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import transaction
 
+from rakaia import stream_rules
 from rakaia.append_decision import (
     AppendPlan,
     PlannedWrite,
     StreamFacts,
-    decide_append,
     own_stamp,
     plan_appends,
     plan_initial_write,
 )
 from rakaia.context import correlation_for, merge_provenance
-from rakaia.json_mode import is_json_content_type, normalize_content_type
+from rakaia.json_mode import is_json_content_type
 from rakaia.read_decision import page_of
 from rakaia.types import (
-    AppendOptions,
     AppendResult,
     CloseResult,
-    DeleteNotAllowed,
-    ExpiryNotAllowed,
     ProducerAccepted,
     ProducerState,
     ProducerValidationResult,
@@ -337,8 +333,20 @@ class DjangoStreamStore:
     ``DjangoExecutor(using=...)`` and ``DjangoProjectionReader(using=...)``.
     """
 
-    def __init__(self, *, using: str | None = None) -> None:
+    def __init__(
+        self, *, using: str | None = None, permanent: bool | None = None
+    ) -> None:
         self._using = using
+        #: Whether every stream here is kept for good (see `rakaia.stream_rules`).
+        #: None, the default, reads `RAKAIA_PERMANENT_STREAMS` on every call, so
+        #: `override_settings` and a settings change are both honoured.
+        self.permanent = permanent
+
+    @property
+    def _permanent(self) -> bool:
+        if self.permanent is not None:
+            return self.permanent
+        return _permanent_streams()
 
     # =========================================================================
     # Alias
@@ -377,42 +385,17 @@ class DjangoStreamStore:
     # Expiry
     # =========================================================================
 
-    @staticmethod
-    def _is_expired(stream: Stream) -> bool:
-        """Whether the stream has aged out, by sliding TTL or absolute expiry.
-
-        Mirrors the in-memory store, including its treatment of a malformed
-        `expires_at` as non-expiring rather than as immediately expired.
-
-        Always false under `RAKAIA_PERMANENT_STREAMS`, which is what stops every
-        read and write path from reaping: they all ask here. A stream given an
-        expiry before the switch was turned on is served as live.
-        """
-        if _permanent_streams():
-            return False
-        now = time.time()
-
-        if (
-            stream.ttl_seconds is not None
-            and now - stream.last_activity_at > stream.ttl_seconds
-        ):
-            return True
-
-        if stream.expires_at:
-            try:
-                expires = datetime.fromisoformat(
-                    stream.expires_at.replace("Z", "+00:00")
-                )
-            except ValueError:
-                return False
-            # A naive timestamp is taken as UTC; a parsed offset is kept, not
-            # overwritten (`replace(tzinfo=...)` would silently discard it).
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            if now > expires.timestamp():
-                return True
-
-        return False
+    def _is_expired(self, stream: Stream) -> bool:
+        """Whether the stream has aged out; always false on a permanent store,
+        which is what stops every read and write path from reaping, since they
+        all ask here."""
+        return stream_rules.is_expired(
+            stream.ttl_seconds,
+            stream.expires_at or None,
+            stream.last_activity_at,
+            now=time.time(),
+            permanent=self._permanent,
+        )
 
     def _get_if_not_expired(self, path: str) -> Stream | None:
         """The live stream at `path`, deleting it first if it has expired.
@@ -453,7 +436,7 @@ class DjangoStreamStore:
     def _locked_write(self, path: str) -> Iterator[Stream]:
         """Open a write transaction on `path`'s locked, live stream row.
 
-        The single door every append and fenced close goes through. It yields
+        The single door every append and every close goes through. It yields
         the `Stream` inside `transaction.atomic()` with the row locked, so a
         writer's closed / content-type / producer checks and its write are one
         indivisible step against concurrent writers. Raises `StreamNotFound`
@@ -496,19 +479,10 @@ class DjangoStreamStore:
     def _facts(stream: Stream) -> StreamFacts:
         """A locked stream row as `rakaia.append_decision` sees it.
 
-        The one place a row is narrowed to the four fields admission is decided
-        from, so a fifth fact cannot reach one write path and miss another. It
-        was written out inline at every call site, and the omission that shape
-        invites has happened twice: `closed_by` was missing from the fencing
-        path (#167) and from the batch path (#181), and in both cases a producer
-        retrying its own closing append was told a bare "closed".
-
-        `_close_locked` deliberately does *not* use this: a close carries no body
-        and no `Stream-Seq`, so it builds `StreamFacts` with only the two fields
-        that can decide it. Passing the other two would be equivalent today —
-        `decide_append` skips both checks when the options carry neither — but it
-        would say they were relevant, and the next person would have to work out
-        that they are not.
+        The one place a row is narrowed to the four fields an append is decided
+        from, so a fifth fact cannot reach one write path and miss another. A
+        close is decided by `rakaia.stream_rules.decide_close`, which takes the
+        two fields it needs directly.
         """
         return StreamFacts(
             closed=stream.closed,
@@ -590,29 +564,31 @@ class DjangoStreamStore:
         production — hence the contract's create-with-body case and this
         comment. Do not unwrap it.
 
-        Under `RAKAIA_PERMANENT_STREAMS` a `ttl_seconds` or `expires_at` raises
+        On a permanent store a `ttl_seconds` or `expires_at` raises
         `ExpiryNotAllowed` before anything is written, including on an idempotent
-        re-create: a permanent store accepts no expiry at all. A stream given one
-        before the switch was turned on compares as having none, as `get` reports.
+        re-create. A stream given one before the switch was turned on compares as
+        having none, as `get` reports.
         """
-        permanent = _permanent_streams()
-        if permanent and (ttl_seconds is not None or expires_at):
-            raise ExpiryNotAllowed(
-                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} cannot "
-                f"be created with a TTL or an expiry"
-            )
+        permanent = self._permanent
+        stream_rules.check_expiry_allowed(
+            path, ttl_seconds, expires_at, permanent=permanent
+        )
         self._reap_if_expired(path)
         with transaction.atomic(using=self._using):
             existing = self._get_if_not_expired(path)
             if existing is not None:
-                same = (
-                    normalize_content_type(content_type)
-                    == normalize_content_type(existing.content_type)
-                    and ttl_seconds == (None if permanent else existing.ttl_seconds)
-                    and expires_at == (None if permanent else existing.expires_at)
-                    and closed == existing.closed
-                )
-                if same:
+                if stream_rules.same_config(
+                    stream_rules.StreamConfig(
+                        existing.content_type,
+                        existing.ttl_seconds,
+                        existing.expires_at,
+                        existing.closed,
+                    ),
+                    stream_rules.StreamConfig(
+                        content_type, ttl_seconds, expires_at, closed
+                    ),
+                    permanent=permanent,
+                ):
                     return existing
                 raise StreamConfigConflict(
                     f"Stream already exists with different configuration: {path}"
@@ -649,86 +625,58 @@ class DjangoStreamStore:
         closing tuple reports `already_closed` instead of being refused as a
         duplicate, so a producer that loses the response can safely repeat it.
         """
-        if (
-            producer_id is not None
+        producer = (
+            (producer_id, producer_epoch, producer_seq)
+            if producer_id is not None
             and producer_epoch is not None
             and producer_seq is not None
-        ):
-            return self._close_with_producer(
-                path, producer_id, producer_epoch, producer_seq
-            )
-        stream = self._get_if_not_expired(path)
-        if stream is None:
-            return None
-        if stream.closed:
-            return CloseResult(final_offset=stream.current_offset, already_closed=True)
-        stream.closed = True
-        stream.closed_at = time.time()
-        stream.last_activity_at = time.time()
-        stream.save(update_fields=["closed", "closed_at", "last_activity_at"])
-        return CloseResult(final_offset=stream.current_offset)
-
-    def _close_with_producer(
-        self, path: str, producer_id: str, epoch: int, seq: int
-    ) -> CloseResult | None:
-        # An absent or expired stream is reported as `None` here, not raised —
-        # `close_stream` promises that — so the one `StreamNotFound`
-        # `_locked_write` can raise is translated back. Nothing inside the block
-        # raises it.
+            else None
+        )
+        # An absent or expired stream is reported as `None` here, not raised, so
+        # the one `StreamNotFound` `_locked_write` can raise is translated back.
         try:
-            return self._close_locked(path, producer_id, epoch, seq)
+            return self._close_locked(path, producer)
         except StreamNotFound:
             return None
 
     def _close_locked(
-        self, path: str, producer_id: str, epoch: int, seq: int
+        self, path: str, producer: tuple[str, int, int] | None
     ) -> CloseResult:
-        """The fenced close itself, on the locked row. Split out only so its
-        `StreamNotFound` has somewhere to be caught."""
+        """The close itself, on the locked row, like every other write."""
         with self._locked_write(path) as stream:
-            # A close is admitted on the same terms as a fenced append with no
-            # body, so it asks the same question: an already-closed stream is
-            # reported, never re-closed — a different producer's close must not
-            # overwrite `closed_by`, which is what makes a retry of the
-            # *original* closing tuple recognisable as a duplicate.
-            verdict = decide_append(
-                StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
-                AppendOptions(
-                    producer_id=producer_id, producer_epoch=epoch, producer_seq=seq
+            verdict = stream_rules.decide_close(
+                closed=stream.closed,
+                closed_by=stream.closed_by,
+                producer=producer,
+                producer_state=(
+                    self._producer_state(stream, producer[0]) if producer else None
                 ),
-                producer_state=self._producer_state(stream, producer_id),
                 now=time.time(),
             )
-            if not verdict.write:
-                return CloseResult(
-                    final_offset=stream.current_offset,
-                    already_closed=verdict.stream_closed,
-                    producer_result=verdict.producer_result,
-                )
-
-            # `decide_append` leaves `producer_result` unset only when no
-            # producer tuple was supplied. This method's producer parameters
-            # are required, so fencing always ran and a verdict always exists.
-            assert verdict.producer_result is not None
-            self._commit_producer(stream, verdict.producer_result)
-            stream.closed = True
-            stream.closed_at = time.time()
-            stream.last_activity_at = time.time()
-            stream.closed_by_producer_id = producer_id
-            stream.closed_by_epoch = epoch
-            stream.closed_by_seq = seq
-            stream.save(
-                update_fields=[
-                    "closed",
-                    "closed_at",
-                    "last_activity_at",
-                    "closed_by_producer_id",
-                    "closed_by_epoch",
-                    "closed_by_seq",
-                ]
-            )
+            fields: list[str] = []
+            if verdict.close:
+                if verdict.producer_result is not None:
+                    self._commit_producer(stream, verdict.producer_result)
+                stream.closed = True
+                stream.closed_at = time.time()
+                fields += ["closed", "closed_at"]
+                if verdict.closed_by is not None:
+                    stream.closed_by_producer_id = verdict.closed_by.producer_id
+                    stream.closed_by_epoch = verdict.closed_by.epoch
+                    stream.closed_by_seq = verdict.closed_by.seq
+                    fields += [
+                        "closed_by_producer_id",
+                        "closed_by_epoch",
+                        "closed_by_seq",
+                    ]
+            if verdict.touch and stream.ttl_seconds is not None:
+                stream.last_activity_at = time.time()
+                fields.append("last_activity_at")
+            if fields:
+                stream.save(update_fields=fields)
             return CloseResult(
                 final_offset=stream.current_offset,
+                already_closed=verdict.already_closed,
                 producer_result=verdict.producer_result,
             )
 
@@ -995,20 +943,22 @@ class DjangoStreamStore:
 
         Returns a `rakaia.types.Stream` — the same type the in-memory store
         returns — carrying metadata only. It never carried messages; read the
-        stream with `read()`. Under `RAKAIA_PERMANENT_STREAMS` the TTL and expiry
-        read as unset, so a stream given one earlier is not advertised as lapsing.
+        stream with `read()`. On a permanent store the TTL and expiry read as
+        unset, so a stream given one earlier is not advertised as lapsing.
         """
         row = self._get_if_not_expired(path)
         if row is None:
             return None
-        permanent = _permanent_streams()
+        ttl_seconds, expires_at = stream_rules.reported_expiry(
+            row.ttl_seconds, row.expires_at, permanent=self._permanent
+        )
         return ProtocolStream(
             path=row.stream_id,
             content_type=row.content_type,
             current_offset=row.current_offset,
             last_seq=row.last_seq,
-            ttl_seconds=None if permanent else row.ttl_seconds,
-            expires_at=None if permanent else row.expires_at,
+            ttl_seconds=ttl_seconds,
+            expires_at=expires_at,
             created_at=row.created_at.timestamp() if row.created_at else 0.0,
             last_activity_at=row.last_activity_at,
             closed=row.closed,
@@ -1050,11 +1000,7 @@ class DjangoStreamStore:
         cascade collector from loading payloads, so neither memory nor the
         query count grows with anything but the number of chunks.
         """
-        if _permanent_streams() and not force:
-            raise DeleteNotAllowed(
-                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} "
-                f"can only be deleted with delete(..., force=True)"
-            )
+        stream_rules.check_delete(path, permanent=self._permanent, force=force)
         with transaction.atomic(using=self._using):
             stream_pk = (
                 self._streams().filter(stream_id=path).values_list("pk", flat=True)
@@ -1087,15 +1033,11 @@ class DjangoStreamStore:
 
         The protocol server calls this before `delete`, and the server answers
         the refusal with `405 Method Not Allowed`. It refuses every path while
-        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off. `delete()`
+        the store is permanent and none otherwise. `delete()`
         refuses as well unless called with `force=True`; this is the check for
         a client's request, made before that.
         """
-        if _permanent_streams():
-            raise DeleteNotAllowed(
-                f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} "
-                f"cannot be deleted over the protocol"
-            )
+        stream_rules.check_protocol_delete(path, permanent=self._permanent)
 
     def get_current_offset(self, path: str) -> str | None:
         """The latest offset ever issued for the stream as a string, or None if

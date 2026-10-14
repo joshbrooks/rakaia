@@ -1070,6 +1070,38 @@ $ uv run pytest tests/test_django_rakaia/test_event_tags.py -q
 
 ---
 
+## 31. Permanent streams on every store
+
+**The problem.** `RAKAIA_PERMANENT_STREAMS` kept history from expiring or being
+deleted, but only on the database store. A project that ran on the file-backed
+store, or tested against the in-memory one, turned the switch on and got none of
+it: streams still lapsed and a client's `DELETE` still went through, with nothing
+to say the setting had been ignored.
+
+**What rakaia does.** Every store takes the switch and follows one set of rules
+for it: no expiry on create, nothing removed for having expired, a client's
+`DELETE` answered `405`, and a `delete()` from Python refused unless it passes
+`force=True`. Under Django the setting reaches whichever store `get_store()` builds.
+
+```python
+store = JsonlStreamStore("var/streams", permanent=True)
+store.create("ida/submissions")
+store.delete("ida/submissions")  # DeleteNotAllowed
+store.delete("ida/submissions", force=True)  # deliberate, so carried out
+```
+
+**See it.** No example covers this yet. The `Permanent streams` block in
+`tests/server_store_contract.py` runs against all three stores, and
+`tests/test_rakaia/test_stream_rules.py` holds the rules themselves.
+
+```console
+$ uv run pytest tests/test_rakaia/test_stream_rules.py -q
+```
+
+→ Deep dive: [Permanent streams](django-integration.md#permanent-streams)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

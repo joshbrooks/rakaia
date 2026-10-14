@@ -42,13 +42,18 @@ def _build_store(backend: str) -> Any:
     ADR 0002 flagged this ("swaps stores by string with no interface check").
     `django_rakaia.checks` reports the same problem at startup, so a misspelling
     fails `manage.py check` rather than waiting for the first append.
+
+    ``RAKAIA_PERMANENT_STREAMS`` applies whichever backend is chosen. The
+    in-memory and file stores take it when they are built; the durable store
+    reads it on every call.
     """
+    permanent = bool(getattr(settings, "RAKAIA_PERMANENT_STREAMS", False))
     if backend == "durable":
         from .django_store import DjangoStreamStore
 
         return DjangoStreamStore()
     if backend == "memory":
-        return StreamStore()
+        return StreamStore(permanent=permanent)
     if backend == "jsonl":
         from rakaia.jsonl_store import JsonlStreamStore
 
@@ -67,6 +72,7 @@ def _build_store(backend: str) -> Any:
             root,
             segment_size=getattr(settings, "RAKAIA_JSONL_SEGMENT_SIZE", 10_000),
             fsync=getattr(settings, "RAKAIA_JSONL_FSYNC", True),
+            permanent=permanent,
         )
     raise ImproperlyConfigured(
         f"RAKAIA_STORE={backend!r} is not a known store backend. "

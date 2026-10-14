@@ -36,8 +36,8 @@ Settings and operator commands:
 * `RAKAIA_READ_PAGE_SIZE` — the page a catch-up read answers with, applied when
   `get_asgi_app()` is called without `options`; on the durable store the page is a
   SQL `LIMIT`, so a first sync no longer loads the whole log.
-* `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the durable store
-  refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
+* `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
+  returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream
   instead of removing it. `DjangoStreamStore.delete()` from Python is refused the
   same way unless called as `delete(path, force=True)` — a management command run

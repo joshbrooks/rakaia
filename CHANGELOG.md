@@ -9,7 +9,22 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **Permanent streams on every store.** `StreamStore` and `JsonlStreamStore` take
+  `permanent=True`, and under Django `RAKAIA_PERMANENT_STREAMS` reaches whichever
+  store `get_store()` builds rather than only the database one. All three accept
+  `delete(path, force=True)`.
+
 ### Changed
+
+- **The three stores now share one set of rules for expiry, re-creating, closing
+  and deleting a stream**, and four small differences are settled: the database
+  store's plain close now takes the stream lock like every other write, it only
+  moves the activity clock on a stream with a TTL, and closing an already-closed
+  stream counts as activity there too; and a read refused for its page size no
+  longer extends a stream's lifetime on the in-memory and file stores. See
+  `UPGRADING.md`.
 
 - **The three stores now work out what an append writes in one shared place.**
   Stamping, provenance, tags, the correlation id, the JSON array split and what

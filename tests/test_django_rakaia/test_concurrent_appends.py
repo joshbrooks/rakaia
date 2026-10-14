@@ -316,3 +316,45 @@ def test_a_model_save_and_a_protocol_append_on_one_stream_do_not_deadlock(
         )
     )
     assert offsets == [1, 2, 3]
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
+def test_two_plain_closes_cannot_both_claim_the_close() -> None:
+    """A plain close reads `closed` under the stream's row lock (#322).
+
+    Thread A closes the stream inside a transaction it holds open. Without the
+    lock, B reads the row as A left it before committing — still open — and then
+    only waits at its own UPDATE, so both report that they closed the stream.
+    With it, B waits at the read and sees A's close: exactly one caller is told
+    `already_closed=False`.
+    """
+    store = DjangoStreamStore()
+    store.create(PATH)
+    store.append(PATH, b'{"seed": true}')
+
+    got: dict[str, bool] = {}
+    a_closed = threading.Event()
+    b_started = threading.Event()
+
+    def closer_a() -> None:
+        with transaction.atomic():
+            result = store.close_stream(PATH)
+            assert result is not None
+            got["a"] = result.already_closed
+            a_closed.set()
+            assert b_started.wait(timeout=10)
+            time.sleep(0.5)
+
+    def closer_b() -> None:
+        assert a_closed.wait(timeout=10)
+        b_started.set()
+        result = store.close_stream(PATH)
+        assert result is not None
+        got["b"] = result.already_closed
+
+    _run(closer_a, closer_b)
+
+    assert sorted(got.values()) == [False, True], (
+        f"both closes claimed the stream: {got}. The row lock did not hold."
+    )

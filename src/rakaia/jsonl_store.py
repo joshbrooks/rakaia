@@ -58,7 +58,6 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
@@ -74,21 +73,17 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
     # backend.
     fcntl = None  # type: ignore[assignment]
 
+from . import stream_rules
 from .append_decision import (
     AppendPlan,
     StreamFacts,
-    decide_append,
     plan_appends,
     plan_initial_write,
 )
-from .json_mode import (
-    normalize_content_type,
-)
 from .offsets import PLAIN
 from .producer import is_producer_state_expired
-from .read_decision import page_of
+from .read_decision import check_page_size, page_of
 from .types import (
-    AppendOptions,
     AppendResult,
     ClosedBy,
     CloseResult,
@@ -284,6 +279,7 @@ class JsonlStreamStore:
         *,
         segment_size: int = _DEFAULT_SEGMENT_SIZE,
         fsync: bool = True,
+        permanent: bool = False,
     ):
         """`fsync` on means an append that has returned has reached the disk.
 
@@ -297,6 +293,8 @@ class JsonlStreamStore:
         syscall is pure cost, and for test fixtures. Process death is survived
         either way — the page cache outlives the process — so this is a choice
         about power loss and kernel panics, not about crashes.
+
+        `permanent` keeps every stream for good; see `rakaia.stream_rules`.
         """
         if fcntl is None:  # pragma: no cover - Windows
             raise RuntimeError(
@@ -309,6 +307,7 @@ class JsonlStreamStore:
         self.root = Path(root)
         self.segment_size = segment_size
         self.fsync = fsync
+        self.permanent = permanent
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / _RETIRED_DIR).mkdir(exist_ok=True)
 
@@ -611,24 +610,14 @@ class JsonlStreamStore:
     # Expiry
     # =========================================================================
 
-    @staticmethod
-    def _is_expired(meta: _Meta) -> bool:
-        now = time.time()
-        if (
-            meta.ttl_seconds is not None
-            and now - meta.last_activity_at > meta.ttl_seconds
-        ):
-            return True
-        if meta.expires_at is not None:
-            try:
-                expires = datetime.fromisoformat(meta.expires_at.replace("Z", "+00:00"))
-                if expires.tzinfo is None:
-                    expires = expires.replace(tzinfo=timezone.utc)
-                if now > expires.timestamp():
-                    return True
-            except ValueError:
-                return False
-        return False
+    def _is_expired(self, meta: _Meta) -> bool:
+        return stream_rules.is_expired(
+            meta.ttl_seconds,
+            meta.expires_at,
+            meta.last_activity_at,
+            now=time.time(),
+            permanent=self.permanent,
+        )
 
     def _live_meta(self, path: str) -> _Meta | None:
         """The stream's metadata, reaping it if it has expired."""
@@ -672,14 +661,22 @@ class JsonlStreamStore:
         initial_data: bytes | None = None,
         closed: bool = False,
     ) -> Stream:
+        stream_rules.check_expiry_allowed(
+            path, ttl_seconds, expires_at, permanent=self.permanent
+        )
         existing = self._live_meta(path)
         if existing is not None:
-            if (
-                normalize_content_type(content_type)
-                == normalize_content_type(existing.content_type)
-                and ttl_seconds == existing.ttl_seconds
-                and expires_at == existing.expires_at
-                and closed == existing.closed
+            if stream_rules.same_config(
+                stream_rules.StreamConfig(
+                    existing.content_type,
+                    existing.ttl_seconds,
+                    existing.expires_at,
+                    existing.closed,
+                ),
+                stream_rules.StreamConfig(
+                    content_type, ttl_seconds, expires_at, closed
+                ),
+                permanent=self.permanent,
             ):
                 return self._as_stream(path, existing)
             raise StreamConfigConflict(
@@ -724,20 +721,24 @@ class JsonlStreamStore:
                 # raised still reaped the expired stream it was replacing and
                 # then left its own replacement — visible to `ls`, absent from
                 # the API, and holding the path against a later create with a
-                # different content type.
-                self.delete(path)
+                # different content type. Forced, because the stream it removes
+                # never existed as far as the caller is concerned.
+                self.delete(path, force=True)
                 raise
             meta = self._load_meta(path) or meta
         return self._as_stream(path, meta)
 
     def _as_stream(self, path: str, meta: _Meta) -> Stream:
+        ttl_seconds, expires_at = stream_rules.reported_expiry(
+            meta.ttl_seconds, meta.expires_at, permanent=self.permanent
+        )
         return Stream(
             path=path,
             content_type=meta.content_type,
             current_offset=PLAIN.render(meta.head),
             last_seq=meta.last_seq,
-            ttl_seconds=meta.ttl_seconds,
-            expires_at=meta.expires_at,
+            ttl_seconds=ttl_seconds,
+            expires_at=expires_at,
             created_at=meta.created_at,
             last_activity_at=meta.last_activity_at,
             producers=dict(meta.producers),
@@ -752,7 +753,11 @@ class JsonlStreamStore:
     def has(self, path: str) -> bool:
         return self._live_meta(path) is not None
 
-    def delete(self, path: str) -> bool:
+    def delete(self, path: str, *, force: bool = False) -> bool:
+        """Delete the stream, keeping its retired high mark and last stamp so a
+        recreate carries on above them. A permanent store refuses with
+        `DeleteNotAllowed` unless `force` is set."""
+        stream_rules.check_delete(path, permanent=self.permanent, force=force)
         d = self._dir(path)
         if not d.is_dir():
             return False
@@ -775,7 +780,8 @@ class JsonlStreamStore:
         return True
 
     def check_protocol_delete(self, path: str) -> None:
-        """Every stream here may be deleted over the protocol."""
+        """Refuse a client's DELETE on a permanent store."""
+        stream_rules.check_protocol_delete(path, permanent=self.permanent)
 
     def clear(self) -> None:
         for child in self.root.iterdir():
@@ -940,60 +946,36 @@ class JsonlStreamStore:
         producer_epoch: int | None = None,
         producer_seq: int | None = None,
     ) -> CloseResult | None:
-        if (
-            producer_id is not None
+        producer = (
+            (producer_id, producer_epoch, producer_seq)
+            if producer_id is not None
             and producer_epoch is not None
             and producer_seq is not None
-        ):
-            return self._close_with_producer(
-                path, producer_id, producer_epoch, producer_seq
-            )
+            else None
+        )
         if self._live_meta(path) is None:
             return None
         try:
             with self._locked(path) as (meta, _buffer):
-                already = meta.closed
-                meta.closed = True
-                self._touch(path, meta)
-                return CloseResult(
-                    final_offset=PLAIN.render(meta.head), already_closed=already
-                )
-        except _Expired:
-            self.delete(path)
-            return None
-
-    def _close_with_producer(
-        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
-    ) -> CloseResult | None:
-        if self._live_meta(path) is None:
-            return None
-        try:
-            with self._locked(path) as (meta, _buffer):
-                verdict = decide_append(
-                    StreamFacts(closed=meta.closed, closed_by=meta.closed_by),
-                    AppendOptions(
-                        producer_id=producer_id,
-                        producer_epoch=producer_epoch,
-                        producer_seq=producer_seq,
+                verdict = stream_rules.decide_close(
+                    closed=meta.closed,
+                    closed_by=meta.closed_by,
+                    producer=producer,
+                    producer_state=(
+                        self._producer_state(meta, producer[0]) if producer else None
                     ),
-                    producer_state=self._producer_state(meta, producer_id),
                     now=time.time(),
                 )
-                if not verdict.write:
-                    return CloseResult(
-                        final_offset=PLAIN.render(meta.head),
-                        already_closed=verdict.stream_closed,
-                        producer_result=verdict.producer_result,
-                    )
-                self._commit_producer(meta, verdict.producer_result)
-                meta.closed = True
-                meta.closed_by = ClosedBy(
-                    producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
-                )
-                self._touch(path, meta)
+                if verdict.close:
+                    self._commit_producer(meta, verdict.producer_result)
+                    meta.closed = True
+                    if verdict.closed_by is not None:
+                        meta.closed_by = verdict.closed_by
+                if verdict.touch:
+                    self._touch(path, meta)
                 return CloseResult(
                     final_offset=PLAIN.render(meta.head),
-                    already_closed=False,
+                    already_closed=verdict.already_closed,
                     producer_result=verdict.producer_result,
                 )
         except _Expired:
@@ -1008,6 +990,7 @@ class JsonlStreamStore:
         self, path: str, offset: str | None = None, *, limit: int | None = None
     ) -> tuple[list[StreamMessage], bool]:
         meta = self._require(path)
+        check_page_size(limit)
         self._touch(path, meta)
         # The page is cut after the segment scan, so this bounds the response,
         # not the read: the log is scanned from `offset` as before.

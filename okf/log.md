@@ -2,6 +2,11 @@
 
 ## 2026-10-14
 
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) and
+  [Django integration](concepts/django-integration.md) — permanent streams apply on every store
+  (`permanent=` on `StreamStore` and `JsonlStreamStore`; `RAKAIA_PERMANENT_STREAMS` reaches
+  whichever backend `get_store()` builds), and `delete(path, force=True)` on all three.
+
 * **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — every
   store stamps an append that sets no `event_ts` (the durable store used to leave it null), and
   tags and correlation ids are checked only on an append that will be written.
