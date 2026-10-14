@@ -37,7 +37,9 @@ from rakaia.protocols import StreamServerStore
 from rakaia.types import (
     AppendOptions,
     ContentTypeMismatch,
+    DeleteNotAllowed,
     EmptyJsonArray,
+    ExpiryNotAllowed,
     InvalidJson,
     ProducerAccepted,
     ProducerDuplicate,
@@ -851,6 +853,78 @@ class ServerStoreContract:
         store.peek("s", "-1")
         time.sleep(0.6)
         assert store.get("s") is None, "peek kept the stream alive"
+
+    def test_a_refused_page_size_does_not_extend_the_ttl_window(self, store):
+        """A read refused for its `limit` is no read at all, so it is not
+        activity either (#322)."""
+        import time
+
+        store.create("s", ttl_seconds=1)
+        time.sleep(0.6)
+        with pytest.raises(ValueError):
+            store.read("s", limit=0)
+        time.sleep(0.6)
+        assert store.get("s") is None, "a refused read kept the stream alive"
+
+    def test_closing_a_closed_stream_still_counts_as_activity(self, store):
+        """Every store touches the TTL window on a plain close, already closed or
+        not; the durable one used to skip the second (#322)."""
+        import time
+
+        store.create("s", ttl_seconds=1)
+        store.close_stream("s")
+        time.sleep(0.6)
+        store.close_stream("s")
+        time.sleep(0.6)
+        assert store.get("s") is not None, "the second close did not touch"
+
+    # =========================================================================
+    # Permanent streams
+    # =========================================================================
+    #
+    # Every store honours the switch the same way (#322). The cases flip it on
+    # the store under test, the way a project turns the setting on after
+    # streams already exist.
+
+    def test_a_permanent_store_refuses_an_expiry_on_create(self, store):
+        store.permanent = True
+        with pytest.raises(ExpiryNotAllowed):
+            store.create("s", ttl_seconds=60)
+        with pytest.raises(ExpiryNotAllowed):
+            store.create("t", expires_at="2099-01-01T00:00:00Z")
+        assert store.get("s") is None and store.get("t") is None
+
+    def test_a_stream_given_an_expiry_earlier_never_expires(self, store):
+        import time
+
+        store.create("s", ttl_seconds=0)
+        store.permanent = True
+        time.sleep(0.01)
+        stream = store.get("s")
+        assert stream is not None
+        assert (stream.ttl_seconds, stream.expires_at) == (None, None)
+
+    def test_recreating_it_without_the_expiry_is_the_idempotent_case(self, store):
+        store.create("s", ttl_seconds=60)
+        store.permanent = True
+        store.create("s")
+        with pytest.raises(ExpiryNotAllowed):
+            store.create("s", ttl_seconds=60)
+
+    def test_a_permanent_store_refuses_a_delete_unless_forced(self, store):
+        store.create("s")
+        store.permanent = True
+        with pytest.raises(DeleteNotAllowed):
+            store.check_protocol_delete("s")
+        with pytest.raises(DeleteNotAllowed):
+            store.delete("s")
+        assert store.has("s")
+        assert store.delete("s", force=True) is True
+        assert not store.has("s")
+
+    def test_force_does_nothing_while_the_switch_is_off(self, store):
+        store.create("s")
+        assert store.delete("s", force=True) is True
 
     def test_check_protocol_delete_answers_without_raising_by_default(self, store):
         store.create("s")

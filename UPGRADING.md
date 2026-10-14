@@ -17,6 +17,25 @@ ones you are crossing.
 
 # 0.9.0
 
+## Permanent streams reach every store
+
+If you set `RAKAIA_PERMANENT_STREAMS = True` and `RAKAIA_STORE` is `"memory"` or
+`"jsonl"`, the setting used to do nothing and now does what it always did on the
+database store: a create with a TTL or an expiry raises `ExpiryNotAllowed`,
+nothing expires, a client's `DELETE` gets `405`, and `store.delete(path)` raises
+`DeleteNotAllowed` unless you pass `force=True`. Code that deletes streams on
+those stores with the switch on needs `force=True`, which is accepted everywhere
+and does nothing while the switch is off. The in-memory and file stores read the
+setting once, when `get_store()` builds them; call `reset_store_cache()` after
+changing it in a test.
+
+Four smaller differences between the stores are settled, none of which raises:
+the database store's plain close now waits for the stream's row lock like every
+other write; it writes `last_activity_at` only on a stream with a TTL; closing an
+already-closed stream now extends a TTL there as it did elsewhere; and a `read`
+refused for `limit < 1` no longer extends the TTL on the in-memory and file
+stores, as it already did not on the database one.
+
 ## A custom protocol store is synchronous now
 
 This only reaches you if you wrote your own `StreamServerStore` to put the

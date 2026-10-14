@@ -66,6 +66,7 @@ PROTOCOL_SERVER = {
     "read_decision",
     "response_cursor",
     "store",
+    "stream_rules",
     "subscription",
 }
 

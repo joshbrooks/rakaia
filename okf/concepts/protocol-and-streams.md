@@ -41,8 +41,9 @@ Imported from `rakaia`:
   message, which the protocol permits, so a conforming client reads on unchanged.
 * Permanent streams: `ExpiryNotAllowed` (a create asking for a TTL or an expiry,
   answered `400`) and `DeleteNotAllowed` (a client `DELETE`, answered `405`).
-  Raised by a store whose streams are permanent; the in-memory and file stores
-  never are.
+  Raised by a store whose streams are permanent: `StreamStore(permanent=True)`,
+  `JsonlStreamStore(..., permanent=True)`, or `DjangoStreamStore` under
+  `RAKAIA_PERMANENT_STREAMS`. `delete(path, force=True)` deletes from Python anyway.
 * The time rakaia stamps on an event is taken after its position is settled and is
   never earlier than that stream's previous stamp, so ordering by `event_ts` agrees
   with ordering by offset. A producer's own `event_ts` is stored as sent.

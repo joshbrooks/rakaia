@@ -128,11 +128,17 @@ def page_of(messages: list[_T], limit: int | None) -> tuple[list[_T], bool]:
     page" without a second query. A `limit` below 1 is a caller error, not an
     empty page: a server that asked for none would never make progress.
     """
+    check_page_size(limit)
     if limit is None:
         return messages, True
-    if limit < 1:
-        raise ValueError(f"limit must be >= 1, got {limit}")
     return messages[:limit], len(messages) <= limit
+
+
+def check_page_size(limit: int | None) -> None:
+    """Refuse a `limit` below 1. A store asks before it touches the TTL window,
+    so a refused read extends nothing."""
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be >= 1, got {limit}")
 
 
 def closed_at_tail(*, closed: bool, at_tail: bool, up_to_date: bool) -> bool:

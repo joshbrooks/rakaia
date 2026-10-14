@@ -11,24 +11,23 @@ import asyncio
 import logging
 import time
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any
 
+from . import stream_rules
 from .append_decision import (
     AppendPlan,
     PlannedWrite,
     StreamFacts,
-    decide_append,
     plan_appends,
     plan_initial_write,
 )
 from .json_mode import (
     is_json_content_type,
-    normalize_content_type,
 )
 from .offsets import COMPOUND
 from .producer import is_producer_state_expired
-from .read_decision import page_of
+from .read_decision import check_page_size, page_of
 from .types import (
     AppendOptions,
     AppendResult,
@@ -59,7 +58,9 @@ class StreamStore:
     call has no `await` inside it for another to interleave at.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, permanent: bool = False) -> None:
+        #: Whether every stream here is kept for good; see `rakaia.stream_rules`.
+        self.permanent = permanent
         self._streams: dict[str, Stream] = {}
         # The messages themselves, keyed by path. They live here rather than on
         # `Stream` because `Stream` is the *metadata* `get()` hands back, and a
@@ -82,42 +83,13 @@ class StreamStore:
     # =========================================================================
 
     def _is_expired(self, stream: Stream) -> bool:
-        """Check if a stream is expired based on TTL or Expires-At.
-
-        Stream-TTL is a sliding window anchored on ``last_activity_at`` (reset
-        on read/write/close). Stream-Expires-At is an absolute deadline that
-        does not slide.
-        """
-        now = time.time()
-
-        if (
-            stream.ttl_seconds is not None
-            and now - stream.last_activity_at > stream.ttl_seconds
-        ):
-            return True
-
-        if stream.expires_at is not None:
-            try:
-                expires = datetime.fromisoformat(
-                    stream.expires_at.replace("Z", "+00:00")
-                )
-                # A naive timestamp is taken as UTC; a parsed offset is kept,
-                # not overwritten (`replace(tzinfo=...)` would discard it).
-                if expires.tzinfo is None:
-                    expires = expires.replace(tzinfo=timezone.utc)
-                if now > expires.timestamp():
-                    return True
-            except ValueError:
-                # A malformed Stream-Expires-At can't be evaluated, so the
-                # stream is treated as non-expiring. Log it rather than
-                # swallowing silently so bad data is observable.
-                _log.debug(
-                    "Ignoring malformed expires_at %r on stream %r",
-                    stream.expires_at,
-                    stream.path,
-                )
-
-        return False
+        return stream_rules.is_expired(
+            stream.ttl_seconds,
+            stream.expires_at,
+            stream.last_activity_at,
+            now=time.time(),
+            permanent=self.permanent,
+        )
 
     def _get_if_not_expired(self, path: str) -> Stream | None:
         """Get a stream, deleting it if expired."""
@@ -162,17 +134,23 @@ class StreamStore:
         Raises:
             StreamConfigConflict: If stream exists with different config.
         """
+        stream_rules.check_expiry_allowed(
+            path, ttl_seconds, expires_at, permanent=self.permanent
+        )
         existing = self._get_if_not_expired(path)
         if existing is not None:
-            # Check config match for idempotent create
-            ct_matches = normalize_content_type(content_type) == normalize_content_type(
-                existing.content_type
-            )
-            ttl_matches = ttl_seconds == existing.ttl_seconds
-            expires_matches = expires_at == existing.expires_at
-            closed_matches = closed == existing.closed
-
-            if ct_matches and ttl_matches and expires_matches and closed_matches:
+            if stream_rules.same_config(
+                stream_rules.StreamConfig(
+                    existing.content_type,
+                    existing.ttl_seconds,
+                    existing.expires_at,
+                    existing.closed,
+                ),
+                stream_rules.StreamConfig(
+                    content_type, ttl_seconds, expires_at, closed
+                ),
+                permanent=self.permanent,
+            ):
                 return existing
             raise StreamConfigConflict(
                 f"Stream already exists with different configuration: {path}"
@@ -216,15 +194,25 @@ class StreamStore:
         return fn(*args, **kwargs)
 
     def get(self, path: str) -> Stream | None:
-        """Get a stream by path. Returns None if not found or expired."""
-        return self._get_if_not_expired(path)
+        """Get a stream by path. Returns None if not found or expired.
+
+        On a permanent store a stream given an expiry earlier reports none.
+        """
+        stream = self._get_if_not_expired(path)
+        if stream is None or not self.permanent:
+            return stream
+        return replace(stream, ttl_seconds=None, expires_at=None)
 
     def has(self, path: str) -> bool:
         """Check if a stream exists (and is not expired)."""
         return self._get_if_not_expired(path) is not None
 
-    def delete(self, path: str) -> bool:
-        """Delete a stream and cancel any pending long-polls."""
+    def delete(self, path: str, *, force: bool = False) -> bool:
+        """Delete a stream and cancel any pending long-polls.
+
+        A permanent store refuses with `DeleteNotAllowed` unless `force` is set.
+        """
+        stream_rules.check_delete(path, permanent=self.permanent, force=force)
         self._cancel_notify(path)
         if path in self._streams:
             # Remember the retired generation so a recreate at this path
@@ -237,7 +225,8 @@ class StreamStore:
         return False
 
     def check_protocol_delete(self, path: str) -> None:
-        """Every stream here may be deleted over the protocol."""
+        """Refuse a client's DELETE on a permanent store."""
+        stream_rules.check_protocol_delete(path, permanent=self.permanent)
 
     def clear(self) -> None:
         """Clear all streams and cancel all pending waits."""
@@ -355,65 +344,37 @@ class StreamStore:
         stream = self._get_if_not_expired(path)
         if stream is None:
             return None
-
-        if producer_id is None or producer_epoch is None or producer_seq is None:
-            already_closed = stream.closed
-            stream.closed = True
-
-            # A close extends the sliding TTL window.
-            self._touch(stream)
-
-            self._notify_closed(path)
-
-            return CloseResult(
-                final_offset=stream.current_offset,
-                already_closed=already_closed,
-            )
-
-        # A close is admitted on the same terms as a fenced append with no
-        # body: already closed is reported (as a duplicate for a retry of the
-        # closing tuple), then the producer is fenced.
-        verdict = decide_append(
-            StreamFacts(closed=stream.closed, closed_by=stream.closed_by),
-            AppendOptions(
-                producer_id=producer_id,
-                producer_epoch=producer_epoch,
-                producer_seq=producer_seq,
+        producer = (
+            (producer_id, producer_epoch, producer_seq)
+            if producer_id is not None
+            and producer_epoch is not None
+            and producer_seq is not None
+            else None
+        )
+        verdict = stream_rules.decide_close(
+            closed=stream.closed,
+            closed_by=stream.closed_by,
+            producer=producer,
+            producer_state=(
+                self._producer_state(stream, producer_id) if producer else None
             ),
-            producer_state=self._producer_state(stream, producer_id),
             now=time.time(),
         )
-        if not verdict.write:
-            return CloseResult(
-                final_offset=stream.current_offset,
-                already_closed=verdict.stream_closed,
-                producer_result=verdict.producer_result,
-            )
-        producer_result = verdict.producer_result
-        # `decide_append` leaves `producer_result` unset only when no producer
-        # tuple was supplied, and this branch has all three, so fencing always
-        # ran and a verdict always exists.
-        assert producer_result is not None
-
-        # Commit and close
-        self._commit_producer_state(stream, producer_result)
-        stream.closed = True
-
-        # A close extends the sliding TTL window.
-        self._touch(stream)
-
-        from .types import ClosedBy
-
-        stream.closed_by = ClosedBy(
-            producer_id=producer_id, epoch=producer_epoch, seq=producer_seq
-        )
-
-        self._notify_closed(path)
-
+        if isinstance(verdict.producer_result, ProducerAccepted) and verdict.close:
+            self._commit_producer_state(stream, verdict.producer_result)
+        if verdict.close:
+            stream.closed = True
+            if verdict.closed_by is not None:
+                stream.closed_by = verdict.closed_by
+        if verdict.touch:
+            # A close extends the sliding TTL window.
+            self._touch(stream)
+        if verdict.close:
+            self._notify_closed(path)
         return CloseResult(
             final_offset=stream.current_offset,
-            already_closed=False,
-            producer_result=producer_result,
+            already_closed=verdict.already_closed,
+            producer_result=verdict.producer_result,
         )
 
     # =========================================================================
@@ -436,6 +397,7 @@ class StreamStore:
         stream = self._get_if_not_expired(path)
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
+        check_page_size(limit)
 
         # A read extends the sliding TTL window.
         self._touch(stream)

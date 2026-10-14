@@ -370,7 +370,7 @@ should. Turn it off with one setting:
 RAKAIA_PERMANENT_STREAMS = True  # off unless you set it
 ```
 
-With it on, every stream in the durable store is permanent:
+With it on, every stream is permanent, whichever store `RAKAIA_STORE` picks:
 
 - **A create that asks for an expiry is refused.** Passing `ttl_seconds` or
   `expires_at` to `create()` raises `ExpiryNotAllowed`, and a protocol `PUT`
@@ -380,16 +380,18 @@ With it on, every stream in the durable store is permanent:
 - **Nothing is removed for having expired.** A stream that was given an expiry
   before you turned the switch on is read, written and listed as if it had none.
 
-**Deleting a stream from Python still works.** `DjangoStreamStore().delete(path)`
-is carried out whether the switch is on or off, because calling it is a decision
-made by whoever wrote the code, not something a client or a clock did. A command
-that rebuilds a stream from scratch by deleting and re-appending keeps working.
+**Deleting a stream from Python has to say so.** `store.delete(path)` is refused
+with `DeleteNotAllowed` too, because a management command run by hand is a Python
+call and the likeliest way to lose a stream. `store.delete(path, force=True)` is
+carried out; `force` does nothing while the switch is off, so a command that
+rebuilds a stream by deleting and re-appending can pass it unconditionally.
 
-The setting is read by the durable store only. The in-memory and file-backed
-stores ignore it: both still accept an expiry, remove a stream once it runs out,
-and delete on a protocol `DELETE`. If you need permanent streams, keep them in
-the database. The setting is read on every call, so `override_settings` in a
-test takes effect immediately.
+Every store honours the switch the same way since `0.9.0`; before that only the
+durable store did. Outside Django, pass it to the store yourself:
+`StreamStore(permanent=True)` or `JsonlStreamStore(root, permanent=True)`. The
+durable store reads the setting on every call, so `override_settings` in a test
+takes effect immediately; the in-memory and file stores take it when
+`get_store()` first builds them.
 
 ### Deleting a stream deletes its events
 
@@ -425,13 +427,13 @@ register_stream_event_admin(MyStreamEvent)
 
 ## Appendix
 
-**Permanent streams, precisely.** The switch makes `DjangoStreamStore._is_expired`
-report every stream as live, which is the one question each read and write path
+**Permanent streams, precisely.** The rules live in `rakaia.stream_rules`, which
+every store asks. The switch makes a store's expiry check report every stream as
+live, which is the one question each read and write path
 asks before reaping, so none of them reaps. A create is refused before anything
 is written, including an idempotent re-create of a stream that already has the
 same expiry. The protocol server refuses `DELETE` by calling the store's
-`check_protocol_delete(path)` before `delete`; the in-memory and file stores
-never refuse. A `DELETE` of a stream that does not exist is still `404`, and the
+`check_protocol_delete(path)` before `delete`. A `DELETE` of a stream that does not exist is still `404`, and the
 `405` carries an `Allow` header without `DELETE` in it, whether the refusal came
 from that check or from `delete()` itself. A stream that was given an expiry
 earlier reports none (`get()` returns no TTL or expiry), so `HEAD` does not send
