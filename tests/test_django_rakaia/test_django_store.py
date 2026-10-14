@@ -518,11 +518,13 @@ async def test_expiry_mid_long_poll_is_a_timeout_not_an_error():
 
     from asgiref.sync import sync_to_async
 
+    from rakaia.protocol_server import _wait_for_messages
+
     store = DjangoStreamStore()
     await sync_to_async(store.create)("s", ttl_seconds=3600)
     head = await sync_to_async(store.get_current_offset)("s")
 
-    task = asyncio.ensure_future(store.wait_for_messages("s", head, 5.0))
+    task = asyncio.ensure_future(_wait_for_messages(store, "s", head, 5.0))
     await asyncio.sleep(0.3)  # let the poll loop observe the live stream first
     await sync_to_async(Stream.objects.filter(stream_id="s").update)(
         last_activity_at=0.0

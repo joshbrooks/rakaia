@@ -329,15 +329,11 @@ class TestNotes:
         assert any("TTL" in note for note in result.notes)
 
     def test_producer_state_is_reported_as_not_carried(self, files, other_files):
-        import asyncio
-
         files.create(PATH)
-        asyncio.run(
-            files.append_with_producer(
-                PATH,
-                b'{"n": 1}',
-                AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0),
-            )
+        files.append(
+            PATH,
+            b'{"n": 1}',
+            AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0),
         )
 
         result = migrate_stream(files, other_files, PATH)

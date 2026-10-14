@@ -19,6 +19,7 @@ may hold outcomes somewhere other than its events.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
@@ -66,7 +67,7 @@ class WritableStore(ReadableStore, Protocol):
     registry rely on: create a stream, append enveloped events, check existence,
     and read them back (inherited from `ReadableStore`). It deliberately excludes
     the Durable Streams **protocol-server** lifecycle (producer epoch/seq
-    fencing, close, TTL, long-poll/`wait_for_messages`), which is not required to
+    fencing, close, TTL, long-poll), which is not required to
     back `replay()`/projections. That lifecycle is `StreamServerStore` below.
     See ADR 0002.
 
@@ -129,13 +130,14 @@ class StreamServerStore(WritableStore, Protocol):
     `WritableStore` is what `replay()` and projections need. This is the wider
     surface `rakaia.protocol_server.create_app` needs: everything in `WritableStore`,
     plus the protocol lifecycle — producer epoch/seq fencing, close, the TTL
-    sliding window, long-poll, and response formatting.
+    sliding window, and a read that leaves that window alone. Every method but
+    `run_sync` is synchronous: the server decides when to leave the event loop,
+    and does long-poll and response framing itself, so a store only answers
+    questions about its own state (#323).
 
-    Until this existed `create_app` was typed against the concrete in-memory
-    `StreamStore`, so the durable store could not back the server no matter
-    what it implemented — which is why the Django integration grew a second,
-    partial implementation of the protocol instead of reusing this one. Two
-    adapters satisfy it: the in-memory `StreamStore` and `DjangoStreamStore`.
+    A store whose appends happen in this process can also define
+    `new_messages_event(path)` (see `SignalsNewMessages`) so a long-poll wakes
+    the moment a message lands instead of on the server's next poll.
 
     Failures are the named ones in `rakaia.types` (`StreamNotFound`,
     `SequenceConflict`, …); a server maps them to statuses by type, so an
@@ -235,64 +237,64 @@ class StreamServerStore(WritableStore, Protocol):
     def delete(self, path: str) -> bool:
         """Delete the stream, cancelling any pending long-polls. Returns whether
         it existed. Offsets stay globally monotonic across delete+recreate: a
-        recreated path resumes numbering above the retired high mark.
-
-        A store may also define `check_protocol_delete(path)`, raising
-        `DeleteNotAllowed` to refuse a client's DELETE while this method stays
-        callable from Python; the server calls it first if it exists. It is
-        optional and deliberately not part of this protocol."""
+        recreated path resumes numbering above the retired high mark."""
         ...
 
-    def format_response(self, path: str, messages: list[Any]) -> bytes:
-        """Render `messages` as the response body for `path`.
+    def check_protocol_delete(self, path: str) -> None:
+        """Raise `DeleteNotAllowed` if a client may not delete `path`.
 
-        Content-type aware: a JSON-mode stream yields one JSON array, anything
-        else the concatenated payloads.
+        The server calls this before `delete` and answers a refusal with 405,
+        while `delete` itself stays callable from Python. A store with no such
+        policy implements it as a no-op.
         """
         ...
 
-    async def append_with_producer(
-        self, path: str, data: bytes, options: Any = None
+    def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
+        """Every message after `offset`, without extending the TTL window.
+
+        What the server's long-poll asks on every tick. `read` is the wrong
+        question there: it counts as activity, so a waiter on a stream with a
+        TTL would rewrite its expiry many times a second. Raises
+        `StreamNotFound` if the stream is absent or expired.
+        """
+        ...
+
+    def close_stream(
+        self,
+        path: str,
+        *,
+        producer_id: str | None = None,
+        producer_epoch: int | None = None,
+        producer_seq: int | None = None,
     ) -> Any:
-        """Append under producer fencing, serialized per `(path, producer_id)`.
-
-        The result carries a `ProducerValidationResult` when the write was
-        refused (stale epoch, sequence gap, duplicate, closed stream) rather
-        than raising — those are protocol outcomes with their own statuses and
-        headers, not failures.
-        """
-        ...
-
-    def close_stream(self, path: str) -> Any:
         """Close `path`, returning a `CloseResult` (or `None` if absent).
 
         Idempotent: closing an already-closed stream reports the same final
-        offset rather than failing.
+        offset rather than failing. With all three producer arguments the close
+        is fenced exactly like an append carrying them, and the result's
+        `producer_result` reports the verdict; a retry of the closing tuple
+        reports `already_closed`. A server passes them only when all three are
+        present.
         """
         ...
 
-    async def close_stream_with_producer(
-        self, path: str, producer_id: str, producer_epoch: int, producer_seq: int
-    ) -> Any:
-        """Close `path` under producer fencing. Same fencing outcomes as
-        `append_with_producer`, same idempotence as `close_stream`.
 
-        The tuple is passed as three arguments rather than on an
-        `AppendOptions`, unlike `append_with_producer` — a close carries no
-        body and no envelope, so there is nothing else for an options object to
-        hold. A server calls this only when all three are present.
-        """
-        ...
+@runtime_checkable
+class SignalsNewMessages(Protocol):
+    """An optional extra for a `StreamServerStore` whose appends happen in the
+    server's own process.
 
-    async def wait_for_messages(
-        self, path: str, offset: str, timeout_seconds: float
-    ) -> tuple[list[Any], bool, bool]:
-        """Long-poll: wait up to `timeout_seconds` for messages after `offset`.
+    The server's long-poll otherwise polls with `peek`. A store with this
+    method hands back an event that is set when the next message lands on
+    `path` (or the stream is closed or deleted), and the server waits on that
+    instead. The event must be set on the server's event loop, so this suits
+    a store whose `run_sync` calls straight through, and not one that hops to
+    a thread. The server asks for the event before it reads, so a message
+    landing between the read and the wait still wakes it.
+    """
 
-        Returns `(messages, timed_out, stream_closed)`. Returns immediately if
-        messages are already available or the stream is closed; returns an
-        empty list on timeout. Raises `StreamNotFound` if the stream is absent.
-        """
+    def new_messages_event(self, path: str) -> asyncio.Event:
+        """An event set on the next change to `path`."""
         ...
 
 

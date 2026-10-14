@@ -42,7 +42,15 @@ import time
 import pytest
 
 from rakaia.jsonl_store import JsonlStreamStore
-from rakaia.types import AppendOptions, StreamNotFound
+from rakaia.protocol_server import _wait_for_messages
+from rakaia.types import (
+    PRODUCER_EPOCH_HEADER,
+    PRODUCER_ID_HEADER,
+    PRODUCER_SEQ_HEADER,
+    STREAM_CLOSED_HEADER,
+    AppendOptions,
+    StreamNotFound,
+)
 
 PATH = "s"
 
@@ -478,9 +486,9 @@ JsonlStreamStore(root).append(path, json.dumps({"from": "another process"}).enco
 async def test_a_long_poll_wakes_for_a_write_from_another_process(
     store, root, tmp_path
 ):
-    """The reason `wait_for_messages` polls instead of waiting on an event.
+    """The reason the server polls this store instead of waiting on an event.
 
-    The in-memory store notifies its waiters with an `asyncio.Event`, which is
+    The in-memory store signals its waiters with an `asyncio.Event`, which is
     correct there and useless here: the append that a live subscriber is waiting
     for comes from a worker, a management command, another web process. This is
     that case, and nothing but the filesystem connects the two sides.
@@ -498,7 +506,7 @@ async def test_a_long_poll_wakes_for_a_write_from_another_process(
     )
     try:
         head = store.get_current_offset(PATH)
-        messages, timed_out, closed = await store.wait_for_messages(PATH, head, 10.0)
+        messages, timed_out, closed = await _wait_for_messages(store, PATH, head, 10.0)
     finally:
         _out, err = await proc.communicate()
         assert proc.returncode == 0, err.decode()
@@ -512,14 +520,14 @@ async def test_a_long_poll_wakes_for_a_write_from_another_process(
 async def test_a_long_poll_still_times_out_when_nothing_writes(store):
     """The other half: a waiter with no writer returns empty, not hung."""
     head = store.get_current_offset(PATH)
-    messages, timed_out, closed = await store.wait_for_messages(PATH, head, 0.3)
+    messages, timed_out, closed = await _wait_for_messages(store, PATH, head, 0.3)
 
     assert (messages, timed_out, closed) == ([], True, False)
 
 
 @pytest.mark.asyncio
 async def test_a_long_poll_on_a_stream_that_never_existed_raises(root):
-    """The first of the two asymmetries `wait_for_messages` documents.
+    """The first of the two asymmetries the server's long-poll documents.
 
     An absent stream on the *first* pass is a `StreamNotFound`, because the
     client asked to wait on something that is not there — it must become a 404,
@@ -529,7 +537,7 @@ async def test_a_long_poll_on_a_stream_that_never_existed_raises(root):
     store = JsonlStreamStore(root, segment_size=8)
 
     with pytest.raises(StreamNotFound):
-        await store.wait_for_messages("never-created", "0" * 20, 0.3)
+        await _wait_for_messages(store, "never-created", "0" * 20, 0.3)
 
 
 @pytest.mark.asyncio
@@ -542,7 +550,7 @@ async def test_a_stream_that_expires_mid_wait_times_out_instead(root):
     store.append(PATH, b'{"n": 0}')
     head = store.get_current_offset(PATH)
 
-    messages, timed_out, closed = await store.wait_for_messages(PATH, head, 3.0)
+    messages, timed_out, closed = await _wait_for_messages(store, PATH, head, 3.0)
 
     assert (messages, timed_out, closed) == ([], True, False)
 
@@ -651,18 +659,23 @@ async def test_a_write_blocked_on_the_lock_does_not_stall_the_event_loop(store, 
 async def test_a_fenced_write_blocked_on_the_lock_does_not_stall_the_event_loop(
     store, root, call
 ):
-    """The same property for a producer's fenced append and fenced close.
+    """The same property for a producer's fenced append and fenced close,
+    sent to the server.
 
-    Every fenced write the server receives goes through these two coroutines
-    rather than `run_sync`, so they have to make the thread hop themselves.
-    Both once called the locked write directly, which parked the event loop on
-    `flock` for as long as another writer held the file.
+    The server once handed these two to coroutines of the store's own rather
+    than `run_sync`, and the file store's versions took the lock on the event
+    loop (#327). They are ordinary `run_sync` calls now (#323); this holds the
+    server to that.
     """
+    from tests.asgi_client import asgi_client
+
+    served = f"/{PATH}"
+    store.create(served, content_type="application/json")
     holding = threading.Event()
     release = threading.Event()
 
     def holder() -> None:
-        with store._locked(PATH) as (meta, buffer):
+        with store._locked(served) as (meta, buffer):
             store._write(meta, buffer, b'{"holder": true}')
             holding.set()
             assert release.wait(timeout=10)
@@ -683,13 +696,27 @@ async def test_a_fenced_write_blocked_on_the_lock_does_not_stall_the_event_loop(
 
         async def blocked_writer() -> None:
             other = JsonlStreamStore(root, segment_size=8)
-            await asyncio.sleep(0.05)
-            asyncio.get_running_loop().call_later(0.3, release.set)
-            if call == "append":
-                opts = AppendOptions(producer_id="p", producer_epoch=0, producer_seq=0)
-                await other.append_with_producer(PATH, b'{"waiter": true}', opts)
-            else:
-                await other.close_stream_with_producer(PATH, "p", 0, 0)
+            producer = {
+                PRODUCER_ID_HEADER: "p",
+                PRODUCER_EPOCH_HEADER: "0",
+                PRODUCER_SEQ_HEADER: "0",
+            }
+            async with asgi_client(other) as ac:
+                await asyncio.sleep(0.05)
+                asyncio.get_running_loop().call_later(0.3, release.set)
+                if call == "append":
+                    response = await ac.post(
+                        served,
+                        content=b'{"waiter": true}',
+                        headers={**producer, "content-type": "application/json"},
+                    )
+                else:
+                    response = await ac.post(
+                        served,
+                        content=b"",
+                        headers={**producer, STREAM_CLOSED_HEADER: "true"},
+                    )
+            assert response.status_code in (200, 204), response.content
             done.set()
 
         tick_task = asyncio.create_task(ticker())

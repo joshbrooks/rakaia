@@ -128,7 +128,8 @@ class DeleteNotAllowed(StreamError):
     """A client asked to delete a stream on a store whose streams are permanent.
 
     Raised from a store's `check_protocol_delete`, which a protocol server calls
-    before `delete`; a `delete()` called from Python is not refused. The server
+    before `delete`, and from `DjangoStreamStore.delete` unless it is called
+    with `force=True`. The server
     answers `405 Method Not Allowed`, the status the spec names for a delete the
     server does not support.
     """

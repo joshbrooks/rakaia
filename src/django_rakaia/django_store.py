@@ -32,7 +32,6 @@ single pure module (`rakaia.producer`) that both call, so the two cannot drift.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections.abc import Iterable, Iterator
@@ -51,7 +50,6 @@ from rakaia.append_decision import (
 )
 from rakaia.context import correlation_for, merge_provenance, tags_and_correlation
 from rakaia.json_mode import (
-    format_json_response,
     is_json_content_type,
     normalize_content_type,
     process_json_append,
@@ -227,14 +225,6 @@ def write_enveloped_event(
         for i, stream in enumerate(streams)
     ]
     return event, entries
-
-
-# Long-poll poll interval. The in-memory store wakes waiters with an
-# asyncio.Event, which only works in-process; a durable stream can be appended
-# to by another process entirely, so this store polls instead. 50ms keeps
-# catch-up latency well under the protocol's expectations without making an
-# idle waiter expensive.
-_POLL_INTERVAL_SECONDS = 0.05
 
 
 # How many event ids `DjangoStreamStore.delete` removes per statement. Well
@@ -603,12 +593,30 @@ class DjangoStreamStore:
                 )
             return stream
 
-    def close_stream(self, path: str) -> CloseResult | None:
+    def close_stream(
+        self,
+        path: str,
+        *,
+        producer_id: str | None = None,
+        producer_epoch: int | None = None,
+        producer_seq: int | None = None,
+    ) -> CloseResult | None:
         """Close the stream. `None` if it does not exist.
 
         Idempotent: closing an already-closed stream reports the same final
-        offset with `already_closed=True` rather than failing.
+        offset with `already_closed=True` rather than failing. With all three
+        producer arguments the close is fenced, and a retry of the *same*
+        closing tuple reports `already_closed` instead of being refused as a
+        duplicate, so a producer that loses the response can safely repeat it.
         """
+        if (
+            producer_id is not None
+            and producer_epoch is not None
+            and producer_seq is not None
+        ):
+            return self._close_with_producer(
+                path, producer_id, producer_epoch, producer_seq
+            )
         stream = self._get_if_not_expired(path)
         if stream is None:
             return None
@@ -620,30 +628,7 @@ class DjangoStreamStore:
         stream.save(update_fields=["closed", "closed_at", "last_activity_at"])
         return CloseResult(final_offset=stream.current_offset)
 
-    async def close_stream_with_producer(
-        self,
-        path: str,
-        producer_id: str | None = None,
-        producer_epoch: int | None = None,
-        producer_seq: int | None = None,
-    ) -> CloseResult | None:
-        """Close under producer fencing.
-
-        A retry of the *same* closing tuple reports `already_closed` instead of
-        being refused as a duplicate, so a producer that loses the response can
-        safely repeat its close.
-        """
-        if producer_id is None or producer_epoch is None or producer_seq is None:
-            return await self.run_sync(self.close_stream, path)
-        return await self.run_sync(
-            self._close_with_producer_sync,
-            path,
-            producer_id,
-            producer_epoch,
-            producer_seq,
-        )
-
-    def _close_with_producer_sync(
+    def _close_with_producer(
         self, path: str, producer_id: str, epoch: int, seq: int
     ) -> CloseResult | None:
         # An absent or expired stream is reported as `None` here, not raised —
@@ -914,43 +899,6 @@ class DjangoStreamStore:
                 "last_updated": result.proposed_state.last_updated,
             },
         )
-
-    async def append_with_producer(
-        self, path: str, data: bytes, options: Any = None
-    ) -> AppendResult:
-        """Append under producer fencing.
-
-        Serialization is by database transaction rather than the in-memory
-        store's per-producer asyncio lock, because concurrent writers to a
-        durable stream are typically different processes, which an in-process
-        lock would not see.
-        """
-        return await self.run_sync(self._append_with_producer_sync, path, data, options)
-
-    def _append_with_producer_sync(
-        self, path: str, data: bytes, options: Any = None
-    ) -> AppendResult:
-        """A fenced append *is* an append, so this is `append`.
-
-        It was a second copy of it — the same nine steps in the same order, 39
-        lines, differing only in a local alias for `verdict.producer_result` and
-        the order of two keyword arguments. That is what #183 is about: the copy
-        is where the divergence gets in, and this one had already diverged twice
-        before the admission rule was shared (#154, #167).
-
-        The reason it looked like a separate method is real but belongs to
-        `append`, and is documented there: the row lock `_locked_write` takes is
-        what makes fencing fence, because two concurrent retries of the same
-        `(producer_id, epoch, seq)` that both read before either commits would
-        both be accepted. That is the same lock a plain append needs to allocate
-        an offset, so there was never a second sequence to run — only one that
-        additionally consults the producer's state, which `decide_append` does
-        for any options carrying the triple.
-
-        The signature stays because `append_with_producer` is part of the store
-        protocol; only the duplicate body is gone.
-        """
-        return self.append(path, data, options)
 
     def append_many(
         self, path: str, events: Iterable[tuple[bytes, Any]]
@@ -1230,13 +1178,17 @@ class DjangoStreamStore:
         # One row past the page is how "more remain" is known without a count.
         return page_of(self._read_since(stream, offset, limit=limit + 1), limit)
 
+    def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
+        """`read` without extending the TTL window; see `StreamServerStore.peek`."""
+        return self._read_since(self._require(path), offset)
+
     def _read_since(
         self, stream: Stream, offset: str | None = None, *, limit: int | None = None
     ) -> list[StreamMessage]:
         """The messages after `offset`, without extending the TTL window.
 
-        Split out from `read` so long-poll can check for new messages on every
-        tick without writing `last_activity_at` on every tick with it. `limit`
+        Split out from `read` so `peek` can check for new messages on every
+        long-poll tick without writing `last_activity_at` on every tick with it. `limit`
         caps the rows fetched; `None` fetches them all.
         """
         entries = (
@@ -1389,72 +1341,15 @@ class DjangoStreamStore:
 
         The protocol server calls this before `delete`, and the server answers
         the refusal with `405 Method Not Allowed`. It refuses every path while
-        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off; `delete()`
-        itself never asks.
+        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off. `delete()`
+        refuses as well unless called with `force=True`; this is the check for
+        a client's request, made before that.
         """
         if _permanent_streams():
             raise DeleteNotAllowed(
                 f"Streams are permanent (RAKAIA_PERMANENT_STREAMS): {path} "
                 f"cannot be deleted over the protocol"
             )
-
-    def format_response(self, path: str, messages: list[StreamMessage]) -> bytes:
-        """Render `messages` as the response body for `path`.
-
-        A JSON-mode stream yields one JSON array; anything else the payloads
-        concatenated. Raises `StreamNotFound` for an absent or expired stream,
-        matching the in-memory store — returning `b""` here would silently
-        drop the JSON-array framing on the expiry race instead of failing.
-        """
-        stream = self._require(path)
-        if is_json_content_type(stream.content_type):
-            # Stored payloads are standalone JSON documents, which is now what
-            # the shared formatter takes. It used to want the in-memory store's
-            # comma-separated concatenation, so this path had to re-frame the
-            # payloads just to have them unframed again (#155).
-            return format_json_response([m.data for m in messages])
-        return b"".join(m.data for m in messages)
-
-    async def wait_for_messages(
-        self, path: str, offset: str, timeout_seconds: float
-    ) -> tuple[list[StreamMessage], bool, bool]:
-        """Long-poll for messages after `offset`.
-
-        Returns `(messages, timed_out, stream_closed)`, matching the in-memory
-        store.
-
-        Polls rather than waiting on an in-process event: a durable stream is
-        typically appended to by a different process, which an `asyncio.Event`
-        in this one would never observe.
-        """
-        deadline = time.monotonic() + timeout_seconds
-        entered = False
-        while True:
-            stream = await self.run_sync(self._get_if_not_expired, path)
-            if stream is None:
-                if not entered:
-                    raise StreamNotFound(f"Stream not found: {path}")
-                # The stream expired mid-wait. The in-memory store reports
-                # that as an ordinary timeout, not an error — a client that
-                # was legitimately waiting should not get a 404 for it.
-                return [], True, False
-            entered = True
-
-            messages = await self.run_sync(self._read_since, stream, offset)
-            if messages:
-                # The TTL window is extended once, on the way out — not on
-                # every tick. Polling through `read` wrote `last_activity_at`
-                # 20 times a second for each waiter on a stream with a TTL.
-                await self.run_sync(self._touch, stream)
-                return messages, False, False
-
-            if stream.closed:
-                return [], False, True
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return [], True, False
-            await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
 
     def get_current_offset(self, path: str) -> str | None:
         """The latest offset ever issued for the stream as a string, or None if

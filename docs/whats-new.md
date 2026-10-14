@@ -552,8 +552,8 @@ RAKAIA_JSONL_FSYNC = True  # off trades durability for speed
 ```
 
 It holds the same store contract the other two do, including concurrent appends
-from several processes and `wait_for_messages`, which it implements by watching
-the directory. That last part is what makes **live updates work across processes
+from several processes and long-poll, which the protocol server answers by
+re-reading the directory. That last part is what makes **live updates work across processes
 with no broker at all** — the `polyglot` example now runs four workers off one
 log, serving SSE from rakaia's own protocol server, with no Redis between them.
 

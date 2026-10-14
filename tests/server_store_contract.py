@@ -32,6 +32,7 @@ import json
 
 import pytest
 
+from rakaia.protocol_server import _wait_for_messages
 from rakaia.protocols import StreamServerStore
 from rakaia.types import (
     AppendOptions,
@@ -109,7 +110,7 @@ class ServerStoreContract:
 
         A `runtime_checkable` Protocol does not compare signatures, so a store
         can satisfy it while taking arguments the server does not pass — which
-        is how `close_stream_with_producer` came to be declared one way and
+        is how the fenced close came to be declared one way and
         implemented another in both stores at once.
 
         Checked with `Signature.bind` rather than name-list equality: every
@@ -219,7 +220,7 @@ class ServerStoreContract:
 
         store.create("s", content_type="application/json", initial_data=b'{"id": 1}')
         messages, _ = store.read("s")
-        assert json.loads(store.format_response("s", messages)) == [{"id": 1}]
+        assert [json.loads(m.data) for m in messages] == [{"id": 1}]
 
     # =========================================================================
     # Append
@@ -509,7 +510,7 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert len(messages) == 2
 
-    async def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
+    def test_append_many_does_not_advance_seq_for_a_refused_item(self, store):
         """An item the fence refuses is not written, so it cannot move
         `Stream-Seq` for the items after it.
 
@@ -520,10 +521,9 @@ class ServerStoreContract:
         collides with a sequence nothing ever took. #181: the two stores
         hand-rolled that scan separately and only one of them got this right.
         """
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"n": 0}', self._producer("p", 2, 0))
-        results = await self._sync(
-            store.append_many,
+        store.create("s")
+        store.append("s", b'{"n": 0}', self._producer("p", 2, 0))
+        results = store.append_many(
             "s",
             [
                 # Stale epoch: refused, so its seq="9" is never taken.
@@ -541,10 +541,10 @@ class ServerStoreContract:
         assert results[1].message is not None, (
             "seq='3' is free: the refused item never took seq='9'"
         )
-        stream = await self._sync(store.get, "s")
+        stream = store.get("s")
         assert stream.last_seq == "3"
 
-    async def test_append_many_to_a_closed_stream_recognises_the_closing_producer(
+    def test_append_many_to_a_closed_stream_recognises_the_closing_producer(
         self, store
     ):
         """A batch is admitted on the same terms as a single append, including
@@ -555,51 +555,47 @@ class ServerStoreContract:
         bare "closed" to the same tuple tells the producer to give up on a write
         that in fact succeeded.
         """
-        await self._sync(store.create, "s")
+        store.create("s")
         closing = AppendOptions(
             producer_id="p", producer_epoch=1, producer_seq=0, close=True
         )
-        await store.append_with_producer("s", b'{"n": 1}', closing)
+        store.append("s", b'{"n": 1}', closing)
 
-        results = await self._sync(store.append_many, "s", [(b'{"n": 1}', closing)])
+        results = store.append_many("s", [(b'{"n": 1}', closing)])
 
         assert results[0].stream_closed is True
         assert results[0].message is None
         assert isinstance(results[0].producer_result, ProducerDuplicate)
 
-    async def test_append_many_items_after_a_close_are_admitted_like_a_loop(
-        self, store
-    ):
+    def test_append_many_items_after_a_close_are_admitted_like_a_loop(self, store):
         """The items after an in-batch close observe the stream the close left
         behind — including the closing tuple, so a producer re-sending its own
         closing append inside the same batch is told it is a duplicate rather
         than a bare "closed"."""
-        await self._sync(store.create, "s")
+        store.create("s")
         closing = AppendOptions(
             producer_id="p", producer_epoch=1, producer_seq=0, close=True
         )
-        results = await self._sync(
-            store.append_many, "s", [(b'{"n": 1}', closing), (b'{"n": 1}', closing)]
+        results = store.append_many(
+            "s", [(b'{"n": 1}', closing), (b'{"n": 1}', closing)]
         )
 
         assert results[0].message is not None and results[0].stream_closed
         assert results[1].message is None and results[1].stream_closed
         assert isinstance(results[1].producer_result, ProducerDuplicate)
 
-    async def test_append_many_fences_the_second_item_against_the_first(self, store):
+    def test_append_many_fences_the_second_item_against_the_first(self, store):
         """Within one batch a producer's state advances item by item, so a
         second item repeating the first item's sequence is a duplicate — the
         same answer a loop of `append` gives."""
-        await self._sync(store.create, "s")
+        store.create("s")
         opts = self._producer("p", 1, 0)
-        results = await self._sync(
-            store.append_many, "s", [(b'{"n": 1}', opts), (b'{"n": 2}', opts)]
-        )
+        results = store.append_many("s", [(b'{"n": 1}', opts), (b'{"n": 2}', opts)])
 
         assert isinstance(results[0].producer_result, ProducerAccepted)
         assert isinstance(results[1].producer_result, ProducerDuplicate)
         assert results[1].message is None
-        messages, _ = await self._sync(store.read, "s")
+        messages, _ = store.read("s")
         assert len(messages) == 1, "the duplicate must not be written"
 
     # -------------------------------------------------------------------------
@@ -676,37 +672,43 @@ class ServerStoreContract:
         store.close_stream("s")
         assert store.get("s").closed is True
 
-    async def test_a_different_producer_cannot_reclose_a_closed_stream(self, store):
+    def test_a_different_producer_cannot_reclose_a_closed_stream(self, store):
         """An already-closed stream is reported, never re-closed.
 
         Overwriting `closed_by` with the second producer's tuple would make a
         retry of the *original* closing tuple unrecognisable as a duplicate —
         the exact idempotence the tuple is recorded for.
         """
-        await self._sync(store.create, "s")
-        await store.close_stream_with_producer("s", "p1", 0, 0)
-        result = await store.close_stream_with_producer("s", "p2", 0, 0)
+        store.create("s")
+        store.close_stream("s", producer_id="p1", producer_epoch=0, producer_seq=0)
+        result = store.close_stream(
+            "s", producer_id="p2", producer_epoch=0, producer_seq=0
+        )
         assert result.already_closed is True
         assert isinstance(result.producer_result, ProducerStreamClosed)
-        by = (await self._sync(store.get, "s")).closed_by
+        by = (store.get("s")).closed_by
         assert by is not None and by.producer_id == "p1", "closed_by must not move"
 
-    async def test_a_fenced_close_reports_the_producer_accepted(self, store):
+    def test_a_fenced_close_reports_the_producer_accepted(self, store):
         """A close that lands says so, the way a fenced append does.
 
         The server reads a missing result as accepted, so this never showed over
         HTTP; a caller of the store saw `None` from one store and
         `ProducerAccepted` from the other two.
         """
-        await self._sync(store.create, "s")
-        result = await store.close_stream_with_producer("s", "p", 0, 0)
+        store.create("s")
+        result = store.close_stream(
+            "s", producer_id="p", producer_epoch=0, producer_seq=0
+        )
         assert result.already_closed is False
         assert isinstance(result.producer_result, ProducerAccepted)
 
-    async def test_a_retried_closing_tuple_is_a_duplicate(self, store):
-        await self._sync(store.create, "s")
-        await store.close_stream_with_producer("s", "p", 0, 0)
-        again = await store.close_stream_with_producer("s", "p", 0, 0)
+    def test_a_retried_closing_tuple_is_a_duplicate(self, store):
+        store.create("s")
+        store.close_stream("s", producer_id="p", producer_epoch=0, producer_seq=0)
+        again = store.close_stream(
+            "s", producer_id="p", producer_epoch=0, producer_seq=0
+        )
         assert again.already_closed is True
         assert isinstance(again.producer_result, ProducerDuplicate)
 
@@ -714,239 +716,182 @@ class ServerStoreContract:
     # Producer fencing
     # =========================================================================
 
-    # Async cases need their sync setup routed through the backend's own
-    # sync/async bridge: a store on a database cannot be called directly from
-    # an async test. The default just calls through, for stores that don't care.
-    @staticmethod
-    async def _sync(fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
     @staticmethod
     def _producer(pid: str, epoch: int, seq: int) -> AppendOptions:
         return AppendOptions(producer_id=pid, producer_epoch=epoch, producer_seq=seq)
 
-    async def test_a_new_producer_must_open_at_seq_zero(self, store):
-        await self._sync(store.create, "s")
-        result = await store.append_with_producer(
-            "s", b'{"id": 1}', self._producer("p", 0, 3)
-        )
+    def test_a_new_producer_must_open_at_seq_zero(self, store):
+        store.create("s")
+        result = store.append("s", b'{"id": 1}', self._producer("p", 0, 3))
         assert isinstance(result.producer_result, ProducerSequenceGap)
         assert result.message is None
 
-    async def test_a_producer_opening_at_zero_is_accepted(self, store):
-        await self._sync(store.create, "s")
-        result = await store.append_with_producer(
-            "s", b'{"id": 1}', self._producer("p", 0, 0)
-        )
+    def test_a_producer_opening_at_zero_is_accepted(self, store):
+        store.create("s")
+        result = store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
         assert isinstance(result.producer_result, ProducerAccepted)
         assert result.message is not None
 
-    async def test_a_replayed_seq_is_a_duplicate_not_a_write(self, store):
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
-        again = await store.append_with_producer(
-            "s", b'{"id": 1}', self._producer("p", 0, 0)
-        )
+    def test_a_replayed_seq_is_a_duplicate_not_a_write(self, store):
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
+        again = store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
         assert isinstance(again.producer_result, ProducerDuplicate)
         assert again.message is None
-        messages, _ = await self._sync(store.read, "s")
+        messages, _ = store.read("s")
         assert len(messages) == 1, "a duplicate must not write a second time"
 
-    async def test_a_stale_epoch_is_refused(self, store):
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 5, 0))
-        result = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 4, 0)
-        )
+    def test_a_stale_epoch_is_refused(self, store):
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 5, 0))
+        result = store.append("s", b'{"id": 2}', self._producer("p", 4, 0))
         assert isinstance(result.producer_result, ProducerStaleEpoch)
 
-    async def test_a_new_epoch_must_also_open_at_zero(self, store):
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
-        result = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 1, 7)
-        )
+    def test_a_new_epoch_must_also_open_at_zero(self, store):
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
+        result = store.append("s", b'{"id": 2}', self._producer("p", 1, 7))
         assert isinstance(result.producer_result, ProducerInvalidEpochSeq)
 
-    async def test_a_gap_is_refused_with_the_expected_seq(self, store):
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
-        result = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 0, 5)
-        )
+    def test_a_gap_is_refused_with_the_expected_seq(self, store):
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
+        result = store.append("s", b'{"id": 2}', self._producer("p", 0, 5))
         assert isinstance(result.producer_result, ProducerSequenceGap)
         assert result.producer_result.expected_seq == 1
 
-    async def test_a_refused_write_does_not_advance_the_producer(self, store):
+    def test_a_refused_write_does_not_advance_the_producer(self, store):
         """A rejected append must leave the sequence where it was."""
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
-        await store.append_with_producer("s", b'{"id": 2}', self._producer("p", 0, 9))
-        accepted = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 0, 1)
-        )
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
+        store.append("s", b'{"id": 2}', self._producer("p", 0, 9))
+        accepted = store.append("s", b'{"id": 2}', self._producer("p", 0, 1))
         assert isinstance(accepted.producer_result, ProducerAccepted)
 
-    async def test_append_with_producer_to_a_closed_stream_reports_closed(self, store):
-        """Closed is decided before fencing, on this door too.
+    def test_a_fenced_append_to_a_closed_stream_reports_closed(self, store):
+        """Closed is decided before fencing.
 
-        Nothing drove `append_with_producer` against a closed stream, and the
-        two stores had drifted underneath: one answered with the fencing
-        outcome for a write that could never land anyway, so a producer whose
-        seq happened to be wrong learned about the gap instead of learning the
-        stream was closed.
+        A producer whose seq happens to be wrong must learn the stream is
+        closed, not about a gap in a write that could never land anyway.
         """
-        await self._sync(store.create, "s")
-        await store.append_with_producer("s", b'{"id": 1}', self._producer("p", 0, 0))
-        await self._sync(store.close_stream, "s")
+        store.create("s")
+        store.append("s", b'{"id": 1}', self._producer("p", 0, 0))
+        store.close_stream("s")
 
-        result = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 0, 9)
-        )
+        result = store.append("s", b'{"id": 2}', self._producer("p", 0, 9))
         assert result.stream_closed is True
         assert result.message is None
         assert isinstance(result.producer_result, ProducerStreamClosed)
 
-    async def test_append_with_producer_retrying_a_closing_tuple_is_a_duplicate(
-        self, store
-    ):
+    def test_a_fenced_append_retrying_a_closing_tuple_is_a_duplicate(self, store):
         """A producer that loses the response to its own closing append must be
         able to tell "my close landed" from "someone else closed this"."""
-        await self._sync(store.create, "s")
+        store.create("s")
         opts = AppendOptions(
             producer_id="p", producer_epoch=0, producer_seq=0, close=True
         )
-        await store.append_with_producer("s", b'{"id": 1}', opts)
+        store.append("s", b'{"id": 1}', opts)
 
-        again = await store.append_with_producer("s", b'{"id": 1}', opts)
+        again = store.append("s", b'{"id": 1}', opts)
         assert again.stream_closed is True
         assert isinstance(again.producer_result, ProducerDuplicate)
         assert again.message is None
 
-    # =========================================================================
-    # Producer options on the plain `append` path
-    # =========================================================================
-    #
-    # A protocol server routes fenced writes to `append_with_producer`, so every
-    # case above goes through that door. Nothing said what the *other* door does
-    # with the same options — and the two stores answered differently:
-    # `StreamStore.append` validated the producer inline and recognised the
-    # idempotent close-duplicate, while `DjangoStreamStore.append` ignored
-    # `options.producer_id` entirely, all while its docstring claimed "outcomes,
-    # all now matching the in-memory store".
-    #
-    # `WritableStore.append` is public and takes an `AppendOptions` with those
-    # fields on it, so a consumer calling it directly got adapter-dependent
-    # behaviour. These cases make the two doors agree.
-
-    async def test_append_honours_producer_fencing(self, store):
-        """The same options through `append` reach the same verdict."""
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
-
-        stale = await self._sync(
-            store.append, "s", b'{"id": 2}', self._producer("p", 0, 0)
-        )
-        assert isinstance(stale.producer_result, ProducerDuplicate)
-        assert stale.message is None
-
-        messages, _ = await self._sync(store.read, "s")
-        assert len(messages) == 1, "a duplicate must not write a second time"
-
-    async def test_append_refuses_a_stale_epoch(self, store):
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 5, 0))
-        result = await self._sync(
-            store.append, "s", b'{"id": 2}', self._producer("p", 4, 0)
-        )
-        assert isinstance(result.producer_result, ProducerStaleEpoch)
-        assert result.message is None
-
-    async def test_append_refuses_a_sequence_gap(self, store):
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
-        result = await self._sync(
-            store.append, "s", b'{"id": 2}', self._producer("p", 0, 5)
-        )
-        assert isinstance(result.producer_result, ProducerSequenceGap)
-        assert result.producer_result.expected_seq == 1
-
-    async def test_append_accepts_a_well_formed_producer_write(self, store):
-        await self._sync(store.create, "s")
-        result = await self._sync(
-            store.append, "s", b'{"id": 1}', self._producer("p", 0, 0)
-        )
-        assert isinstance(result.producer_result, ProducerAccepted)
-        assert result.message is not None
-
-    async def test_append_shares_producer_state_with_append_with_producer(self, store):
-        """One producer, one sequence — whichever door each write came through."""
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}', self._producer("p", 0, 0))
-        result = await store.append_with_producer(
-            "s", b'{"id": 2}', self._producer("p", 0, 1)
-        )
-        assert isinstance(result.producer_result, ProducerAccepted)
-
-    async def test_append_to_a_closed_stream_reports_the_duplicate_close(self, store):
-        """Re-sending the append that closed the stream is idempotent, not a
-        bare refusal — the producer needs to tell "my close landed" apart from
-        "someone else closed this"."""
-        await self._sync(store.create, "s")
-        opts = AppendOptions(
-            producer_id="p", producer_epoch=0, producer_seq=0, close=True
-        )
-        await self._sync(store.append, "s", b'{"id": 1}', opts)
-
-        again = await self._sync(store.append, "s", b'{"id": 1}', opts)
-        assert again.stream_closed is True
-        assert isinstance(again.producer_result, ProducerDuplicate)
-
-    async def test_append_to_a_closed_stream_by_another_producer_is_refused(
-        self, store
-    ):
-        await self._sync(store.create, "s")
-        await self._sync(
-            store.append,
+    def test_append_to_a_closed_stream_by_another_producer_is_refused(self, store):
+        store.create("s")
+        store.append(
             "s",
             b'{"id": 1}',
             AppendOptions(
                 producer_id="p", producer_epoch=0, producer_seq=0, close=True
             ),
         )
-        other = await self._sync(
-            store.append, "s", b'{"id": 2}', self._producer("other", 0, 0)
-        )
+        other = store.append("s", b'{"id": 2}', self._producer("other", 0, 0))
         assert other.stream_closed is True
         assert isinstance(other.producer_result, ProducerStreamClosed)
         assert other.message is None
 
     # =========================================================================
-    # Long-poll
+    # Peek and long-poll
     # =========================================================================
 
+    def test_peek_returns_the_messages_after_an_offset(self, store):
+        store.create("s")
+        first = store.append("s", b'{"id": 1}').message
+        store.append("s", b'{"id": 2}')
+        assert [json.loads(m.data) for m in store.peek("s", "-1")] == [
+            {"id": 1},
+            {"id": 2},
+        ]
+        assert [json.loads(m.data) for m in store.peek("s", first.offset)] == [
+            {"id": 2}
+        ]
+
+    def test_peek_of_a_missing_stream_raises(self, store):
+        with pytest.raises(StreamNotFound):
+            store.peek("nope", "-1")
+
+    def test_peek_does_not_extend_the_ttl_window(self, store):
+        """What separates `peek` from `read`: a long-poll calls it on every
+        tick, and a stream that a waiter is only watching must still expire."""
+        import time
+
+        store.create("s", ttl_seconds=1)
+        time.sleep(0.6)
+        store.peek("s", "-1")
+        time.sleep(0.6)
+        assert store.get("s") is None, "peek kept the stream alive"
+
+    def test_check_protocol_delete_answers_without_raising_by_default(self, store):
+        store.create("s")
+        store.check_protocol_delete("s")
+
+    # The server's long-poll loop, driven against this store. It is the server's
+    # code, but what it waits on is the store's answers, so it runs once per
+    # backend.
+
     async def test_wait_returns_immediately_when_messages_exist(self, store):
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}')
-        messages, _, _ = await store.wait_for_messages("s", "-1", 5.0)
+        await store.run_sync(store.create, "s")
+        await store.run_sync(store.append, "s", b'{"id": 1}')
+        messages, _, _ = await _wait_for_messages(store, "s", "-1", 5.0)
         assert len(messages) == 1
 
     async def test_wait_times_out_empty_when_caught_up(self, store):
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}')
-        head = await self._sync(store.get_current_offset, "s")
-        messages, timed_out, _ = await store.wait_for_messages("s", head, 0.15)
+        await store.run_sync(store.create, "s")
+        await store.run_sync(store.append, "s", b'{"id": 1}')
+        head = await store.run_sync(store.get_current_offset, "s")
+        messages, timed_out, _ = await _wait_for_messages(store, "s", head, 0.15)
         assert messages == []
         assert timed_out is True
 
     async def test_wait_returns_on_a_closed_stream(self, store):
-        await self._sync(store.create, "s")
-        await self._sync(store.append, "s", b'{"id": 1}')
-        head = await self._sync(store.get_current_offset, "s")
-        await self._sync(store.close_stream, "s")
-        messages, _, closed = await store.wait_for_messages("s", head, 5.0)
+        await store.run_sync(store.create, "s")
+        await store.run_sync(store.append, "s", b'{"id": 1}')
+        head = await store.run_sync(store.get_current_offset, "s")
+        await store.run_sync(store.close_stream, "s")
+        messages, _, closed = await _wait_for_messages(store, "s", head, 5.0)
         assert messages == []
         assert closed is True
+
+    async def test_wait_wakes_for_an_append_made_while_waiting(self, store):
+        import asyncio
+
+        await store.run_sync(store.create, "s")
+        head = await store.run_sync(store.get_current_offset, "s")
+
+        async def append_soon():
+            await asyncio.sleep(0.1)
+            await store.run_sync(store.append, "s", b'{"id": 1}')
+
+        task = asyncio.create_task(append_soon())
+        messages, timed_out, _ = await _wait_for_messages(store, "s", head, 5.0)
+        await task
+        assert timed_out is False
+        assert [json.loads(m.data) for m in messages] == [{"id": 1}]
+
+    async def test_wait_on_a_missing_stream_raises(self, store):
+        with pytest.raises(StreamNotFound):
+            await _wait_for_messages(store, "nope", "-1", 0.1)
 
     # =========================================================================
     # TTL
@@ -981,24 +926,8 @@ class ServerStoreContract:
         store.touch("nope")  # must not raise
 
     # =========================================================================
-    # Response formatting
+    # JSON mode
     # =========================================================================
-
-    def test_format_response_for_a_missing_stream_raises(self, store):
-        """Not `b""`: an empty body silently drops JSON-array framing on the
-        expiry race, where a failure names what actually happened."""
-        with pytest.raises(StreamNotFound):
-            store.format_response("nope", [])
-
-    def test_json_mode_formats_one_array(self, store):
-        store.create("s", content_type="application/json")
-        store.append("s", b'{"id": 1}')
-        store.append("s", b'{"id": 2}')
-        messages, _ = store.read("s")
-        body = store.format_response("s", messages)
-        import json
-
-        assert json.loads(body) == [{"id": 1}, {"id": 2}]
 
     def test_a_json_array_append_flattens_into_separate_messages(self, store):
         """`[a, b]` is two messages, not one message that is an array.
@@ -1012,10 +941,7 @@ class ServerStoreContract:
         store.create("s", content_type="application/json")
         store.append("s", b'[{"id": 1}, {"id": 2}]')
         messages, _ = store.read("s")
-        assert json.loads(store.format_response("s", messages)) == [
-            {"id": 1},
-            {"id": 2},
-        ]
+        assert [json.loads(m.data) for m in messages] == [{"id": 1}, {"id": 2}]
 
     def test_an_empty_json_array_is_refused_on_append(self, store):
         from rakaia.types import EmptyJsonArray
@@ -1055,12 +981,12 @@ class ServerStoreContract:
         messages, _ = store.read("s")
         assert [m.data for m in messages] == [b'{"a":  1}']
 
-    def test_a_text_stream_formats_as_the_concatenated_payloads(self, store):
+    def test_a_text_stream_keeps_each_payload_whole(self, store):
         store.create("s", content_type="text/csv")
         store.append("s", b"a,b\n")
         store.append("s", b"c,d\n")
         messages, _ = store.read("s")
-        assert store.format_response("s", messages) == b"a,b\nc,d\n"
+        assert [m.data for m in messages] == [b"a,b\n", b"c,d\n"]
 
     def test_a_binary_payload_round_trips(self, store):
         """Bytes that are not valid UTF-8 must survive too."""

@@ -8,10 +8,12 @@ application with zero framework dependencies. Can be run with any ASGI server
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,9 +32,9 @@ from ._asgi import (
     send_response,
     start_streaming_response,
 )
-from .json_mode import is_json_content_type
+from .json_mode import format_json_response, is_json_content_type
 from .offsets import ForeignOffset
-from .protocols import StreamServerStore
+from .protocols import SignalsNewMessages, StreamServerStore
 from .read_decision import (
     STREAM_CLOSED_HEADER_RESP,
     STREAM_OFFSET_HEADER_RESP,
@@ -76,6 +78,7 @@ from .types import (
     SequenceConflict,
     StreamConfigConflict,
     StreamError,
+    StreamMessage,
     StreamNotFound,
 )
 
@@ -622,6 +625,79 @@ async def _validate_read_params(
     return False
 
 
+# How often a long-poll re-reads a store that cannot signal new messages. A
+# file or database log can be appended to by another process, which no event in
+# this one would see, so it is polled; 50ms keeps catch-up latency well under
+# what the protocol expects without making an idle waiter expensive (#290).
+_POLL_INTERVAL_SECONDS = 0.05
+
+
+async def _wait_for_messages(
+    store: StreamServerStore, path: str, offset: str, timeout_seconds: float
+) -> tuple[list[StreamMessage], bool, bool]:
+    """Long-poll: wait up to `timeout_seconds` for messages after `offset`.
+
+    Returns `(messages, timed_out, stream_closed)`. Raises `StreamNotFound` if
+    the stream is absent on the first pass; one that expires or is deleted
+    mid-wait is an ordinary timeout, so a client legitimately waiting gets no
+    404 for it. The TTL window is extended once, on the way out with messages,
+    not on every tick.
+
+    A store offering `new_messages_event` is waited on rather than polled. The
+    event is taken before the read, so a message landing between the read and
+    the wait has already set it. The event must be set on the event loop, which
+    `asyncio.Event` requires; a store whose writes run in a thread cannot offer
+    one.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    first = True
+    while True:
+        event = (
+            store.new_messages_event(path)
+            if isinstance(store, SignalsNewMessages)
+            else None
+        )
+        # The stream before the messages, never after: an append that also
+        # closes, landing between the two, would otherwise read as closed with
+        # its message never delivered.
+        stream = await store.run_sync(store.get, path)
+        if stream is None:
+            if first:
+                raise StreamNotFound(f"Stream not found: {path}")
+            return [], True, False
+        first = False
+
+        try:
+            messages = await store.run_sync(store.peek, path, offset)
+        except StreamNotFound:
+            # Gone between the `get` and the `peek`: the same mid-wait expiry.
+            return [], True, False
+        if messages:
+            await store.run_sync(store.touch, path)
+            return messages, False, False
+        if stream.closed:
+            return [], False, True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return [], True, False
+        if event is None:
+            await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
+            continue
+        try:
+            await asyncio.wait_for(event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return [], True, False
+
+
+def _response_body(content_type: str | None, messages: list[StreamMessage]) -> bytes:
+    """A JSON-mode stream's messages as one JSON array; anything else, the
+    payloads concatenated."""
+    if is_json_content_type(content_type):
+        return format_json_response([m.data for m in messages])
+    return b"".join(m.data for m in messages)
+
+
 async def _handle_read(
     path: str,
     scope: Scope,
@@ -706,7 +782,8 @@ async def _handle_read(
             )
             return
 
-        wait_result = await store.wait_for_messages(
+        wait_result = await _wait_for_messages(
+            store,
             path,
             effective_offset or stream.current_offset,
             opts.long_poll_timeout,
@@ -760,7 +837,7 @@ async def _handle_read(
         await _send_verdict(send, verdict)
         return
 
-    response_data = await store.run_sync(store.format_response, path, messages)
+    response_data = _response_body(stream.content_type, messages)
     await send_response(send, 200, verdict.headers, response_data)
 
 
@@ -889,10 +966,7 @@ async def _handle_sse(
                 if use_base64:
                     data_payload = base64.b64encode(message.data).decode()
                 elif is_json_stream:
-                    json_bytes = await store.run_sync(
-                        store.format_response, path, [message]
-                    )
-                    data_payload = json_bytes.decode("utf-8")
+                    data_payload = format_json_response([message.data]).decode("utf-8")
                 else:
                     data_payload = message.data.decode("utf-8")
 
@@ -942,8 +1016,8 @@ async def _handle_sse(
                     _wait_messages,
                     timed_out,
                     stream_closed,
-                ) = await store.wait_for_messages(
-                    path, current_offset, opts.long_poll_timeout
+                ) = await _wait_for_messages(
+                    store, path, current_offset, opts.long_poll_timeout
                 )
             except (KeyError, StreamError):
                 break
@@ -1089,8 +1163,12 @@ async def _handle_append(
             assert producer_id is not None
             assert producer_epoch is not None
             assert producer_seq is not None
-            close_result = await store.close_stream_with_producer(
-                path, producer_id, producer_epoch, producer_seq
+            close_result = await store.run_sync(
+                store.close_stream,
+                path,
+                producer_id=producer_id,
+                producer_epoch=producer_epoch,
+                producer_seq=producer_seq,
             )
             if close_result is None:
                 await _send_error(send, 404, b"Stream not found", cors)
@@ -1160,11 +1238,9 @@ async def _handle_append(
         close=close_stream,
     )
 
-    # Use append_with_producer for serialized operations
-    if producer_id is not None:
-        result = await store.append_with_producer(path, body, append_opts)
-    else:
-        result = await store.run_sync(store.append, path, body, append_opts)
+    # A fenced append is an ordinary append carrying the producer triple: every
+    # store checks the producer inside the same lock that orders its writes.
+    result = await store.run_sync(store.append, path, body, append_opts)
 
     # Handle closed stream
     if result.stream_closed and result.message is None:
@@ -1225,13 +1301,10 @@ async def _handle_delete(
         await _send_error(send, 404, b"Stream not found", cors)
         return
 
-    # Optional, so a store that has no such policy need not grow a method: a
-    # store may refuse a client's DELETE while still honouring `delete()` from
-    # Python, which is what `DjangoStreamStore` does for permanent streams.
+    # A store may refuse a client's DELETE while still honouring `delete()`
+    # from Python, which is what `DjangoStreamStore` does for permanent streams.
     # Its `DeleteNotAllowed` is answered by `create_app`, like any store failure.
-    check = getattr(store, "check_protocol_delete", None)
-    if check is not None:
-        await store.run_sync(check, path)
+    await store.run_sync(store.check_protocol_delete, path)
 
     await store.run_sync(store.delete, path)
     await send_response(send, 204, cors)

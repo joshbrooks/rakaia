@@ -243,6 +243,37 @@ class TestRead:
         assert b'"a"' in body
         assert b'"b"' in body
 
+    async def test_a_text_stream_reads_back_as_its_payloads_joined(
+        self, client: httpx.AsyncClient
+    ):
+        """Only a JSON stream is framed; any other body is the payloads as
+        written, end to end, with nothing between them."""
+        text = {"content-type": "text/csv"}
+        await client.put("/foo", headers=text)
+        await client.post("/foo", headers=text, content=b"a,b\n")
+        await client.post("/foo", headers=text, content=b"c,d\n")
+        response = await client.get("/foo")
+        assert response.content == b"a,b\nc,d\n"
+
+    async def test_sse_on_a_json_stream_frames_each_message_as_an_array(
+        self, client: httpx.AsyncClient
+    ):
+        """Each live `data` event carries one message as a one-element JSON
+        array, the same framing a plain GET of that message would get."""
+        json_ct = {"content-type": "application/json"}
+        await client.put("/foo", headers=json_ct)
+        await client.post("/foo", headers=json_ct, content=b'{"a":1}')
+        await client.post(
+            "/foo", headers={**json_ct, "Stream-Closed": "true"}, content=b'{"b":2}'
+        )
+        response = await client.get("/foo?offset=-1&live=sse")
+        data = [
+            json.loads(block.split("data:", 1)[1])
+            for block in response.text.split("\n\n")
+            if block.startswith("event: data")
+        ]
+        assert data == [[{"a": 1}], [{"b": 2}]]
+
     async def test_read_missing_returns_404(self, client: httpx.AsyncClient):
         response = await client.get("/missing")
         assert response.status_code == 404

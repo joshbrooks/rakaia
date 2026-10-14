@@ -44,8 +44,8 @@ def test_a_json_mode_stream_can_be_replayed() -> None:
 
     `replay()` reads through `ReadableStore`, which says nothing about content
     types -- so a JSON-mode stream must replay exactly like any other. Today the
-    first event fails to decode, because the bytes carry a trailing comma that
-    only `format_response` knows how to strip.
+    first event failed to decode, because the bytes carried a trailing comma
+    that only the response framing knew how to strip.
     """
     store = StreamStore()
     store.create("s", content_type="application/json")
@@ -64,9 +64,10 @@ def test_a_json_mode_stream_can_be_replayed() -> None:
 def test_a_json_array_append_stores_one_message_per_element() -> None:
     """`server_store_contract.py` names this behaviour in a test title.
 
-    That contract test asserts through `format_response`, which re-wraps the
-    blob -- so it passes while the property it names does not hold. Asserting on
-    the stored messages instead is what makes the claim observable.
+    That contract test once asserted through the response framing, which
+    re-wrapped the blob -- so it passed while the property it names did not
+    hold. Asserting on the stored messages instead is what makes the claim
+    observable.
     """
     store = StreamStore()
     store.create("s", content_type="application/json")

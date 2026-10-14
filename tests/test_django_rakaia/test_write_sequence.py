@@ -119,44 +119,19 @@ class TestEveryWritePathRecordsThroughOneMethod:
 
 
 class TestAFencedAppendIsAnAppend:
-    """The 39 duplicated lines, gone.
-
-    `_append_with_producer_sync` ran its own copy of the same nine steps. It is
-    now `append`, and this is what stops the copy coming back: the assertion is
-    about the call, because a reintroduced copy would produce identical rows.
-    """
-
-    def test_the_fenced_entry_point_delegates(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        store = DjangoStreamStore()
-        store.create("s", content_type="application/json")
-        seen: list[tuple] = []
-        original = DjangoStreamStore.append
-
-        def recording(self, path, data, options=None):
-            seen.append((path, data, options))
-            return original(self, path, data, options)
-
-        monkeypatch.setattr(DjangoStreamStore, "append", recording)
-
-        opts = _producer("p", 1, 0)
-        store._append_with_producer_sync("s", b'{"n": 1}', opts)
-
-        assert seen == [("s", b'{"n": 1}', opts)]
+    """A fenced append is `append` carrying the producer triple; there is no
+    second entry point for it to drift from (#183, then #323 removed the
+    async one the server used)."""
 
     def test_it_still_fences(self) -> None:
-        """Delegating must not have dropped the fencing — the reason the method
-        looked separate. `decide_append` consults the producer's state for any
-        options carrying the triple, whichever door they came through."""
+        """`decide_append` consults the producer's state for any options
+        carrying the triple."""
         store = DjangoStreamStore()
         store.create("s", content_type="application/json")
 
-        first = store._append_with_producer_sync("s", b'{"n": 1}', _producer("p", 1, 0))
-        replay = store._append_with_producer_sync(
-            "s", b'{"n": 1}', _producer("p", 1, 0)
-        )
-        stale = store._append_with_producer_sync("s", b'{"n": 2}', _producer("p", 0, 1))
+        first = store.append("s", b'{"n": 1}', _producer("p", 1, 0))
+        replay = store.append("s", b'{"n": 1}', _producer("p", 1, 0))
+        stale = store.append("s", b'{"n": 2}', _producer("p", 0, 1))
 
         assert first.message is not None
         assert isinstance(replay.producer_result, ProducerDuplicate)
