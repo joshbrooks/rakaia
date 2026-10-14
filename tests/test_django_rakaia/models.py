@@ -76,11 +76,11 @@ class AppStreamEvent(StreamEvent):
         db_table = "test_app_streamevent"
 
 
-def subclass_every_event() -> None:
+def subclass_every_event(using: str = "default") -> None:
     """Give every existing event an `AppStreamEvent` row, as an app that extends
     the event model would have. Only the subclass row is written."""
-    for event in StreamEvent.objects.all():
-        AppStreamEvent(streamevent_ptr=event).save_base(raw=True)
+    for event in StreamEvent.objects.using(using):
+        AppStreamEvent(streamevent_ptr=event).save_base(raw=True, using=using)
 
 
 def to_user_data(instance: User) -> UserData:

@@ -146,12 +146,12 @@ def test_the_database_option_prunes_that_alias_only():
     assert _all() == {on_default}
 
 
-@pytest.mark.django_db(transaction=True)
-def test_a_protected_subclassed_orphan_is_kept_whole():
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+@pytest.mark.parametrize("using", ["default", "overlay"])
+def test_a_protected_subclassed_orphan_is_kept_whole(using):
     """A protected event stops the prune with nothing deleted, including the
-    subclass row an app keeps its own columns in. Those rows are deleted in a
-    step of their own before the events, and once committed on their own before
-    the protection was found."""
+    subclass row an app keeps its own columns in, on whichever database the
+    prune was pointed at."""
     from django.db.models import ProtectedError
 
     from tests.test_django_rakaia.models import (
@@ -160,11 +160,11 @@ def test_a_protected_subclassed_orphan_is_kept_whole():
         subclass_every_event,
     )
 
-    orphan = _orphan(1)
-    subclass_every_event()
-    IncidentRecord.objects.create(event_id=orphan)
+    orphan = _orphan(1, using)
+    subclass_every_event(using)
+    IncidentRecord.objects.using(using).create(event_id=orphan)
 
     with pytest.raises(ProtectedError):
-        call_command("prune_orphan_events", stdout=io.StringIO())
+        call_command("prune_orphan_events", "--database", using, stdout=io.StringIO())
 
-    assert AppStreamEvent.objects.filter(pk=orphan).exists()
+    assert AppStreamEvent.objects.using(using).filter(pk=orphan).exists()
