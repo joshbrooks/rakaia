@@ -34,19 +34,16 @@ from django.apps import apps
 from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.db.models import Q
 
+from rakaia.applying import RowAccessor, UpsertOutcome, apply_effects
 from rakaia.effects import (
-    _WRITE_ORDER_PASSES,
     ApplyReport,
     Delete,
     Effect,
     Exclude,
-    RefResolver,
     Retire,
     SpareKeys,
     Update,
     Upsert,
-    _write_order_rank,
-    check_disjoint_defaults,
 )
 
 from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
@@ -196,60 +193,23 @@ class DjangoExecutor:
         return model.objects.using(self._using)
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport:
-        effects_list = list(effects)
-        check_disjoint_defaults(effects_list)
-        # One resolver per batch: an upsert declaring produces= records its row,
-        # and a sibling's Ref values are substituted before that sibling applies.
-        resolver = RefResolver()
-        retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
-        created = written = skipped = 0
+        # The order, the refs and the report are `apply_effects`'s, shared with
+        # the in-memory executor; this supplies the four writes over the ORM, in
+        # one transaction on the executor's alias.
         with transaction.atomic(using=self._using):
-            # One pass per rank: reconcile batches (upsert current rows,
-            # prune/soft-delete the rest) converge regardless of handler order,
-            # and a produces= row is always recorded before any later effect
-            # that refs it. Which effect lands in which pass is
-            # `_write_order_rank`'s to say, not this loop's.
-            # A run of consecutive `Update`s is applied together so a fanned-out
-            # change costs one statement instead of one per row (#199). The run
-            # is flushed the moment anything else appears, which is what keeps a
-            # `Ref` in an update's lookup resolvable: it binds to a row an
-            # earlier `Upsert` materialised, so an update must never be hoisted
-            # above its producer.
-            for rank in _WRITE_ORDER_PASSES:
-                pending: list[Update] = []
-                for eff in effects_list:
-                    if _write_order_rank(eff) != rank:
-                        continue
-                    if isinstance(eff, Upsert):
-                        self._flush_updates(pending, resolver)
-                        obj, outcome = self._upsert(resolver.resolve_effect(eff))
-                        if outcome == "created":
-                            created += 1
-                            written += 1
-                        elif outcome == "written":
-                            written += 1
-                        else:
-                            skipped += 1
-                        if eff.produces is not None:
-                            resolver.record(eff.produces, _row_accessor(obj))
-                    elif isinstance(eff, Update):
-                        pending.append(eff)
-                    elif isinstance(eff, Delete):
-                        self._delete(resolver.resolve_effect(eff))
-                    elif isinstance(eff, Retire):
-                        reff = resolver.resolve_effect(eff)
-                        flipped = self._retire(reff)
-                        if reff.transition is not None:
-                            retire_flips.append((reff, flipped))
-                self._flush_updates(pending, resolver)
-        return ApplyReport(
-            retire_flips=retire_flips,
-            upserts_created=created,
-            upserts_written=written,
-            upserts_skipped=skipped,
-        )
+            return apply_effects(
+                effects,
+                upsert=self._upsert_row,
+                update_run=self._update_run,
+                delete=self._delete,
+                retire=self._retire,
+            )
 
-    def _upsert(self, eff: Upsert) -> tuple[Any, str]:
+    def _upsert_row(self, eff: Upsert) -> tuple[UpsertOutcome, RowAccessor]:
+        obj, outcome = self._upsert(eff)
+        return outcome, _row_accessor(obj)
+
+    def _upsert(self, eff: Upsert) -> tuple[Any, UpsertOutcome]:
         """Apply one upsert; return the row and how it resolved.
 
         The outcome is `"created"`, `"written"` or `"skipped"` — see
@@ -265,7 +225,7 @@ class DjangoExecutor:
             return obj, ("created" if was_created else "written")
         return self._upsert_skip_unchanged(model, eff.lookup, defaults)
 
-    def _flush_updates(self, pending: list[Update], resolver: RefResolver) -> None:
+    def _update_run(self, resolved: list[Update]) -> None:
         """Apply a run of consecutive `Update`s, collapsing what can be collapsed.
 
         Consecutive updates that share a model, share identical ``defaults``, and
@@ -298,16 +258,12 @@ class DjangoExecutor:
           the column. Guarding the key closed one of those; this closes all of
           them, since each needs a non-idempotent write to become visible.
         * Order *between* groups is preserved, and a run ends at the first
-          non-update, so nothing moves across an `Upsert` — which is what keeps a
-          `Ref` in a later lookup resolvable.
+          non-update, so no update moves across an `Upsert` emitted after it.
 
-        Refs are resolved before grouping: two effects are only alike once a `Ref`
-        standing in for a sibling's row has been substituted.
+        The run arrives with its Refs resolved, which grouping needs: two effects
+        are only alike once a `Ref` standing in for a sibling's row has been
+        substituted.
         """
-        if not pending:
-            return
-        resolved = [resolver.resolve_effect(eff) for eff in pending]
-        pending.clear()
 
         run: list[Update] = []
         run_key: tuple[Any, ...] | None = None
@@ -466,7 +422,7 @@ class DjangoExecutor:
 
     def _upsert_skip_unchanged(
         self, model: type, lookup: dict, defaults: dict
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, UpsertOutcome]:
         try:
             row = self._manager(model).get(**lookup)
         except model.DoesNotExist:

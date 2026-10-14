@@ -196,7 +196,7 @@ class TestEveryRefBearingFieldIsReached:
 
     def test_an_update_keeps_its_own_type(self):
         # The resolver is generic in the effect type, so a caller that hands in
-        # an `Update` gets an `Update` back — `_flush_updates` relies on it.
+        # an `Update` gets an `Update` back — `apply_effects` relies on it.
         resolver = RefResolver()
         resolver.record("proj", self._accessor({"pk": 2}))
         eff = Update(

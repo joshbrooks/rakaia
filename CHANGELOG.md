@@ -25,7 +25,11 @@ runnable demo for each.
   stream counts as activity there too; and a read refused for its page size no
   longer extends a stream's lifetime on the in-memory and file stores. See
   `UPGRADING.md`.
-
+- **Both executors now apply a batch through one shared loop.** Nothing about the
+  rows they write changes. One edge moves on `InMemoryProjections`: a run of
+  consecutive updates in which one names a `Ref` that cannot be resolved now
+  applies none of them before raising, as `DjangoExecutor` already did, where it
+  used to apply the ones ahead of the bad one.
 - **The three stores now work out what an append writes in one shared place.**
   Stamping, provenance, tags, the correlation id, the JSON array split and what
   the append changes about the stream were each written separately in the

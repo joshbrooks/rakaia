@@ -341,9 +341,9 @@ def _assert_never(value: NoReturn) -> NoReturn:
 class RefResolver:
     """Resolves `Ref` placeholders against rows produced earlier in one batch.
 
-    An applying executor keeps one resolver per ``apply()`` call. As it applies
-    each write effect that declares ``produces=X``, it calls ``record(X,
-    accessor)`` with a callable mapping a field name to the produced row's value
+    `rakaia.applying.apply_effects` keeps one resolver per ``apply()`` call. As
+    it applies each write effect that declares ``produces=X``, it calls
+    ``record(X, accessor)`` with a callable mapping a field name to the produced row's value
     (e.g. ``lambda f: obj.pk if f in ("pk", "id") else getattr(obj, f)``). Before
     applying any effect it calls ``resolve_effect(effect)`` to substitute every
     ``Ref`` value; a ``Ref`` to an id not yet produced raises
@@ -640,9 +640,9 @@ def _write_order_rank(effect: Effect) -> int:
     two different events cannot simply be poured into one batch: doing so would
     hoist a later event's write above an earlier event's delete.
 
-    Kept beside `check_disjoint_defaults` and consulted by both executors and by
-    the replay buffer that decides where a batch boundary falls, so the rule has
-    one home rather than three that can drift (#152, #256).
+    Kept beside `check_disjoint_defaults` and consulted by the apply loop both
+    executors share (`rakaia.applying`) and by the replay buffer that decides
+    where a batch boundary falls, so the rule has one home (#152, #256, #325).
     """
     if isinstance(effect, (Upsert, Update)):
         return 0
@@ -654,6 +654,6 @@ def _write_order_rank(effect: Effect) -> int:
 _WRITE_ORDER_PASSES = (0, 1, 2)
 """The passes `_write_order_rank` sorts a batch into, in application order.
 
-An executor loops over this and dispatches on the rank, so a fourth pass would
-be added here and nowhere else.
+`rakaia.applying.apply_effects` loops over this and dispatches on the rank, so
+a fourth pass would be added here and nowhere else.
 """

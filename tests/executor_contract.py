@@ -170,6 +170,25 @@ class ExecutorContract:
         assert self._keys(seam) == ["a"]
         assert seam.reader.get(seam.model, field_key="a").severity == "warning"
 
+    def test_every_update_in_a_run_is_applied(self, seam):
+        """Consecutive updates reach the executor as one run, and none may be
+        lost. The seams here apply them one by one; Django's collapse of a run
+        is pinned in `tests/test_django_rakaia/test_update_batching.py`."""
+        seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
+        seam.executor.apply(
+            [
+                Update(
+                    model_label=seam.model,
+                    lookup={"field_key": key},
+                    defaults={"severity": "warning"},
+                )
+                for key in ("a", "b")
+            ]
+        )
+
+        for key in ("a", "b"):
+            assert seam.reader.get(seam.model, field_key=key).severity == "warning"
+
     def test_update_with_empty_defaults_is_a_noop(self, seam):
         seam.executor.apply([self._upsert(seam, "a")])
         seam.executor.apply(
@@ -372,6 +391,26 @@ class ExecutorContract:
         )
 
         assert seam.reader.get(seam.model, field_key="b").severity == "critical"
+
+    def test_a_ref_to_id_is_the_primary_key(self, seam):
+        seam.executor.apply(
+            [
+                Upsert(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "alert_type": "m", "field_key": "a"},
+                    defaults={},
+                    produces="anchor",
+                ),
+                Upsert(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "alert_type": "m", "field_key": "b"},
+                    defaults={"message": Ref("anchor", "id")},
+                ),
+            ]
+        )
+
+        anchor = seam.reader.get(seam.model, field_key="a")
+        assert str(seam.reader.get(seam.model, field_key="b").message) == str(anchor.pk)
 
     def test_a_ref_from_a_delete_emitted_first_still_resolves(self, seam):
         """Refs are order-free for the same reason the ops are: the producing
