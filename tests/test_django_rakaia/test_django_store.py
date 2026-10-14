@@ -131,6 +131,14 @@ class TestDjangoStreamStore:
         assert result.stream_closed is True
         assert result.message is None
 
+    def test_a_closing_append_records_when_it_closed(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(close=True))
+        stream = Stream.objects.get(stream_id="s")
+        assert stream.closed is True
+        assert stream.closed_at is not None
+
     def test_seq_conflict_raises(self):
         store = DjangoStreamStore()
         store.create("s")

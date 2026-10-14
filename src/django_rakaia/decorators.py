@@ -129,8 +129,8 @@ def create_stream_event(
     # `write_enveloped_event`'s to decide, and the rows are written by
     # `write_events`, shared with `DjangoStreamStore.append`. `@stream_model`
     # used to have its own copy of those rules and the copies had drifted (#131).
-    # Atomic because `get_next_offset` locks the per-path high-water for the
-    # duration of the transaction. A savepoint when the caller already has one
+    # Atomic because the writer locks the per-path high-water for the duration
+    # of the transaction. A savepoint when the caller already has one
     # open, so the event stays inside the save that produced it.
     # The save being audited decides the database, unless a caller says
     # otherwise. `write_enveloped_event` then takes the alias from the streams

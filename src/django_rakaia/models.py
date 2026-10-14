@@ -106,7 +106,7 @@ class Stream(models.Model):
         which is what lets one protocol server read either.
         """
         # Read the high-water from the same database this stream row came from,
-        # as `get_next_offset_block` allocates from (#159). Before the watermark
+        # as `lock_watermark` does for allocation (#159). Before the watermark
         # became authoritative here this read took `max(entries, watermark)`, and
         # the entries half already followed the alias — so a scratch-database
         # rebuild happened to report its own entries when they were higher.
@@ -124,8 +124,8 @@ class Stream(models.Model):
         # Zero, or no row at all: either this path has never been appended to, or
         # the install was upgraded across migration 0005, which creates the
         # high-water table without backfilling it. The same one case
-        # `get_next_offset_block` has to look at the entry table for, and for the
-        # same reason — see the gate there. Every other read is one row lookup.
+        # `lock_watermark` has to look at the entry table for, and for the same
+        # reason — see the gate there. Every other read is one row lookup.
         entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
         return format_offset(entries_max or 0)
 
@@ -185,16 +185,13 @@ class Stream(models.Model):
         :meth:`get_next_offset_and_stamp`).
 
         The reserved block is ``start .. start + count - 1``. ``count`` must be
-        ``>= 1``. This is the single offset-allocation path shared by every
-        write surface (durable store single + bulk append, ``@stream_model``
-        signals, protocol views).
+        ``>= 1``. rakaia's own writes no longer come through here —
+        `django_store.write_events` locks with `lock_watermark` and advances the
+        mark itself, because it needs the last stamp before it can take a new
+        one — so this and the ``get_next_offset*`` wrappers serve code that
+        allocates offsets for itself.
 
-        Must be called inside a transaction: locks the per-path high-water row
-        (``StreamOffsetWatermark``) with select_for_update() so concurrent
-        writers serialize on offset allocation instead of colliding on
-        unique_together(stream, offset). A bulk writer holds the lock once and
-        advances the high-water by the whole block, so interleaved single and
-        bulk appends never overlap offsets.
+        Must be called inside a transaction; see `lock_watermark`.
 
         Offsets are **globally monotonic across delete+recreate** (#34, Defect
         #2): the high-water row is keyed by ``stream_id`` and is never
@@ -385,9 +382,10 @@ class StreamEvent(models.Model):
     raw/pure-protocol appends. `event_type` doubles as the envelope label."""
     event_ts = models.FloatField(null=True, blank=True, db_index=True)
     """Event-sourcing envelope timestamp: the event's logical time as set by the
-    producer (`AppendOptions.event_ts`). `null` when the producer didn't set one,
-    in which case the store surfaces the append time (`created_at`) instead. This
-    is the deterministic merge key, kept distinct from transport time."""
+    producer (`AppendOptions.event_ts`), or else rakaia's own stamp. `null` only on
+    a row a plain protocol append wrote before 0.9.0, which left it unset; the
+    store surfaces the append time (`created_at`) for those. This is the
+    deterministic merge key, kept distinct from transport time."""
     payload_encoding = models.CharField(max_length=16, null=True, blank=True)
     """How to turn `data` back into the payload bytes the producer appended.
 

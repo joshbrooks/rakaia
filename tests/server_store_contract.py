@@ -831,6 +831,16 @@ class ServerStoreContract:
         with pytest.raises(StreamNotFound):
             store.peek("nope", "-1")
 
+    def test_an_append_extends_the_ttl_window(self, store):
+        """The counterpart to `peek` below: a write is activity."""
+        import time
+
+        store.create("s", ttl_seconds=1)
+        time.sleep(0.6)
+        store.append("s", b'{"id": 1}')
+        time.sleep(0.6)
+        assert store.get("s") is not None, "the append did not extend the window"
+
     def test_peek_does_not_extend_the_ttl_window(self, store):
         """What separates `peek` from `read`: a long-poll calls it on every
         tick, and a stream that a waiter is only watching must still expire."""

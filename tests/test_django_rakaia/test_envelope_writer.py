@@ -17,12 +17,10 @@ stream, and no test anywhere is looking at the difference". These tests look at
 the difference: they drive both doors with the same envelope and compare the
 rows and the read-back messages.
 
-What they deliberately do *not* pin is that the two doors choose the same
-envelope. They don't: a raw protocol append carries no `event_ts` unless the
-producer sets one, while `@stream_model` always stamps one (ADR 0002
-item 5, `test_decorators_provenance.TestEnvelopeTimestamp`). That is a
-difference of *input*, decided by the caller. Everything below is about what
-the writer does with the input it is given.
+Since #321 both doors also stamp an event that sets no `event_ts` (ADR 0002
+item 5, `test_decorators_provenance.TestEnvelopeTimestamp`); before, a raw
+protocol append left it unset. Everything below is about what the writer does
+with the input it is given.
 """
 
 from __future__ import annotations

@@ -87,6 +87,7 @@ from .models import (
     StreamEntry,
     StreamEvent,
     StreamEventTag,
+    StreamOffsetWatermark,
     StreamProducer,
     delete_events,
 )
@@ -104,7 +105,6 @@ __all__ = [
     "format_offset",
     "message_of",
     "write_enveloped_event",
-    "write_events",
 ]
 
 
@@ -168,20 +168,28 @@ def write_events(
     # save is never split across two (#159).
     if streams:
         using = streams[0]._state.db
-    order = sorted(range(len(streams)), key=lambda i: streams[i].stream_id)
-    watermarks = {i: streams[i].lock_watermark() for i in order}
+    # One lock per distinct path, taken in path order. A resolver can name the
+    # same path twice, and each occurrence then takes its own block of offsets
+    # from that one watermark, rather than both reading the same `high`.
+    watermarks: dict[str, StreamOffsetWatermark] = {}
+    for stream in sorted(streams, key=lambda stream: stream.stream_id):
+        if stream.stream_id not in watermarks:
+            watermarks[stream.stream_id] = stream.lock_watermark()
 
     stamp: float | None = None
     if any(e.event_ts is None for e in events):
         # Read the clock only now, with the locks held: a time read before them
         # belongs to whichever writer got there first, not to these positions.
-        last = [w.last_event_ts for w in watermarks.values() if w.last_event_ts]
+        last = [
+            w.last_event_ts for w in watermarks.values() if w.last_event_ts is not None
+        ]
         stamp = own_stamp(max(last) if last else None, time.time())
-    starts: dict[int, int] = {}
-    for i in order:
-        watermark = watermarks[i]
-        starts[i] = watermark.high + 1
+    starts: list[int] = []
+    for stream in streams:
+        watermark = watermarks[stream.stream_id]
+        starts.append(watermark.high + 1)
         watermark.high += len(events)
+    for watermark in watermarks.values():
         fields = ["high"]
         if stamp is not None:
             watermark.last_event_ts = stamp

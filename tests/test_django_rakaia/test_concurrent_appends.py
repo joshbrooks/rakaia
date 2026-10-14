@@ -4,7 +4,7 @@ Everything else in this suite tests the durable store from a single
 connection, which cannot observe the property offset allocation actually
 promises: that two writers hitting the same stream at the same moment get
 *different* offsets. That promise rests on the ``select_for_update()`` in
-``Stream.get_next_offset_block`` — and on SQLite that call compiles to nothing
+``Stream.lock_watermark`` — and on SQLite that call compiles to nothing
 at all, because Django emits ``FOR UPDATE`` only when
 ``connection.features.has_select_for_update`` is true and the SQLite backend
 leaves it false.
@@ -206,19 +206,19 @@ def test_fanning_into_the_same_streams_in_opposite_orders_does_not_deadlock(
         store.create(path)
         store.append(path, b'{"seed": true}')
 
-    original = Stream.get_next_offset_block
+    original = Stream.lock_watermark
     local = threading.local()
     first_taken = {"a": threading.Event(), "b": threading.Event()}
 
-    def announcing(self: Stream, count: int) -> int:
-        start = original(self, count)
+    def announcing(self: Stream) -> Any:
+        watermark = original(self)
         if not getattr(local, "announced", False):
             local.announced = True
             first_taken[local.me].set()
             first_taken[local.other].wait(timeout=2)
-        return start
+        return watermark
 
-    monkeypatch.setattr(Stream, "get_next_offset_block", announcing)
+    monkeypatch.setattr(Stream, "lock_watermark", announcing)
 
     got: dict[str, list[str]] = {}
 
@@ -278,22 +278,22 @@ def test_a_model_save_and_a_protocol_append_on_one_stream_do_not_deadlock(
     store.create(PATH)
     store.append(PATH, b'{"seed": true}')
 
-    original = Stream._reserve
+    original = Stream.lock_watermark
     local = threading.local()
     save_has_watermark = threading.Event()
     append_has_row = threading.Event()
 
-    def announcing(self: Stream, count: int, *, stamp: bool) -> Any:
+    def announcing(self: Stream) -> Any:
         if local.role == "append":
             append_has_row.set()
             save_has_watermark.wait(timeout=2)
-            return original(self, count, stamp=stamp)
-        reserved = original(self, count, stamp=stamp)
+            return original(self)
+        watermark = original(self)
         save_has_watermark.set()
         append_has_row.wait(timeout=2)
-        return reserved
+        return watermark
 
-    monkeypatch.setattr(Stream, "_reserve", announcing)
+    monkeypatch.setattr(Stream, "lock_watermark", announcing)
 
     def save() -> None:
         local.role = "save"

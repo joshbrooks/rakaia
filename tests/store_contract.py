@@ -192,6 +192,16 @@ class StoreContract:
             2_000_000_050.0,
         ]
 
+    @pytest.mark.usefixtures("clock")
+    def test_a_producer_time_does_not_move_the_store_s_own_stamp(self, store):
+        # A producer's time is kept as sent and takes no part in the stamp rule,
+        # so a backfill dated far ahead cannot pin every later stamp to it.
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(event_ts=3_000_000_000.0))
+        store.append("s", b'{"id": 2}')
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [3_000_000_000.0, 2_000_000_000.0]
+
     def test_own_event_ts_carries_over_a_delete_and_recreate(self, store, clock):
         # The durable store keeps the last stamp on its offset watermark, which
         # outlives the stream, so a path deleted and created again carries on

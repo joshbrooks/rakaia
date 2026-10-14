@@ -12,7 +12,7 @@ runnable demo for each.
 ### Changed
 
 - **The three stores now work out what an append writes in one shared place.**
-  Stamping, provenance, tags, the incident number, the JSON array split and what
+  Stamping, provenance, tags, the correlation id, the JSON array split and what
   the append changes about the stream were each written separately in the
   in-memory, file and database stores, and had started to differ. Three
   differences are settled, each toward what most stores already did:
