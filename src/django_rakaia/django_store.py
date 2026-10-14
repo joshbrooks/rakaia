@@ -436,7 +436,7 @@ class DjangoStreamStore:
     def _locked_write(self, path: str) -> Iterator[Stream]:
         """Open a write transaction on `path`'s locked, live stream row.
 
-        The single door every append and fenced close goes through. It yields
+        The single door every append and every close goes through. It yields
         the `Stream` inside `transaction.atomic()` with the row locked, so a
         writer's closed / content-type / producer checks and its write are one
         indivisible step against concurrent writers. Raises `StreamNotFound`
@@ -479,19 +479,10 @@ class DjangoStreamStore:
     def _facts(stream: Stream) -> StreamFacts:
         """A locked stream row as `rakaia.append_decision` sees it.
 
-        The one place a row is narrowed to the four fields admission is decided
-        from, so a fifth fact cannot reach one write path and miss another. It
-        was written out inline at every call site, and the omission that shape
-        invites has happened twice: `closed_by` was missing from the fencing
-        path (#167) and from the batch path (#181), and in both cases a producer
-        retrying its own closing append was told a bare "closed".
-
-        `_close_locked` deliberately does *not* use this: a close carries no body
-        and no `Stream-Seq`, so it builds `StreamFacts` with only the two fields
-        that can decide it. Passing the other two would be equivalent today —
-        `decide_append` skips both checks when the options carry neither — but it
-        would say they were relevant, and the next person would have to work out
-        that they are not.
+        The one place a row is narrowed to the four fields an append is decided
+        from, so a fifth fact cannot reach one write path and miss another. A
+        close is decided by `rakaia.stream_rules.decide_close`, which takes the
+        two fields it needs directly.
         """
         return StreamFacts(
             closed=stream.closed,
@@ -1042,7 +1033,7 @@ class DjangoStreamStore:
 
         The protocol server calls this before `delete`, and the server answers
         the refusal with `405 Method Not Allowed`. It refuses every path while
-        `RAKAIA_PERMANENT_STREAMS` is on and none while it is off. `delete()`
+        the store is permanent and none otherwise. `delete()`
         refuses as well unless called with `force=True`; this is the check for
         a client's request, made before that.
         """

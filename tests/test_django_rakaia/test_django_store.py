@@ -131,6 +131,14 @@ class TestDjangoStreamStore:
         assert result.stream_closed is True
         assert result.message is None
 
+    def test_a_close_leaves_the_activity_clock_alone_without_a_ttl(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        before = Stream.objects.get(stream_id="s").last_activity_at
+        store.close_stream("s")
+        store.close_stream("s", producer_id="p", producer_epoch=0, producer_seq=0)
+        assert Stream.objects.get(stream_id="s").last_activity_at == before
+
     def test_a_closing_append_records_when_it_closed(self):
         store = DjangoStreamStore()
         store.create("s")

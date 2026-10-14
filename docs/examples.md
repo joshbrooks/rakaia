@@ -199,7 +199,8 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
   Every example that serves the protocol takes the default page of a thousand,
   and none holds a stream long enough for a read to stop short.
-- `RAKAIA_PERMANENT_STREAMS`, its three refusals (`ExpiryNotAllowed`, and
+- `RAKAIA_PERMANENT_STREAMS` and the `permanent=True` argument on
+  `StreamStore` and `JsonlStreamStore`, its three refusals (`ExpiryNotAllowed`, and
   `DeleteNotAllowed` for both a client's `DELETE` and a Python `delete()` without
   `force=True`) and `manage.py prune_orphan_events`. No example turns the
   switch on or deletes a stream, so none shows a `DELETE` being refused or a

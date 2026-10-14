@@ -2,11 +2,8 @@
 once for every store.
 
 The counterpart of `rakaia.append_decision`, for everything about a stream that
-is not an append. Each store had its own copy of these rules, and the copies had
-drifted (#322): one logged a malformed expiry and two did not, only the durable
-store honoured permanent streams, and its plain close took no lock and wrote the
-activity clock on a stream with no TTL. A store's job is now the same as for an
-append: load the facts, ask, persist the answer.
+is not an append (#322). A store's job is the same as for an append: load the
+facts, ask, persist the answer.
 
 **Permanent streams.** A store built with ``permanent=True`` keeps every stream
 for good: nothing expires, a create may not ask for a TTL or an expiry, a stream

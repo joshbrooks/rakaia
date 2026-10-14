@@ -922,6 +922,14 @@ class ServerStoreContract:
         assert store.delete("s", force=True) is True
         assert not store.has("s")
 
+    def test_a_refused_first_body_leaves_nothing_on_a_permanent_store(self, store):
+        """A create whose body is refused must leave no stream behind, and the
+        clean-up must not itself be refused as a delete."""
+        store.permanent = True
+        with pytest.raises(InvalidJson):
+            store.create("s", content_type="application/json", initial_data=b"{no")
+        assert not store.has("s")
+
     def test_force_does_nothing_while_the_switch_is_off(self, store):
         store.create("s")
         assert store.delete("s", force=True) is True

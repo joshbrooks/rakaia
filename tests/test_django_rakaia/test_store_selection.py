@@ -255,3 +255,23 @@ class TestInMemoryInProductionIsFlagged:
         settings.RAKAIA_STORE = "durable"
         settings.DEBUG = False
         assert check_store_backend(None) == []
+
+
+class TestPermanentStreamsReachEveryBackend:
+    """`RAKAIA_PERMANENT_STREAMS` reaches whichever store `get_store()` builds,
+    not only the durable one (#322)."""
+
+    def test_the_in_memory_store(self, settings):
+        settings.RAKAIA_STORE = "memory"
+        settings.RAKAIA_PERMANENT_STREAMS = True
+        assert get_store().permanent is True
+
+    def test_the_file_backed_store(self, settings, tmp_path):
+        settings.RAKAIA_STORE = "jsonl"
+        settings.RAKAIA_JSONL_ROOT = str(tmp_path / "streams")
+        settings.RAKAIA_PERMANENT_STREAMS = True
+        assert get_store().permanent is True
+
+    def test_off_unless_set(self, settings):
+        settings.RAKAIA_STORE = "memory"
+        assert get_store().permanent is False

@@ -153,6 +153,25 @@ class TestClose:
         assert isinstance(verdict.producer_result, ProducerDuplicate)
         assert verdict.touch is False
 
+    @pytest.mark.parametrize("other", [("p", 2, 0), ("p", 1, 1)])
+    def test_the_same_producer_with_another_epoch_or_seq_is_told_closed(self, other):
+        verdict = decide_close(
+            closed=True,
+            closed_by=ClosedBy("p", epoch=1, seq=0),
+            producer=other,
+            now=NOW,
+        )
+        assert isinstance(verdict.producer_result, ProducerStreamClosed)
+
+    def test_a_duplicate_reports_the_closing_seq(self):
+        verdict = decide_close(
+            closed=True,
+            closed_by=ClosedBy("p", epoch=1, seq=7),
+            producer=("p", 1, 7),
+            now=NOW,
+        )
+        assert verdict.producer_result == ProducerDuplicate(last_seq=7)
+
     def test_another_tuple_on_a_closed_stream_is_told_it_is_closed(self):
         verdict = decide_close(
             closed=True,
