@@ -1,20 +1,16 @@
-"""Writes, then deletes, then retires — decided in one place (#256).
+"""Writes, then deletes, then retires — decided in one place (#256, #325).
 
-The rule was stated three times: once for the buffer that decides where a batch
-boundary has to fall, and once inside each executor's apply loop. Nothing pinned
-the buffer against either executor, so two of the three could agree while the
-third drifted. This suite asserts all three read the same rule object *and* that
-each of them applies what that object says.
-
-Both halves earn their place. Restoring a local copy to the buffer was caught by
-the identity half only; restoring the three hard-coded passes to an executor left
-the import in place and was caught by the behaviour half only.
+Two places read the rule: the buffer that decides where a batch boundary has to
+fall, and the one loop both executors apply through (`rakaia.applying`). Each
+case below stands the rule on its head in the one module that reads it and
+checks the behaviour follows. A site that carries its own copy does not reverse,
+so it fails here — without the identity check across modules this file used to
+need, back when each executor had a loop of its own.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
-from types import ModuleType
 
 import pytest
 
@@ -32,8 +28,7 @@ from rakaia.store import StreamStore
 effects_module = import_module("rakaia.effects")
 replay_module = import_module("rakaia.replaying")
 batching_module = import_module("rakaia.batching")
-executors_module = import_module("rakaia.executors")
-effect_executor = import_module("django_rakaia.effect_executor")
+applying_module = import_module("rakaia.applying")
 
 MATCH = "s"
 
@@ -57,16 +52,6 @@ class _Batches:
     def apply(self, effects) -> ApplyReport:
         self.batches.append(list(effects))
         return ApplyReport()
-
-
-@pytest.mark.parametrize(
-    "module",
-    [batching_module, executors_module, effect_executor],
-    ids=["buffer", "in_memory_executor", "django_executor"],
-)
-def test_every_site_reads_the_one_rule(module: ModuleType) -> None:
-    """One rule object, three readers — not three functions that agree today."""
-    assert module._write_order_rank is effects_module._write_order_rank
 
 
 def test_the_buffer_takes_its_batch_boundary_from_the_rule(monkeypatch) -> None:
@@ -98,7 +83,7 @@ def test_the_buffer_takes_its_batch_boundary_from_the_rule(monkeypatch) -> None:
 def test_the_in_memory_executor_takes_its_passes_from_the_rule(monkeypatch) -> None:
     """Write then delete leaves no row; reversed, the delete runs first and the
     write survives."""
-    monkeypatch.setattr(executors_module, "_write_order_rank", _retires_first)
+    monkeypatch.setattr(applying_module, "_write_order_rank", _retires_first)
     ex = InMemoryProjections()
 
     ex.apply([Upsert("app.R", {"id": "x"}, {"n": 1}), Delete("app.R", {"id": "x"})])
@@ -109,7 +94,7 @@ def test_the_in_memory_executor_takes_its_passes_from_the_rule(monkeypatch) -> N
 @pytest.mark.django_db
 def test_the_django_executor_takes_its_passes_from_the_rule(monkeypatch) -> None:
     """The same batch, the same reversal, on the durable executor."""
-    monkeypatch.setattr(effect_executor, "_write_order_rank", _retires_first)
+    monkeypatch.setattr(applying_module, "_write_order_rank", _retires_first)
     from tests.test_django_rakaia.models import Alert
 
     lookup = {"stream_key": "s", "alert_type": "a", "field_key": ""}

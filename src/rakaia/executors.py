@@ -29,20 +29,17 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 
+from .applying import RowAccessor, UpsertOutcome, apply_effects
 from .effects import (
-    _WRITE_ORDER_PASSES,
     ApplyReport,
     Delete,
     Effect,
     Exclude,
     Executor,
-    RefResolver,
     Retire,
     SpareKeys,
     Update,
     Upsert,
-    _write_order_rank,
-    check_disjoint_defaults,
 )
 
 
@@ -101,11 +98,10 @@ class RecordingExecutor:
 class InMemoryProjections:
     """An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables.
 
-    It mirrors `django_rakaia.effect_executor.DjangoExecutor` where that is
-    observable: all four database effects, the three ordered passes (every
-    write, then every delete, then every retire), one `RefResolver` per
-    `apply()` call, `check_disjoint_defaults` before the first write, and
-    `retire_flips` for a retire that opted into notifications.
+    It applies through the same loop as `django_rakaia.effect_executor.DjangoExecutor`
+    (`rakaia.applying.apply_effects`), so the three ordered passes, `Ref`
+    resolution, `check_disjoint_defaults` and the report are the same code, and
+    only the four writes differ.
     `tests/executor_contract.py` and
     `tests/projection_reader_contract.py` hold it and the Django pair to the same
     behaviour::
@@ -166,50 +162,18 @@ class InMemoryProjections:
     # -- the Executor protocol ---------------------------------------------
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport:
-        effects_list = list(effects)
-        check_disjoint_defaults(effects_list)
-        # One resolver per batch: an upsert declaring produces= records its row,
-        # and a sibling's Ref values are substituted before that sibling applies.
-        resolver = RefResolver()
-        retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = []
-        created = written = 0
-        # One pass per rank — writes, then deletes, then retires — so a
-        # reconcile batch converges regardless of the order its handlers
-        # emitted, and a produces= row is recorded before any later effect Refs
-        # it. Which effect lands in which pass is `_write_order_rank`'s to say,
-        # not this loop's.
-        for rank in _WRITE_ORDER_PASSES:
-            for eff in effects_list:
-                if _write_order_rank(eff) != rank:
-                    continue
-                if isinstance(eff, Upsert):
-                    # No skip_unchanged here, so every upsert writes: `skipped`
-                    # stays 0 and `written` counts them all, which is what the
-                    # Django executor also reports when the option is off.
-                    if (
-                        self._upsert(resolver, resolver.resolve_effect(eff))
-                        == "created"
-                    ):
-                        created += 1
-                    written += 1
-                elif isinstance(eff, Update):
-                    self._update(resolver.resolve_effect(eff))
-                elif isinstance(eff, Delete):
-                    self._delete(resolver.resolve_effect(eff))
-                elif isinstance(eff, Retire):
-                    reff = resolver.resolve_effect(eff)
-                    flipped = self._retire(reff)
-                    if reff.transition is not None:
-                        retire_flips.append((reff, flipped))
-        return ApplyReport(
-            retire_flips=retire_flips,
-            upserts_created=created,
-            upserts_written=written,
-            upserts_skipped=0,
+        # The order, the refs and the report are `apply_effects`'s, shared with
+        # the Django executor; this supplies the four writes over dicts.
+        return apply_effects(
+            effects,
+            upsert=self._upsert,
+            update_run=self._update_run,
+            delete=self._delete,
+            retire=self._retire,
         )
 
-    def _upsert(self, resolver: RefResolver, eff: Upsert) -> str:
-        """Apply one upsert; return `"created"` or `"written"`.
+    def _upsert(self, eff: Upsert) -> tuple[UpsertOutcome, RowAccessor]:
+        """Apply one upsert; return `"created"` or `"written"`, and the row.
 
         Never `"skipped"` — that outcome belongs to `skip_unchanged`, which this
         executor does not implement (it holds no columns to compare against).
@@ -230,15 +194,15 @@ class InMemoryProjections:
             self._table(label)[self._next_pk] = row
             self._next_pk += 1
             outcome = "created"
-        if eff.produces is not None:
-            # Let a sibling Ref bind to this row's pk (or any other column).
-            resolver.record(
-                eff.produces,
-                lambda field, row=row: (
-                    row["pk"] if field in ("pk", "id") else row.get(field)
-                ),
-            )
-        return outcome
+        # What a sibling's Ref reads: this row's pk, or any other column.
+        return (
+            outcome,
+            lambda field: row["pk"] if field in ("pk", "id") else row.get(field),
+        )
+
+    def _update_run(self, effects: list[Update]) -> None:
+        for eff in effects:
+            self._update(eff)
 
     def _update(self, eff: Update) -> None:
         """Update-if-exists: never mints a row (the multi-owner primitive)."""
