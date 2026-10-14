@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
 ### Added
 
 - **Permanent streams on every store.** `StreamStore` and `JsonlStreamStore` take
