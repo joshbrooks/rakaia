@@ -452,7 +452,7 @@ class ServerStoreContract:
         onwards — a batch of one is still a batch.
 
         Named for the raise and nothing more, because that is all it can see.
-        Deleting the pre-flight's `check_payload` leaves this test green on both
+        Deleting the pre-flight's payload check leaves this test green on all
         backends: with one item there is no prefix to strand, so "refused by the
         pre-flight" and "raised by the write that followed" leave identical
         state. The sibling above is what pins the pre-flight; this pins only
@@ -830,6 +830,16 @@ class ServerStoreContract:
     def test_peek_of_a_missing_stream_raises(self, store):
         with pytest.raises(StreamNotFound):
             store.peek("nope", "-1")
+
+    def test_an_append_extends_the_ttl_window(self, store):
+        """The counterpart to `peek` below: a write is activity."""
+        import time
+
+        store.create("s", ttl_seconds=1)
+        time.sleep(0.6)
+        store.append("s", b'{"id": 1}')
+        time.sleep(0.6)
+        assert store.get("s") is not None, "the append did not extend the window"
 
     def test_peek_does_not_extend_the_ttl_window(self, store):
         """What separates `peek` from `read`: a long-poll calls it on every

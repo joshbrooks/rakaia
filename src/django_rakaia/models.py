@@ -13,6 +13,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models, transaction
 from django.db.models import Max
 
+from rakaia.append_decision import own_stamp
 from rakaia.types import MAX_CORRELATION_ID_LENGTH, MAX_TAG_LENGTH, ClosedBy
 
 from .event_message import event_label_display
@@ -105,7 +106,7 @@ class Stream(models.Model):
         which is what lets one protocol server read either.
         """
         # Read the high-water from the same database this stream row came from,
-        # as `get_next_offset_block` allocates from (#159). Before the watermark
+        # as `lock_watermark` does for allocation (#159). Before the watermark
         # became authoritative here this read took `max(entries, watermark)`, and
         # the entries half already followed the alias — so a scratch-database
         # rebuild happened to report its own entries when they were higher.
@@ -123,8 +124,8 @@ class Stream(models.Model):
         # Zero, or no row at all: either this path has never been appended to, or
         # the install was upgraded across migration 0005, which creates the
         # high-water table without backfilling it. The same one case
-        # `get_next_offset_block` has to look at the entry table for, and for the
-        # same reason — see the gate there. Every other read is one row lookup.
+        # `lock_watermark` has to look at the entry table for, and for the same
+        # reason — see the gate there. Every other read is one row lookup.
         entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
         return format_offset(entries_max or 0)
 
@@ -184,16 +185,13 @@ class Stream(models.Model):
         :meth:`get_next_offset_and_stamp`).
 
         The reserved block is ``start .. start + count - 1``. ``count`` must be
-        ``>= 1``. This is the single offset-allocation path shared by every
-        write surface (durable store single + bulk append, ``@stream_model``
-        signals, protocol views).
+        ``>= 1``. rakaia's own writes no longer come through here —
+        `django_store.write_events` locks with `lock_watermark` and advances the
+        mark itself, because it needs the last stamp before it can take a new
+        one — so this and the ``get_next_offset*`` wrappers serve code that
+        allocates offsets for itself.
 
-        Must be called inside a transaction: locks the per-path high-water row
-        (``StreamOffsetWatermark``) with select_for_update() so concurrent
-        writers serialize on offset allocation instead of colliding on
-        unique_together(stream, offset). A bulk writer holds the lock once and
-        advances the high-water by the whole block, so interleaved single and
-        bulk appends never overlap offsets.
+        Must be called inside a transaction; see `lock_watermark`.
 
         Offsets are **globally monotonic across delete+recreate** (#34, Defect
         #2): the high-water row is keyed by ``stream_id`` and is never
@@ -205,60 +203,57 @@ class Stream(models.Model):
         """
         if count < 1:
             raise ValueError(f"count must be >= 1, got {count}")
-        # Lock the per-path high-water for the duration of the enclosing
-        # transaction, so concurrent writers serialize here rather than colliding
-        # on unique_together(stream, offset).
-        #
-        # Allocate on whatever database this stream row came from. `self.entries`
-        # already follows the instance's alias, and the watermark has to agree
-        # with it or a rebuild against a scratch database would read its
-        # high-water from the live one (#159).
-        #
-        # One locked `get_or_create` rather than a plain one followed by a
-        # `select_for_update().get()`: the pair read the same row twice and threw
-        # the first result away, because the first call existed only to make the
-        # row exist. `get_or_create` on a locked queryset issues its `get` with
-        # `FOR UPDATE`, so the row is both created-if-absent and locked in one
-        # round trip, and it still tolerates the first-writer race the same way
-        # (it retries on the unique-key IntegrityError).
-        using = self._state.db
-        watermarks = StreamOffsetWatermark.objects.using(using)
-        watermark, _ = watermarks.select_for_update().get_or_create(
-            stream_path=self.stream_id
-        )
-        # A watermark that has been advanced even once is authoritative: every
-        # `StreamEntry` in the codebase gets its offset from this method, so
-        # nothing can write an entry above the high mark. Re-deriving that mark
-        # from the entry table on every append would scan a growing table for an
-        # answer already held in one row.
-        #
-        # `high == 0` is the one case it cannot answer, because it means either
-        # "brand new path" or "install upgraded across migration 0005", which
-        # creates this table without backfilling it. On an upgraded install the
-        # entries are already there and the watermark is not, so allocating from
-        # the watermark alone would reissue offset 1 over the top of them. So the
-        # aggregate runs then — once per path, ever — and seeds the high mark for
-        # every allocation after it.
-        if watermark.high == 0:
-            entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
-            start = (entries_max or 0) + 1
-        else:
-            start = watermark.high + 1
+        watermark = self.lock_watermark()
+        start = watermark.high + 1
         watermark.high = start + count - 1
         if not stamp:
             watermark.save(update_fields=["high"])
             return start, None
         # Read the clock only now, with the lock held: a time read before it
         # belongs to whichever writer got there first, not to this position.
-        now = time.time()
-        stamped = (
-            now
-            if watermark.last_event_ts is None
-            else max(watermark.last_event_ts, now)
-        )
+        stamped = own_stamp(watermark.last_event_ts, time.time())
         watermark.last_event_ts = stamped
         watermark.save(update_fields=["high", "last_event_ts"])
         return start, stamped
+
+    def lock_watermark(self) -> "StreamOffsetWatermark":
+        """This path's offset high-water, locked until the transaction ends.
+
+        Must be called inside a transaction: the row is read with
+        `select_for_update()`, so concurrent writers serialize here instead of
+        colliding on `unique_together(stream, offset)`. Its `high` is the last
+        offset issued, ready to advance; the caller saves it.
+
+        Read from whatever database this stream row came from. `self.entries`
+        already follows the instance's alias, and the watermark has to agree
+        with it or a rebuild against a scratch database would read its
+        high-water from the live one (#159).
+        """
+        # One locked `get_or_create` rather than a plain one followed by a
+        # `select_for_update().get()`: `get_or_create` on a locked queryset
+        # issues its `get` with `FOR UPDATE`, so the row is both
+        # created-if-absent and locked in one round trip, and it still tolerates
+        # the first-writer race (it retries on the unique-key IntegrityError).
+        watermarks = StreamOffsetWatermark.objects.using(self._state.db)
+        watermark, _ = watermarks.select_for_update().get_or_create(
+            stream_path=self.stream_id
+        )
+        # A watermark that has been advanced even once is authoritative: every
+        # `StreamEntry` gets its offset from here, so nothing can write an entry
+        # above the high mark, and re-deriving it from the entry table on every
+        # append would scan a growing table for an answer already held in one
+        # row.
+        #
+        # `high == 0` is the one case it cannot answer, because it means either
+        # "brand new path" or "install upgraded across migration 0005", which
+        # creates this table without backfilling it. On an upgraded install the
+        # entries are already there and the watermark is not, so allocating from
+        # the watermark alone would reissue offset 1 over the top of them. So the
+        # aggregate runs then — once per path, ever.
+        if watermark.high == 0:
+            entries_max = self.entries.aggregate(max_offset=Max("offset"))["max_offset"]
+            watermark.high = entries_max or 0
+        return watermark
 
 
 class StreamOffsetWatermark(models.Model):
@@ -387,9 +382,10 @@ class StreamEvent(models.Model):
     raw/pure-protocol appends. `event_type` doubles as the envelope label."""
     event_ts = models.FloatField(null=True, blank=True, db_index=True)
     """Event-sourcing envelope timestamp: the event's logical time as set by the
-    producer (`AppendOptions.event_ts`). `null` when the producer didn't set one,
-    in which case the store surfaces the append time (`created_at`) instead. This
-    is the deterministic merge key, kept distinct from transport time."""
+    producer (`AppendOptions.event_ts`), or else rakaia's own stamp. `null` only on
+    a row a plain protocol append wrote before 0.9.0, which left it unset; the
+    store surfaces the append time (`created_at`) for those. This is the
+    deterministic merge key, kept distinct from transport time."""
     payload_encoding = models.CharField(max_length=16, null=True, blank=True)
     """How to turn `data` back into the payload bytes the producer appended.
 

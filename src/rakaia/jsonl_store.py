@@ -74,12 +74,15 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
     # backend.
     fcntl = None  # type: ignore[assignment]
 
-from .append_decision import StreamFacts, decide_append, decide_append_batch
-from .context import merge_provenance, tags_and_correlation
+from .append_decision import (
+    AppendPlan,
+    StreamFacts,
+    decide_append,
+    plan_appends,
+    plan_initial_write,
+)
 from .json_mode import (
-    is_json_content_type,
     normalize_content_type,
-    process_json_append,
 )
 from .offsets import PLAIN
 from .producer import is_producer_state_expired
@@ -709,7 +712,9 @@ class JsonlStreamStore:
             # be used here.
             try:
                 with self._locked(path, check_expiry=False) as (m, buffer):
-                    self._write(m, buffer, initial_data, is_initial_create=True)
+                    self._write_plan(
+                        m, buffer, plan_initial_write(m.content_type, initial_data)
+                    )
             except Exception:
                 # A create whose body is refused must leave nothing behind, not
                 # an empty stream where the caller's failed one would be. The
@@ -790,74 +795,56 @@ class JsonlStreamStore:
     # Append
     # =========================================================================
 
-    def _write(
-        self,
-        meta: _Meta,
-        buffer: list[dict[str, Any]],
-        data: bytes,
-        *,
-        is_initial_create: bool = False,
-        label: str = "",
-        metadata: dict | None = None,
-        event_ts: float | None = None,
-        tags: tuple[str, ...] = (),
-        correlation_id: str | None = None,
-    ) -> StreamMessage | None:
-        """Turn one append into one or more buffered records.
+    def _write_plan(
+        self, meta: _Meta, buffer: list[dict[str, Any]], plan: AppendPlan
+    ) -> list[StreamMessage | None]:
+        """Buffer the plan's writes, returning per item the last message it
+        became, or None for an item that writes nothing.
 
-        JSON mode flattens a posted array one level, exactly as the other two
-        stores do — each element becomes its own entry with its own offset.
+        Runs under the stream's file lock, which is what makes reading
+        `meta.last_event_ts` and advancing it safe.
         """
-        if is_json_content_type(meta.content_type):
-            payloads = process_json_append(data, is_initial_create)
-            if not payloads:
-                return None
-        else:
-            payloads = [data]
-
+        writes, stamp = plan.stamped(meta.last_event_ts, time.time())
+        if stamp is not None:
+            meta.last_event_ts = stamp
         append_time = time.time()
-        # The default `event_ts` is this store's own stamp, so it never goes
-        # backwards on this stream; a producer's time is kept exactly as sent
-        # and does not move the mark (#284). `_write` runs under the stream's
-        # file lock, which is what makes the read-then-advance safe.
-        if event_ts is None:
-            event_ts = (
-                append_time
-                if meta.last_event_ts is None
-                else max(meta.last_event_ts, append_time)
-            )
-            meta.last_event_ts = event_ts
-        message: StreamMessage | None = None
-        for payload in payloads:
-            meta.head += 1
-            offset = PLAIN.render(meta.head)
-            record = {
-                "id": meta.head,
-                "offset": offset,
-                "ts": append_time,
-                "event_ts": event_ts,
-                "label": label,
-                "metadata": metadata,
-                **self._encode(payload),
-            }
-            # Written only when set, so a record without them is byte-for-byte
-            # what 0.7 wrote and reads back the same.
-            if tags:
-                record["tags"] = list(tags)
-            if correlation_id is not None:
-                record["correlation_id"] = correlation_id
-            buffer.append(record)
-            message = StreamMessage(
-                data=payload,
-                offset=offset,
-                timestamp=append_time,
-                event_ts=record["event_ts"],
-                label=label,
-                metadata=metadata,
-                tags=tags,
-                correlation_id=correlation_id,
-            )
-        return message
+        results: list[StreamMessage | None] = []
+        for write in writes:
+            if write is None:
+                results.append(None)
+                continue
+            message: StreamMessage | None = None
+            for payload in write.payloads:
+                meta.head += 1
+                offset = PLAIN.render(meta.head)
+                record = {
+                    "id": meta.head,
+                    "offset": offset,
+                    "ts": append_time,
+                    "event_ts": write.event_ts,
+                    "label": write.label,
+                    "metadata": write.metadata,
+                    **self._encode(payload),
+                }
+                # Written only when set, so a record without them is
+                # byte-for-byte what 0.7 wrote and reads back the same.
+                if write.tags:
+                    record["tags"] = list(write.tags)
+                if write.correlation_id is not None:
+                    record["correlation_id"] = write.correlation_id
+                buffer.append(record)
+                message = StreamMessage(
+                    data=payload,
+                    offset=offset,
+                    timestamp=append_time,
+                    event_ts=write.event_ts,
+                    label=write.label,
+                    metadata=write.metadata,
+                    tags=write.tags,
+                    correlation_id=write.correlation_id,
+                )
+            results.append(message)
+        return results
 
     def _producer_state(self, meta: _Meta, producer_id: str | None):
         if producer_id is None:
@@ -877,46 +864,7 @@ class JsonlStreamStore:
             meta.producers[result.producer_id] = result.proposed_state
 
     def append(self, path: str, data: bytes, options: Any = None) -> AppendResult:
-        opts = options or AppendOptions()
-        try:
-            with self._locked(path) as (meta, buffer):
-                verdict = decide_append(
-                    self._facts(meta),
-                    opts,
-                    producer_state=self._producer_state(meta, opts.producer_id),
-                    now=time.time(),
-                )
-                if not verdict.write:
-                    return AppendResult(
-                        message=None,
-                        stream_closed=verdict.stream_closed,
-                        producer_result=verdict.producer_result,
-                    )
-                tags, correlation_id = tags_and_correlation(opts)
-                message = self._write(
-                    meta,
-                    buffer,
-                    data,
-                    label=opts.label,
-                    metadata=merge_provenance(opts.metadata),
-                    event_ts=opts.event_ts,
-                    tags=tags,
-                    correlation_id=correlation_id,
-                )
-                self._touch(path, meta)
-                self._commit_producer(meta, verdict.producer_result)
-                if opts.seq is not None:
-                    meta.last_seq = opts.seq
-                if opts.close:
-                    self._mark_closed(meta, opts)
-                return AppendResult(
-                    message=message,
-                    producer_result=verdict.producer_result,
-                    stream_closed=opts.close,
-                )
-        except _Expired:
-            self.delete(path)
-            raise StreamNotFound(f"Stream not found: {path}") from None
+        return self.append_many(path, [(data, options)])[0]
 
     @staticmethod
     def _facts(meta: _Meta) -> StreamFacts:
@@ -927,91 +875,55 @@ class JsonlStreamStore:
             last_seq=meta.last_seq,
         )
 
-    @staticmethod
-    def _mark_closed(meta: _Meta, opts: Any) -> None:
-        meta.closed = True
-        producer_id = getattr(opts, "producer_id", None)
-        if producer_id is not None:
-            meta.closed_by = ClosedBy(
-                producer_id=producer_id,
-                epoch=getattr(opts, "producer_epoch", None) or 0,
-                seq=getattr(opts, "producer_seq", None) or 0,
-            )
-
     def append_many(
         self, path: str, events: Iterable[tuple[bytes, Any]]
     ) -> list[AppendResult]:
         """Append an ordered batch under one lock and one write per segment.
 
         All-or-nothing, and by construction rather than by care: the shared
-        `decide_append_batch` refuses the whole batch before a single record
-        reaches the buffer, and the buffer is not flushed until the block exits
-        cleanly. A conflict on item three leaves items one and two unwritten
-        because they were never written in the first place (#214).
+        `plan_appends` refuses the whole batch before a single record reaches
+        the buffer, and the buffer is not flushed until the block exits cleanly.
+        A conflict on item three leaves items one and two unwritten because they
+        were never written in the first place (#214).
         """
         items = list(events)
         if not items:
             return []
         try:
             with self._locked(path) as (meta, buffer):
-                options = [o for _d, o in items]
-                payloads = [d for d, _o in items]
                 producer_ids = {
                     pid
-                    for o in options
+                    for _d, o in items
                     if (pid := getattr(o, "producer_id", None)) is not None
                 }
-                batch = decide_append_batch(
+                plan = plan_appends(
                     self._facts(meta),
-                    options,
-                    payloads=payloads,
+                    [o for _d, o in items],
+                    payloads=[d for d, _o in items],
                     producer_states={
                         pid: self._producer_state(meta, pid) for pid in producer_ids
                     },
                     now=time.time(),
                 )
-                # Every item's envelope is checked before the first is buffered.
-                envelopes = [tags_and_correlation(o) for _d, o in items]
-                results: list[AppendResult] = []
-                for index, ((data, opts), verdict) in enumerate(
-                    zip(items, batch.verdicts, strict=True)
-                ):
-                    if not verdict.write:
-                        results.append(
-                            AppendResult(
-                                message=None,
-                                stream_closed=verdict.stream_closed,
-                                producer_result=verdict.producer_result,
-                            )
-                        )
-                        continue
-                    o = opts or AppendOptions()
-                    message = self._write(
-                        meta,
-                        buffer,
-                        data,
-                        label=o.label,
-                        metadata=merge_provenance(o.metadata),
-                        event_ts=o.event_ts,
-                        tags=envelopes[index][0],
-                        correlation_id=envelopes[index][1],
-                    )
-                    results.append(
-                        AppendResult(
-                            message=message,
-                            producer_result=verdict.producer_result,
-                            stream_closed=bool(o.close),
-                        )
-                    )
-                if batch.writes_anything:
+                messages = self._write_plan(meta, buffer, plan)
+                if plan.writes_anything:
                     self._touch(path, meta)
-                for accepted in batch.producer_commits.values():
+                for accepted in plan.producer_commits.values():
                     self._commit_producer(meta, accepted)
-                if batch.last_seq is not None:
-                    meta.last_seq = batch.last_seq
-                if batch.closing_opts is not None:
-                    self._mark_closed(meta, batch.closing_opts)
-                return results
+                meta.last_seq = plan.last_seq
+                if plan.close:
+                    meta.closed = True
+                    meta.closed_by = plan.closed_by
+                return [
+                    AppendResult(
+                        message=message,
+                        stream_closed=write.close if write else verdict.stream_closed,
+                        producer_result=verdict.producer_result,
+                    )
+                    for verdict, write, message in zip(
+                        plan.verdicts, plan.writes, messages, strict=True
+                    )
+                ]
         except _Expired:
             self.delete(path)
             raise StreamNotFound(f"Stream not found: {path}") from None

@@ -12,15 +12,19 @@ it.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from rakaia.append_decision import (
     StreamFacts,
-    check_payload,
     decide_append,
-    decide_append_batch,
+    plan_appends,
+    split_payload,
 )
+from rakaia.context import provenance
 from rakaia.types import (
+    MAX_TAG_LENGTH,
     AppendOptions,
     ClosedBy,
     ContentTypeMismatch,
@@ -245,7 +249,7 @@ def _decide_batch(facts=None, items=(), *, payloads=None, producer_states=None):
     """`payloads` defaults to a valid JSON body per item, so a case about
     admission does not have to restate one."""
     items = list(items)
-    return decide_append_batch(
+    return plan_appends(
         facts or StreamFacts(),
         items,
         payloads=[b"{}"] * len(items) if payloads is None else list(payloads),
@@ -328,7 +332,7 @@ class TestBatchAdmissibility:
         batch = _decide_batch(items=[AppendOptions(), closing, AppendOptions()])
         assert [v.write for v in batch.verdicts] == [True, True, False]
         assert batch.verdicts[2].stream_closed is True
-        assert batch.closing_opts is closing
+        assert batch.close is True
 
     def test_a_close_records_which_tuple_closed_the_stream(self):
         """So the items after it can recognise a re-send of that same closing
@@ -342,7 +346,8 @@ class TestBatchAdmissibility:
         assert batch.verdicts[1].write is False
         assert batch.verdicts[1].stream_closed is True
         assert isinstance(batch.verdicts[1].producer_result, ProducerDuplicate)
-        assert batch.closing_opts is closing
+        assert batch.close is True
+        assert batch.closed_by == ClosedBy("p", epoch=0, seq=0)
 
     def test_an_already_closed_stream_still_gets_a_verdict_per_item(self):
         batch = _decide_batch(
@@ -414,30 +419,32 @@ class TestPayloadValidity:
     """
 
     def test_a_valid_json_body_is_admitted(self):
-        assert check_payload("application/json", b'{"a": 1}') is None
+        assert [
+            json.loads(p) for p in split_payload("application/json", b'{"a": 1}')
+        ] == [{"a": 1}]
 
     def test_an_unparseable_body_is_refused(self):
         with pytest.raises(InvalidJson):
-            check_payload("application/json", b"not json")
+            split_payload("application/json", b"not json")
 
     def test_an_empty_array_is_refused(self):
         with pytest.raises(EmptyJsonArray):
-            check_payload("application/json", b"[]")
+            split_payload("application/json", b"[]")
 
     @pytest.mark.parametrize("content_type", ["text/plain", "application/octet-stream"])
     def test_a_declared_non_json_content_type_takes_any_bytes(self, content_type):
-        assert check_payload(content_type, b"not json") is None
+        assert split_payload(content_type, b"not json") == [b"not json"]
 
     def test_no_declared_content_type_takes_any_bytes(self):
         """The event-sourcing shape: the store parses if it can and keeps the
         raw bytes if it cannot, so there is nothing here to refuse."""
-        assert check_payload(None, b"not json") is None
+        assert split_payload(None, b"not json") == [b"not json"]
 
     def test_a_charset_parameter_still_means_json(self):
         """`application/json; charset=utf-8` is a JSON stream, so its bodies are
         constrained — the check must normalise rather than compare literally."""
         with pytest.raises(InvalidJson):
-            check_payload("application/json; charset=utf-8", b"not json")
+            split_payload("application/json; charset=utf-8", b"not json")
 
 
 class TestBatchPayloadValidity:
@@ -526,7 +533,131 @@ class TestBatchPayloadValidity:
         """
         import inspect
 
-        parameter = inspect.signature(decide_append_batch).parameters["payloads"]
+        parameter = inspect.signature(plan_appends).parameters["payloads"]
         assert parameter.default is inspect.Parameter.empty
         with pytest.raises(TypeError):
-            decide_append_batch(StreamFacts(), [AppendOptions()], now=NOW)
+            plan_appends(StreamFacts(), [AppendOptions()], now=NOW)  # type: ignore[call-arg]
+
+
+BAD_TAG = "x" * (MAX_TAG_LENGTH + 1)
+
+
+def _bad_tag(**fields):
+    """Options carrying a tag the store must refuse. `AppendOptions` checks its
+    tags when it is built, so the bad one is set afterwards, the way a caller
+    can; the store's own check is what is under test."""
+    opts = AppendOptions(**fields)
+    object.__setattr__(opts, "tags", (BAD_TAG,))
+    return opts
+
+
+class TestWhatAWriteBecomes:
+    """The second half of the plan (#321): what an admitted item stores, and what
+    a refused one does not. Each store used to work this out itself."""
+
+    def test_a_refused_item_plans_no_write(self):
+        plan = _decide_batch(
+            StreamFacts(closed=True), items=[AppendOptions(), AppendOptions()]
+        )
+        assert plan.writes == [None, None]
+        assert plan.writes_anything is False
+
+    def test_an_admitted_item_carries_its_envelope(self):
+        opts = AppendOptions(
+            label="created",
+            metadata={"who": "a"},
+            tags=("b", "a", "b"),
+            correlation_id="inc-1",
+            event_ts=5.0,
+        )
+        (write,) = _decide_batch(items=[opts]).writes
+        assert write is not None
+        assert write.label == "created"
+        assert write.metadata == {"who": "a"}
+        assert write.tags == ("a", "b")
+        assert write.correlation_id == "inc-1"
+        assert write.event_ts == 5.0
+        assert write.close is False
+
+    def test_a_raw_append_has_an_empty_label_and_no_metadata(self):
+        (write,) = _decide_batch(items=[None]).writes
+        assert write is not None
+        assert (write.label, write.metadata, write.tags) == ("", None, ())
+
+    def test_ambient_provenance_is_merged_under_explicit_metadata(self):
+        with provenance(who="ambient", why="import"):
+            (write,) = _decide_batch(
+                items=[AppendOptions(metadata={"who": "explicit"})]
+            ).writes
+        assert write is not None
+        assert write.metadata == {"who": "explicit", "why": "import"}
+
+    def test_a_json_array_is_flattened_into_one_payload_per_element(self):
+        plan = _decide_batch(JSON, items=[AppendOptions()], payloads=[b"[1, 2, 3]"])
+        (write,) = plan.writes
+        assert write is not None
+        assert [json.loads(p) for p in write.payloads] == [1, 2, 3]
+        assert plan.message_count == 3
+
+    def test_a_bad_tag_refuses_the_batch(self):
+        with pytest.raises(ValueError):
+            _decide_batch(items=[AppendOptions(), _bad_tag()])
+
+    def test_a_bad_tag_on_a_closed_stream_is_not_read(self):
+        """The envelope is checked where the body is: only for an item that will
+        be written. The in-memory store used to check first and raise, while the
+        file store answered "closed"."""
+        plan = _decide_batch(StreamFacts(closed=True), items=[_bad_tag()])
+        assert isinstance(plan.verdicts[0].producer_result, ProducerStreamClosed)
+
+    def test_a_bad_tag_on_an_item_the_fence_refuses_is_not_read(self):
+        plan = _decide_batch(
+            items=[_bad_tag(producer_id="p", producer_epoch=0, producer_seq=4)]
+        )
+        assert isinstance(plan.verdicts[0].producer_result, ProducerSequenceGap)
+
+    def test_a_close_without_a_producer_records_no_tuple(self):
+        plan = _decide_batch(items=[AppendOptions(close=True)])
+        assert plan.close is True
+        assert plan.closed_by is None
+
+    def test_nothing_closing_changes_nothing(self):
+        plan = _decide_batch(items=[AppendOptions()])
+        assert (plan.close, plan.closed_by) == (False, None)
+
+
+class TestEventTime:
+    """`AppendPlan.stamped`: the store's own time, filled in once it has its last
+    stamp and the clock in hand (#284)."""
+
+    def test_an_item_without_a_time_gets_the_stamp(self):
+        plan = _decide_batch(items=[AppendOptions()])
+        (write,), mark = plan.stamped(last_event_ts=None, now=NOW)
+        assert write is not None and write.event_ts == NOW
+        assert mark == NOW
+
+    def test_the_stamp_never_goes_back_past_the_last_one(self):
+        plan = _decide_batch(items=[AppendOptions()])
+        (write,), mark = plan.stamped(last_event_ts=NOW + 50, now=NOW)
+        assert write is not None and write.event_ts == NOW + 50
+        assert mark == NOW + 50
+
+    def test_a_producer_time_is_kept_and_does_not_move_the_mark(self):
+        plan = _decide_batch(items=[AppendOptions(event_ts=NOW + 999)])
+        (write,), mark = plan.stamped(last_event_ts=NOW, now=NOW)
+        assert write is not None and write.event_ts == NOW + 999
+        assert mark is None
+
+    def test_every_unset_item_in_a_batch_shares_one_stamp(self):
+        plan = _decide_batch(
+            items=[AppendOptions(), AppendOptions(event_ts=1.0), AppendOptions()]
+        )
+        writes, mark = plan.stamped(last_event_ts=None, now=NOW)
+        assert [w.event_ts for w in writes if w is not None] == [NOW, 1.0, NOW]
+        assert mark == NOW
+
+    def test_a_refused_item_stays_unwritten(self):
+        plan = _decide_batch(StreamFacts(closed=True), items=[AppendOptions()])
+        writes, mark = plan.stamped(last_event_ts=None, now=NOW)
+        assert writes == [None]
+        assert mark is None

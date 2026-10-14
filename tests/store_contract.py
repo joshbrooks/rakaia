@@ -168,18 +168,9 @@ class StoreContract:
         assert messages[-1].event_ts == logical
         assert messages[-1].timestamp != logical
 
-    # Whether a raw append with no producer-set time gets a stamp this store
-    # takes itself. The durable store is the exception: it stores NULL, and its
-    # readers fall back to the row's database insert time, which the clock
-    # below does not reach. Its own stamp -- the one `@stream_model` asks for --
-    # is pinned in `tests/test_django_rakaia/test_event_ts_stamp.py`.
-    stamps_raw_appends = True
-
     @pytest.fixture
     def clock(self, monkeypatch):
         """A wall clock the test sets by hand, including backwards."""
-        if not self.stamps_raw_appends:
-            pytest.skip("this store does not stamp a raw append's event_ts itself")
         now = [2_000_000_000.0]
         monkeypatch.setattr("time.time", lambda: now[0])
         return now
@@ -200,6 +191,16 @@ class StoreContract:
             2_000_000_000.0,
             2_000_000_050.0,
         ]
+
+    @pytest.mark.usefixtures("clock")
+    def test_a_producer_time_does_not_move_the_store_s_own_stamp(self, store):
+        # A producer's time is kept as sent and takes no part in the stamp rule,
+        # so a backfill dated far ahead cannot pin every later stamp to it.
+        store.create("s")
+        store.append("s", b'{"id": 1}', AppendOptions(event_ts=3_000_000_000.0))
+        store.append("s", b'{"id": 2}')
+        messages, _ = store.read("s")
+        assert [m.event_ts for m in messages] == [3_000_000_000.0, 2_000_000_000.0]
 
     def test_own_event_ts_carries_over_a_delete_and_recreate(self, store, clock):
         # The durable store keeps the last stamp on its offset watermark, which

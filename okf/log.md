@@ -1,5 +1,11 @@
 # Directory Update Log
 
+## 2026-10-14
+
+* **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — every
+  store stamps an append that sets no `event_ts` (the durable store used to leave it null), and
+  tags and correlation ids are checked only on an append that will be written.
+
 ## 2026-10-06
 
 * **Update**: [Event envelope & provenance](concepts/event-envelope-and-provenance.md) — a tag

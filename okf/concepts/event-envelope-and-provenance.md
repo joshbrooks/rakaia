@@ -25,7 +25,10 @@ Imported from `rakaia`:
   correlation_id)`. Tags read back sorted and de-duplicated; a tag is at most
   100 characters and a correlation id at most 128, neither containing NUL or
   invalid UTF-8,
-  checked before anything is written (`ValueError`).
+  checked before anything is written (`ValueError`) — for an append that will be
+  written; one refused as closed or fenced out is not checked.
+* An append that sets no `event_ts` gets the store's own stamp, on every store
+  (`DjangoStreamStore` included since `0.9.0`).
 * `AppendResult.event_id` — the `StreamEvent` id from `DjangoStreamStore`;
   `None` from the in-memory and JSONL stores.
 * `provenance(...)` context manager; `get_provenance()`.

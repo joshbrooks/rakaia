@@ -99,34 +99,53 @@ def test_a_fan_out_brings_lagging_streams_up_on_their_own_database(
 ) -> None:
     # The catch-up write must follow the streams to their alias; sent to the
     # default database it would update nothing, and `behind` would stay behind.
-    ahead = Stream.objects.using("overlay").create(stream_id="ahead")
-    behind = Stream.objects.using("overlay").create(stream_id="behind")
+    # `behind` has a stamp of its own, earlier than `ahead`'s, and sorts first,
+    # so a stamp taken from the first stream rather than the latest shows.
+    ahead = Stream.objects.using("overlay").create(stream_id="z-ahead")
+    behind = Stream.objects.using("overlay").create(stream_id="a-behind")
     # Callers hold a transaction on the streams' alias; the offset lock needs one.
+    clock[0] -= 50
     with transaction.atomic(using="overlay"):
-        write_enveloped_event([ahead], {"id": 1}, stamp_event_ts=True)
+        write_enveloped_event([behind], {"id": 0})
+    clock[0] += 50
+    with transaction.atomic(using="overlay"):
+        write_enveloped_event([ahead], {"id": 1})
     clock[0] -= 100
     with transaction.atomic(using="overlay"):
-        write_enveloped_event([ahead, behind], {"id": 2}, stamp_event_ts=True)
-    watermark = StreamOffsetWatermark.objects.using("overlay").get(stream_path="behind")
+        event, _ = write_enveloped_event([ahead, behind], {"id": 2})
+    assert event.event_ts == T0
+    watermark = StreamOffsetWatermark.objects.using("overlay").get(
+        stream_path="a-behind"
+    )
     assert watermark.last_event_ts == T0
+
+
+@pytest.mark.usefixtures("clock")
+def test_a_path_named_twice_takes_an_offset_for_each() -> None:
+    # A resolver can name one path twice. Each occurrence takes its own offset
+    # from the one watermark, rather than both reading the same high mark and
+    # colliding on `unique_together(stream, offset)`.
+    stream = Stream.objects.create(stream_id="twice")
+    with transaction.atomic():
+        _event, entries = write_enveloped_event([stream, stream], {"id": 1})
+    assert sorted(e.offset for e in entries) == [1, 2]
 
 
 @pytest.mark.usefixtures("clock")
 def test_a_supplied_time_is_kept_and_does_not_move_the_stamp() -> None:
     stream = Stream.objects.create(stream_id="areas")
-    event, _ = write_enveloped_event(
-        [stream], {"id": 1}, event_ts=3_000_000_000.0, stamp_event_ts=True
-    )
+    event, _ = write_enveloped_event([stream], {"id": 1}, event_ts=3_000_000_000.0)
     assert event.event_ts == 3_000_000_000.0
     assert _save("areas") == T0
 
 
 @pytest.mark.usefixtures("clock")
-def test_a_raw_protocol_append_still_stores_no_time() -> None:
-    # The durable store's protocol append is not stamped: NULL means "the
-    # producer set no time", and readers fall back to the insert time.
+def test_a_raw_protocol_append_is_stamped_too() -> None:
+    # It used to store NULL and leave readers to fall back to the insert time,
+    # the one store of three that did (#321). It now takes the same stamp a
+    # `@stream_model` save does, under the same lock.
     store = DjangoStreamStore()
     store.create("raw")
     store.append("raw", b'{"id": 1}')
     event = Stream.objects.get(stream_id="raw").entries.get().event
-    assert event.event_ts is None
+    assert event.event_ts == T0

@@ -14,12 +14,17 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
-from .append_decision import StreamFacts, decide_append, decide_append_batch
-from .context import merge_provenance, tags_and_correlation
+from .append_decision import (
+    AppendPlan,
+    PlannedWrite,
+    StreamFacts,
+    decide_append,
+    plan_appends,
+    plan_initial_write,
+)
 from .json_mode import (
     is_json_content_type,
     normalize_content_type,
-    process_json_append,
 )
 from .offsets import COMPOUND
 from .producer import is_producer_state_expired
@@ -193,9 +198,10 @@ class StreamStore:
             closed=closed,
         )
 
-        # If initial data is provided, append it
-        if initial_data and len(initial_data) > 0:
-            self._append_to_stream(stream, initial_data, is_initial_create=True)
+        if initial_data:
+            self._write_plan(
+                stream, plan_initial_write(stream.content_type, initial_data)
+            )
 
         self._streams[path] = stream
         return stream
@@ -255,89 +261,14 @@ class StreamStore:
         options: AppendOptions | None = None,
     ) -> AppendResult:
         """
-        Append data to a stream.
-
-        Handles content-type validation, JSON mode, Stream-Seq coordination,
-        producer validation, and stream closure.
+        Append data to a stream: a batch of one.
 
         Raises:
             StreamNotFound: If stream doesn't exist or is expired.
             InvalidJson / EmptyJsonArray: If the payload fails JSON-mode checks.
             ContentTypeMismatch / SequenceConflict: On the respective conflict.
         """
-        opts = options or AppendOptions()
-        tags, correlation_id = tags_and_correlation(opts)
-        stream = self._get_if_not_expired(path)
-        if stream is None:
-            raise StreamNotFound(f"Stream not found: {path}")
-
-        # Admission is decided in `rakaia.append_decision`, shared with the
-        # durable store, so the ordering (closed -> content-type -> fencing ->
-        # Stream-Seq) cannot drift between the two. This store's only job here
-        # is to supply the facts and then persist the verdict.
-        verdict = decide_append(
-            StreamFacts(
-                closed=stream.closed,
-                closed_by=stream.closed_by,
-                content_type=stream.content_type,
-                last_seq=stream.last_seq,
-            ),
-            opts,
-            producer_state=self._producer_state(stream, opts.producer_id),
-            now=time.time(),
-        )
-        if not verdict.write:
-            return AppendResult(
-                message=None,
-                stream_closed=verdict.stream_closed,
-                producer_result=verdict.producer_result,
-            )
-        producer_result = verdict.producer_result
-
-        # Append the data (may raise for invalid JSON). Provenance is merged
-        # here at the public-append boundary — not in _append_to_stream — so a
-        # stream's initial-create message is never stamped.
-        message = self._append_to_stream(
-            stream,
-            data,
-            label=opts.label,
-            metadata=merge_provenance(opts.metadata),
-            event_ts=opts.event_ts,
-            tags=tags,
-            correlation_id=correlation_id,
-        )
-
-        # === STATE MUTATION (only after successful append) ===
-
-        # A write extends the sliding TTL window.
-        self._touch(stream)
-
-        if producer_result is not None:
-            self._commit_producer_state(stream, producer_result)
-
-        if opts.seq is not None:
-            stream.last_seq = opts.seq
-
-        if opts.close:
-            stream.closed = True
-            if opts.producer_id is not None:
-                from .types import ClosedBy
-
-                stream.closed_by = ClosedBy(
-                    producer_id=opts.producer_id,
-                    epoch=opts.producer_epoch or 0,
-                    seq=opts.producer_seq or 0,
-                )
-            self._notify_closed(path)
-
-        # Notify long-pollers
-        self._notify_waiters(path)
-
-        return AppendResult(
-            message=message,
-            producer_result=producer_result,
-            stream_closed=opts.close,
-        )
+        return self.append_many(path, [(data, options)])[0]
 
     def append_many(
         self,
@@ -346,62 +277,62 @@ class StreamStore:
     ) -> list[AppendResult]:
         """Append an ordered batch, returning one ``AppendResult`` per item.
 
-        API parity with :meth:`DjangoStreamStore.append_many` so a consumer can
-        call one method against either backend. The in-memory store has no
-        per-append transaction cost to amortise, so this simply delegates to
-        :meth:`append` per item, preserving every append semantic
-        (producer/seq/close validation, TTL touch, long-poll notification). An
-        empty batch returns ``[]``.
-
-        A refusal anywhere in the batch refuses the whole batch before anything
-        is written — a content-type or Stream-Seq conflict, and equally a body
-        the stream's content type cannot hold (`InvalidJson`, `EmptyJsonArray`).
-        The durable store's single transaction can only be all-or-nothing, and
-        the two stores must agree — a plain loop here would leave the prefix
-        written, and did (#214).
-
-        That admissibility scan is `rakaia.append_decision.decide_append_batch`,
-        shared with the durable store, so the two cannot drift on what a *batch*
-        is allowed to do any more than they can on a single append. It used to
-        be hand-rolled here, and it advanced its `Stream-Seq` view on items the
-        fence would refuse — so a batch whose first item was fenced out raised a
-        conflict against a sequence nothing had written (#181). The verdicts are
-        deliberately discarded: this store then *is* a loop of `append`, which
-        re-derives each one against really-advanced state. The shared rule is
-        called for its all-or-nothing pre-flight, which a loop cannot give. The
-        payload check rides along for the same reason: the loop below will parse
-        each body again on its way to storing it, so the pre-flight exists only
-        to have refused the batch before the first `append` runs.
+        What each item is allowed to do and what it writes are decided by
+        `rakaia.append_decision.plan_appends`, shared with the other two stores,
+        before anything is stored — so a refusal anywhere in the batch (a
+        conflict, a body the stream cannot hold, a bad tag) refuses the whole
+        batch with nothing written, as the durable store's single transaction
+        does. This store renders the offsets and keeps the result. An empty
+        batch returns ``[]``.
         """
         items = list(events)
         if not items:
             return []
         stream = self._get_if_not_expired(path)
-        if stream is not None:
-            producer_ids = {
-                pid
-                for _d, o in items
-                if (pid := getattr(o, "producer_id", None)) is not None
-            }
-            decide_append_batch(
-                StreamFacts(
-                    closed=stream.closed,
-                    closed_by=stream.closed_by,
-                    content_type=stream.content_type,
-                    last_seq=stream.last_seq,
-                ),
-                [options for _data, options in items],
-                payloads=[data for data, _options in items],
-                producer_states={
-                    pid: self._producer_state(stream, pid) for pid in producer_ids
-                },
-                now=time.time(),
+        if stream is None:
+            raise StreamNotFound(f"Stream not found: {path}")
+        producer_ids = {
+            pid
+            for _d, o in items
+            if (pid := getattr(o, "producer_id", None)) is not None
+        }
+        plan = plan_appends(
+            StreamFacts(
+                closed=stream.closed,
+                closed_by=stream.closed_by,
+                content_type=stream.content_type,
+                last_seq=stream.last_seq,
+            ),
+            [options for _data, options in items],
+            payloads=[data for data, _options in items],
+            producer_states={
+                pid: self._producer_state(stream, pid) for pid in producer_ids
+            },
+            now=time.time(),
+        )
+        messages = self._write_plan(stream, plan)
+        if plan.writes_anything:
+            # A write extends the sliding TTL window.
+            self._touch(stream)
+        for accepted in plan.producer_commits.values():
+            self._commit_producer_state(stream, accepted)
+        stream.last_seq = plan.last_seq
+        if plan.close:
+            stream.closed = True
+            stream.closed_by = plan.closed_by
+        if plan.writes_anything:
+            self._notify_waiters(path)
+
+        return [
+            AppendResult(
+                message=message,
+                stream_closed=write.close if write else verdict.stream_closed,
+                producer_result=verdict.producer_result,
             )
-        # Checked for every item before the first is written, which the loop
-        # below cannot do: it would store the prefix and raise on the bad item.
-        for _data, options in items:
-            tags_and_correlation(options)
-        return [self.append(path, data, options) for data, options in items]
+            for verdict, write, message in zip(
+                plan.verdicts, plan.writes, messages, strict=True
+            )
+        ]
 
     # =========================================================================
     # Close operations
@@ -579,79 +510,44 @@ class StreamStore:
     # Internal helpers
     # =========================================================================
 
-    def _append_to_stream(
-        self,
-        stream: Stream,
-        data: bytes,
-        is_initial_create: bool = False,
-        *,
-        label: str = "",
-        metadata: dict | None = None,
-        event_ts: float | None = None,
-        tags: tuple[str, ...] = (),
-        correlation_id: str | None = None,
-    ) -> StreamMessage | None:
-        """Append data to a stream, handling JSON mode processing."""
-        # One payload per stored message. Outside JSON mode the body is the
-        # single message; in JSON mode the protocol flattens a posted array one
-        # level and each element becomes its own message (spec 7.1).
-        json_mode = is_json_content_type(stream.content_type)
-        if json_mode:
-            payloads = process_json_append(data, is_initial_create)
-            if not payloads:
-                return None
-        else:
-            payloads = [data]
+    def _write_plan(
+        self, stream: Stream, plan: AppendPlan
+    ) -> list[StreamMessage | None]:
+        """Store the plan's writes, returning per item the last message it
+        became — the stream's new head, which is what a caller resumes from —
+        or None for an item that writes nothing."""
+        writes, stamp = plan.stamped(self._last_event_ts.get(stream.path), time.time())
+        if stamp is not None:
+            self._last_event_ts[stream.path] = stamp
+        return [self._store(stream, w) if w is not None else None for w in writes]
 
-        # Parse current offset and calculate new one
+    def _store(self, stream: Stream, write: PlannedWrite) -> StreamMessage | None:
+        json_mode = is_json_content_type(stream.content_type)
         parts = stream.current_offset.split("_")
         read_seq = int(parts[0])
         byte_offset = int(parts[1])
-
-        # Envelope timestamp defaults to append time when the producer didn't set
-        # a logical one, so `event_ts` is always populated after a store append.
-        # That default is this store's own stamp, so it is clamped to never go
-        # backwards on this path; a producer's time is kept exactly as sent and
-        # does not move the mark (#284).
         append_time = time.time()
-        if event_ts is None:
-            event_ts = max(
-                self._last_event_ts.get(stream.path, append_time), append_time
-            )
-            self._last_event_ts[stream.path] = event_ts
         message: StreamMessage | None = None
-
-        for payload in payloads:
+        for payload in write.payloads:
             # A JSON-mode offset is a position in the *response* body, where the
             # payloads are joined by commas — so each message advances the byte
             # offset by its own length plus the separator that will sit after it.
             # Storing the payload unframed (#155) therefore leaves every offset
             # exactly where it was; only `StreamMessage.data` changes.
             byte_offset += len(payload) + (1 if json_mode else 0)
-            # `COMPOUND` owns the shape, the field widths and the padding
-            # that makes offsets sort byte-wise (see `rakaia.offsets`). The
-            # widths used to be written out here, again where a recreated path
-            # picks up its first offset, and a third time inside the
-            # `INITIAL_OFFSET` literal — with a comment saying a change had to
-            # update all three "in lockstep", which is a rule announcing it has
-            # no home (#182).
             new_offset = COMPOUND.render(read_seq, byte_offset)
-
             message = StreamMessage(
                 data=payload,
                 offset=new_offset,
                 timestamp=append_time,
-                event_ts=event_ts,
-                label=label,
-                metadata=metadata,
-                tags=tags,
-                correlation_id=correlation_id,
+                event_ts=write.event_ts,
+                label=write.label,
+                metadata=write.metadata,
+                tags=write.tags,
+                correlation_id=write.correlation_id,
             )
             self._messages.setdefault(stream.path, []).append(message)
             stream.current_offset = new_offset
-
-        # The last message, whose offset is the stream's new head — what a
-        # caller resumes from. A flattened array writes several.
         return message
 
     @staticmethod

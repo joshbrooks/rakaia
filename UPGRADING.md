@@ -61,6 +61,34 @@ one async method, `run_sync`, which says how to call it from the event loop.
 Both are synchronous, so from async code on a database store go through
 `await store.run_sync(...)`, as before.
 
+## Four quiet changes to what an append records
+
+Nothing here raises, which is why it is written down.
+
+- **The rows rakaia writes no longer fire `post_save`.** A single append and a
+  `@stream_model` save created their `StreamEvent` and `StreamEntry` rows one at a
+  time, so a receiver on either model ran for them; a batch never fired it. Every
+  path now writes in bulk, as the batch did. rakaia's own live-update publishing
+  does not depend on the signal. A receiver of your own on those two models stops
+  seeing rakaia's writes: read the stream, or subscribe to its channel group,
+  instead.
+
+- **`DjangoStreamStore` stamps an append that sets no `event_ts`.** It stored
+  `NULL` in `StreamEvent.event_ts` for a plain protocol append, and readers fell
+  back to the row's insert time; it now stores the same stamp the other two
+  stores and `@stream_model` take, `max(the stream's last stamp, now)`. Anything
+  reading `StreamMessage.event_ts` sees nearly the same value as before. Code that
+  queries the column directly and treats `NULL` as "a raw append" will find new
+  rows filled in; existing rows are not touched, so no migration runs.
+- **A bad tag or correlation id on an append that is refused anyway is no longer
+  an error.** The stores disagreed: the in-memory store, and a batch on the file
+  store, checked them whatever the decision, so a bad tag on a closed stream
+  raised `ValueError` there, while the database store and a single append on the file
+  store answered "closed". Every store now checks them
+  only for an append that will be written, as it already did for the body.
+- **A stream's initial `PUT` body no longer records the ambient `provenance()` on
+  `DjangoStreamStore`.** The other two stores never did.
+
 ---
 
 # 0.8.0

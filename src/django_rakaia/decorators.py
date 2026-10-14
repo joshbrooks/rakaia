@@ -117,24 +117,20 @@ def create_stream_event(
         json.dumps(dataclasses.asdict(dc_instance), cls=DjangoJSONEncoder)
     )
 
-    # `event_ts` is the deterministic merge key (ADR 0002 item 5), and this door
-    # always stamps one: leaving it NULL would force `merge_replay` onto
-    # transport time, which is the ordering trap that item closed. A raw
-    # protocol append is the other case — no logical time unless the producer
-    # set one — which is why the shared writer is told whether to stamp rather
-    # than deciding it.
-    #
-    # The stamp is *taken* by the writer, not here: under the offset lock, as
-    # `max(the stream's last stamp, now)`, so a stream's times agree with its
-    # positions (#284).
+    # `event_ts` is the deterministic merge key (ADR 0002 item 5), and the
+    # shared writer stamps one on every event that does not bring its own:
+    # leaving it NULL would force `merge_replay` onto transport time, which is
+    # the ordering trap that item closed. The stamp is taken under the offset
+    # lock, as `max(the stream's last stamp, now)`, so a stream's times agree
+    # with its positions (#284).
     #
     # Everything else about the envelope — the `"append"` sentinel, merging the
-    # ambient `provenance()` block into `metadata`, `{}` rather than NULL,
-    # locking offset allocation — is `write_enveloped_event`'s to decide, shared
-    # with `DjangoStreamStore.append`. `@stream_model` used to have its own copy
-    # of those rules and the copies had drifted (#131).
-    # Atomic because `get_next_offset` locks the per-path high-water for the
-    # duration of the transaction. A savepoint when the caller already has one
+    # ambient `provenance()` block into `metadata`, `{}` rather than NULL — is
+    # `write_enveloped_event`'s to decide, and the rows are written by
+    # `write_events`, shared with `DjangoStreamStore.append`. `@stream_model`
+    # used to have its own copy of those rules and the copies had drifted (#131).
+    # Atomic because the writer locks the per-path high-water for the duration
+    # of the transaction. A savepoint when the caller already has one
     # open, so the event stays inside the save that produced it.
     # The save being audited decides the database, unless a caller says
     # otherwise. `write_enveloped_event` then takes the alias from the streams
@@ -170,7 +166,6 @@ def create_stream_event(
             [by_id[stream_id] for stream_id in stream_ids],
             payload,
             label=action,
-            stamp_event_ts=True,
         )
 
     return event
