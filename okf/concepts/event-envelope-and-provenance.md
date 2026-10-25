@@ -28,12 +28,15 @@ Imported from `rakaia`:
   checked before anything is written (`ValueError`) — for an append that will be
   written; one refused as closed or fenced out is not checked.
 * An append that sets no `event_ts` gets the store's own stamp, on every store
-  (`DjangoStreamStore` included since `0.9.0`).
+  (`DjangoStreamStore` included since `0.9.0`). The items of one batch that set
+  none share one stamp.
 * `AppendResult.event_id` — the `StreamEvent` id from `DjangoStreamStore`;
   `None` from the in-memory and JSONL stores.
 * `provenance(...)` context manager; `get_provenance()`.
   `provenance(correlation=...)` supplies the correlation id of an append that
   gives none; an explicit one wins. Unrelated to `Upsert(produces=...)`.
+  A stream's initial `PUT` body is not an append and records neither, on every
+  store (`DjangoStreamStore` recorded both before `0.9.0`).
 * History helpers: `history_effects`, `recover_peak_snapshot`, `label_marker`,
   `envelope_actor`.
 
