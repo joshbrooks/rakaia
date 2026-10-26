@@ -9,6 +9,18 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An edited frozen handler is now drift after a restart, not only inside the
+  process that edited it.** The hash a handler was first registered with is read
+  back from the registration log and compared with the live function, so replay
+  reports it under `on_drift` and `--strict-drift` as it would have in one
+  process. See `UPGRADING.md`.
+- **`fold_events` now requires `start_seq`, the position of its first event in
+  the real stream**, so a live fold picks the same handler version a rebuild does
+  once the stream is past a version boundary. It used to number every batch from
+  0. See `UPGRADING.md`.
+
 ## [0.9.0] - 2026-10-14
 
 ### Added
