@@ -465,7 +465,7 @@ def _dispatch_event(
         ctx.drift.check(
             kind="handler",
             name=version.name,
-            stored_hash=version.source_hash,
+            stored_hash=version.hash_to_check,
             fn=version.fn,
         )
         all_effects.extend(_call_handler(version, upcasted, ctx.reader))
@@ -552,6 +552,41 @@ def replay(
     applied. A staged replay needs the whole range before its second pass, so it
     decodes up front and the same event applies nothing. See `EventSource`.
     """
+    return replay_numbered_from(
+        store,
+        stream_path,
+        executor,
+        handler_registry=handler_registry,
+        upcaster_registry=upcaster_registry,
+        start_seq=start_seq,
+        end_seq=end_seq,
+        event_match=event_match,
+        on_drift=on_drift,
+        reader=reader,
+    )
+
+
+def replay_numbered_from(
+    store: ReadableStore,
+    stream_path: str,
+    executor: Executor,
+    *,
+    first_seq: int = 0,
+    handler_registry: HandlerRegistry | None = None,
+    upcaster_registry: UpcasterRegistry | None = None,
+    start_seq: int = 0,
+    end_seq: int | None = None,
+    event_match: str | None = None,
+    on_drift: OnDriftPolicy = "warn",
+    reader: ProjectionReader | None = None,
+) -> ReplayResult:
+    """`replay()`, with the stream's first message numbered ``first_seq``.
+
+    For a stream that holds only part of another stream's history, such as the
+    scratch stream `django_rakaia.fold_events` builds: handlers are chosen by
+    ``seq``, so the events must carry the position they have in the real stream.
+    ``start_seq`` and ``end_seq`` count in the same numbering.
+    """
     match_str = event_match if event_match is not None else stream_path
     messages, _ = store.read(stream_path)
 
@@ -568,7 +603,7 @@ def replay(
         # single-pass replay dispatches the events before a malformed one rather
         # than nothing. `run_passes` materialises this itself when it needs more
         # than one pass, which is why there is no second loop here.
-        for seq, msg in enumerate(messages):
+        for seq, msg in enumerate(messages, start=first_seq):
             if end_seq is not None and seq >= end_seq:
                 break
             if seq < start_seq:

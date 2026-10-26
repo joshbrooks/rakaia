@@ -18,7 +18,7 @@ import importlib
 import inspect
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 # `HandlerDriftError` is defined next to the rule that raises it, in
@@ -253,6 +253,11 @@ class _MetaStreamRecord:
     def identity_from_payload(cls, payload: dict[str, Any]) -> tuple:
         return tuple(f.read(payload) for f in cls._PAYLOAD_FIELDS)
 
+    @classmethod
+    def fields_from_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        """The same values as `identity_from_payload`, by field name."""
+        return {f.name: f.read(payload) for f in cls._PAYLOAD_FIELDS}
+
 
 #: The registration-site field, shared by all three record kinds. The fallback
 #: is the old derivation — right whenever the decoration site and the definition
@@ -355,6 +360,18 @@ class HandlerVersion(_MetaStreamRecord):
     is what `rehydrate()` imports. Separate from `dotted_path` because binding a
     dependency with `functools.partial` puts the wiring in one module and the
     function in another. Set from the calling frame; see `_registration_site`."""
+
+    reference_hash: str | None = None
+    """The hash this version's code was first registered with, when the store
+    already held one for the same name and range. Replay compares the live
+    function against it, so an edit made before a restart reads as drift. Not
+    persisted and not part of the identity; None means `source_hash` is the
+    reference."""
+
+    @property
+    def hash_to_check(self) -> str:
+        """What a replay compares the live function against."""
+        return self.reference_hash or self.source_hash
 
     # -- meta-stream record (see `rakaia.registration_log`) -----------------
     #
@@ -477,6 +494,18 @@ class _LogBackedRegistry:
             importlib.import_module(module_name)
 
 
+def _range_of(fields: dict[str, Any]) -> tuple:
+    """Which handler a registration is a version of, ignoring its code."""
+    return (
+        fields["name"],
+        fields["event_match"],
+        fields["effective_from"],
+        fields["effective_to"],
+        fields["match_field"],
+        fields["stage"],
+    )
+
+
 class HandlerRegistry(_LogBackedRegistry):
     """
     Registry of versioned handlers, optionally backed by a meta-stream.
@@ -576,6 +605,7 @@ class HandlerRegistry(_LogBackedRegistry):
             match_field=match_field,
             stage=stage,
         )
+        version = replace(version, reference_hash=self._first_recorded_hash(version))
 
         key = (name, event_match)
         series = self._versions.setdefault(key, [])
@@ -592,6 +622,20 @@ class HandlerRegistry(_LogBackedRegistry):
         series.append(version)
         series.sort(key=lambda v: v.effective_from)
         return version
+
+    def _first_recorded_hash(self, version: HandlerVersion) -> str | None:
+        """The hash first logged for this handler name and range, if any.
+
+        "Same range" is name, event match, bounds, match field and stage; the
+        code is what is being asked about, so it is left out. The first record
+        wins: later records are the edits that were registered after it.
+        """
+        wanted = _range_of(version.fields_from_payload(version.to_payload()))
+        for payload in self._handler_log.payloads():
+            fields = HandlerVersion.fields_from_payload(payload)
+            if _range_of(fields) == wanted:
+                return str(fields["source_hash"])
+        return None
 
     def register_reducer(
         self,
