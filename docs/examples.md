@@ -207,7 +207,11 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(authorize=..., allowed_origins=..., max_body_bytes=...,
   sse_max_seconds=...)` and their `RAKAIA_` settings. Every example that serves the
   protocol runs open, which is the default; the tests in `whats-new.md` section 33
-  are the only cover.
+  are the only cover. Two side effects of the 0.10.0 server changes: `chat` now signs
+  every visitor in as a demo user (`chat/middleware.py`), because the dashboard's live
+  feed needs a login and the sample has none; and `polyglot` tails its stream from
+  `offset=0`, so each of its connections, now closed every 60 seconds, replays the
+  whole stream on reconnect. It stays correct but costs more as the stream grows.
 - `RAKAIA_PERMANENT_STREAMS` and the `permanent=True` argument on
   `StreamStore` and `JsonlStreamStore`, its three refusals (`ExpiryNotAllowed`, and
   `DeleteNotAllowed` for both a client's `DELETE` and a Python `delete()` without

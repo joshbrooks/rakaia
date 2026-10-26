@@ -9,10 +9,35 @@ could not.
 from __future__ import annotations
 
 import asyncio
+import signal
+from collections.abc import Iterator
 from typing import Any
+
+import pytest
 
 from rakaia import StreamStore, create_app
 from rakaia.protocol_server import DEFAULT_SSE_MAX_SECONDS, ServerOptions
+
+
+@pytest.fixture(autouse=True)
+def fail_instead_of_hanging() -> Iterator[None]:
+    """Turn a stuck handler into a failure.
+
+    `asyncio.wait_for` cannot interrupt a handler that spins without awaiting, and
+    a spinning loop blocks the one thread the event loop runs on. A signal is
+    delivered between bytecodes, so it still gets through.
+    """
+
+    def give_up(*_: object) -> None:
+        raise TimeoutError("the SSE handler never gave control back")
+
+    previous = signal.signal(signal.SIGALRM, give_up)
+    signal.alarm(15)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 class CountingStore(StreamStore):
@@ -77,7 +102,7 @@ async def test_the_handler_stops_polling_when_the_client_disconnects():
     assert store.get_calls > 2, "the connection should be polling while open"
 
     conn.gone.set()
-    await asyncio.wait_for(handler, timeout=2)
+    await asyncio.wait_for(handler, timeout=2)  # fails, not hangs, if it never ends
     after_exit = store.get_calls
     await asyncio.sleep(0.3)
 

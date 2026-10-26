@@ -119,6 +119,15 @@ class TestAuthorizeHook:
             response = await c.get("/s?offset=-1")
         assert (response.status_code, response.content) == (401, b"log in")
 
+    @pytest.mark.parametrize("verdict", [1, 0, 200, 204, 302, 600, -5, (200, b"x")])
+    async def test_a_status_outside_400_to_599_is_a_malformed_verdict(self, verdict):
+        """`return 200` from a hook must not let the request through as a success."""
+        store = StreamStore()
+        async with asgi_client(store, authorize=lambda *_: verdict) as c:
+            response = await c.put("/s", headers=JSON)
+        assert response.status_code == 403
+        assert not store.has("/s")
+
     async def test_a_coroutine_hook_is_awaited(self):
         async def authorize(scope, action):  # noqa: ARG001
             return None if action == "read" else False

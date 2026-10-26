@@ -371,8 +371,8 @@ class ServerOptions:
     ``"create"``, ``"append"``, ``"read"`` (GET and HEAD) or ``"delete"``. It may
     be a plain function or a coroutine function. Return ``None`` or ``True`` to
     allow; ``False`` answers ``403``; an ``int`` answers that status; a
-    ``(status, body_bytes)`` tuple answers both. Anything else is refused with
-    ``403``, so a mistake in the hook fails closed. CORS preflight (``OPTIONS``)
+    ``(status, body_bytes)`` tuple answers both; a status must be 400 to 599. Anything
+    else is refused with ``403``, so a mistake in the hook fails closed. CORS preflight (``OPTIONS``)
     is never passed to it, because browsers send no credentials with one. The
     Django entry point sets this from ``RAKAIA_AUTHORIZE``.
     """
@@ -434,6 +434,13 @@ _ACTION_FOR_METHOD = {
 }
 
 
+def _is_error_status(value: object) -> bool:
+    """Whether a hook's answer is a refusal status: an int from 400 to 599."""
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and 400 <= value <= 599
+    )
+
+
 async def _denied_by_hook(
     authorize: Authorize | None, scope: Scope, method: str
 ) -> tuple[int, bytes] | None:
@@ -448,12 +455,12 @@ async def _denied_by_hook(
         return None
     if verdict is False:
         return 403, b"Forbidden"
-    if isinstance(verdict, int):
+    if _is_error_status(verdict):
         return verdict, b"Not allowed"
     if (
         isinstance(verdict, tuple)
         and len(verdict) == 2
-        and isinstance(verdict[0], int)
+        and _is_error_status(verdict[0])
         and isinstance(verdict[1], bytes)
     ):
         return verdict

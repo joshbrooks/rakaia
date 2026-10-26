@@ -360,8 +360,8 @@ without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
 
 `RAKAIA_AUTHORIZE` is a function (or its dotted path) called with the ASGI scope
 and the action — `"create"`, `"append"`, `"read"` or `"delete"` — before the
-request does anything. Return `None` to allow it, or a status such as `401` or
-`403` to refuse it; `(status, b"message")` sets the body too. It may be `async`.
+request does anything. Return `None` to allow it, or a status from 400 to 599, such as `401` or
+`403`, to refuse it (anything else is treated as a mistake and gives `403`); `(status, b"message")` sets the body too. It may be `async`.
 A browser's CORS preflight is never passed to it.
 
 ```python
