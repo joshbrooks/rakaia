@@ -16,7 +16,9 @@ class Executor(Protocol):
 ```
 
 The same replay produces the same effects either way — the executor is the only
-thing that differs, so a dry run is a faithful preview of the real write:
+thing that differs, so a dry run is a preview of the real write — it runs the same
+checks, though it cannot see the rows (see
+[what a dry run cannot see](#what-a-dry-run-cannot-see)):
 
 ```mermaid
 flowchart LR
@@ -32,7 +34,7 @@ ships four implementations:
 | Executor | Package | What it does |
 |---|---|---|
 | `DjangoExecutor` | `django_rakaia.effect_executor` | Applies effects for real — an `Upsert` via `update_or_create`, an `Update`, a `Delete`, a `Retire`. |
-| `CollectingExecutor` | `rakaia.executors` | Records effects into `.effects` **without applying them**. The building block for a dry run. |
+| `CollectingExecutor` | `rakaia.executors` | Records effects into `.effects` **without writing anything**, after running the checks a real write runs. The building block for a dry run. |
 | `RecordingExecutor` | `rakaia.executors` | Wraps any other executor: applies **through** it, and keeps what it passed on in `.effects`. |
 | `InMemoryProjections` | `rakaia.executors` | Applies effects to in-memory dicts, and reads them back — an `Executor` and a `ProjectionReader` in one, with no database. |
 
@@ -105,12 +107,34 @@ Because it is what the demos and tests rehearse on, "it worked in memory" has to
 mean something on Django. Two shared conformance suites enforce that:
 `tests/executor_contract.py` holds `InMemoryProjections` and `DjangoExecutor` to the
 same batch semantics (writes, then deletes, then retires; one `RefResolver` per
-`apply()`; collision detection before the first write), and
+`apply()`; collision detection before the first write), holds `CollectingExecutor`
+to the checking half of it (collisions, unresolved `Ref`s, the counts), and
 `tests/projection_reader_contract.py` does the same for its reader half against
 `DjangoProjectionReader` and `PreloadedProjectionReader`.
 
 It is deliberately not an ORM: exact match, `__in` and `__isnull` are the only
 lookups it understands, and there are no relations, constraints or transactions.
+
+Two differences from the database are closed: an upsert whose lookup matches more
+than one row raises `MultipleRowsMatched` (Django raises the model's
+`MultipleObjectsReturned`), and the rows a retire flips are reported in key order
+by value, so `2` comes before `10`, with NULLs last. That NULL placement is this
+executor's own rule: the database executor orders by the database, which puts
+NULLs first on SQLite and last on Postgres, so a retire over rows with a missing
+key value can flip in a different order there. Three more remain, because each
+needs to know the table's columns and it has no schema:
+
+- **A column nothing wrote.** Django reads the model's default; here the row has
+  no such attribute and a read raises `AttributeError`. Reading it as `None` would
+  be wrong for a column whose default is not null, and would hide a mistyped
+  column name, so it is left raising.
+- **Types are not coerced.** `"7"` written to an integer column stays `"7"`;
+  Django stores `7`.
+- **NOT NULL is not enforced.** Writing `None` to a required column succeeds here
+  and raises `IntegrityError` on the database.
+
+Use a throwaway database ([below](#the-using-seam)) when the answer depends on any
+of the three.
 
 ### Skipping no-op writes
 
@@ -208,13 +232,26 @@ for effect in ex.effects:
 
 Because handlers are pure, the effects a `CollectingExecutor` records are exactly
 the ones a `DjangoExecutor` would apply for the same stream and registry — so the
-dry-run count matches the real `effects_applied`. This is the primitive behind:
+dry-run count matches the real `effects_applied`. It also runs the checks the real
+write runs, so a batch the real write would reject raises here too: two effects
+writing the same column of one row raise `EffectCollisionError`, a `Ref` with no
+producer raises `UnresolvedRefError`, and a retire with an empty patch raises
+`ValueError`. This is the primitive behind:
 
 - **Migration verification** — replay a stream with a `CollectingExecutor`, diff
   the recorded effects against the rows you already have, and confirm a
   cut-over reproduces current state before you commit to it.
 - **"What will this replay do?"** — see the writes a `--from/--to` window would
   make before running it for real.
+
+### What a dry run cannot see
+
+A `CollectingExecutor` holds no rows, so two answers are the ones a write onto
+empty tables would give. Every upsert counts as created, and a retire that asked
+for a `Transition` counts as flipping one row, however many rows it matches.
+`manage.py replay --dry-run` therefore prints an `external=` figure that can be
+above or below the real run's. Diffing against the live rows
+is what answers the exact question.
 
 ## Make "no writes" enforced rather than assumed
 

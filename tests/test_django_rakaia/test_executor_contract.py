@@ -12,6 +12,8 @@ from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
 from tests.executor_contract import ExecutorContract, ExecutorSeam
 
+from .models import Alert
+
 
 @pytest.mark.django_db
 class TestDjangoExecutorContract(ExecutorContract):
@@ -21,6 +23,7 @@ class TestDjangoExecutorContract(ExecutorContract):
             executor=DjangoExecutor(),
             reader=DjangoProjectionReader(),
             model="test_django_rakaia.Alert",
+            multiple_rows_error=Alert.MultipleObjectsReturned,
         )
 
 
@@ -36,6 +39,7 @@ class TestDjangoExecutorSkipUnchangedContract(ExecutorContract):
             executor=DjangoExecutor(skip_unchanged=True),
             reader=DjangoProjectionReader(),
             model="test_django_rakaia.Alert",
+            multiple_rows_error=Alert.MultipleObjectsReturned,
         )
 
     def test_reapplying_an_identical_batch_is_reported_as_skipped(self, seam):

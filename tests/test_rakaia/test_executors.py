@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from rakaia.effects import ApplyReport, Effect, Upsert
+from rakaia.effects import ApplyReport, Effect, Retire, Transition, Upsert
 from rakaia.executors import (
     CollectingExecutor,
     InMemoryProjections,
@@ -51,6 +51,63 @@ class TestCollectingExecutor:
         assert result.effects_applied == 2
         assert [e.lookup["id"] for e in ex.effects] == [1, 2]
         assert [e.defaults["name"] for e in ex.effects] == ["a", "b"]
+
+
+def test_a_dry_run_replay_reports_the_transitions_a_retire_would_flip():
+    """`manage.py replay --dry-run` prints `len(result.external)`, so a dry run
+    that observed no flips printed a smaller number than the real run."""
+    store = StreamStore()
+    reg = HandlerRegistry()
+
+    def h(_event):
+        return Retire(
+            model_label="x.X",
+            lookup={"scope": "s", "resolved_at__isnull": True},
+            patch={"resolved_at": "now"},
+            transition=Transition(kind="resolved", key_fields=("scope",)),
+        )
+
+    reg.register("h", "s", h, 0, None)
+    seed_stream("s", [{"id": 1}], store=store)
+
+    result = replay(store, "s", CollectingExecutor(), handler_registry=reg)
+
+    assert [e.kind for e in result.external] == ["resolved"]
+
+
+def test_an_accepted_batch_is_recorded_in_order():
+    ex = CollectingExecutor()
+    batch = [_eff(1), _eff(2)]
+
+    ex.apply(batch)
+
+    assert ex.effects == batch
+
+
+def test_flipped_rows_with_no_value_for_a_key_come_last():
+    """In-memory only: databases disagree about NULLs, so the order is this
+    executor's own rule, stated and deterministic."""
+    proj = InMemoryProjections()
+    model = "x.X"
+    proj.apply(
+        [
+            Upsert(model_label=model, lookup={"k": k}, defaults={"n": n})
+            for k, n in (("a", None), ("b", 10), ("c", 2))
+        ]
+    )
+    report = proj.apply(
+        [
+            Retire(
+                model_label=model,
+                lookup={"gone__isnull": True},
+                patch={"gone": True},
+                transition=Transition(kind="gone", key_fields=("n",)),
+            )
+        ]
+    )
+
+    [(_, rows)] = report.retire_flips
+    assert [r["n"] for r in rows] == [2, 10, None]
 
 
 @pytest.mark.parametrize("n", [0, 1, 5])

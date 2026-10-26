@@ -41,10 +41,38 @@ from .effects import (
     Update,
     Upsert,
 )
+from .errors import RakaiaError
+
+
+class MultipleRowsMatched(RakaiaError):
+    """An upsert's lookup matched more than one row.
+
+    What `InMemoryProjections` raises where Django's ``update_or_create`` raises
+    the model's own ``MultipleObjectsReturned``. A lookup that names a natural
+    key matches one row; one that matches two is a bug in the handler, and
+    quietly updating the first would hide it.
+
+    A `RakaiaError`, like its siblings, so catching that around a replay sees it.
+    """
+
+    code = "multiple_rows_matched"
 
 
 class CollectingExecutor:
     """An Executor that records effects instead of applying them.
+
+    It writes nothing, but it runs the checks a real write runs, through the
+    same loop (`rakaia.applying.apply_effects`): a batch whose effects write the
+    same column of one row raises `EffectCollisionError`, a `Ref` with no
+    producer raises `UnresolvedRefError`, and a retire with an empty patch
+    raises `ValueError`. A batch that raises is not recorded. `.effects` keeps
+    the effects as emitted, `Ref`s unresolved.
+
+    The report carries what a write onto empty tables would report: every upsert
+    counts as created, and every retire that asked for a `Transition` counts as
+    flipping one row, however many rows it matches. A dry run cannot see the rows,
+    so that count can be above or below the real run's, and a flip's identity holds the retire's own exact-match values for the
+    transition's key fields (``None`` where the lookup does not pin one).
 
     Example — verify that replaying a stream reproduces existing state without
     touching the database::
@@ -59,9 +87,35 @@ class CollectingExecutor:
         self.effects: list[Effect] = []
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport:
-        self.effects.extend(effects)
-        # Records effects without applying them, so it observes no retire flips.
-        return ApplyReport()
+        batch = list(effects)
+        report = apply_effects(
+            batch,
+            upsert=_pretend_upsert,
+            update_run=_write_nothing,
+            delete=_write_nothing,
+            retire=_pretend_retire,
+        )
+        self.effects.extend(batch)
+        return report
+
+
+def _write_nothing(_effects: Any) -> None:
+    """The update and delete writes of a dry run."""
+
+
+def _pretend_upsert(eff: Upsert) -> tuple[UpsertOutcome, RowAccessor]:
+    """An upsert onto an empty table: the row is created, and a `Ref` to it
+    reads back what the upsert itself wrote (``None`` for anything else)."""
+    written = {**eff.lookup, **(eff.defaults or {})}
+    return "created", lambda field: written.get(field)
+
+
+def _pretend_retire(eff: Retire) -> list[dict[str, Any]]:
+    if not eff.patch:
+        raise ValueError("retire effect requires a non-empty patch")
+    if eff.transition is None:
+        return []
+    return [{c: eff.lookup.get(c) for c in eff.transition.key_fields}]
 
 
 class RecordingExecutor:
@@ -93,6 +147,27 @@ class RecordingExecutor:
         batch = list(effects)
         self.effects.extend(batch)
         return self.inner.apply(batch)
+
+
+def _in_database_order(
+    identities: list[dict[str, Any]], cols: list[str]
+) -> list[dict[str, Any]]:
+    """Sort identities as ``ORDER BY cols`` does: by value, so 2 comes before 10.
+
+    NULLs go last. That is this executor's own rule, chosen so the order is the
+    same everywhere; databases differ (SQLite puts them first). A column mixing
+    types, which a real column cannot, falls back to comparing text.
+    """
+
+    def by_value(identity: dict[str, Any]) -> tuple[Any, ...]:
+        return tuple((identity[c] is None, identity[c]) for c in cols)
+
+    try:
+        return sorted(identities, key=by_value)
+    except TypeError:
+        return sorted(
+            identities, key=lambda i: tuple((i[c] is None, str(i[c])) for c in cols)
+        )
 
 
 class InMemoryProjections:
@@ -181,6 +256,10 @@ class InMemoryProjections:
         label = eff.model_label
         lookup = eff.lookup
         existing = self._find(label, lookup)
+        if len(existing) > 1:
+            raise MultipleRowsMatched(
+                f"{label} upsert lookup {lookup} matched {len(existing)} rows"
+            )
         if existing:
             row = existing[0]
             row.update(eff.defaults or {})
@@ -234,9 +313,8 @@ class InMemoryProjections:
         flipped: list[dict[str, Any]] = []
         if eff.transition is not None:
             cols = list(eff.transition.key_fields)
-            flipped = sorted(
-                ({c: r.get(c) for c in cols} for r in targets),
-                key=lambda identity: tuple(str(identity[c]) for c in cols),
+            flipped = _in_database_order(
+                [{c: r.get(c) for c in cols} for r in targets], cols
             )
         for row in targets:
             row.update(eff.patch)
@@ -245,7 +323,10 @@ class InMemoryProjections:
     # -- the ProjectionReader protocol --------------------------------------
 
     def get(self, model_label: str, /, **lookup: Any) -> Any | None:
-        """The single row matching `lookup`, or None (never raises on absence)."""
+        """The first row matching `lookup` in pk order, or None (never raises on absence).
+
+        When several match the first is returned; an upsert raises instead.
+        """
         found = self._find(model_label, lookup)
         return SimpleNamespace(**found[0]) if found else None
 

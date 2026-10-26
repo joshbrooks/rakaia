@@ -12,7 +12,8 @@ generated: { by: claude-code/opus-4-8, at: 2026-07-28T00:00:00Z }
 Handlers return `Effect`s — pure data, not I/O — and a separate `Executor`
 applies them. This makes replay idempotent (re-applying an upsert converges) and
 handlers trivially testable. A `CollectingExecutor` records effects instead of
-applying them: the basis for dry-run and migration verification. Symbolic `Ref`s
+applying them, after running the checks a real write runs (collision, unresolved
+`Ref`): the basis for dry-run and migration verification. Symbolic `Ref`s
 let one effect bind to a sibling effect's generated primary key within a batch,
 and `check_disjoint_defaults` enforces the invariant that lets several owners
 compose one row safely.
@@ -38,7 +39,8 @@ Imported from `rakaia`:
   write the same column of the same row (the multi-owner guard).
 * `Executor` protocol; `CollectingExecutor` (dry-run); `RecordingExecutor`
   (wraps any executor, applies through it and keeps what it handed on — what a
-  rebuild gate diffs).
+  rebuild gate diffs); `InMemoryProjections` (dict-backed executor and reader; raises
+  `MultipleRowsMatched` where Django raises `MultipleObjectsReturned`).
 * Django: `DjangoExecutor` (applies to the ORM, resolves `Ref`s);
   `diff_effects_against_rows` (verify replay reproduces existing rows).
 

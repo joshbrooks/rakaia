@@ -1,5 +1,13 @@
 # Directory Update Log
 
+## 2026-10-27
+
+* **Update**: [Effects & executors](concepts/effects-and-executors.md) — `CollectingExecutor`
+  runs the same collision and `Ref` checks as a real write and reports upsert and retire-flip
+  counts as a write onto empty tables would. `InMemoryProjections` raises `MultipleRowsMatched`
+  for an upsert lookup matching several rows and orders flipped rows by value; `MultipleRowsMatched` is a `RakaiaError` with reason code
+  `multiple_rows_matched`.
+
 ## 2026-10-14
 
 * **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) and
