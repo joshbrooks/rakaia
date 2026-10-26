@@ -1019,6 +1019,34 @@ def _closed_control(offset: str) -> bytes:
     return _build_sse_control(offset, offset, True, True, None, CursorOptions())
 
 
+async def _run_until_disconnect_or_deadline(
+    work: Any, receive: Receive, max_seconds: float | None
+) -> None:
+    """Run `work`, but stop it if the client hangs up or the deadline passes.
+
+    ASGI only reports a dropped client through `receive`, so a handler that
+    never reads it keeps polling the store for a socket that is gone. Whichever
+    of the three finishes first wins and the others are cancelled.
+    """
+
+    async def until_disconnect() -> None:
+        while (await receive()).get("type") != "http.disconnect":
+            pass
+
+    task = asyncio.ensure_future(work)
+    watcher = asyncio.ensure_future(until_disconnect())
+    try:
+        await asyncio.wait(
+            {task, watcher}, timeout=max_seconds, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        for pending in (task, watcher):
+            pending.cancel()
+        await asyncio.gather(task, watcher, return_exceptions=True)
+    if task.done() and not task.cancelled():
+        task.result()  # re-raise what the work raised
+
+
 async def _handle_sse(
     path: str,
     stream: Any,
@@ -1026,13 +1054,18 @@ async def _handle_sse(
     cursor: str | None,
     use_base64: bool,
     _scope: Scope,
-    _receive: Receive,
+    receive: Receive,
     send: Send,
     store: StreamServerStore,
     opts: ServerOptions,
     cors: dict[str, str],
 ) -> None:
-    """Handle SSE (Server-Sent Events) mode."""
+    """Handle SSE (Server-Sent Events) mode.
+
+    Ends when the stream is closed at its tail, when the client disconnects
+    (the polling stops with it), or after `ServerOptions.sse_max_seconds` so the
+    client reconnects from its last offset (spec §5.8, §8.2).
+    """
     sse_headers: dict[str, str] = {
         **cors,
         "content-type": "text/event-stream",
@@ -1055,120 +1088,128 @@ async def _handle_sse(
 
     await start_streaming_response(send, 200, sse_headers)
 
-    current_offset = initial_offset
-    is_json_stream = is_json_content_type(stream.content_type)
+    async def pump() -> None:
+        nonlocal pending_read
+        current_offset = initial_offset
+        is_json_stream = is_json_content_type(stream.content_type)
 
-    while True:
-        # Read messages from offset
-        if pending_read is not None:
-            messages, up_to_date = pending_read
-            pending_read = None
-        else:
-            try:
-                # A page cut short comes back with `up_to_date` false, and the
-                # loop reads the next one straight away instead of waiting.
-                messages, up_to_date = await store.run_sync(
-                    store.read, path, current_offset, limit=opts.read_page_size
-                )
-            except (KeyError, StreamError):
+        while True:
+            # Read messages from offset
+            if pending_read is not None:
+                messages, up_to_date = pending_read
+                pending_read = None
+            else:
+                try:
+                    # A page cut short comes back with `up_to_date` false, and the
+                    # loop reads the next one straight away instead of waiting.
+                    messages, up_to_date = await store.run_sync(
+                        store.read, path, current_offset, limit=opts.read_page_size
+                    )
+                except (KeyError, StreamError):
+                    break
+
+            current_stream = await store.run_sync(store.get, path)
+            if current_stream is None:
                 break
 
-        current_stream = await store.run_sync(store.get, path)
-        if current_stream is None:
-            break
+            tail_offset = current_stream.current_offset
+            stream_is_closed = current_stream.closed
+            cursor_opts = opts.cursor_options
 
-        tail_offset = current_stream.current_offset
-        stream_is_closed = current_stream.closed
-        cursor_opts = opts.cursor_options
+            buffer = b""
 
-        buffer = b""
+            if messages:
+                # Pair every data event with its own control event so consumers can
+                # rely on a strict data -> control framing during catch-up.
+                for message in messages:
+                    if use_base64:
+                        data_payload = base64.b64encode(message.data).decode()
+                    elif is_json_stream:
+                        data_payload = format_json_response([message.data]).decode(
+                            "utf-8"
+                        )
+                    else:
+                        data_payload = message.data.decode("utf-8")
 
-        if messages:
-            # Pair every data event with its own control event so consumers can
-            # rely on a strict data -> control framing during catch-up.
-            for message in messages:
-                if use_base64:
-                    data_payload = base64.b64encode(message.data).decode()
-                elif is_json_stream:
-                    data_payload = format_json_response([message.data]).decode("utf-8")
-                else:
-                    data_payload = message.data.decode("utf-8")
+                    sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
+                    buffer += sse_data.encode("utf-8")
+                    buffer += _build_sse_control(
+                        message.offset,
+                        tail_offset,
+                        stream_is_closed,
+                        up_to_date,
+                        cursor,
+                        cursor_opts,
+                    )
+                    current_offset = message.offset
 
-                sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
-                buffer += sse_data.encode("utf-8")
+                control_offset = messages[-1].offset
+            else:
+                # Caught up with nothing new: emit a single control event.
+                control_offset = tail_offset
                 buffer += _build_sse_control(
-                    message.offset,
+                    control_offset,
                     tail_offset,
                     stream_is_closed,
                     up_to_date,
                     cursor,
                     cursor_opts,
                 )
-                current_offset = message.offset
 
-            control_offset = messages[-1].offset
-        else:
-            # Caught up with nothing new: emit a single control event.
-            control_offset = tail_offset
-            buffer += _build_sse_control(
-                control_offset,
-                tail_offset,
-                stream_is_closed,
-                up_to_date,
-                cursor,
-                cursor_opts,
-            )
+            await send_body_chunk(send, buffer)
 
-        await send_body_chunk(send, buffer)
-
-        # End the connection once there can be nothing more: a closed stream at
-        # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
-        if stream_ended(closed=stream_is_closed, at_tail=control_offset == tail_offset):
-            break
-
-        current_offset = control_offset
-
-        # Wait for new data if caught up
-        if up_to_date:
-            if current_stream.closed:
-                # Send final control
-                await send_body_chunk(send, _closed_control(current_offset))
+            # End the connection once there can be nothing more: a closed stream at
+            # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
+            if stream_ended(
+                closed=stream_is_closed, at_tail=control_offset == tail_offset
+            ):
                 break
 
-            try:
-                (
-                    _wait_messages,
-                    timed_out,
-                    stream_closed,
-                ) = await _wait_for_messages(
-                    store, path, current_offset, opts.long_poll_timeout
-                )
-            except (KeyError, StreamError):
-                break
+            current_offset = control_offset
 
-            if stream_closed:
-                await send_body_chunk(send, _closed_control(current_offset))
-                break
-
-            if timed_out:
-                # Keep-alive control event
-                stream_after = await store.run_sync(store.get, path)
-                if stream_after and stream_after.closed:
+            # Wait for new data if caught up
+            if up_to_date:
+                if current_stream.closed:
+                    # Send final control
                     await send_body_chunk(send, _closed_control(current_offset))
                     break
 
-                await send_body_chunk(
-                    send,
-                    _build_sse_control(
-                        current_offset,
-                        current_offset,
-                        False,
-                        True,
-                        cursor,
-                        opts.cursor_options,
-                    ),
-                )
-            # Loop continues to read new messages
+                try:
+                    (
+                        _wait_messages,
+                        timed_out,
+                        stream_closed,
+                    ) = await _wait_for_messages(
+                        store, path, current_offset, opts.long_poll_timeout
+                    )
+                except (KeyError, StreamError):
+                    break
+
+                if stream_closed:
+                    await send_body_chunk(send, _closed_control(current_offset))
+                    break
+
+                if timed_out:
+                    # Keep-alive control event
+                    stream_after = await store.run_sync(store.get, path)
+                    if stream_after and stream_after.closed:
+                        await send_body_chunk(send, _closed_control(current_offset))
+                        break
+
+                    await send_body_chunk(
+                        send,
+                        _build_sse_control(
+                            current_offset,
+                            current_offset,
+                            False,
+                            True,
+                            cursor,
+                            opts.cursor_options,
+                        ),
+                    )
+                # Loop continues to read new messages
+
+    await _run_until_disconnect_or_deadline(pump(), receive, opts.sse_max_seconds)
 
     # End the SSE connection
     await send_body_chunk(send, b"", more_body=False)

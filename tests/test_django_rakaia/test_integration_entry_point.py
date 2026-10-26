@@ -15,6 +15,7 @@ threaded through rather than dropped.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
@@ -177,3 +178,16 @@ class TestSettingsReachTheServer:
             options = await client.options("/s")
         assert put.status_code == 201
         assert options.headers["access-control-allow-origin"] == "*"
+
+    async def test_sse_max_seconds_setting_ends_a_live_connection(
+        self, settings, given_store: StreamStore
+    ) -> None:
+        settings.RAKAIA_SSE_MAX_SECONDS = 0.2
+        async with _client(get_asgi_app(store=given_store)) as client:
+            await client.put("/s", headers=JSON)
+            started = time.monotonic()
+            response = await asyncio.wait_for(
+                client.get("/s?offset=-1&live=sse"), timeout=5
+            )
+        assert response.status_code == 200
+        assert time.monotonic() - started < 3
