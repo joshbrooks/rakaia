@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from channels.layers import get_channel_layer
+from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseBadRequest, StreamingHttpResponse
 from django.views.decorators.http import require_GET
 
@@ -20,6 +21,7 @@ from .models import StreamEntry
 from .offsets import parse_offset
 
 
+@login_required
 @require_GET
 async def stream_events_sse(_request: Any, stream_id: str) -> Any:
     """SSE endpoint for real-time stream event updates via channel layer.
