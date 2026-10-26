@@ -16,6 +16,32 @@ Receive = Any  # Callable that returns ASGI events
 Send = Any  # Callable that accepts ASGI events
 
 
+class BodyTooLarge(Exception):
+    """The request body went past the configured maximum."""
+
+
+def limit_body(receive: Receive, max_bytes: int | None) -> Receive:
+    """Wrap `receive` so reading more than `max_bytes` of body raises `BodyTooLarge`.
+
+    Counts as the chunks arrive, so an oversize body is refused after the first
+    chunk that crosses the line instead of after the whole body is in memory.
+    `None` leaves `receive` alone.
+    """
+    if max_bytes is None:
+        return receive
+    seen = 0
+
+    async def limited() -> Any:
+        nonlocal seen
+        message = await receive()
+        seen += len(message.get("body", b""))
+        if seen > max_bytes:
+            raise BodyTooLarge(f"request body is over {max_bytes} bytes")
+        return message
+
+    return limited
+
+
 async def read_body(receive: Receive) -> bytes:
     """Read the full request body from an ASGI receive callable."""
     body = b""

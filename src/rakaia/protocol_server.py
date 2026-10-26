@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from ._asgi import (
+    BodyTooLarge,
     Receive,
     Scope,
     Send,
@@ -27,6 +30,7 @@ from ._asgi import (
     get_path,
     get_query_param,
     get_query_string,
+    limit_body,
     read_body,
     send_body_chunk,
     send_response,
@@ -290,6 +294,15 @@ def _fault_injection_enabled_by_env() -> bool:
 DEFAULT_READ_PAGE_SIZE = 1000
 """The default for `ServerOptions.read_page_size`, in messages."""
 
+DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+"""The default for `ServerOptions.max_body_bytes`: 8 MiB."""
+
+DEFAULT_SSE_MAX_SECONDS = 60.0
+"""The default for `ServerOptions.sse_max_seconds`: spec §5.8 asks for about 60."""
+
+Authorize = Callable[[Scope, str], Any]
+"""What `ServerOptions.authorize` is: called with the ASGI scope and the action."""
+
 
 @dataclass
 class ServerOptions:
@@ -333,6 +346,45 @@ class ServerOptions:
     ``RAKAIA_READ_PAGE_SIZE`` setting.
     """
 
+    max_body_bytes: int | None = DEFAULT_MAX_BODY_BYTES
+    """The most request body bytes a create or append may carry.
+
+    Past it the server answers ``413`` (spec §5.2) and stops reading, rather
+    than holding the whole body in memory. ``None`` turns the limit off. The
+    Django entry point sets this from the ``RAKAIA_MAX_BODY_BYTES`` setting.
+    """
+
+    allowed_origins: tuple[str, ...] = ("*",)
+    """Origins a browser may call this server from, for CORS.
+
+    ``("*",)`` allows every origin and is the default so a demo page on another
+    port works. Otherwise a request whose ``Origin`` is listed is answered with
+    that origin and ``Vary: Origin``, and any other gets no allow-origin header,
+    so the browser refuses to hand the response to the page. The Django entry
+    point sets this from ``RAKAIA_ALLOWED_ORIGINS``.
+    """
+
+    authorize: Authorize | None = None
+    """Decides whether a request may proceed; ``None`` allows everything.
+
+    Called with the ASGI scope (method, path, headers) and the action:
+    ``"create"``, ``"append"``, ``"read"`` (GET and HEAD) or ``"delete"``. It may
+    be a plain function or a coroutine function. Return ``None`` or ``True`` to
+    allow; ``False`` answers ``403``; an ``int`` answers that status; a
+    ``(status, body_bytes)`` tuple answers both. Anything else is refused with
+    ``403``, so a mistake in the hook fails closed. CORS preflight (``OPTIONS``)
+    is never passed to it, because browsers send no credentials with one. The
+    Django entry point sets this from ``RAKAIA_AUTHORIZE``.
+    """
+
+    sse_max_seconds: float | None = DEFAULT_SSE_MAX_SECONDS
+    """How long an SSE connection stays open before the server ends it.
+
+    The client reconnects from the last offset it saw (spec §5.8, §8.2), which
+    also lets the server shed connections it can no longer see are dead.
+    ``None`` never ends one on a timer.
+    """
+
     def __post_init__(self) -> None:
         # Checked here rather than on first read: a page size taken from an
         # environment variable arrives as a string, and would otherwise fail
@@ -346,6 +398,66 @@ class ServerOptions:
             raise ValueError(
                 f"read_page_size must be None or an int >= 1, got {size!r}"
             )
+        limit = self.max_body_bytes
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+        ):
+            raise ValueError(
+                f"max_body_bytes must be None or an int >= 0, got {limit!r}"
+            )
+        if isinstance(self.allowed_origins, str):
+            raise ValueError(
+                "allowed_origins must be a list of origins, not one string"
+            )
+        self.allowed_origins = tuple(self.allowed_origins)
+
+
+def _allow_origin_headers(
+    allowed: tuple[str, ...], origin: str | None
+) -> dict[str, str]:
+    """The CORS header that says which origin may read the response."""
+    if "*" in allowed:
+        return {"access-control-allow-origin": "*"}
+    # A per-origin answer differs by request, so caches must key on it.
+    headers = {"vary": "Origin"}
+    if origin is not None and origin in allowed:
+        headers["access-control-allow-origin"] = origin
+    return headers
+
+
+_ACTION_FOR_METHOD = {
+    "PUT": "create",
+    "POST": "append",
+    "GET": "read",
+    "HEAD": "read",
+    "DELETE": "delete",
+}
+
+
+async def _denied_by_hook(
+    authorize: Authorize | None, scope: Scope, method: str
+) -> tuple[int, bytes] | None:
+    """Ask the integrator's hook; return the response to send, or None to proceed."""
+    action = _ACTION_FOR_METHOD.get(method)
+    if authorize is None or action is None:
+        return None
+    verdict = authorize(scope, action)
+    if inspect.isawaitable(verdict):
+        verdict = await verdict
+    if verdict is None or verdict is True:
+        return None
+    if verdict is False:
+        return 403, b"Forbidden"
+    if isinstance(verdict, int):
+        return verdict, b"Not allowed"
+    if (
+        isinstance(verdict, tuple)
+        and len(verdict) == 2
+        and isinstance(verdict[0], int)
+        and isinstance(verdict[1], bytes)
+    ):
+        return verdict
+    return 403, b"Forbidden"
 
 
 def create_app(
@@ -376,7 +488,7 @@ def create_app(
 
         # CORS headers (applied to all responses via wrapper)
         cors_headers = {
-            "access-control-allow-origin": "*",
+            **_allow_origin_headers(opts.allowed_origins, get_header(scope, "origin")),
             "access-control-allow-methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS",
             "access-control-allow-headers": (
                 "content-type, authorization, If-None-Match, Stream-Seq, "
@@ -397,6 +509,16 @@ def create_app(
         if method == "OPTIONS":
             await send_response(send, 204, cors_headers)
             return
+
+        # Access control. After the preflight (browsers send no credentials with
+        # one) and before anything reads or consumes state.
+        denied = await _denied_by_hook(opts.authorize, scope, method)
+        if denied is not None:
+            await _send_error(send, denied[0], denied[1], cors_headers)
+            return
+
+        # Every handler reads the body through this, so none can go past the cap.
+        receive = limit_body(receive, opts.max_body_bytes)
 
         # Handle test control endpoints. Gated off by default: when disabled the
         # path is not routed at all, so it 404s like any other unknown path.
@@ -436,6 +558,8 @@ def create_app(
                 await _handle_delete(path, send, actual_store, cors_headers)
             else:
                 await _send_error(send, 405, b"Method not allowed", cors_headers)
+        except BodyTooLarge:
+            await _send_error(send, 413, b"Request body too large", cors_headers)
         except StreamError as e:
             mapped = _status_for(e)
             if mapped is None:

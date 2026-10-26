@@ -14,6 +14,8 @@ What is left here is wiring coverage, which genuinely does need the round trip.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from rakaia import create_app
@@ -26,6 +28,7 @@ def asgi_client(
     *,
     long_poll_timeout: float | None = None,
     enable_fault_injection: bool | None = None,
+    **options_overrides: Any,
 ) -> httpx.AsyncClient:
     """An `httpx` client driving `create_app` over the given store in-process.
 
@@ -33,13 +36,16 @@ def asgi_client(
     on a long poll or an SSE keep-alive would otherwise pay the default. Both
     options are `None` unless a test says otherwise, so an omitted one keeps
     whatever `ServerOptions` derives — `enable_fault_injection` reads the
-    environment, and forcing it here would hide that.
+    environment, and forcing it here would hide that. Any other `ServerOptions`
+    field can be passed by name.
     """
     options = ServerOptions()
     if long_poll_timeout is not None:
         options.long_poll_timeout = long_poll_timeout
     if enable_fault_injection is not None:
         options.enable_fault_injection = enable_fault_injection
+    for name, value in options_overrides.items():
+        setattr(options, name, value)
     app = create_app(store=store, options=options)
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

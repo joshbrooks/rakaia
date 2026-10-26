@@ -124,3 +124,56 @@ class TestOptionsAreThreadedThrough:
         # Generous against the 0.05s asked for, decisive against the 3.0s
         # default a dropped `options` would fall back to.
         assert elapsed < 1.0, f"long poll waited {elapsed:.2f}s; option not applied"
+
+
+def deny_everything(scope, action):  # noqa: ARG001 - the hook's fixed signature
+    return 403
+
+
+class TestSettingsReachTheServer:
+    """Each protocol-server option has a `RAKAIA_` setting; the mount must read it."""
+
+    async def test_max_body_bytes_setting_gives_a_413(
+        self, settings, given_store: StreamStore
+    ) -> None:
+        settings.RAKAIA_MAX_BODY_BYTES = 10
+        async with _client(get_asgi_app(store=given_store)) as client:
+            await client.put("/s", headers=JSON)
+            big = await client.post("/s", content=b'"' + b"x" * 50 + b'"', headers=JSON)
+            small = await client.post("/s", content=b'"ok"', headers=JSON)
+        assert (big.status_code, small.status_code) == (413, 204)
+
+    async def test_authorize_setting_as_a_dotted_path(
+        self, settings, given_store: StreamStore
+    ) -> None:
+        settings.RAKAIA_AUTHORIZE = f"{__name__}.deny_everything"
+        async with _client(get_asgi_app(store=given_store)) as client:
+            response = await client.put("/s", headers=JSON)
+        assert response.status_code == 403
+
+    async def test_authorize_setting_as_a_callable(
+        self, settings, given_store: StreamStore
+    ) -> None:
+        settings.RAKAIA_AUTHORIZE = deny_everything
+        async with _client(get_asgi_app(store=given_store)) as client:
+            response = await client.get("/s?offset=-1")
+        assert response.status_code == 403
+
+    async def test_allowed_origins_setting(
+        self, settings, given_store: StreamStore
+    ) -> None:
+        settings.RAKAIA_ALLOWED_ORIGINS = ["https://app.test"]
+        async with _client(get_asgi_app(store=given_store)) as client:
+            ok = await client.options("/s", headers={"origin": "https://app.test"})
+            other = await client.options("/s", headers={"origin": "https://x.test"})
+        assert ok.headers["access-control-allow-origin"] == "https://app.test"
+        assert "access-control-allow-origin" not in other.headers
+
+    async def test_settings_left_alone_keep_the_defaults(
+        self, given_store: StreamStore
+    ) -> None:
+        async with _client(get_asgi_app(store=given_store)) as client:
+            put = await client.put("/s", headers=JSON)
+            options = await client.options("/s")
+        assert put.status_code == 201
+        assert options.headers["access-control-allow-origin"] == "*"
