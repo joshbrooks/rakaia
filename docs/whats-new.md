@@ -412,6 +412,9 @@ adopting it is a deletion, not a rewrite.
 Its sibling `fold_events` runs a batch of events through your handlers *now*,
 via a throwaway in-memory stream, so write-time projection and rebuild-time
 projection run the same code rather than two implementations that can disagree.
+Pass `start_seq=` (required) the number of events the stream already holds,
+so the fold picks the handler version a rebuild would; the tests in
+`tests/test_django_rakaia/test_envelope.py` prove the two agree.
 
 Underneath both is `rakaia.seed_stream`, which is the same idea one tier down:
 getting a handful of events into a stream, without Django in the picture.

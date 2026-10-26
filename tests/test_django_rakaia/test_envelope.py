@@ -168,6 +168,7 @@ class TestFoldEvents:
         fold_events(
             [{"id": "a", "suku": "one"}, {"id": "b", "suku": "two"}],
             _registry(),
+            start_seq=0,
         )
         assert FinanceLine.objects.count() == 2
         assert FinanceLine.objects.get(submission_id="a").suku == "one"
@@ -177,6 +178,7 @@ class TestFoldEvents:
         fold_events(
             [{"id": "a", "suku": "first"}, {"id": "a", "suku": "second"}],
             _registry(),
+            start_seq=0,
         )
         assert FinanceLine.objects.get(submission_id="a").suku == "second"
 
@@ -186,28 +188,30 @@ class TestFoldEvents:
         from django_rakaia.models import StreamEvent
 
         before = StreamEvent.objects.count()
-        fold_events([{"id": "a", "suku": "one"}], _registry())
+        fold_events([{"id": "a", "suku": "one"}], _registry(), start_seq=0)
         assert StreamEvent.objects.count() == before
 
     def test_an_explicit_executor_is_used(self):
         from rakaia.executors import CollectingExecutor
 
         executor = CollectingExecutor()
-        fold_events([{"id": "a", "suku": "one"}], _registry(), executor=executor)
+        fold_events(
+            [{"id": "a", "suku": "one"}], _registry(), executor=executor, start_seq=0
+        )
 
         assert len(executor.effects) == 1
         assert FinanceLine.objects.count() == 0  # dry run wrote nothing
 
     def test_an_empty_batch_is_a_no_op(self):
-        fold_events([], _registry())
+        fold_events([], _registry(), start_seq=0)
         assert FinanceLine.objects.count() == 0
 
     def test_successive_folds_do_not_leak_into_each_other(self):
         """Each call gets a fresh scratch store, so event 1 is not replayed
         again by the second call."""
         registry = _registry()
-        fold_events([{"id": "a", "suku": "one"}], registry)
-        fold_events([{"id": "b", "suku": "two"}], registry)
+        fold_events([{"id": "a", "suku": "one"}], registry, start_seq=0)
+        fold_events([{"id": "b", "suku": "two"}], registry, start_seq=0)
         assert FinanceLine.objects.count() == 2
 
     def test_a_reader_is_forwarded_for_staged_folds(self):
@@ -216,6 +220,7 @@ class TestFoldEvents:
             _registry(),
             reader=DjangoProjectionReader(),
             executor=DjangoExecutor(),
+            start_seq=0,
         )
         assert FinanceLine.objects.count() == 1
 
@@ -237,7 +242,12 @@ class TestTheScratchPathIsRakaiasOwnNamespace:
         registry.register(
             name="finance", event_match="my/own/path", fn=_handler, effective_from=0
         )
-        fold_events([{"id": "a", "suku": "one"}], registry, scratch_path="my/own/path")
+        fold_events(
+            [{"id": "a", "suku": "one"}],
+            registry,
+            scratch_path="my/own/path",
+            start_seq=0,
+        )
         assert FinanceLine.objects.count() == 1
 
     def test_a_registry_matching_a_different_path_projects_nothing(self):
@@ -250,5 +260,64 @@ class TestTheScratchPathIsRakaiasOwnNamespace:
             fn=_handler,
             effective_from=0,
         )
-        fold_events([{"id": "a", "suku": "one"}], registry)
+        fold_events([{"id": "a", "suku": "one"}], registry, start_seq=0)
         assert FinanceLine.objects.count() == 0
+
+
+def _handler_v1(event):
+    return Upsert(
+        model_label="test_django_rakaia.FinanceLine",
+        lookup={"submission_id": event["id"]},
+        defaults={"suku": "v1"},
+    )
+
+
+def _handler_v2(event):
+    return Upsert(
+        model_label="test_django_rakaia.FinanceLine",
+        lookup={"submission_id": event["id"]},
+        defaults={"suku": "v2"},
+    )
+
+
+class TestFoldNumbersEventsFromTheRealStream:
+    """#344: a handler version is chosen by position in the entity stream, so a
+    live fold must number its events the way a rebuild will."""
+
+    def _versioned(self) -> HandlerRegistry:
+        registry = HandlerRegistry()
+        registry.register("finance", SCRATCH_PATH, _handler_v1, 0, 3)
+        registry.register("finance", SCRATCH_PATH, _handler_v2, 3, None)
+        return registry
+
+    def test_event_four_gets_the_same_version_live_and_on_rebuild(self):
+        from rakaia import replay
+
+        registry = self._versioned()
+        store = StreamStore()
+        for n in range(5):
+            append_event(store, SCRATCH_PATH, {"id": f"e{n}"}, label="x")
+        replay(store, SCRATCH_PATH, DjangoExecutor(), handler_registry=registry)
+        rebuilt = FinanceLine.objects.get(submission_id="e4").suku
+        FinanceLine.objects.all().delete()
+
+        fold_events([{"id": "e4"}], registry, start_seq=4)
+
+        assert rebuilt == "v2"
+        assert FinanceLine.objects.get(submission_id="e4").suku == rebuilt
+
+    def test_each_event_in_a_batch_is_numbered_in_turn(self):
+        fold_events([{"id": "e2"}, {"id": "e3"}], self._versioned(), start_seq=2)
+
+        assert FinanceLine.objects.get(submission_id="e2").suku == "v1"
+        assert FinanceLine.objects.get(submission_id="e3").suku == "v2"
+
+    def test_a_wrong_position_picks_the_wrong_version(self):
+        """The position is what chooses the handler, so it must be the real one."""
+        fold_events([{"id": "e4"}], self._versioned(), start_seq=0)
+
+        assert FinanceLine.objects.get(submission_id="e4").suku == "v1"
+
+    def test_the_position_is_required(self):
+        with pytest.raises(TypeError, match="start_seq"):
+            fold_events([{"id": "e4"}], self._versioned())  # type: ignore[call-arg]
