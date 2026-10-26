@@ -203,6 +203,11 @@ No example exercises these yet — a good place to contribute a demo:
   database (a column nothing wrote, type coercion, NOT NULL). The demos dry-run
   without tripping a check, and none shows one failing, or a case where the
   in-memory rows and the database differ.
+
+- `ServerOptions(authorize=..., allowed_origins=..., max_body_bytes=...,
+  sse_max_seconds=...)` and their `RAKAIA_` settings. Every example that serves the
+  protocol runs open, which is the default; the tests in `whats-new.md` section 33
+  are the only cover.
 - `RAKAIA_PERMANENT_STREAMS` and the `permanent=True` argument on
   `StreamStore` and `JsonlStreamStore`, its three refusals (`ExpiryNotAllowed`, and
   `DeleteNotAllowed` for both a client's `DELETE` and a Python `delete()` without

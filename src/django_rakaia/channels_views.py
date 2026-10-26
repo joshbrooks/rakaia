@@ -21,7 +21,9 @@ from .models import StreamEntry
 from .offsets import parse_offset
 
 
-@login_required
+# django-stubs types `login_required` for sync views only; Django 5+ also accepts
+# an async view, awaiting `request.auser()` for it.
+@login_required  # pyright: ignore[reportCallIssue, reportArgumentType]
 @require_GET
 async def stream_events_sse(_request: Any, stream_id: str) -> Any:
     """SSE endpoint for real-time stream event updates via channel layer.

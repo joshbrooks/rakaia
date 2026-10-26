@@ -9,6 +9,18 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **Access control on the protocol server.** `ServerOptions.authorize` is a hook,
+  called with the ASGI scope and the action (`create`, `append`, `read`, `delete`),
+  that allows a request or answers `401`/`403`; `ServerOptions.allowed_origins`
+  narrows CORS from `*`. Under Django they are `RAKAIA_AUTHORIZE` and
+  `RAKAIA_ALLOWED_ORIGINS`. Both default to open, so set them in production.
+- **A request body limit.** A create or append over `ServerOptions.max_body_bytes`
+  (`RAKAIA_MAX_BODY_BYTES`, 8 MiB) is refused with `413` without reading the rest.
+- **`ServerOptions.sse_max_seconds`** (`RAKAIA_SSE_MAX_SECONDS`, 60) closes every
+  live SSE connection on a timer, as the protocol asks, so clients reconnect.
+
 ### Changed
 
 - **A dry run runs the checks a real write runs.** `CollectingExecutor` raises
@@ -34,6 +46,11 @@ runnable demo for each.
   the real stream**, so a live fold picks the same handler version a rebuild does
   once the stream is past a version boundary. It used to number every batch from
   0. See `UPGRADING.md`.
+- **Live SSE connections ended only when the stream did.** The handler never
+  noticed a client leaving, so it kept querying the store for a closed socket and
+  a server asked to stop would not. It now stops with the client.
+- **The dashboard's live event feed needed no login.** It now redirects an
+  anonymous visitor to the login page like the other dashboard views.
 
 ## [0.9.0] - 2026-10-14
 

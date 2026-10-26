@@ -35,6 +35,11 @@ Imported from `rakaia`:
   status)`; `PollStatus` is one of `fresh` / `advanced` / `caught_up` / `rewound`
   / `absent`.
 * CDN cursors: `calculate_cursor`, `generate_response_cursor`, `CursorOptions`.
+* `ServerOptions(authorize=…, allowed_origins=…, max_body_bytes=…, sse_max_seconds=…)` —
+  a `(scope, action)` access hook (default allows all), the CORS origin list (default
+  `*`), the body limit that answers `413` (default 8 MiB), and the timer after which
+  a live SSE connection is closed (default 60 s). An SSE handler also ends when the
+  client disconnects.
 * `ServerOptions(read_page_size=…)` — the most messages one catch-up read answers
   with, a thousand by default and `None` to turn paging off. A page that stops
   short omits `Stream-Up-To-Date` and points `Stream-Next-Offset` at its last
