@@ -291,7 +291,7 @@ subscribe to those groups:
 
 | URL                                            | Purpose                              |
 |------------------------------------------------|--------------------------------------|
-| `/streams/api/streams/<stream_id>/sse/`        | Live events for one stream.          |
+| `/streams/api/streams/<stream_id>/sse/`        | Live events for one stream. Needs a signed-in user, like every dashboard page. |
 
 Consume them from JavaScript:
 
@@ -350,6 +350,56 @@ stops short leaves out `Stream-Up-To-Date` and sets `Stream-Next-Offset` to its
 last message, so a client that follows the protocol reads on from there without
 knowing a page size exists. The setting is read when `get_asgi_app()` is called
 without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
+
+### Protect the protocol app
+
+> **Warning.** The mount above bypasses Django's middleware, so sessions,
+> `request.user` and `login_required` do not apply to it. Out of the box anyone who
+> can reach the URL can create, append to, read and delete any stream, from any
+> website. Before you expose it, set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS`.
+
+`RAKAIA_AUTHORIZE` is a function (or its dotted path) called with the ASGI scope
+and the action — `"create"`, `"append"`, `"read"` or `"delete"` — before the
+request does anything. Return `None` to allow it, or a status from 400 to 599, such as `401` or
+`403`, to refuse it (anything else is treated as a mistake and gives `403`); `(status, b"message")` sets the body too. It may be `async`.
+A browser's CORS preflight is never passed to it.
+
+```python
+# settings.py
+RAKAIA_AUTHORIZE = "myproject.access.authorize"
+RAKAIA_ALLOWED_ORIGINS = ["https://app.example.org"]  # default is ["*"]
+
+# myproject/access.py
+from django.conf import settings
+
+
+def authorize(scope, action):
+    # A token: scope["headers"] is a list of (bytes, bytes) pairs.
+    token = dict(scope["headers"]).get(b"authorization")
+    if token == f"Bearer {settings.PROTOCOL_TOKEN}".encode():
+        return None
+    # Or, for a browser session, wrap the app in Channels' AuthMiddlewareStack
+    # in asgi.py (below) and read the user it puts in the scope.
+    user = scope.get("user")
+    if user is not None and user.is_authenticated:
+        return None if action == "read" or user.is_staff else 403
+    return 401
+```
+
+```python
+# asgi.py — only needed for the session version
+from channels.auth import AuthMiddlewareStack
+
+protocol_app = AuthMiddlewareStack(get_asgi_app())
+```
+
+Other limits, all with defaults: a body over `RAKAIA_MAX_BODY_BYTES` (8 MiB;
+`None` for no limit) is refused with `413`, and a live SSE connection is closed
+after `RAKAIA_SSE_MAX_SECONDS` (60; `None` for never) so the client reconnects from
+the last offset it saw. A closed connection also stops the server polling the
+store for it. As with the page size, these settings are read when `get_asgi_app()`
+is called without `options`; `ServerOptions(authorize=..., allowed_origins=...,
+max_body_bytes=..., sse_max_seconds=...)` sets them directly.
 
 > **Changed.** This used to be `django_rakaia.protocol_views`, a separate
 > implementation with verb-in-path URLs (`/streams/x/append`), newline-delimited

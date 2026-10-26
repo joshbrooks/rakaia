@@ -9,8 +9,19 @@ import json
 
 import pytest
 from channels.layers import get_channel_layer
+from django.contrib.auth.models import AnonymousUser, User
 
 from django_rakaia.models import Stream, StreamEntry, StreamEvent
+
+
+def _sign_in(request, user) -> None:
+    """Do what `AuthenticationMiddleware` does: the async login check awaits `auser`."""
+
+    async def auser():
+        return user
+
+    request.user = user
+    request.auser = auser
 
 
 def _extract_data_payload(chunk: bytes | str) -> dict | None:
@@ -135,6 +146,7 @@ class TestChannelLayerSSEViews:
 
         factory = RequestFactory()
         request = factory.get("/api/streams/existing-test/sse/")
+        _sign_in(request, User(username="viewer"))
 
         response = await stream_events_sse(request, "existing-test")
 
@@ -158,6 +170,7 @@ class TestChannelLayerSSEViews:
 
         factory = RequestFactory()
         request = factory.get("/api/streams/live-test/sse/")
+        _sign_in(request, User(username="viewer"))
 
         response = await stream_events_sse(request, "live-test")
 
@@ -203,6 +216,7 @@ class TestChannelLayerSSEViews:
 
         factory = RequestFactory()
         request = factory.get("/api/streams/a.b/sse/")
+        _sign_in(request, User(username="viewer"))
         response = await stream_events_sse(request, "a.b")
 
         channel_layer = get_channel_layer()
@@ -255,6 +269,7 @@ class TestChannelLayerSSEViews:
         request = factory.get(
             "/api/streams/foreign-offset/sse/", HTTP_LAST_EVENT_ID="0_5"
         )
+        _sign_in(request, User(username="viewer"))
 
         response = await stream_events_sse(request, "foreign-offset")
 
@@ -271,9 +286,29 @@ class TestChannelLayerSSEViews:
 
         factory = RequestFactory()
         request = factory.get("/api/streams/header-test/sse/")
+        _sign_in(request, User(username="viewer"))
 
         response = await stream_events_sse(request, "header-test")
 
         assert response["Content-Type"] == "text/event-stream"
         assert response["Cache-Control"] == "no-cache"
         assert response["X-Accel-Buffering"] == "no"
+
+
+@pytest.mark.django_db(transaction=True)
+class TestChannelLayerSSELoginRequired:
+    """The dashboard's SSE view needs a login like every other dashboard view."""
+
+    async def test_anonymous_caller_is_redirected_to_login(self):
+        from django.test import RequestFactory
+
+        from django_rakaia.channels_views import stream_events_sse
+
+        await Stream.objects.acreate(stream_id="private")
+        request = RequestFactory().get("/api/streams/private/sse/")
+        _sign_in(request, AnonymousUser())
+
+        response = await stream_events_sse(request, "private")
+
+        assert response.status_code == 302
+        assert "/accounts/login" in response["Location"]

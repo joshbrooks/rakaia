@@ -1139,6 +1139,37 @@ $ uv run pytest tests/test_rakaia/test_executor_contract.py -q
 
 → Deep dive: [What a dry run cannot see](dry-run-and-executors.md#what-a-dry-run-cannot-see)
 
+## 33. Lock the protocol server down
+
+**The problem.** The protocol server let anyone who could reach it create, read,
+append to and delete any stream, from any website, with a request body of any size.
+The Django mount in `asgi.py` skips Django's auth middleware, so the project's own
+login rules never reached it. A browser tab that was closed also left the server
+polling the store for it until the stream ended.
+
+**What rakaia does.** You pass a function that decides each request, a list of
+allowed websites, and a size limit; the server now closes live connections after a
+minute and stops work for a client that leaves. All of it has a `RAKAIA_` setting
+under Django, and the defaults leave access open.
+
+```python
+RAKAIA_AUTHORIZE = "myproject.access.authorize"  # def authorize(scope, action)
+RAKAIA_ALLOWED_ORIGINS = ["https://app.example.org"]
+RAKAIA_MAX_BODY_BYTES = 8 * 1024 * 1024  # the default; over it is a 413
+RAKAIA_SSE_MAX_SECONDS = 60  # the default; None never ends a connection
+```
+
+**See it.** No example covers this yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_protocol_server_access.py \
+    tests/test_rakaia/test_protocol_server_sse_lifecycle.py \
+    tests/test_rakaia/test_sigterm_with_open_sse.py \
+    tests/test_django_rakaia/test_authorize_with_signed_in_user.py -q
+```
+
+→ Deep dive: [Protect the protocol app](django-integration.md#protect-the-protocol-app)
+
 ---
 
 ## Where to go next

@@ -8,6 +8,13 @@
   for an upsert lookup matching several rows and orders flipped rows by value; `MultipleRowsMatched` is a `RakaiaError` with reason code
   `multiple_rows_matched`.
 
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) and
+  [Django integration](concepts/django-integration.md) — the protocol server takes an
+  access hook, an allowed-origins list, a body limit (`413`) and an SSE timer, with
+  `RAKAIA_AUTHORIZE`, `RAKAIA_ALLOWED_ORIGINS`, `RAKAIA_MAX_BODY_BYTES` and
+  `RAKAIA_SSE_MAX_SECONDS` under Django; an SSE handler ends when its client leaves; the
+  dashboard's live feed needs a login.
+
 ## 2026-10-14
 
 * **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) and

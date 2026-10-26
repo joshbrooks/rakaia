@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from ._asgi import (
+    BodyTooLarge,
     Receive,
     Scope,
     Send,
@@ -27,6 +30,7 @@ from ._asgi import (
     get_path,
     get_query_param,
     get_query_string,
+    limit_body,
     read_body,
     send_body_chunk,
     send_response,
@@ -290,6 +294,15 @@ def _fault_injection_enabled_by_env() -> bool:
 DEFAULT_READ_PAGE_SIZE = 1000
 """The default for `ServerOptions.read_page_size`, in messages."""
 
+DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+"""The default for `ServerOptions.max_body_bytes`: 8 MiB."""
+
+DEFAULT_SSE_MAX_SECONDS = 60.0
+"""The default for `ServerOptions.sse_max_seconds`: spec §5.8 asks for about 60."""
+
+Authorize = Callable[[Scope, str], Any]
+"""What `ServerOptions.authorize` is: called with the ASGI scope and the action."""
+
 
 @dataclass
 class ServerOptions:
@@ -333,6 +346,45 @@ class ServerOptions:
     ``RAKAIA_READ_PAGE_SIZE`` setting.
     """
 
+    max_body_bytes: int | None = DEFAULT_MAX_BODY_BYTES
+    """The most request body bytes a create or append may carry.
+
+    Past it the server answers ``413`` (spec §5.2) and stops reading, rather
+    than holding the whole body in memory. ``None`` turns the limit off. The
+    Django entry point sets this from the ``RAKAIA_MAX_BODY_BYTES`` setting.
+    """
+
+    allowed_origins: tuple[str, ...] = ("*",)
+    """Origins a browser may call this server from, for CORS.
+
+    ``("*",)`` allows every origin and is the default so a demo page on another
+    port works. Otherwise a request whose ``Origin`` is listed is answered with
+    that origin and ``Vary: Origin``, and any other gets no allow-origin header,
+    so the browser refuses to hand the response to the page. The Django entry
+    point sets this from ``RAKAIA_ALLOWED_ORIGINS``.
+    """
+
+    authorize: Authorize | None = None
+    """Decides whether a request may proceed; ``None`` allows everything.
+
+    Called with the ASGI scope (method, path, headers) and the action:
+    ``"create"``, ``"append"``, ``"read"`` (GET and HEAD) or ``"delete"``. It may
+    be a plain function or a coroutine function. Return ``None`` or ``True`` to
+    allow; ``False`` answers ``403``; an ``int`` answers that status; a
+    ``(status, body_bytes)`` tuple answers both; a status must be 400 to 599. Anything
+    else is refused with ``403``, so a mistake in the hook fails closed. CORS preflight (``OPTIONS``)
+    is never passed to it, because browsers send no credentials with one. The
+    Django entry point sets this from ``RAKAIA_AUTHORIZE``.
+    """
+
+    sse_max_seconds: float | None = DEFAULT_SSE_MAX_SECONDS
+    """How long an SSE connection stays open before the server ends it.
+
+    The client reconnects from the last offset it saw (spec §5.8, §8.2), which
+    also lets the server shed connections it can no longer see are dead.
+    ``None`` never ends one on a timer.
+    """
+
     def __post_init__(self) -> None:
         # Checked here rather than on first read: a page size taken from an
         # environment variable arrives as a string, and would otherwise fail
@@ -346,6 +398,73 @@ class ServerOptions:
             raise ValueError(
                 f"read_page_size must be None or an int >= 1, got {size!r}"
             )
+        limit = self.max_body_bytes
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+        ):
+            raise ValueError(
+                f"max_body_bytes must be None or an int >= 0, got {limit!r}"
+            )
+        if isinstance(self.allowed_origins, str):
+            raise ValueError(
+                "allowed_origins must be a list of origins, not one string"
+            )
+        self.allowed_origins = tuple(self.allowed_origins)
+
+
+def _allow_origin_headers(
+    allowed: tuple[str, ...], origin: str | None
+) -> dict[str, str]:
+    """The CORS header that says which origin may read the response."""
+    if "*" in allowed:
+        return {"access-control-allow-origin": "*"}
+    # A per-origin answer differs by request, so caches must key on it.
+    headers = {"vary": "Origin"}
+    if origin is not None and origin in allowed:
+        headers["access-control-allow-origin"] = origin
+    return headers
+
+
+_ACTION_FOR_METHOD = {
+    "PUT": "create",
+    "POST": "append",
+    "GET": "read",
+    "HEAD": "read",
+    "DELETE": "delete",
+}
+
+
+def _is_error_status(value: object) -> bool:
+    """Whether a hook's answer is a refusal status: an int from 400 to 599."""
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and 400 <= value <= 599
+    )
+
+
+async def _denied_by_hook(
+    authorize: Authorize | None, scope: Scope, method: str
+) -> tuple[int, bytes] | None:
+    """Ask the integrator's hook; return the response to send, or None to proceed."""
+    action = _ACTION_FOR_METHOD.get(method)
+    if authorize is None or action is None:
+        return None
+    verdict = authorize(scope, action)
+    if inspect.isawaitable(verdict):
+        verdict = await verdict
+    if verdict is None or verdict is True:
+        return None
+    if verdict is False:
+        return 403, b"Forbidden"
+    if _is_error_status(verdict):
+        return verdict, b"Not allowed"
+    if (
+        isinstance(verdict, tuple)
+        and len(verdict) == 2
+        and _is_error_status(verdict[0])
+        and isinstance(verdict[1], bytes)
+    ):
+        return verdict
+    return 403, b"Forbidden"
 
 
 def create_app(
@@ -376,7 +495,7 @@ def create_app(
 
         # CORS headers (applied to all responses via wrapper)
         cors_headers = {
-            "access-control-allow-origin": "*",
+            **_allow_origin_headers(opts.allowed_origins, get_header(scope, "origin")),
             "access-control-allow-methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS",
             "access-control-allow-headers": (
                 "content-type, authorization, If-None-Match, Stream-Seq, "
@@ -397,6 +516,16 @@ def create_app(
         if method == "OPTIONS":
             await send_response(send, 204, cors_headers)
             return
+
+        # Access control. After the preflight (browsers send no credentials with
+        # one) and before anything reads or consumes state.
+        denied = await _denied_by_hook(opts.authorize, scope, method)
+        if denied is not None:
+            await _send_error(send, denied[0], denied[1], cors_headers)
+            return
+
+        # Every handler reads the body through this, so none can go past the cap.
+        receive = limit_body(receive, opts.max_body_bytes)
 
         # Handle test control endpoints. Gated off by default: when disabled the
         # path is not routed at all, so it 404s like any other unknown path.
@@ -436,6 +565,8 @@ def create_app(
                 await _handle_delete(path, send, actual_store, cors_headers)
             else:
                 await _send_error(send, 405, b"Method not allowed", cors_headers)
+        except BodyTooLarge:
+            await _send_error(send, 413, b"Request body too large", cors_headers)
         except StreamError as e:
             mapped = _status_for(e)
             if mapped is None:
@@ -895,6 +1026,34 @@ def _closed_control(offset: str) -> bytes:
     return _build_sse_control(offset, offset, True, True, None, CursorOptions())
 
 
+async def _run_until_disconnect_or_deadline(
+    work: Any, receive: Receive, max_seconds: float | None
+) -> None:
+    """Run `work`, but stop it if the client hangs up or the deadline passes.
+
+    ASGI only reports a dropped client through `receive`, so a handler that
+    never reads it keeps polling the store for a socket that is gone. Whichever
+    of the three finishes first wins and the others are cancelled.
+    """
+
+    async def until_disconnect() -> None:
+        while (await receive()).get("type") != "http.disconnect":
+            pass
+
+    task = asyncio.ensure_future(work)
+    watcher = asyncio.ensure_future(until_disconnect())
+    try:
+        await asyncio.wait(
+            {task, watcher}, timeout=max_seconds, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        for pending in (task, watcher):
+            pending.cancel()
+        await asyncio.gather(task, watcher, return_exceptions=True)
+    if task.done() and not task.cancelled():
+        task.result()  # re-raise what the work raised
+
+
 async def _handle_sse(
     path: str,
     stream: Any,
@@ -902,13 +1061,18 @@ async def _handle_sse(
     cursor: str | None,
     use_base64: bool,
     _scope: Scope,
-    _receive: Receive,
+    receive: Receive,
     send: Send,
     store: StreamServerStore,
     opts: ServerOptions,
     cors: dict[str, str],
 ) -> None:
-    """Handle SSE (Server-Sent Events) mode."""
+    """Handle SSE (Server-Sent Events) mode.
+
+    Ends when the stream is closed at its tail, when the client disconnects
+    (the polling stops with it), or after `ServerOptions.sse_max_seconds` so the
+    client reconnects from its last offset (spec §5.8, §8.2).
+    """
     sse_headers: dict[str, str] = {
         **cors,
         "content-type": "text/event-stream",
@@ -931,120 +1095,128 @@ async def _handle_sse(
 
     await start_streaming_response(send, 200, sse_headers)
 
-    current_offset = initial_offset
-    is_json_stream = is_json_content_type(stream.content_type)
+    async def pump() -> None:
+        nonlocal pending_read
+        current_offset = initial_offset
+        is_json_stream = is_json_content_type(stream.content_type)
 
-    while True:
-        # Read messages from offset
-        if pending_read is not None:
-            messages, up_to_date = pending_read
-            pending_read = None
-        else:
-            try:
-                # A page cut short comes back with `up_to_date` false, and the
-                # loop reads the next one straight away instead of waiting.
-                messages, up_to_date = await store.run_sync(
-                    store.read, path, current_offset, limit=opts.read_page_size
-                )
-            except (KeyError, StreamError):
+        while True:
+            # Read messages from offset
+            if pending_read is not None:
+                messages, up_to_date = pending_read
+                pending_read = None
+            else:
+                try:
+                    # A page cut short comes back with `up_to_date` false, and the
+                    # loop reads the next one straight away instead of waiting.
+                    messages, up_to_date = await store.run_sync(
+                        store.read, path, current_offset, limit=opts.read_page_size
+                    )
+                except (KeyError, StreamError):
+                    break
+
+            current_stream = await store.run_sync(store.get, path)
+            if current_stream is None:
                 break
 
-        current_stream = await store.run_sync(store.get, path)
-        if current_stream is None:
-            break
+            tail_offset = current_stream.current_offset
+            stream_is_closed = current_stream.closed
+            cursor_opts = opts.cursor_options
 
-        tail_offset = current_stream.current_offset
-        stream_is_closed = current_stream.closed
-        cursor_opts = opts.cursor_options
+            buffer = b""
 
-        buffer = b""
+            if messages:
+                # Pair every data event with its own control event so consumers can
+                # rely on a strict data -> control framing during catch-up.
+                for message in messages:
+                    if use_base64:
+                        data_payload = base64.b64encode(message.data).decode()
+                    elif is_json_stream:
+                        data_payload = format_json_response([message.data]).decode(
+                            "utf-8"
+                        )
+                    else:
+                        data_payload = message.data.decode("utf-8")
 
-        if messages:
-            # Pair every data event with its own control event so consumers can
-            # rely on a strict data -> control framing during catch-up.
-            for message in messages:
-                if use_base64:
-                    data_payload = base64.b64encode(message.data).decode()
-                elif is_json_stream:
-                    data_payload = format_json_response([message.data]).decode("utf-8")
-                else:
-                    data_payload = message.data.decode("utf-8")
+                    sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
+                    buffer += sse_data.encode("utf-8")
+                    buffer += _build_sse_control(
+                        message.offset,
+                        tail_offset,
+                        stream_is_closed,
+                        up_to_date,
+                        cursor,
+                        cursor_opts,
+                    )
+                    current_offset = message.offset
 
-                sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
-                buffer += sse_data.encode("utf-8")
+                control_offset = messages[-1].offset
+            else:
+                # Caught up with nothing new: emit a single control event.
+                control_offset = tail_offset
                 buffer += _build_sse_control(
-                    message.offset,
+                    control_offset,
                     tail_offset,
                     stream_is_closed,
                     up_to_date,
                     cursor,
                     cursor_opts,
                 )
-                current_offset = message.offset
 
-            control_offset = messages[-1].offset
-        else:
-            # Caught up with nothing new: emit a single control event.
-            control_offset = tail_offset
-            buffer += _build_sse_control(
-                control_offset,
-                tail_offset,
-                stream_is_closed,
-                up_to_date,
-                cursor,
-                cursor_opts,
-            )
+            await send_body_chunk(send, buffer)
 
-        await send_body_chunk(send, buffer)
-
-        # End the connection once there can be nothing more: a closed stream at
-        # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
-        if stream_ended(closed=stream_is_closed, at_tail=control_offset == tail_offset):
-            break
-
-        current_offset = control_offset
-
-        # Wait for new data if caught up
-        if up_to_date:
-            if current_stream.closed:
-                # Send final control
-                await send_body_chunk(send, _closed_control(current_offset))
+            # End the connection once there can be nothing more: a closed stream at
+            # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
+            if stream_ended(
+                closed=stream_is_closed, at_tail=control_offset == tail_offset
+            ):
                 break
 
-            try:
-                (
-                    _wait_messages,
-                    timed_out,
-                    stream_closed,
-                ) = await _wait_for_messages(
-                    store, path, current_offset, opts.long_poll_timeout
-                )
-            except (KeyError, StreamError):
-                break
+            current_offset = control_offset
 
-            if stream_closed:
-                await send_body_chunk(send, _closed_control(current_offset))
-                break
-
-            if timed_out:
-                # Keep-alive control event
-                stream_after = await store.run_sync(store.get, path)
-                if stream_after and stream_after.closed:
+            # Wait for new data if caught up
+            if up_to_date:
+                if current_stream.closed:
+                    # Send final control
                     await send_body_chunk(send, _closed_control(current_offset))
                     break
 
-                await send_body_chunk(
-                    send,
-                    _build_sse_control(
-                        current_offset,
-                        current_offset,
-                        False,
-                        True,
-                        cursor,
-                        opts.cursor_options,
-                    ),
-                )
-            # Loop continues to read new messages
+                try:
+                    (
+                        _wait_messages,
+                        timed_out,
+                        stream_closed,
+                    ) = await _wait_for_messages(
+                        store, path, current_offset, opts.long_poll_timeout
+                    )
+                except (KeyError, StreamError):
+                    break
+
+                if stream_closed:
+                    await send_body_chunk(send, _closed_control(current_offset))
+                    break
+
+                if timed_out:
+                    # Keep-alive control event
+                    stream_after = await store.run_sync(store.get, path)
+                    if stream_after and stream_after.closed:
+                        await send_body_chunk(send, _closed_control(current_offset))
+                        break
+
+                    await send_body_chunk(
+                        send,
+                        _build_sse_control(
+                            current_offset,
+                            current_offset,
+                            False,
+                            True,
+                            cursor,
+                            opts.cursor_options,
+                        ),
+                    )
+                # Loop continues to read new messages
+
+    await _run_until_disconnect_or_deadline(pump(), receive, opts.sse_max_seconds)
 
     # End the SSE connection
     await send_body_chunk(send, b"", more_body=False)

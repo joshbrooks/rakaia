@@ -29,13 +29,20 @@ From `django_rakaia`:
 * `diff_effects_against_rows` — migration/verification helper.
 * `stream_coverage` and `manage.py check_stream_coverage` — check that a stream
   still has an event for every row of the table it is written from.
-* SSE views + Channels signals for live broadcast.
+* SSE views + Channels signals for live broadcast; the view needs a signed-in user.
 
 Settings and operator commands:
 
 * `RAKAIA_READ_PAGE_SIZE` — the page a catch-up read answers with, applied when
   `get_asgi_app()` is called without `options`; on the durable store the page is a
   SQL `LIMIT`, so a first sync no longer loads the whole log.
+* `RAKAIA_AUTHORIZE` — a function (or dotted path) `(scope, action)` the protocol app
+  asks before every create, append, read or delete; `None` allows, a status refuses.
+  Default: none, so everything is allowed. The mount bypasses Django's auth middleware.
+* `RAKAIA_ALLOWED_ORIGINS` — the CORS origin list for the protocol app; default `["*"]`.
+* `RAKAIA_MAX_BODY_BYTES` — largest create or append body, default 8 MiB, over it `413`.
+* `RAKAIA_SSE_MAX_SECONDS` — closes each live SSE connection on a timer, default 60.
+  All four apply when `get_asgi_app()` is called without `options`.
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
   returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream

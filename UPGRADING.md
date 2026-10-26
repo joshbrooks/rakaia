@@ -60,6 +60,27 @@ matches more than one row, where it used to update the first. A lookup that name
 the natural key never does. It also reports flipped rows in key order, so integer
 keys read `1, 2, 10` where they read `1, 10, 2`.
 
+## Set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS` before you expose the protocol app
+
+Nothing breaks, and nothing changes by default: the protocol server still allows
+every request from every origin, and the Django mount you set up in `asgi.py`
+bypasses Django's auth middleware, so `login_required` and sessions never applied
+to it. Production should set both. See
+[Protect the protocol app](docs/django-integration.md#protect-the-protocol-app).
+
+## Three things that now behave differently
+
+- **A request body over 8 MiB is refused with `413`.** Set `RAKAIA_MAX_BODY_BYTES`
+  (or `ServerOptions(max_body_bytes=...)`, `None` for no limit) if you append more
+  than that in one request.
+- **Live SSE connections close after 60 seconds.** A client that follows the
+  protocol reconnects from its last offset. A client that reopens the same URL, as
+  a browser `EventSource` does, now starts again from the offset in its URL every
+  minute, so a stream it tails from `offset=0` is replayed each time. Change it
+  with `RAKAIA_SSE_MAX_SECONDS`, or `None` for never.
+- **The dashboard's live feed (`stream_events_sse`) needs a signed-in user.** An
+  anonymous request is redirected to the login page, where it used to be served.
+
 ---
 
 # 0.9.0

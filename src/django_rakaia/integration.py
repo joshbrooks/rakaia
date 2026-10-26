@@ -1,7 +1,12 @@
 from django.conf import settings
+from django.utils.module_loading import import_string
 
 from rakaia import ServerOptions, create_app
-from rakaia.protocol_server import DEFAULT_READ_PAGE_SIZE
+from rakaia.protocol_server import (
+    DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_READ_PAGE_SIZE,
+    DEFAULT_SSE_MAX_SECONDS,
+)
 from rakaia.protocols import StreamServerStore
 
 from .store import get_store
@@ -39,13 +44,27 @@ def get_asgi_app(
             return await django_app(scope, receive, send)
     """
     if options is None:
-        # The one server option a Django deployment sets from its settings: how
-        # many messages a catch-up read returns before the client is told to
-        # read on (#289). `None` turns paging off.
+        # The server options a Django deployment sets from its settings. Reading
+        # a page returns `RAKAIA_READ_PAGE_SIZE` messages at most (#289, `None`
+        # turns paging off); a body over `RAKAIA_MAX_BODY_BYTES` is a 413;
+        # `RAKAIA_ALLOWED_ORIGINS` is the CORS list; `RAKAIA_AUTHORIZE` is the
+        # access hook, a callable or its dotted path; and an SSE connection is
+        # ended after `RAKAIA_SSE_MAX_SECONDS` so clients reconnect.
+        authorize = getattr(settings, "RAKAIA_AUTHORIZE", None)
+        if isinstance(authorize, str):
+            authorize = import_string(authorize)
         options = ServerOptions(
             read_page_size=getattr(
                 settings, "RAKAIA_READ_PAGE_SIZE", DEFAULT_READ_PAGE_SIZE
-            )
+            ),
+            max_body_bytes=getattr(
+                settings, "RAKAIA_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES
+            ),
+            allowed_origins=tuple(getattr(settings, "RAKAIA_ALLOWED_ORIGINS", ("*",))),
+            authorize=authorize,
+            sse_max_seconds=getattr(
+                settings, "RAKAIA_SSE_MAX_SECONDS", DEFAULT_SSE_MAX_SECONDS
+            ),
         )
     return create_app(
         store=store if store is not None else get_store(), options=options

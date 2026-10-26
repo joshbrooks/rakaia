@@ -42,6 +42,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # The sample has no login, but the live feed needs a signed-in user.
+    "chat.middleware.DemoUserMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 
