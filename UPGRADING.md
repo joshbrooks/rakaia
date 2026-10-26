@@ -40,6 +40,26 @@ without it raises `TypeError` until you add it. With it, a live fold chooses the
 handler version a rebuild would, so a stream already past a version boundary can
 now get a different version live than it did before.
 
+## A dry run now fails where the real write would
+
+`CollectingExecutor` used to record a batch and report nothing. It now runs the
+checks the real write runs, so a replay that passed as a dry run can raise:
+`EffectCollisionError` for two effects writing one column of one row,
+`UnresolvedRefError` for a `Ref` no earlier effect produced, and `ValueError` for
+a retire with an empty patch. That is the point, and a dry run that starts failing
+was passing a batch the real write rejects. The report it returns is no longer
+empty either: every upsert counts as created, and a retire that asked for a
+`Transition` counts as flipping one row, so `manage.py replay --dry-run` prints a
+larger `external=` than before. A dry run holds no rows, so it counts one flip per
+retire however many rows match, and the figure can be above or below a real run's. Code that checked
+`ApplyReport` from a `CollectingExecutor` for being zero needs updating.
+
+`InMemoryProjections` now raises `MultipleRowsMatched` (a `RakaiaError`, with the new
+reason code `multiple_rows_matched`) when an upsert's lookup
+matches more than one row, where it used to update the first. A lookup that names
+the natural key never does. It also reports flipped rows in key order, so integer
+keys read `1, 2, 10` where they read `1, 10, 2`.
+
 ---
 
 # 0.9.0

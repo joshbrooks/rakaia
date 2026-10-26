@@ -199,6 +199,10 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
   Every example that serves the protocol takes the default page of a thousand,
   and none holds a stream long enough for a read to stop short.
+- `CollectingExecutor`'s checks and `InMemoryProjections`' differences from the
+  database (a column nothing wrote, type coercion, NOT NULL). The demos dry-run
+  without tripping a check, and none shows one failing, or a case where the
+  in-memory rows and the database differ.
 - `RAKAIA_PERMANENT_STREAMS` and the `permanent=True` argument on
   `StreamStore` and `JsonlStreamStore`, its three refusals (`ExpiryNotAllowed`, and
   `DeleteNotAllowed` for both a client's `DELETE` and a Python `delete()` without

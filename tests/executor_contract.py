@@ -94,8 +94,92 @@ class ExecutorSeam:
     model: str
     """`model_label` of the projection described above."""
 
+    multiple_rows_error: type[Exception]
+    """What an upsert raises when its lookup matches more than one row: Django's
+    ``MultipleObjectsReturned`` for the model, or the in-memory executor's own."""
 
-class ExecutorContract:
+
+class ExecutorChecksContract:
+    """What every executor must *check* and *report*, whether or not it writes.
+
+    A dry run that passes a batch the real write rejects is worse than no dry
+    run, so `CollectingExecutor`, which keeps no rows, is held to this half and
+    `ExecutorContract` extends it for the executors that do. Nothing here reads
+    a row back, and the counts are the ones a write onto empty tables gives.
+    """
+
+    @staticmethod
+    def _alert(seam: ExecutorSeam, key: str, **defaults: Any) -> Upsert:
+        return Upsert(
+            model_label=seam.model,
+            lookup={"stream_key": "s", "alert_type": "machine", "field_key": key},
+            defaults={"severity": "error", **defaults},
+        )
+
+    def test_a_colliding_batch_raises(self, seam):
+        with pytest.raises(EffectCollisionError):
+            seam.executor.apply(
+                [
+                    self._alert(seam, "a", severity="info"),
+                    self._alert(seam, "a", severity="error"),
+                ]
+            )
+
+    def test_a_ref_with_no_producer_raises(self, seam):
+        with pytest.raises(UnresolvedRefError):
+            seam.executor.apply([self._alert(seam, "a", dismissed_version=Ref("nope"))])
+
+    def test_a_ref_to_an_earlier_producer_is_accepted(self, seam):
+        seam.executor.apply(
+            [
+                Upsert(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "field_key": "a"},
+                    defaults={},
+                    produces="anchor",
+                ),
+                self._alert(seam, "b", dismissed_version=Ref("anchor")),
+            ]
+        )
+
+    def test_a_retire_with_an_empty_patch_raises(self, seam):
+        with pytest.raises(ValueError):
+            seam.executor.apply(
+                [Retire(model_label=seam.model, lookup={"stream_key": "s"}, patch={})]
+            )
+
+    def test_a_first_batch_of_upserts_reports_each_as_created(self, seam):
+        report = seam.executor.apply([self._alert(seam, "a"), self._alert(seam, "b")])
+
+        assert report is not None
+        assert (report.upserts_created, report.upserts_written) == (2, 2)
+
+    def test_a_retire_that_asked_for_a_transition_reports_a_flip_with_its_key_fields(
+        self, seam
+    ):
+        seam.executor.apply([self._alert(seam, "a")])
+        report = seam.executor.apply(
+            [
+                Retire(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "resolved_at__isnull": True},
+                    patch={"resolved_at": "2024-01-02T00:00:00"},
+                    transition=Transition(
+                        kind="alert_resolved", key_fields=("stream_key", "field_key")
+                    ),
+                )
+            ]
+        )
+
+        assert report is not None
+        [(effect, rows)] = report.retire_flips
+        assert effect.transition is not None
+        assert effect.transition.kind == "alert_resolved"
+        assert len(rows) == 1
+        assert set(rows[0]) == {"stream_key", "field_key"}
+
+
+class ExecutorContract(ExecutorChecksContract):
     """Contract every applying executor must uphold.
 
     Subclasses provide::
@@ -623,3 +707,48 @@ class ExecutorContract:
             assert [rows for _, rows in report.retire_flips] == [
                 [{"stream_key": "s", "alert_type": "machine", "field_key": "a"}]
             ]
+
+    # -- parity with the database -------------------------------------------
+
+    def test_an_upsert_whose_lookup_matches_two_rows_raises(self, seam):
+        """Updating "the first" row hid a handler bug in memory and raised on the
+        database, so a batch rehearsed in memory could fail on the real write."""
+        seam.executor.apply([self._upsert(seam, "a"), self._upsert(seam, "b")])
+
+        with pytest.raises(seam.multiple_rows_error):
+            seam.executor.apply(
+                [
+                    Upsert(
+                        model_label=seam.model,
+                        lookup={"stream_key": "s"},
+                        defaults={"severity": "info"},
+                    )
+                ]
+            )
+
+        assert [r.severity for r in seam.reader.filter(seam.model)] == ["error"] * 2
+
+    def test_flipped_rows_are_reported_in_key_order_not_text_order(self, seam):
+        """Numeric keys sort as numbers, as ``ORDER BY`` does: 2 before 10."""
+        seam.executor.apply(
+            [
+                self._upsert(seam, k, dismissed_version=v)
+                for k, v in zip("abc", (2, 10, 1), strict=True)
+            ]
+        )
+        report = seam.executor.apply(
+            [
+                Retire(
+                    model_label=seam.model,
+                    lookup={"stream_key": "s", "resolved_at__isnull": True},
+                    patch={"resolved_at": "2024-01-02T00:00:00"},
+                    transition=Transition(
+                        kind="alert_resolved", key_fields=("dismissed_version",)
+                    ),
+                )
+            ]
+        )
+
+        assert report is not None
+        [(_, rows)] = report.retire_flips
+        assert [r["dismissed_version"] for r in rows] == [1, 2, 10]

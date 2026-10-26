@@ -1105,6 +1105,42 @@ $ uv run pytest tests/test_rakaia/test_stream_rules.py -q
 
 ---
 
+## 32. A dry run fails where the real write would
+
+**The problem.** A dry run existed to say "this replay is safe to apply", but it
+recorded the batch without checking it. Two effects writing the same column, or a
+reference to a row nothing produced, passed the dry run and failed on the real
+write, and `manage.py replay --dry-run` printed a smaller `external=` than the real
+run.
+
+**What rakaia does.** `CollectingExecutor` runs the same checks as the real write
+and reports what a write onto empty tables would: every upsert created, and a
+retire that asked for a transition flipping one row. The in-memory executor now
+also raises when an upsert's lookup matches several rows, as Django does.
+
+```python
+ex = CollectingExecutor()
+ex.apply(
+    [
+        Upsert(model_label="app.Alert", lookup={"key": "a"}, defaults={"n": 1}),
+        Upsert(model_label="app.Alert", lookup={"key": "a"}, defaults={"n": 2}),
+    ]
+)
+# EffectCollisionError: both write app.Alert n
+```
+
+**See it.** No example covers this yet. The checking half of
+`tests/executor_contract.py` runs against `CollectingExecutor`, `DjangoExecutor` and
+`InMemoryProjections` alike.
+
+```console
+$ uv run pytest tests/test_rakaia/test_executor_contract.py -q
+```
+
+→ Deep dive: [What a dry run cannot see](dry-run-and-executors.md#what-a-dry-run-cannot-see)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

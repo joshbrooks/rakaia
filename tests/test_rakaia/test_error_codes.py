@@ -28,7 +28,7 @@ from rakaia.effects import (
     UnresolvedRefError,
 )
 from rakaia.errors import REASON_CODES, UNHANDLED, RakaiaError
-from rakaia.executors import CollectingExecutor
+from rakaia.executors import CollectingExecutor, MultipleRowsMatched
 from rakaia.outcomes import InMemoryOutcomeStore, Outcome
 from rakaia.registry import HandlerGapError, UpcasterChainError
 from rakaia.replaying import MergeKeyError, MissingReaderError, UndecodableEventError
@@ -37,8 +37,8 @@ from rakaia.subscription import consume
 from rakaia.types import StreamMessage
 
 #: Every class rakaia raises from the apply path, against the code it promises.
-#: Nine sites, and the pairing is the promise — not a derivation from a name.
-THE_NINE: list[tuple[type[RakaiaError], str]] = [
+#: Ten sites, and the pairing is the promise — not a derivation from a name.
+THE_TEN: list[tuple[type[RakaiaError], str]] = [
     (HandlerGapError, "handler_gap"),
     (UpcasterChainError, "upcaster_chain"),
     (EffectCollisionError, "effect_collision"),
@@ -48,6 +48,7 @@ THE_NINE: list[tuple[type[RakaiaError], str]] = [
     (MissingReaderError, "missing_reader"),
     (UndecodableEventError, "undecodable_event"),
     (MergeKeyError, "merge_key"),
+    (MultipleRowsMatched, "multiple_rows_matched"),
 ]
 
 
@@ -76,7 +77,7 @@ def _reasons_and_params(exc: BaseException) -> tuple[tuple[str, ...], dict[str, 
 
 class TestEachSiteRecordsItsOwnCode:
     @pytest.mark.parametrize(
-        ("cls", "code"), THE_NINE, ids=[c.__name__ for c, _ in THE_NINE]
+        ("cls", "code"), THE_TEN, ids=[c.__name__ for c, _ in THE_TEN]
     )
     def test_the_loop_records_the_class_s_promised_code(
         self, cls: type[RakaiaError], code: str
@@ -85,12 +86,12 @@ class TestEachSiteRecordsItsOwnCode:
         assert reasons == (code,)
         assert params == {}
 
-    def test_the_nine_codes_are_distinct(self) -> None:
-        codes = [code for _, code in THE_NINE]
+    def test_the_ten_codes_are_distinct(self) -> None:
+        codes = [code for _, code in THE_TEN]
         assert len(set(codes)) == len(codes)
 
     def test_every_promised_code_is_in_the_closed_set(self) -> None:
-        assert {code for _, code in THE_NINE} | {UNHANDLED} == set(REASON_CODES)
+        assert {code for _, code in THE_TEN} | {UNHANDLED} == set(REASON_CODES)
 
 
 class TestAnythingElseIsUnhandled:
@@ -122,7 +123,7 @@ class TestACodeSurvivesARename:
     renamed, which is what silently rewrote the vocabulary operators read."""
 
     @pytest.mark.parametrize(
-        ("cls", "code"), THE_NINE, ids=[c.__name__ for c, _ in THE_NINE]
+        ("cls", "code"), THE_TEN, ids=[c.__name__ for c, _ in THE_TEN]
     )
     def test_renaming_the_class_does_not_move_the_code(
         self, cls: type[RakaiaError], code: str
@@ -136,15 +137,15 @@ class TestACodeSurvivesARename:
     def test_no_code_is_spelled_the_way_a_name_derivation_would_spell_it(self) -> None:
         """A derivation that happened to agree would pass the rename test by
         luck for one class; this fails if any code is literally its class name."""
-        for cls, code in THE_NINE:
+        for cls, code in THE_TEN:
             assert code != cls.__name__
 
 
 class TestOneClauseCatchesThemAll:
     @pytest.mark.parametrize(
-        "cls", [c for c, _ in THE_NINE], ids=[c.__name__ for c, _ in THE_NINE]
+        "cls", [c for c, _ in THE_TEN], ids=[c.__name__ for c, _ in THE_TEN]
     )
-    def test_the_base_type_catches_every_one_of_the_nine(
+    def test_the_base_type_catches_every_one_of_the_ten(
         self, cls: type[RakaiaError]
     ) -> None:
         with pytest.raises(RakaiaError):
@@ -195,7 +196,7 @@ class TestTheSetIsClosed:
                     walk(sub)
 
         walk(RakaiaError)
-        assert seen == {cls for cls, _ in THE_NINE}
+        assert seen == {cls for cls, _ in THE_TEN}
         for cls in seen:
             assert cls.code in REASON_CODES
             assert cls.code != UNHANDLED

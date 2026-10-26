@@ -64,6 +64,7 @@ REASON_CODES: Final = frozenset(
         "missing_reader",
         "undecodable_event",
         "merge_key",
+        "multiple_rows_matched",
         UNHANDLED,
     }
 )

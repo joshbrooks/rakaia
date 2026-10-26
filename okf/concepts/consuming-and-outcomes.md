@@ -54,7 +54,7 @@ Imported from `rakaia`:
 * `OutcomeStore` protocol with three implementations: `InMemoryOutcomeStore`,
   `JsonlOutcomeStore`, and Django's `DjangoOutcomeStore`. `encode_outcome` /
   `decode_outcome` is the one translation all three share.
-* `RakaiaError` with `code`, `REASON_CODES` (the closed, published set of ten),
+* `RakaiaError` with `code`, `REASON_CODES` (the closed, published set of eleven),
   `UNHANDLED` and `EXCEPTION_TYPE_KEY` — the reason codes rakaia records for its
   own failures. A consumer's own exception is recorded as `unhandled` with its
   type in `params`, never its message.

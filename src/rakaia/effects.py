@@ -348,8 +348,9 @@ class RefResolver:
     applying any effect it calls ``resolve_effect(effect)`` to substitute every
     ``Ref`` value; a ``Ref`` to an id not yet produced raises
     :class:`UnresolvedRefError` (deterministic — a forward ref is never a silent
-    ``None``). The `CollectingExecutor` does *not* resolve — a dry run keeps the
-    literal ``Ref`` values, which is correct.
+    ``None``). The `CollectingExecutor` resolves too, so an unknown ``Ref`` fails a
+    dry run as it fails a write, but it records the effects as emitted, with their
+    literal ``Ref`` values.
     """
 
     def __init__(self) -> None:

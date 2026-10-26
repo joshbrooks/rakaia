@@ -141,6 +141,7 @@ operator has been counting.
 | `missing_reader` | a staged replay was run without the reader its later stages need |
 | `undecodable_event` | the event's payload is not readable as JSON |
 | `merge_key` | a merged stream's events lack, or disagree about, the ordering key |
+| `multiple_rows_matched` | an upsert's lookup matched more than one row, on the in-memory executor |
 | `unhandled` | anything else — your `apply` raised, and the exception's type is in `params` |
 
 The last one is deliberately the only place a Python type name appears, and it
