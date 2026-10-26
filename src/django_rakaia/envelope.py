@@ -34,7 +34,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from rakaia import AppendOptions, AppendResult, seed_stream
 from rakaia.protocols import ProjectionReader, WritableStore
 from rakaia.registry import HandlerRegistry
-from rakaia.replaying import replay
+from rakaia.replaying import replay_numbered_from
 
 #: The in-memory stream path a live fold replays through.
 #:
@@ -122,6 +122,7 @@ def fold_events(
     executor: Any = None,
     label: str = "import",
     scratch_path: str = SCRATCH_PATH,
+    start_seq: int,
 ) -> None:
     """Project ``events`` now, through the handlers a replay would use.
 
@@ -132,6 +133,13 @@ def fold_events(
     ``scratch_path`` must match the ``event_match`` the registry's handlers were
     registered against, or nothing fires. It defaults to `SCRATCH_PATH`; register
     against that same constant rather than repeating the string.
+
+    ``start_seq`` is the position ``events[0]`` has in the real stream it belongs
+    to, which is what a rebuild numbers it. A handler version is chosen by that
+    number, so a wrong one picks the wrong handler and can disagree with a
+    rebuild once the stream is past a version boundary. It has no default, so a
+    caller cannot number from 0 by forgetting it: pass the entity stream's event
+    count before this batch is appended.
 
     The point is that write-time projection and rebuild-time projection run the
     *same* handler code. A consumer that instead materialises rows directly at
@@ -156,10 +164,11 @@ def fold_events(
         encoder=DjangoJSONEncoder,
     )
 
-    replay(
+    replay_numbered_from(
         scratch,
         scratch_path,
         executor or DjangoExecutor(),
+        first_seq=start_seq,
         handler_registry=registry,
         reader=reader,
     )

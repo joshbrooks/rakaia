@@ -136,6 +136,10 @@ class RegistrationLog:
         self._payloads.append(payload)
         return True
 
+    def payloads(self) -> list[dict[str, Any]]:
+        """Every recorded payload, oldest first."""
+        return list(self._payloads)
+
     def known(self) -> set[tuple]:
         """Every recorded identity."""
         return set(self._known)

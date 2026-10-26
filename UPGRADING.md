@@ -15,6 +15,33 @@ ones you are crossing.
 
 ---
 
+# 0.10.0
+
+## Replay can now report drift that used to pass in silence
+
+A handler edited between two process starts is now compared with the hash it was
+**first** registered with, which is read back from the registration log. A replay
+that was clean before a deploy can therefore warn, or raise under
+`--strict-drift`, after it. That is the check working: the old events were
+projected by different code from the code that would now replay them. Either
+revert the edit, or close the old range and register the new code as a new
+version.
+
+Any edit to the function's text counts, a comment or a decorator included, since
+the hash covers the source as written. Close a version's range without touching
+its body.
+
+## `fold_events` needs `start_seq`
+
+`fold_events` took no position, so it numbered each batch from 0 and always
+chose the handler for the start of the stream. It now requires the keyword
+`start_seq`: pass the entity stream's event count before this batch. Every call
+without it raises `TypeError` until you add it. With it, a live fold chooses the
+handler version a rebuild would, so a stream already past a version boundary can
+now get a different version live than it did before.
+
+---
+
 # 0.9.0
 
 ## Permanent streams reach every store

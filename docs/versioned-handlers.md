@@ -267,10 +267,19 @@ python manage.py replay submissions:SF_1_2 --strict-drift
 # raises HandlerDriftError("handler='sf12_cost_sync' stored=... current=...")
 ```
 
+The first hash recorded for a version is the reference, and it survives a
+restart: register v1, restart, register an edited body for the same range, and
+replay reports drift just as an in-process edit does. A comment or decorator
+edit changes the hash too, because it covers the function's text as written.
+Close a version's range rather than editing its body.
+
 The drift signal tells you that a function you'd promised to leave alone
 (because old events were processed under it) has been edited. The
 remedy is either to revert the change or to formalise it as a new
 version covering the appropriate seq range.
+
+The restart reference applies to handlers. A reducer or upcaster is still
+compared with the hash it was registered with in the running process.
 
 Handlers, reducers and upcasters are all checked the same way, by the same code:
 one `DriftLedger` per replay, which knows what has drifted, says so once however
