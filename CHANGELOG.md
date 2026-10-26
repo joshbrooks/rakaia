@@ -9,6 +9,20 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Changed
+
+- **A dry run runs the checks a real write runs.** `CollectingExecutor` raises
+  `EffectCollisionError`, `UnresolvedRefError` or `ValueError` for a batch the real
+  write would reject, and returns a report with the upsert and retire-flip counts a
+  write onto empty tables would give, so `manage.py replay --dry-run` prints a
+  larger `external=`. `tests/executor_contract.py` holds it to the checking half of
+  the executor contract. See `UPGRADING.md`.
+- **`InMemoryProjections` matches the database more closely.** An upsert whose lookup
+  matches several rows raises `MultipleRowsMatched` (reason code `multiple_rows_matched`) instead of updating the first,
+  and flipped rows come back in key order (`1, 2, 10`, not `1, 10, 2`). Unwritten
+  columns, type coercion and NOT NULL remain differences and are listed in
+  `docs/dry-run-and-executors.md`.
+
 ### Fixed
 
 - **An edited frozen handler is now drift after a restart, not only inside the
