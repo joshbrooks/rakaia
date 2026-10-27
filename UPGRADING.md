@@ -26,6 +26,14 @@ full, which broke read order and made a resume skip events. Open existing data
 with the size it was written with; a stream whose `meta.json` predates this adopts
 the size its segment filenames show, and one still in its first segment adopts
 the size you pass. There is no way to change the size of a stream that has data.
+## `prune_outcomes` keeps each event's latest record
+
+If you run `manage.py prune_outcomes`, the outcome table no longer shrinks to
+nothing: for every consumer, stream and subject the latest record stays however
+old it is, because a subject with no record reads as an event that succeeded.
+Nothing raises and no signature changes, but the same `--older-than-days` now
+deletes fewer rows, and `--dry-run` counts them the same way. To drop a kept
+record, delete that row yourself, knowing the event will then read as succeeded.
 
 ## Handler fingerprints now follow helpers and constants
 

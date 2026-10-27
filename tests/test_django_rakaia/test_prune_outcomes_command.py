@@ -16,9 +16,13 @@ from django.core.management.base import CommandError
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from django_rakaia.management.commands import prune_outcomes
 from django_rakaia.models import ConsumerOutcome
+from django_rakaia.outcomes import DjangoOutcomeStore
+from rakaia.outcomes import Outcome
 
 
 class _FrozenClock:
@@ -261,3 +265,149 @@ class TestTheBatchSize:
             )
 
         assert ConsumerOutcome.objects.count() == 1
+
+
+def _record(
+    *, subject: str, attempt: int, age: timedelta, consumer: str = "c", stream="s"
+) -> int:
+    """Record a real outcome through the store, then backdate it."""
+    DjangoOutcomeStore().record(
+        Outcome(
+            consumer=consumer,
+            stream_path=stream,
+            subject=subject,
+            offset="1",
+            sequence_key=subject,
+            stage="project",
+            status="failed",
+            reasons=("unhandled",),
+            attempt=attempt,
+        )
+    )
+    row = ConsumerOutcome.objects.order_by("-pk").first()
+    assert row is not None
+    ConsumerOutcome.objects.filter(pk=row.pk).update(recorded_at=timezone.now() - age)
+    return row.pk
+
+
+@pytest.mark.django_db
+class TestPruningKeepsTheLatestRecordPerSubject:
+    """Success writes no record, so a subject with no record reads as one that
+    worked. Pruning a skipped event's only failure record would therefore turn it
+    into a success, whatever its age. What the store reports as the latest record
+    for each subject is kept."""
+
+    def test_an_old_only_record_survives_so_the_event_does_not_read_as_succeeded(
+        self,
+    ):
+        only = _record(subject="row-1", attempt=1, age=timedelta(days=900))
+
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=io.StringIO())
+
+        assert list(ConsumerOutcome.objects.values_list("pk", flat=True)) == [only]
+        assert [o.subject for o in DjangoOutcomeStore().latest("c", "s")] == ["row-1"]
+
+    def test_older_attempts_of_the_same_subject_are_pruned(self):
+        first = _record(subject="row-1", attempt=1, age=timedelta(days=900))
+        second = _record(subject="row-1", attempt=2, age=timedelta(days=800))
+
+        out = io.StringIO()
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=out)
+
+        survivors = set(ConsumerOutcome.objects.values_list("pk", flat=True))
+        assert survivors == {second}
+        assert first not in survivors
+        assert "deleted=1" in out.getvalue()
+
+    def test_latest_is_unchanged_by_pruning(self):
+        _record(subject="a", attempt=1, age=timedelta(days=900))
+        _record(subject="a", attempt=2, age=timedelta(days=700))
+        _record(subject="b", attempt=1, age=timedelta(days=600))
+        _record(subject="c", attempt=1, age=timedelta(days=5))
+        before = DjangoOutcomeStore().latest("c", "s")
+
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=io.StringIO())
+
+        assert DjangoOutcomeStore().latest("c", "s") == before
+
+    def test_the_same_subject_under_two_consumers_keeps_one_record_each(self):
+        mine = _record(subject="x", attempt=1, age=timedelta(days=900), consumer="a")
+        theirs = _record(subject="x", attempt=1, age=timedelta(days=900), consumer="b")
+        other_stream = _record(
+            subject="x", attempt=1, age=timedelta(days=900), consumer="a", stream="t"
+        )
+
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=io.StringIO())
+
+        survivors = set(ConsumerOutcome.objects.values_list("pk", flat=True))
+        assert survivors == {mine, theirs, other_stream}
+
+    def test_a_dry_run_counts_what_a_real_run_would_delete(self):
+        _record(subject="a", attempt=1, age=timedelta(days=900))
+        _record(subject="a", attempt=2, age=timedelta(days=800))
+        _record(subject="b", attempt=1, age=timedelta(days=800))
+
+        out = io.StringIO()
+        call_command(
+            "prune_outcomes",
+            "--older-than-days",
+            "365",
+            "--dry-run",
+            stdout=out,
+        )
+
+        assert "deleted=1" in out.getvalue()
+        assert ConsumerOutcome.objects.count() == 3
+
+    def test_a_repeat_of_the_same_attempt_keeps_the_later_row(self):
+        """`latest` lets the last write win on a tie; so must the keeper."""
+        first = _record(subject="a", attempt=1, age=timedelta(days=900))
+        second = _record(subject="a", attempt=1, age=timedelta(days=800))
+
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=io.StringIO())
+
+        survivors = set(ConsumerOutcome.objects.values_list("pk", flat=True))
+        assert survivors == {second}
+        assert first not in survivors
+
+    def test_a_higher_attempt_beats_a_later_written_lower_one(self):
+        """Attempt, not write order, decides -- as it does in `latest`."""
+        higher = _record(subject="a", attempt=2, age=timedelta(days=900))
+        _record(subject="a", attempt=1, age=timedelta(days=800))
+
+        call_command("prune_outcomes", "--older-than-days", "365", stdout=io.StringIO())
+
+        assert list(ConsumerOutcome.objects.values_list("pk", flat=True)) == [higher]
+
+
+@pytest.mark.django_db
+class TestPruningNeverChangesWhatLatestReports:
+    """Property: whatever the ages and attempts, pruning leaves `latest` as it was."""
+
+    @settings(
+        max_examples=40,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    @given(
+        rows=st.lists(
+            st.tuples(
+                st.sampled_from(["a", "b", "c"]),
+                st.integers(min_value=1, max_value=3),
+                st.integers(min_value=0, max_value=900),
+            ),
+            max_size=12,
+        ),
+        days=st.integers(min_value=0, max_value=900),
+    )
+    def test_every_subjects_latest_record_survives(self, rows, days):
+        ConsumerOutcome.objects.all().delete()
+        for subject, attempt, age in rows:
+            _record(subject=subject, attempt=attempt, age=timedelta(days=age))
+        before = DjangoOutcomeStore().latest("c", "s")
+
+        call_command(
+            "prune_outcomes", "--older-than-days", str(days), stdout=io.StringIO()
+        )
+
+        assert DjangoOutcomeStore().latest("c", "s") == before

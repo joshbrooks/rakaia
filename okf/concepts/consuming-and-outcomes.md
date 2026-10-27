@@ -83,6 +83,8 @@ Imported from `django_rakaia`:
   `commit_cursor` (`generation=poll.generation` saves the stream stamp beside the offset).
 * `manage.py prune_outcomes --older-than-days N` — retention. No default age:
   the right period differs per installation and a wrong guess deletes evidence.
+  It keeps the latest record for each consumer, stream and subject however old, so a
+  skipped event never starts reading as a success; only older attempts are deleted.
 * A read-only admin for the records, the one screen this library's operational
   bookkeeping gets.
 

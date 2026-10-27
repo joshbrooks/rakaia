@@ -62,6 +62,11 @@ runnable demo for each.
   re-read before the caller could reset what it had built. It now applies nothing,
   leaves the cursor alone, and returns status `rewound` with the new
   `Consumed.needs_rebuild` set. See `UPGRADING.md`.
+- **`prune_outcomes` no longer turns a skipped event into a success.** A consumer
+  writes nothing when an event works, so deleting the only failure record of an old
+  event made it read as one that succeeded. The command now keeps the latest record
+  for each consumer, stream and subject however old, and deletes only older attempts
+  and records this version cannot read. See `UPGRADING.md`.
 - **A consumer notices that its stream was deleted and recreated, or expired.**
   Offsets keep rising across a recreate, so the unread events were skipped without
   a word. Each stream now carries a stamp that changes when it is recreated
