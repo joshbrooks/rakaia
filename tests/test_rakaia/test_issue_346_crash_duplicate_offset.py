@@ -9,10 +9,6 @@ from rakaia.jsonl_store import JsonlStreamStore
 PATH = "s"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GitHub #346: head comes from stale meta.json, so the next append reuses a logged offset",
-)
 def test_crash_between_log_and_meta_does_not_reuse_an_offset(tmp_path):
     store = JsonlStreamStore(tmp_path / "streams", fsync=False)
     store.create(PATH)

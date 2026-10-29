@@ -40,6 +40,12 @@ runnable demo for each.
 
 ### Fixed
 
+- **A file-backed stream no longer reuses an offset after a crash.** If the
+  process died just after writing an event and before saving the stream's
+  bookkeeping, the next start handed the same offset to a new event. The store
+  now takes the head from the log itself whenever it is ahead of the saved copy,
+  at the cost of reading one line from the end of the last segment on each open.
+
 - **An edited frozen handler is now drift after a restart, not only inside the
   process that edited it.** The hash a handler was first registered with is read
   back from the registration log and compared with the live function, so replay

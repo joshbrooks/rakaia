@@ -376,8 +376,11 @@ class JsonlStreamStore:
             # what is not. This is the property the layout is chosen for.
             raw = {}
         meta = _Meta.from_json(raw)
-        if not raw:
-            meta.head = self._scan_head(path)
+        # The log is written before `meta.json`, so a process that died between
+        # the two leaves a log ahead of its cache. The head is whichever is
+        # higher, or the next append reissues an offset already in the log (#346).
+        # A fresh `meta.json` costs one read of the last segment's final line.
+        meta.head = max(meta.head, self._scan_head(path))
         # Only a stream with a TTL has a sliding window, so only that stream
         # pays the extra read. Loading it unconditionally cost an `open()` on
         # every append to every stream, for a field nothing would consult.
@@ -446,16 +449,38 @@ class JsonlStreamStore:
             os.close(fd)
 
     def _scan_head(self, path: str) -> int:
-        """The highest entry id in the log, by reading the last segment.
+        """The highest entry id in the log, by reading the end of the last segment.
 
-        The recovery path: what the head *is* when `meta.json` cannot say.
+        Reads backwards in blocks until it has one complete line, so the cost is
+        a line, not the segment. A trailing line with no newline is a crash
+        mid-append and is skipped, as `_read_segment` skips it.
         """
         segments = self._segments(path)
         if not segments:
             return 0
-        for record in reversed(list(self._read_segment(segments[-1]))):
-            return int(record["id"])
-        return 0
+        try:
+            with segments[-1].open("rb") as fh:
+                end = fh.seek(0, os.SEEK_END)
+                size = 4096
+                while True:
+                    start = max(0, end - size)
+                    fh.seek(start)
+                    chunk = fh.read(end - start)
+                    # Complete lines only: drop the torn tail, and drop the first
+                    # fragment unless the chunk reaches the start of the file.
+                    lines = chunk.split(b"\n")[:-1]
+                    if start > 0:
+                        lines = lines[1:]
+                    for line in reversed(lines):
+                        try:
+                            return int(json.loads(line)["id"])
+                        except (ValueError, KeyError):
+                            continue
+                    if start == 0:
+                        return 0
+                    size *= 2
+        except FileNotFoundError:
+            return 0
 
     @contextmanager
     def _locked(
