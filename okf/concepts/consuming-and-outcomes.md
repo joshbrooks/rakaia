@@ -36,7 +36,9 @@ Imported from `rakaia`:
 
 * `poll(store, path, cursor) -> Poll` — the incremental read. `PollStatus` is
   `fresh` / `advanced` / `caught_up` / `rewound` / `absent`; `rewound` means the
-  log shrank beneath the cursor and derived state must be reset first.
+  log shrank beneath the cursor. `poll` still returns the re-read; `consume`
+  applies nothing, leaves the cursor alone, and sets `Consumed.needs_rebuild`, and
+  the operator rebuilds — nothing resets automatically.
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.

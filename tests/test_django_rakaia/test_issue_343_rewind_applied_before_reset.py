@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rakaia.store import StreamStore
 from rakaia.subscription import consume
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GitHub #343: consume applies a rewound re-read before derived state can be reset",
-)
 def test_a_rewound_stream_is_not_applied_before_the_caller_can_reset() -> None:
     store = StreamStore()
     store.create("s")

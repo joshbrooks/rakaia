@@ -40,6 +40,11 @@ runnable demo for each.
 
 ### Fixed
 
+- **A consumer whose stream went backwards no longer re-applies it.** When the
+  log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
+  re-read before the caller could reset what it had built. It now applies nothing,
+  leaves the cursor alone, and returns status `rewound` with the new
+  `Consumed.needs_rebuild` set. See `UPGRADING.md`.
 - **A file-backed stream no longer reuses an offset after a crash.** If the
   process died just after writing an event and before saving the stream's
   bookkeeping, the next start handed the same offset to a new event. The store

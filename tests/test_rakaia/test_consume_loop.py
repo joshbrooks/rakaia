@@ -322,7 +322,8 @@ class TestTheLoopIsStillAPoll:
 
     def test_a_rewound_pass_is_reported_rather_than_absorbed(self) -> None:
         """The loop does not reset derived state for the caller — it cannot know
-        what the derived state is — so `rewound` still has to reach them."""
+        what the derived state is — so `rewound` still has to reach them, and it
+        applies nothing until they have (GitHub #343)."""
         store = _store_with("s", [b"a", b"b"])
         result = consume(
             store,
@@ -334,7 +335,8 @@ class TestTheLoopIsStillAPoll:
         )
 
         assert result.status == "rewound"
-        assert result.applied == 2
+        assert result.applied == 0
+        assert result.cursor == "zzzzzzzz"
 
 
 def _always_raises(_message: StreamMessage) -> None:

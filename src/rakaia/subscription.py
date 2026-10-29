@@ -90,7 +90,6 @@ def poll(store: CursorStore, path: str, cursor: str | None) -> Poll:
         store: a `ReadableStore` that also exposes ``get_current_offset``.
         path: the stream to poll.
         cursor: the last offset this consumer applied, or ``None`` on first poll.
-
     Returns:
         A `Poll`. Persist ``.cursor`` only after the messages are applied, so a
         crash mid-apply re-delivers rather than skips (at-least-once). A
@@ -183,6 +182,13 @@ class Consumed:
     """``on_error="halt"`` stopped the pass. Messages after the failure were not
     applied and are still pending."""
 
+    @property
+    def needs_rebuild(self) -> bool:
+        """The stream went backwards beneath this consumer (``rewound``). Nothing was
+        applied and the cursor did not move; the consumer's derived state no
+        longer matches the log and has to be rebuilt by the operator."""
+        return self.status == "rewound"
+
 
 def consume(
     store: CursorStore,
@@ -254,10 +260,23 @@ def consume(
             log is not this loop's to record.
         sequence_of: what a message is ordered *within*. Defaults to the subject.
 
+    **A stream that went backwards applies nothing.** The status
+    is ``rewound`` (`Consumed.needs_rebuild`), the cursor does
+    not move, and no automatic reset happens: derived rows built from events no
+    longer in the log are never removed by re-reading, so the operator rebuilds.
+
     Returns:
         A `Consumed` describing the pass.
     """
     result = poll(store, path, cursor)
+    if result.status == "rewound":
+        return Consumed(
+            status=result.status,
+            applied=0,
+            outcomes=(),
+            cursor=cursor,
+            halted=False,
+        )
     subject_of = subject_of or (lambda message: message.offset)
     sequence_of = sequence_of or subject_of
 

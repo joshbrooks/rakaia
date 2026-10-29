@@ -39,7 +39,7 @@ result = poll(store, "submissions", cursor)
 | `fresh` | first poll (no prior cursor) — every message returned |
 | `advanced` | new messages since the cursor — the delta returned |
 | `caught_up` | cursor is at the head — nothing new (`result.caught_up`) |
-| `rewound` | cursor sorts **past** the head — the log was rebuilt beneath it; re-read from the start and reset derived state (`result.rewound`) |
+| `rewound` | cursor sorts **past** the head — the log was rebuilt beneath it. `poll` returns the re-read (`result.rewound`); `consume` applies none of it, so rebuild the derived state first |
 | `absent` | the stream does not exist |
 
 ## At-least-once: poll, apply, *then* commit
@@ -163,7 +163,10 @@ a stream recreated at a path issues offsets strictly greater than any it issued
 before (the in-memory store bumps the offset's `read_seq` generation; the
 EventStoreDB `$all` / Kinesis model). So a normal delete+recreate can never
 collide with a stale cursor — the recreated content sorts *past* it and is
-delivered as an ordinary `advanced`, with no silent skip. `rewound` is therefore
+delivered as an ordinary `advanced`, with no silent skip. A `rewound` pass stops
+([#343](https://github.com/joshbrooks/rakaia/issues/343)): `consume` applies none
+of the re-read and leaves the cursor, so rebuild the derived state, then start the
+consumer again. `rewound` is therefore
 a **defensive** status: it fires only for a genuinely truncated log, or a cursor
 carried over from a different stream, where the head really does sort before the
 cursor.
