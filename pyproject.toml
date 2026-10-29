@@ -57,6 +57,7 @@ dev = [
     "django>=4.2",
     "django-types>=0.23.0",
     "pytest-django>=4.9.0",
+    "hypothesis>=6.170.13",
 ]
 postgres = [
     # Only needed to run the test suite with RAKAIA_TEST_DB=postgres, which is
