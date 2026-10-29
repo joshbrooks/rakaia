@@ -42,8 +42,8 @@ jobs:
           # once carried a few hundred lines of unrelated marker churn (#118).
           version: "0.13.0"
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python 3.13
+        run: uv python install 3.13
 
       # Guard against tagging v1.2.3 while pyproject.toml still says 0.1.0.
       - name: Check tag matches project version

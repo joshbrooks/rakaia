@@ -81,7 +81,7 @@ class Subclassed(_Ci, enum.Enum):
     YES = _Ci("y")
 
 
-class LooseEq(str, enum.Enum):
+class LooseEq(str, enum.Enum):  # noqa: UP042 - a plain str+Enum on purpose; StrEnum changes str()
     """Plain `str` values, but equality overridden on the enum itself — so two
     members with values 'y' and 'Y' compare and hash alike."""
 

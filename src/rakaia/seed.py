@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import Any, TypeVar, Union, overload
+from typing import Any, Union, overload
 
 from .protocols import WritableStore
 from .store import StreamStore
@@ -56,17 +56,15 @@ SeedEvent = Union[
     "tuple[dict[str, Any] | bytes, AppendOptions | None]",
 ]
 
-_S = TypeVar("_S", bound=WritableStore)
-
 
 @overload
-def seed_stream(
+def seed_stream[S: WritableStore](
     path: str,
     events: Iterable[SeedEvent] = ...,
     *,
-    store: _S,
+    store: S,
     encoder: type[json.JSONEncoder] | None = ...,
-) -> _S: ...
+) -> S: ...
 
 
 @overload
@@ -79,13 +77,13 @@ def seed_stream(
 ) -> StreamStore: ...
 
 
-def seed_stream(
+def seed_stream[S: WritableStore](
     path: str,
     events: Iterable[SeedEvent] = (),
     *,
-    store: _S | None = None,
+    store: S | None = None,
     encoder: type[json.JSONEncoder] | None = None,
-) -> _S | StreamStore:
+) -> S | StreamStore:
     """Create ``path`` and append ``events`` to it, in list order.
 
     ``events`` are payloads — dicts, which are JSON-encoded, or ``bytes``, which

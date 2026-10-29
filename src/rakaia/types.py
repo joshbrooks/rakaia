@@ -157,8 +157,8 @@ class EnvelopeMetadata(TypedDict, total=False):
     request-scoped `provenance()` block conventionally carries.
 
     The ``metadata`` fields accept this *or any* ``dict[str, Any]``, so extra
-    keys are not an error. ``total=False`` on the class rather than
-    ``NotRequired`` per key keeps it importable on Python 3.10.
+    keys are not an error. Every key is optional, so ``total=False`` on the
+    class.
     """
 
     user: Any

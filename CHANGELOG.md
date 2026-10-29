@@ -23,6 +23,9 @@ runnable demo for each.
 
 ### Changed
 
+- **Python 3.13 or newer is now required.** partisipa-import, the main
+  consumer, is moving to 3.13. On anything older, pip will not install this
+  release; it picks `0.9.x` instead.
 - **A dry run runs the checks a real write runs.** `CollectingExecutor` raises
   `EffectCollisionError`, `UnresolvedRefError` or `ValueError` for a batch the real
   write would reject, and returns a report with the upsert and retire-flip counts a

@@ -11,7 +11,7 @@ table by correcting the code and re-running, without touching the data.
 It takes about ten minutes. Everything here was run start to finish against
 `rakaia-streams` 0.2.0 and Django 6.1; the output shown is the real output.
 
-You need Python 3.10 or newer. You don't need to know any event-sourcing
+You need Python 3.13 or newer. You don't need to know any event-sourcing
 vocabulary — see the [glossary](glossary.md) if a word here is unfamiliar.
 
 ## 1. Install

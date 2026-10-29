@@ -191,8 +191,17 @@ git -C <repo> fetch --all -q
 git -C <repo> show origin/main:backend/pyproject.toml   # what partisipa pins
 git -C <repo> show origin/main:backend/uv.lock          # what it resolves
 git -C ~/github/catalpainternational/ansible show \
-    origin/partisipa-staging:host_vars/partisipa-production.yaml   # what a host runs
+    origin/partisipa:host_vars/partisipa-production.yaml   # what partisipa-import production runs
 ```
+
+That host file names only a partisipa-import tag (`git_version`); it does not say
+which Python runs. Production is not containerised: ansible installs it with uv,
+which picks the newest interpreter the tag's `requires-python` allows, so only
+the host can answer (`/var/www/partisipa/env/bin/python --version`). The
+`3.12-bookworm` image in the tag's `containers.yml` is staging's and the
+development copies', not production's; the two differed on 2026-10-29 (3.12.16
+and 3.13.7). `host_vars/partisipa.yaml` on ansible's default branch is the older
+`partisipa` app (p7a), not this one.
 
 Read from `origin/<branch>`, never from a working tree — yours or a sibling's —
 and never from a document that quotes it. A tag is not a release, a release is

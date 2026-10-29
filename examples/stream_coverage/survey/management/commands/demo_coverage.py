@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from typing import Any
 
@@ -122,9 +122,7 @@ class Command(BaseCommand):
         # Set the change time explicitly, a second after the newest event, rather
         # than trusting the clock to have moved on since step 1.
         newest = StreamEvent.objects.aggregate(t=Max("event_ts"))["t"]
-        changed_at = datetime.fromtimestamp(newest, tz=timezone.utc) + timedelta(
-            seconds=1
-        )
+        changed_at = datetime.fromtimestamp(newest, tz=UTC) + timedelta(seconds=1)
         edited = list(
             Submission.objects.order_by("pk").values_list("pk", flat=True)[:2]
         )

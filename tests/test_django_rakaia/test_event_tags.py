@@ -235,8 +235,8 @@ class TestTheEventListing:
             self.other,
         ]
         assert self._ids(client, until="2000-01-01T00:00:00+00:00") == []
-        # A trailing `Z`. Only Python 3.10 rejects it without the view's own
-        # handling, so this can go red only on 3.10; later versions pass anyway.
+        # A trailing `Z` or `z`; `fromisoformat` rejects the lower-case one
+        # without the view's own handling.
         assert self._ids(client, until="2000-01-01T00:00:00Z") == []
         assert self._ids(client, until="2000-01-01T00:00:00z") == []
         assert self._ids(client, since="2000-01-01T00:00:00Z") == [
