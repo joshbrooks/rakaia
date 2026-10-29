@@ -223,6 +223,31 @@ def test_delete_takes_the_stream_path_away_before_it_empties_the_directory(
     assert not list((root / "%retired").glob("%trash-*"))
 
 
+def test_another_deletes_sweep_spares_a_directory_still_being_emptied(
+    root, monkeypatch
+):
+    """A rename keeps the stream directory's old mtime; a stream last written
+    long ago must not look abandoned to a sweep while its delete empties it."""
+    import rakaia.jsonl_store as module
+
+    store = JsonlStreamStore(root, segment_size=4)
+    store.create(PATH)
+    store.append(PATH, b"one")
+    old = time.time() - 3600
+    os.utime(root / PATH, (old, old))
+    ages: list[float] = []
+    real_rmtree = module.shutil.rmtree
+
+    def rmtree_noting_how_old_it_looks(target, *args, **kwargs):
+        ages.append(time.time() - target.stat().st_mtime)
+        return real_rmtree(target, *args, **kwargs)
+
+    monkeypatch.setattr(module.shutil, "rmtree", rmtree_noting_how_old_it_looks)
+    store.delete(PATH)
+
+    assert ages and ages[0] < module._TRASH_GRACE_SECONDS
+
+
 def test_a_delete_cleans_up_the_leftovers_of_one_that_died_mid_removal(root):
     store = JsonlStreamStore(root, segment_size=4)
     store.create(PATH)

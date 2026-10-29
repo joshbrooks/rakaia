@@ -926,6 +926,10 @@ class JsonlStreamStore:
         # directory after left a gap in which a waiter's `open` recreated it.
         gone = self.root / _RETIRED_DIR / f"%trash-{uuid.uuid4().hex}"
         d.rename(gone)
+        # A rename keeps the directory's old mtime, so without this a stream
+        # last written over a minute ago would look abandoned to another
+        # delete's sweep while this one is still emptying it.
+        os.utime(gone)
         shutil.rmtree(gone)
         self._sweep_trash()
 
