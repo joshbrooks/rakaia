@@ -176,3 +176,67 @@ def test_a_different_auto_now_time_is_not_a_difference():
     diffs = _diff_cursors()
 
     assert len(diffs) == 1 and diffs[0].ok, diffs
+
+
+def _registry_keyed_by_suku():
+    from rakaia.registry import HandlerRegistry
+
+    reg = HandlerRegistry()
+    reg.register(
+        name="fin",
+        event_match=PATH,
+        fn=lambda e: [
+            Upsert(
+                model_label="test_django_rakaia.FinanceLine",
+                lookup={"suku": e["suku"]},
+                defaults={"delta": e["delta"], "submission_id": e["id"]},
+            )
+        ],
+        effective_from=0,
+    )
+    return reg
+
+
+def test_a_second_live_row_behind_the_same_key_fails_the_rebuild():
+    _seed_log({"id": "a", "suku": "s", "delta": 1})
+    _live(
+        {"id": "a", "suku": "s", "delta": 1},
+        {"id": "b", "suku": "s", "delta": 1},
+    )
+
+    report = rebuild_and_verify(
+        PATH,
+        into="overlay",
+        live_models=[FinanceLine],
+        registry=_registry_keyed_by_suku(),
+    )
+
+    assert not report.certified
+    assert "<row count>" in str(report)
+
+
+def test_equal_numbers_of_rows_behind_a_key_are_compared_as_a_set():
+    from django_rakaia.verification import _diff_tables
+
+    for alias, deltas in (("overlay", (1, 2)), ("default", (2, 1))):
+        for d in deltas:
+            FinanceLine.objects.using(alias).create(
+                submission_id=f"r{d}", suku="s", delta=d
+            )
+    eff = [
+        Upsert(
+            model_label="test_django_rakaia.FinanceLine",
+            lookup={"suku": "s"},
+            defaults={"delta": 1},
+        )
+    ]
+    same = _diff_tables(
+        [FinanceLine], rebuilt_using="overlay", live_using="default", effects=eff
+    )
+    assert all(r.ok for r in same)
+
+    FinanceLine.objects.using("default").filter(delta=1).update(delta=7)
+    differ = _diff_tables(
+        [FinanceLine], rebuilt_using="overlay", live_using="default", effects=eff
+    )
+    assert [r for r in differ if not r.ok]

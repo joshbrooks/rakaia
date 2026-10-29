@@ -33,7 +33,7 @@ From `django_rakaia`:
   against the ORM.
 * `diff_effects_against_rows` — migration/verification helper.
 * `rebuild_and_verify` — compares the rebuilt table with the live table over `live_models`
-  in both directions; a `RowDiff` says which side holds a row the other lacks.
+  in both directions; a `RowDiff` says which side holds a row the other lacks, and rows sharing a key are counted.
 * `stream_coverage` and `manage.py check_stream_coverage` — check that a stream
   still has an event for every row of the table it is written from.
 * SSE views + Channels signals for live broadcast; the view needs a signed-in user.

@@ -5,6 +5,9 @@
 * **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — `JsonlStreamStore`
   records `segment_size` per stream and raises the new exported `SegmentSizeMismatch` when opened
   with another; deletes and creates take the stream lock (GitHub #346).
+* **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
+  counts rows that share a key instead of collapsing them, so a second live row behind one
+  upsert key now fails the check.
 
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
   `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the

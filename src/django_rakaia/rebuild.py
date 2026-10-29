@@ -24,7 +24,8 @@ refuses a from-scratch claim it cannot honour, and returns a
 ``into`` table is compared with the **live** table in both directions
 (`verification._diff_tables`): a live row the log never
 produced, a rebuilt row missing from live, and a row whose fields differ all fail,
-and the report names the model, key and side. Effects aimed at any other model are
+and the report names the model, key and side (rows sharing a key are counted, not
+collapsed). Effects aimed at any other model are
 still checked one way, by
 :func:`~django_rakaia.verification.diff_effects_against_rows`. The ``into`` alias
 also lets a stage > 0 handler read what stage 0 wrote, which a

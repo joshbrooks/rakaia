@@ -73,7 +73,8 @@ Two consequences to check before you rely on it. A model you list in `live_model
 that no effect writes now fails if it has live rows, because those are rows the log
 never produced: leave out any table the log does not own. And a row is matched by
 the lookup fields its upsert uses (a model with no upsert is matched by primary key),
-so two rows that share those fields count as one.
+and rows that share those fields are counted: a different number on each side fails,
+and equal numbers are compared as a set.
 
 ## Replay can now report drift that used to pass in silence
 

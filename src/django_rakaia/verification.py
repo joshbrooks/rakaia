@@ -388,7 +388,9 @@ def _diff_tables(
     A row is identified by the lookup fields the replay's upserts used for that
     model (``effects`` supplies them), or by primary key when the model has no
     upsert. Reports a row only in live, a row only in the rebuild, and a row whose
-    stored fields differ. Fields the database fills in itself (primary key,
+    stored fields differ. Rows that share a key are counted, not collapsed: a
+    different number on each side is a difference, and equal counts are compared
+    as sets of rows. Fields the database fills in itself (primary key,
     ``auto_now`` / ``auto_now_add``) are not compared.
     """
     norms = DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
@@ -413,10 +415,24 @@ def _diff_tables(
         ]
 
         def load(alias: str, model: type = model, key_attrs: list[str] = key_attrs):
-            return {
-                tuple(getattr(r, a) for a in key_attrs): r
-                for r in model.objects.using(alias).all().iterator()  # type: ignore[attr-defined]
-            }
+            grouped: dict[tuple, list[Any]] = {}
+            for r in model.objects.using(alias).all().iterator():  # type: ignore[attr-defined]
+                grouped.setdefault(tuple(getattr(r, a) for a in key_attrs), []).append(
+                    r
+                )
+            return grouped
+
+        def shape(rows: list[Any], model: type = model, compared=compared) -> list:
+            return sorted(
+                (
+                    tuple(
+                        _canonical(model, f.name, getattr(r, f.attname), norms)
+                        for f in compared
+                    )
+                    for r in rows
+                ),
+                key=repr,
+            )
 
         rebuilt, live = load(rebuilt_using), load(live_using)
         label = meta.label
@@ -426,11 +442,22 @@ def _diff_tables(
                 out.append(RowDiff(label, lookup, missing=False, only_in="rebuilt"))
             elif key not in rebuilt:
                 out.append(RowDiff(label, lookup, missing=False, only_in="live"))
+            elif len(rebuilt[key]) != len(live[key]):
+                # Two live rows behind one key are two rows, not one.
+                diffs = [FieldDiff("<row count>", len(rebuilt[key]), len(live[key]))]
+                out.append(RowDiff(label, lookup, missing=False, field_diffs=diffs))
+            elif len(rebuilt[key]) > 1:
+                diffs = []
+                if shape(rebuilt[key]) != shape(live[key]):
+                    diffs.append(
+                        FieldDiff("<rows>", shape(rebuilt[key]), shape(live[key]))
+                    )
+                out.append(RowDiff(label, lookup, missing=False, field_diffs=diffs))
             else:
                 diffs = []
                 for f in compared:
-                    exp = getattr(rebuilt[key], f.attname)
-                    act = getattr(live[key], f.attname)
+                    exp = getattr(rebuilt[key][0], f.attname)
+                    act = getattr(live[key][0], f.attname)
                     if _canonical(model, f.name, exp, norms) != _canonical(
                         model, f.name, act, norms
                     ):

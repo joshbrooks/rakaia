@@ -84,7 +84,8 @@ runnable demo for each.
 - **`rebuild_and_verify` now compares the rebuilt table with the live table in both
   directions.** A live row the log never produced, a row the log deleted that is still
   live, and a row a later event overwrote used to pass or fail by accident; each now
-  fails, and the report names the model, key and which side holds the row.
+  fails, and the report names the model, key and which side holds the row. Two live
+  rows behind one key are counted as two, not collapsed into one.
 - **Saving a `@stream_model` model now follows the same rules as every other
   append.** The event used to be written straight to the database, so it landed in
   a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
