@@ -19,6 +19,7 @@ because what each one is defending is the property and not the call.
 from __future__ import annotations
 
 import inspect
+from typing import Any
 
 import pytest
 
@@ -397,3 +398,34 @@ class TestAStreamThatIsNotTheOneTheCursorWasSavedAgainst:
 
         assert result.status == "replaced" and result.needs_rebuild
         assert result.applied == 0 and result.cursor == cursor and committed == []
+
+    def test_a_transient_error_stops_the_pass_and_is_retried_next_run(self) -> None:
+        class Blip(Exception):
+            pass
+
+        store = _store_with("s", [b"a", b"b"])
+        committed: list[str] = []
+        outcomes = InMemoryOutcomeStore()
+        calls: list[bytes] = []
+
+        def apply(m: StreamMessage) -> None:
+            calls.append(m.data)
+            if m.data == b"b" and calls.count(b"b") == 1:
+                raise Blip
+
+        kwargs: dict[str, Any] = {
+            "apply": apply,
+            "consumer": "c",
+            "on_error": "skip",
+            "outcomes": outcomes,
+            "commit": committed.append,
+            "transient": (Blip,),
+        }
+        first = consume(store, "s", **kwargs)
+        assert first.transient and first.halted and first.applied == 1
+        assert committed == [store.read("s")[0][0].offset]
+        assert outcomes.latest("c", "s") == []
+
+        second = consume(store, "s", cursor=committed[-1], **kwargs)
+        assert not second.transient and second.applied == 1
+        assert calls == [b"a", b"b", b"b"]

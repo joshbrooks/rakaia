@@ -13,7 +13,7 @@ from django.db import OperationalError
 
 from django_rakaia.consumer import django_consumer
 from django_rakaia.django_store import DjangoStreamStore
-from django_rakaia.models import ConsumerCursor, Stream
+from django_rakaia.models import ConsumerCursor, ConsumerOutcome, Stream
 
 
 def _stream(*payloads: bytes) -> DjangoStreamStore:
@@ -85,3 +85,21 @@ class TestReplacedStream:
         assert not result.needs_rebuild and seen == [b"b"]
         row = ConsumerCursor.objects.get(consumer_id="c", stream_path="s")
         assert row.generation == store.get_generation("s")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_dropped_connection_is_retried_not_recorded_as_a_failure() -> None:
+    store = _stream(b"a")
+    consumer = django_consumer(store, "s", "c")
+
+    def drop(_message):
+        raise OperationalError("server closed the connection unexpectedly")
+
+    first = consumer.run(drop, on_error="skip")
+    assert first.transient and first.halted
+    assert not ConsumerOutcome.objects.exists()
+    assert not ConsumerCursor.objects.exists()
+
+    seen: list[bytes] = []
+    second = consumer.run(lambda m: seen.append(m.data), on_error="skip")
+    assert seen == [b"a"] and second.applied == 1

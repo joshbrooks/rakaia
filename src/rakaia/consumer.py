@@ -121,6 +121,10 @@ class Consumer:
     sequence_of: Callable[[StreamMessage], str] | None = None
     """What a message is ordered *within*. Defaults to the subject."""
 
+    transient: tuple[type[BaseException], ...] | None = None
+    """Exception types that mean "try again later", as `consume` takes them.
+    ``None`` uses the ones registered, which `django_rakaia` fills in."""
+
     def run(
         self,
         apply: Callable[[StreamMessage], Iterable[Outcome] | None],
@@ -164,4 +168,5 @@ class Consumer:
                     self.name, self.path, generation
                 )
             ),
+            transient=self.transient,
         )

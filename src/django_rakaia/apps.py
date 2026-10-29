@@ -20,6 +20,14 @@ class DjangoRakaiaConfig(AppConfig):
 
         autodiscover()
 
+        # A dropped connection or a deadlock is "try again later", not a bad
+        # event; core rakaia cannot name them without importing Django.
+        from django.db import InterfaceError, OperationalError
+
+        from rakaia.subscription import register_transient_errors
+
+        register_transient_errors(OperationalError, InterfaceError)
+
         # Protocol tier: SSE broadcasting via Django Channels. Wired only when
         # wanted, so `channels`/`daphne` stay an optional extra for framework
         # consumers (they are in `[project.optional-dependencies]`).

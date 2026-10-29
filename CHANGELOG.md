@@ -52,6 +52,12 @@ runnable demo for each.
   `ConsumerCursor`, migration `0014`); the consumer saves it beside its cursor and,
   on a mismatch, stops exactly as for a rewind, with status `replaced`. A cursor
   saved before the upgrade adopts the stream's current stamp. See `UPGRADING.md`.
+- **A dropped connection or a deadlock is no longer recorded as a failed event.**
+  Under `on_error="skip"` it was skipped for good. `consume` now stops the pass
+  with `Consumed.transient` set, writes no outcome and leaves the cursor below the
+  event, so the next run retries it. `django_rakaia` registers `OperationalError`
+  and `InterfaceError`; core `rakaia` takes `transient=` or
+  `rakaia.subscription.register_transient_errors`. See `UPGRADING.md`.
 - **A file-backed stream no longer reuses an offset after a crash.** If the
   process died just after writing an event and before saving the stream's
   bookkeeping, the next start handed the same offset to a new event. The store

@@ -33,6 +33,7 @@ stream, where the head really does sort before the cursor.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
@@ -42,6 +43,8 @@ from .offsets import after as offsets_after
 from .outcomes import Outcome
 from .protocols import CursorStore, OutcomeStore
 from .types import StreamMessage
+
+_log = logging.getLogger("rakaia.subscription")
 
 PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "replaced", "absent"]
 """Outcome of a `poll`:
@@ -155,6 +158,22 @@ def generation_of(store: object, path: str) -> str | None:
     return None if getter is None else getter(path)
 
 
+_TRANSIENT_ERRORS: list[type[BaseException]] = []
+
+
+def register_transient_errors(*types: type[BaseException]) -> None:
+    """Say which exceptions mean "try again later" rather than "this event is bad".
+
+    Core rakaia imports no database library, so it cannot name a dropped
+    connection itself; `django_rakaia` registers ``OperationalError`` and
+    ``InterfaceError`` when it loads. Anything registered here is what `consume`
+    treats as transient unless the caller passes ``transient=`` explicitly.
+    """
+    for exc_type in types:
+        if exc_type not in _TRANSIENT_ERRORS:
+            _TRANSIENT_ERRORS.append(exc_type)
+
+
 def _tail(messages: list[StreamMessage], fallback: str) -> str:
     """The last message's offset, or `fallback` when there are no messages."""
     return messages[-1].offset if messages else fallback
@@ -211,8 +230,14 @@ class Consumed:
     polled. Below the poll's cursor when the pass halted."""
 
     halted: bool
-    """``on_error="halt"`` stopped the pass. Messages after the failure were not
-    applied and are still pending."""
+    """The pass stopped before the end of what it read: ``on_error="halt"`` hit a
+    failure, or `transient` is set. Messages from there on were not applied and
+    are still pending."""
+
+    transient: bool = False
+    """The apply raised a "try again later" error (a dropped connection, a
+    deadlock). Nothing was recorded for it and the cursor is still below it, so
+    run the consumer again; ``halted`` is set too."""
 
     @property
     def needs_rebuild(self) -> bool:
@@ -237,6 +262,7 @@ def consume(
     sequence_of: Callable[[StreamMessage], str] | None = None,
     generation: str | None = None,
     commit_generation: Callable[[str], None] | None = None,
+    transient: tuple[type[BaseException], ...] | None = None,
 ) -> Consumed:
     """Poll `path`, apply each message, record any outcome, then commit.
 
@@ -299,6 +325,10 @@ def consume(
         commit_generation: called with the stream's stamp the first time this
             consumer sees it (a first run, or a cursor from before stamps), and
             after the first committed offset when there was no cursor yet.
+        transient: exception types that mean "try again later". Defaults to
+            those `django_rakaia` registered. An apply that raises one stops the
+            pass with ``Consumed.transient`` set, records nothing and leaves the
+            cursor where it was, under either `on_error`.
 
     **A stream that went backwards or was replaced applies nothing.** The status
     is ``rewound`` or ``replaced`` (`Consumed.needs_rebuild`), the cursor does
@@ -310,6 +340,15 @@ def consume(
     """
     result = poll(store, path, cursor, generation=generation)
     if result.status in ("rewound", "replaced"):
+        # Said out loud as well as returned: nothing in the library runs the
+        # consumer, so a caller that ignores the status would stall in silence.
+        _log.error(
+            "Consumer %r stopped on %r: the stream was %s, so its derived data "
+            "no longer matches the log. Nothing was applied; rebuild it.",
+            consumer,
+            path,
+            "rewound" if result.status == "rewound" else "deleted and recreated",
+        )
         return Consumed(
             status=result.status,
             applied=0,
@@ -317,6 +356,7 @@ def consume(
             cursor=cursor,
             halted=False,
         )
+    transient_types = tuple(_TRANSIENT_ERRORS) if transient is None else transient
     current_generation = (
         generation_of(store, path) if result.status != "absent" else None
     )
@@ -354,6 +394,25 @@ def consume(
         try:
             emitted = apply(message)
         except Exception as exc:
+            if transient_types and isinstance(exc, transient_types):
+                # Not a bad event: the database blinked. Writing a failure for
+                # it would skip it for good under "skip", so write nothing and
+                # leave the cursor below it for the next run.
+                _log.warning(
+                    "Consumer %r paused on %r at a temporary error (%s); "
+                    "it will retry on the next run.",
+                    consumer,
+                    path,
+                    type(exc).__name__,
+                )
+                return Consumed(
+                    status=result.status,
+                    applied=applied,
+                    outcomes=tuple(recorded),
+                    cursor=committed,
+                    halted=True,
+                    transient=True,
+                )
             code = exc.code if isinstance(exc, RakaiaError) else UNHANDLED
             _record(
                 Outcome(

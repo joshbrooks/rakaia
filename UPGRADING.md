@@ -107,6 +107,15 @@ original. A custom `ConsumerCursorStore` keeps working but cannot detect a repla
 stream until it adds `load_generation` and `commit_generation`; a custom stream
 store likewise needs `get_generation`.
 
+## A dropped connection no longer counts as a bad event
+
+`OperationalError` and `InterfaceError` raised by an apply used to be written as a
+`failed` outcome and, under `on_error="skip"`, skipped for good. They now stop the
+pass (`Consumed.transient` and `halted` set), record nothing and leave the cursor
+below the event, so the next run retries it. A consumer that schedules runs needs
+no change; one that read `halted` as "`on_error="halt"` fired" should also check
+`transient`. A permanent database error is still recorded and skipped.
+
 ---
 
 # 0.9.0

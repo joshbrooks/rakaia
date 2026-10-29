@@ -45,6 +45,11 @@ Imported from `rakaia`:
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.
+* A transient error (a dropped connection, a deadlock) is not a bad event:
+  `consume(..., transient=)` or `rakaia.subscription.register_transient_errors`
+  names the types (`django_rakaia` registers `OperationalError` and
+  `InterfaceError`), and one raised by an apply stops the pass with
+  `Consumed.transient` set, records no outcome and leaves the cursor below it.
 * `Consumer(store, path, name, cursors, outcomes)` with `run(apply, on_error=…)`
   — the loop as one object. `outcomes` is required, so the shape that records
   nothing cannot be built.
