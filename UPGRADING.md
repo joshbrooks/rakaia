@@ -133,7 +133,8 @@ the row is rolled back with it, and in autocommit the row stays and only the eve
 is refused. `create_stream_event` returns `None` rather than a `StreamEvent` when the
 store is not the durable one. With a memory or file store the event is written at
 once and is not rolled back with the row, and a model that writes several streams
-makes one append per stream rather than one shared event.
+makes one append per stream rather than one shared event, though every stream is
+checked first, so one closed stream refuses the whole save and none is written.
 
 ## Set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS` before you expose the protocol app
 

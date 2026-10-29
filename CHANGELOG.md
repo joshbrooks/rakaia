@@ -89,7 +89,9 @@ runnable demo for each.
 - **Saving a `@stream_model` model now follows the same rules as every other
   append.** The event used to be written straight to the database, so it landed in
   a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
-  the new `StreamClosed`, and the event goes to the store you configured. See
+  the new `StreamClosed`, and the event goes to the store you configured. A save
+  to several streams where one is closed now writes to none of them on the
+  in-memory and file stores too, as it already did on the database one. See
   `UPGRADING.md`.
 - **A handler's drift fingerprint now covers the helpers it calls and the
   constants it reads**, not only its own text, so changing `_helper()` or a

@@ -8,6 +8,9 @@
 * **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
   counts rows that share a key instead of collapsing them, so a second live row behind one
   upsert key now fails the check.
+* **Update**: [Django integration](concepts/django-integration.md) — a `@stream_model` save that
+  fans out to several streams checks them all first, so one closed stream refuses the whole save
+  on the memory and file stores too, leaving none written.
 
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
   `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the

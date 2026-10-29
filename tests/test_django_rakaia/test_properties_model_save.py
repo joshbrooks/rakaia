@@ -66,3 +66,52 @@ def test_store_holds_exactly_the_saves_made_while_open(backend, ops):
             assert [json.loads(m.data)["n"] for m in messages] == kept
         finally:
             reset_store_cache()
+
+
+@pytest.mark.parametrize("backend", ["durable", "memory"])
+@settings(
+    max_examples=25,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(
+    ops=st.lists(
+        st.sampled_from(["save_both", "save_b", "close_a", "close_b"]), max_size=8
+    )
+)
+def test_a_fan_out_save_is_all_or_nothing(backend, ops):
+    """A save to two streams lands in both, or in neither when either is closed."""
+    base = uuid.uuid4().hex
+    paths = {"a": f"prop:{base}:a", "b": f"prop:{base}:b"}
+    line = FinanceLine(submission_id="a", suku="s", delta=1)
+    with override_settings(RAKAIA_STORE=backend):
+        reset_store_cache()
+        try:
+            store = get_store()
+            for p in paths.values():
+                store.create(p, content_type="application/json")
+            kept: dict[str, list[int]] = {"a": [], "b": []}
+            closed: set[str] = set()
+            for n, op in enumerate(ops):
+                if op.startswith("close"):
+                    store.close_stream(paths[op[-1]])
+                    closed.add(op[-1])
+                    continue
+                targets = ["a", "b"] if op == "save_both" else ["b"]
+                resolver = [paths[t] for t in targets]
+                if closed & set(targets):
+                    with pytest.raises(StreamError):
+                        create_stream_event(
+                            resolver, lambda _o, n=n: _Payload(n), line, "update"
+                        )
+                else:
+                    create_stream_event(
+                        resolver, lambda _o, n=n: _Payload(n), line, "update"
+                    )
+                    for t in targets:
+                        kept[t].append(n)
+            for t, p in paths.items():
+                messages, _ = store.read(p)
+                assert [json.loads(m.data)["n"] for m in messages] == kept[t]
+        finally:
+            reset_store_cache()
