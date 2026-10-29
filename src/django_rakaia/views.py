@@ -7,7 +7,7 @@ Uses the normalized Stream/StreamEvent/StreamEntry model structure.
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 from django.contrib.auth.decorators import login_required
@@ -283,8 +283,8 @@ def _parse_time(value: str | None, name: str) -> datetime | None:
     """`value` as an aware datetime, or `ValueError` naming the parameter."""
     if not value:
         return None
-    # A trailing `Z` is what most clients send; `fromisoformat` takes it only
-    # from Python 3.11, and this package supports 3.10.
+    # A trailing `Z` is what most clients send; `fromisoformat` takes an
+    # upper-case one but not a lower-case `z`, which ISO 8601 also allows.
     if value.endswith(("Z", "z")):
         value = value[:-1] + "+00:00"
     try:
@@ -292,7 +292,7 @@ def _parse_time(value: str | None, name: str) -> datetime | None:
     except ValueError:
         raise ValueError(f"{name} must be an ISO 8601 date or time") from None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return when
 
 

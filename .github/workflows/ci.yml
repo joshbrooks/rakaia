@@ -25,8 +25,8 @@ jobs:
           # once carried a few hundred lines of unrelated marker churn (#118).
           version: "0.13.0"
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python 3.13
+        run: uv python install 3.13
 
       - name: Install dependencies
         run: uv sync --extra dev --extra django --extra docs --extra prod
@@ -122,8 +122,8 @@ jobs:
           enable-cache: true
           version: "0.13.0"
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python 3.13
+        run: uv python install 3.13
 
       - name: Install dependencies
         run: uv sync --extra dev --extra django --extra postgres
@@ -154,8 +154,8 @@ jobs:
           enable-cache: true
           version: "0.13.0"
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python 3.13
+        run: uv python install 3.13
 
       - name: Install dependencies
         run: uv sync --extra dev --extra django

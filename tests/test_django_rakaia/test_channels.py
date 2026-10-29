@@ -40,19 +40,16 @@ def _extract_data_payload(chunk: bytes | str) -> dict | None:
     return None
 
 
-async def _collect_payloads(streaming_content, count: int, timeout: float = 3.0):
+async def _collect_payloads(streaming_content, count: int, within: float = 3.0):
     """Read SSE chunks until `count` payloads collected. Times out fast on hang."""
     payloads: list[dict] = []
-
-    async def _consume():
+    async with asyncio.timeout(within):
         async for chunk in streaming_content:
             payload = _extract_data_payload(chunk)
             if payload is not None:
                 payloads.append(payload)
             if len(payloads) >= count:
                 break
-
-    await asyncio.wait_for(_consume(), timeout=timeout)
     return payloads
 
 

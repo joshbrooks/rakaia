@@ -6,7 +6,7 @@ name = "rakaia-streams"
 version = "0.9.0"
 description = "Python server implementation of the Durable Streams protocol"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [{ name = "Josh Brooks" }]
 keywords = ["durable-streams", "streaming", "http", "sse", "asgi"]
@@ -15,9 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
     "Typing :: Typed",
@@ -207,7 +204,7 @@ ignore = [
 known-first-party = ["rakaia", "django_rakaia"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.13"
 # `standard` (the pyright default) catches genuine type errors but is
 # tolerant of Django ORM dynamism that pyright can't introspect. Set this
 # to `strict` if you want to enforce full annotation coverage on the core

@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from dataclasses import replace as dc_replace
-from typing import Any, NoReturn, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Protocol, TypeVar, assert_never, cast, runtime_checkable
 
 from .errors import RakaiaError
 
@@ -327,17 +327,6 @@ _EffectT = TypeVar("_EffectT", bound="Effect")
 _SpareT = TypeVar("_SpareT", bound="Exclude | SpareKeys | None")
 
 
-def _assert_never(value: NoReturn) -> NoReturn:
-    """Exhaustiveness check: a value pyright believes is unreachable.
-
-    `typing.assert_never` would say this, but it landed in 3.11 and this package
-    supports 3.10 with zero runtime dependencies, so it is written out. Passing
-    a value pyright can still narrow is an argument-type error, which is how a
-    new member of the `Effect` union becomes a build failure.
-    """
-    raise AssertionError(f"Unhandled effect variant: {type(value).__name__}")
-
-
 class RefResolver:
     """Resolves `Ref` placeholders against rows produced earlier in one batch.
 
@@ -435,7 +424,7 @@ class RefResolver:
         renamed field made `hasattr` return False, so the `Ref` was never
         substituted and the placeholder object itself was written to the
         database. Reading `effect.patch` instead of ``getattr(effect, "patch")``
-        makes that rename a type error, and `_assert_never` makes a *new* effect
+        makes that rename a type error, and `assert_never` makes a *new* effect
         variant one too, which nothing caught before (#161 item 2).
 
         Mutation this is pinned by: rename `Retire.patch`, and
@@ -469,7 +458,7 @@ class RefResolver:
                 "_EffectT",
                 dc_replace(effect, lookup=lookup, patch=patch, spare=spare),
             )
-        _assert_never(effect)
+        assert_never(effect)
 
 
 # =============================================================================

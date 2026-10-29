@@ -28,7 +28,7 @@ from rakaia.outcomes import InMemoryOutcomeStore, Outcome
 #: Values that are *not* text. Each was a real finding, or the next one predicted:
 #: rounds fixed a map's values, then its keys, then the list beside it, then the
 #: plain fields. A store must refuse all of them, and refuse them identically.
-class _StrSubclass(str, Enum):
+class _StrSubclass(str, Enum):  # noqa: UP042 - a plain str+Enum on purpose; StrEnum changes str()
     """A `str` subclass — the shape that defeats every check made on value alone.
 
     It compares equal to its own text, so `==` cannot see it, and it renders to

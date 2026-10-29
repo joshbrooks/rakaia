@@ -17,6 +17,13 @@ ones you are crossing.
 
 # 0.10.0
 
+## Python 3.13 is now the minimum
+
+rakaia now requires Python 3.13 or newer. On an older Python nothing fails
+loudly: pip quietly resolves the last release that still allowed it, `0.9.x`,
+so an unpinned install looks like an upgrade that did nothing. Move to 3.13
+before taking this release.
+
 ## Replay can now report drift that used to pass in silence
 
 A handler edited between two process starts is now compared with the hash it was

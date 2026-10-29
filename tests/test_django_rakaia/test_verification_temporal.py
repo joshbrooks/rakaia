@@ -52,7 +52,7 @@ MODEL = "test_django_rakaia.Measure"
 REF = uuid.UUID("33333333-3333-3333-3333-333333333333")
 
 # Non-zero microseconds: the case the encoder truncates, i.e. almost every value.
-AWARE = dt.datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=dt.timezone.utc)
+AWARE = dt.datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=dt.UTC)
 ON = dt.date(2026, 1, 2)
 AT_TIME = dt.time(3, 4, 5, 123456)
 

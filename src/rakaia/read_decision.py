@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
-from typing import TypeVar
 
 from .json_mode import is_json_content_type
 from .offsets import is_syntactically_valid
@@ -115,10 +114,7 @@ class ReadVerdict:
     body: bytes | None = b""
 
 
-_T = TypeVar("_T")
-
-
-def page_of(messages: list[_T], limit: int | None) -> tuple[list[_T], bool]:
+def page_of[T](messages: list[T], limit: int | None) -> tuple[list[T], bool]:
     """Cut `messages` to one page: ``(page, up_to_date)``.
 
     The one rule every store's paged `read` shares (#289). `limit=None` is no

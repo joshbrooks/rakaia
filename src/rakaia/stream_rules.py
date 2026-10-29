@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .json_mode import normalize_content_type
 from .producer import validate_producer
@@ -56,12 +56,12 @@ def is_expired(
         return True
     if expires_at is not None:
         try:
-            expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            expires = datetime.fromisoformat(expires_at)
         except ValueError:
             _log.debug("Ignoring malformed expires_at %r", expires_at)
             return False
         if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+            expires = expires.replace(tzinfo=UTC)
         if now > expires.timestamp():
             return True
     return False

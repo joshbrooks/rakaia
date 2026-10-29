@@ -630,7 +630,7 @@ async def _handle_create(
         try:
             from datetime import datetime
 
-            datetime.fromisoformat(expires_at_header.replace("Z", "+00:00"))
+            datetime.fromisoformat(expires_at_header)
         except ValueError:
             await _send_error(send, 400, b"Invalid Stream-Expires-At timestamp", cors)
             return
@@ -817,7 +817,7 @@ async def _wait_for_messages(
             continue
         try:
             await asyncio.wait_for(event.wait(), timeout=remaining)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return [], True, False
 
 

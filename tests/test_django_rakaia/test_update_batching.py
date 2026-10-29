@@ -855,7 +855,7 @@ class TestEqualityThatIgnoresRepresentation:
     def test_one_instant_in_two_time_zones_stores_two_ways(self):
         import datetime as dt
 
-        a = dt.datetime(2020, 1, 1, 12, tzinfo=dt.timezone.utc)
+        a = dt.datetime(2020, 1, 1, 12, tzinfo=dt.UTC)
         b = dt.datetime(2020, 1, 1, 13, tzinfo=dt.timezone(dt.timedelta(hours=1)))
         assert a == b and hash(a) == hash(b)
         stored = self._pair(a, b)
@@ -864,7 +864,7 @@ class TestEqualityThatIgnoresRepresentation:
     def test_the_same_for_a_bare_time(self):
         import datetime as dt
 
-        a = dt.time(12, 0, tzinfo=dt.timezone.utc)
+        a = dt.time(12, 0, tzinfo=dt.UTC)
         b = dt.time(13, 0, tzinfo=dt.timezone(dt.timedelta(hours=1)))
         assert a == b and hash(a) == hash(b)
         stored = self._pair(a, b)

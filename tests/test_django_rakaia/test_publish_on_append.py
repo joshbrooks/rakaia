@@ -46,16 +46,13 @@ async def _subscribe() -> tuple[object, str]:
     return layer, channel
 
 
-async def _drain(layer, channel, *, expected: int, timeout: float = 3.0) -> list[dict]:
+async def _drain(layer, channel, *, expected: int, within: float = 3.0) -> list[dict]:
     """Collect up to `expected` frames, giving up quickly rather than hanging."""
     received: list[dict] = []
-
-    async def _consume():
-        while len(received) < expected:
-            received.append(await layer.receive(channel))
-
     with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(_consume(), timeout=timeout)
+        async with asyncio.timeout(within):
+            while len(received) < expected:
+                received.append(await layer.receive(channel))
     return received
 
 
@@ -159,7 +156,7 @@ class TestAppendManyPublishes:
         await store.run_sync(store.create, PATH)
         await store.run_sync(store.append_many, PATH, [])
 
-        assert await _drain(layer, channel, expected=1, timeout=0.3) == []
+        assert await _drain(layer, channel, expected=1, within=0.3) == []
 
 
 class TestParityBetweenTheTwoPaths:

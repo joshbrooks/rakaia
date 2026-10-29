@@ -139,7 +139,7 @@ class TestJsonEncoding:
 
     def test_stream_event_data_accepts_django_types(self):
         ref = uuid.uuid4()
-        moment = dt.datetime(2026, 8, 9, 12, 30, tzinfo=dt.timezone.utc)
+        moment = dt.datetime(2026, 8, 9, 12, 30, tzinfo=dt.UTC)
 
         event = StreamEvent.objects.create(
             data={"ref": ref, "amount": Decimal("12.50"), "recorded_at": moment},
@@ -152,7 +152,7 @@ class TestJsonEncoding:
         assert stored["recorded_at"] == "2026-08-09T12:30:00Z"
 
     def test_stream_event_metadata_accepts_django_types(self):
-        moment = dt.datetime(2026, 8, 9, 12, 30, tzinfo=dt.timezone.utc)
+        moment = dt.datetime(2026, 8, 9, 12, 30, tzinfo=dt.UTC)
 
         event = StreamEvent.objects.create(
             data={},
@@ -180,9 +180,7 @@ class TestJsonEncoding:
         0. Django stores microseconds, so a payload timestamp never compares
         equal to the column it was lifted from.
         """
-        moment = dt.datetime(
-            2026, 8, 9, 12, 30, microsecond=microsecond, tzinfo=dt.timezone.utc
-        )
+        moment = dt.datetime(2026, 8, 9, 12, 30, microsecond=microsecond, tzinfo=dt.UTC)
 
         event = StreamEvent.objects.create(
             data={"recorded_at": moment}, event_type="create"
@@ -199,7 +197,7 @@ class TestJsonEncoding:
             to_dataclass=lambda obj: MeasureData(
                 ref=obj.ref,
                 amount=obj.amount,
-                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.UTC),
             ),
             instance=measure,
             action="create",
@@ -225,7 +223,7 @@ class TestJsonEncoding:
             to_dataclass=lambda obj: MeasureData(
                 ref=obj.ref,
                 amount=obj.amount,
-                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+                recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.UTC),
             ),
             instance=measure,
             action="create",
@@ -266,7 +264,7 @@ class TestJsonEncoding:
                 to_dataclass=lambda obj: MeasureData(
                     ref=obj.ref,
                     amount=obj.amount,
-                    recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+                    recorded_at=dt.datetime(2026, 8, 9, tzinfo=dt.UTC),
                 ),
                 instance=measure,
                 action="create",
