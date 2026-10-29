@@ -57,6 +57,11 @@ runnable demo for each.
 - **The file store's documentation no longer promises that a batch is all or
   nothing across a crash.** Each segment write is atomic; a batch that crosses a
   segment boundary is two writes, and recovery keeps the first.
+- **Two workers on one consumer now take turns.** `django_consumer` runs each pass
+  in one transaction that locks the consumer's cursor row, so a second worker waits
+  and then reads the position the first saved, instead of applying the same events
+  twice. `commit_cursor` also refuses to move a position backwards, raising the new
+  `CursorMovedBackwards`. See `UPGRADING.md`.
 - **A consumer whose stream went backwards no longer re-applies it.** When the
   log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
   re-read before the caller could reset what it had built. It now applies nothing,

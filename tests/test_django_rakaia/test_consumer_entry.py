@@ -28,6 +28,7 @@ from django_rakaia.consumer import (
 )
 from django_rakaia.models import ConsumerCursor, ConsumerOutcome
 from django_rakaia.outcomes import DjangoOutcomeStore
+from django_rakaia.subscription import load_cursor
 from rakaia.consumer import InMemoryConsumerCursorStore
 from rakaia.outcomes import InMemoryOutcomeStore
 from rakaia.store import StreamStore
@@ -278,3 +279,30 @@ class TestNamingWhatTheLoopRecords:
 
         (record,) = DjangoOutcomeStore().latest("reporting", "submissions")
         assert record.subject == record.offset
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAFailedApplyRollsBackOnlyItself:
+    """A pass is one transaction, so an apply that writes and then raises must be
+    undone on its own: its partial write goes, the failure is still recorded, and
+    the events around it still land."""
+
+    def test_the_partial_write_of_a_failed_apply_is_undone(self) -> None:
+        from .models import Alert
+
+        store = _store_with("partial", [b"1", b"2", b"3"])
+        consumer = django_consumer(store, "partial", "c")
+
+        def apply(message: StreamMessage) -> None:
+            Alert.objects.create(
+                stream_key=message.data.decode(), alert_type="t", field_key=""
+            )
+            if message.data == b"2":
+                raise ValueError("bad event")
+
+        result = consumer.run(apply, on_error="skip")
+
+        assert result.applied == 2
+        assert sorted(Alert.objects.values_list("stream_key", flat=True)) == ["1", "3"]
+        assert ConsumerOutcome.objects.count() == 1
+        assert load_cursor("c", "partial") == result.cursor

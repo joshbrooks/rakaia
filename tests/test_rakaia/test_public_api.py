@@ -205,6 +205,7 @@ DJANGO_RAKAIA_PUBLIC = {
     "canonical_value",
     "DjangoOutcomeStore",
     "CallerTransactionOpen",
+    "CursorMovedBackwards",
     "DjangoConsumer",
     "DjangoConsumerCursorStore",
     "django_consumer",

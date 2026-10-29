@@ -30,7 +30,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from django.db import DEFAULT_DB_ALIAS, InterfaceError, OperationalError, connections
+from django.db import (
+    DEFAULT_DB_ALIAS,
+    InterfaceError,
+    OperationalError,
+    connections,
+    transaction,
+)
 
 from rakaia.consumer import Consumer
 from rakaia.outcomes import Outcome
@@ -44,6 +50,7 @@ from .subscription import (
     commit_generation,
     load_cursor,
     load_generation,
+    locked_cursor,
 )
 
 
@@ -113,12 +120,25 @@ def _alias_of(target: object) -> str | None:
 
 @dataclass(frozen=True)
 class DjangoConsumer(Consumer):
-    """A `Consumer` that checks the caller has no transaction open.
+    """A `Consumer` that checks the caller has no transaction open, and that
+    runs one worker at a time per ``(consumer, stream)``.
 
     The check is on `run` rather than on construction because that is where the
     hazard is: a consumer built during startup and run later from a request
     handler is fine, and one built outside a transaction and run inside one is
     the case being refused.
+
+    **Within one pass, the cursor row is locked; a second worker waits.** The
+    pass runs in a single transaction on the cursor's alias holding a
+    ``select_for_update`` lock on the cursor row, so two workers under one
+    consumer name take turns instead of applying the same events twice, and the
+    second reads the cursor the first committed. Each `apply` runs in its own
+    savepoint, so one that raises rolls back only its own writes and the
+    transaction stays usable for the record of the failure. A worker that dies
+    mid-pass loses that pass's cursor and same-alias outcomes together and the
+    events are delivered again; and the lock is held as long as the pass runs, so
+    keep passes short. The lock is real only on a backend with
+    ``SELECT ... FOR UPDATE`` (Postgres); on SQLite nothing waits.
 
     ``transient`` defaults to Django's ``OperationalError`` and ``InterfaceError``:
     a dropped connection or a deadlock is "try again later", not a bad event.
@@ -142,7 +162,18 @@ class DjangoConsumer(Consumer):
                     f"on {alias!r}. Everything it records would roll back with "
                     "that transaction — see ADR 0007."
                 )
-        return super().run(apply, on_error=on_error)
+        if not isinstance(self.cursors, DjangoConsumerCursorStore):
+            return super().run(apply, on_error=on_error)
+        using = self.cursors.using
+        with locked_cursor(self.name, self.path, using=using):
+
+            def apply_in_savepoint(
+                message: StreamMessage,
+            ) -> Iterable[Outcome] | None:
+                with transaction.atomic(using=using):
+                    return apply(message)
+
+            return super().run(apply_in_savepoint, on_error=on_error)
 
     def _aliases(self) -> list[str]:
         """Every connection this consumer's records depend on, in a stable order.

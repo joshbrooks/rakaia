@@ -26,6 +26,19 @@ full, which broke read order and made a resume skip events. Open existing data
 with the size it was written with; a stream whose `meta.json` predates this adopts
 the size its segment filenames show, and one still in its first segment adopts
 the size you pass. There is no way to change the size of a stream that has data.
+
+## One worker at a time per consumer, and cursors only move forward
+
+`DjangoConsumer.run` now holds a lock on the consumer's cursor row for the whole
+pass, so a second worker with the same consumer name waits for the first, and each
+`apply` runs in its own savepoint. Nothing changes for one worker, but a pass that
+is slow now makes the next one wait (keep passes short), the pass's cursor and
+same-database outcomes land together or not at all, and a `ConsumerCursor` row
+exists, with an empty `offset`, as soon as a pass starts (`load_cursor` still
+returns `None` for it). `commit_cursor` now raises `CursorMovedBackwards` for an
+offset behind the saved one; to start a consumer over, delete its `ConsumerCursor`
+row as before. The lock is real on Postgres only; SQLite has no row locks.
+
 ## `prune_outcomes` keeps each event's latest record
 
 If you run `manage.py prune_outcomes`, the outcome table no longer shrinks to

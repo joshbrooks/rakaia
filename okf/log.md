@@ -11,6 +11,10 @@
 * **Update**: [Django integration](concepts/django-integration.md) — a `@stream_model` save that
   fans out to several streams checks them all first, so one closed stream refuses the whole save
   on the memory and file stores too, leaving none written.
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — two workers under
+  one consumer name take turns (`DjangoConsumer.run` locks the cursor row for the pass), and
+  `commit_cursor` raises the new `CursorMovedBackwards` for an offset behind the saved one.
+
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — `prune_outcomes`
   keeps the latest record for each consumer, stream and subject, so pruning cannot turn a
   skipped event into one that reads as succeeded.

@@ -179,6 +179,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "InMemoryConsumerCursorStore",
         "DjangoConsumerCursorStore",
         "CallerTransactionOpen",
+        "CursorMovedBackwards",
         "consume",
         "Consumed",
         "OnErrorPolicy",

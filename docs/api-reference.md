@@ -194,11 +194,12 @@ page is the contract.
 |---|---|---|---|
 | `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
 | `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
-| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = (<class 'django.db.utils.OperationalError'>, <class 'django.db.utils.InterfaceError'>)) -> None` | A `Consumer` that checks the caller has no transaction open. |
+| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = (<class 'django.db.utils.OperationalError'>, <class 'django.db.utils.InterfaceError'>)) -> None` | A `Consumer` that checks the caller has no transaction open, and that runs one worker at a time per ``(consumer, stream)``. |
 | `ConsumerCursorStore` | `rakaia` | `(*args, **kwargs)` | Somewhere to keep a consumer's watermark between runs. |
 | `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |
 | `DjangoConsumerCursorStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A `ConsumerCursorStore` over the ``ConsumerCursor`` table. |
 | `CallerTransactionOpen` | `django_rakaia` | — | Raised when a run is started inside a transaction the caller opened. |
+| `CursorMovedBackwards` | `django_rakaia` | — | Raised when a commit would put the watermark behind where it already is. |
 | `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, generation: 'str \| None' = None, commit_generation: 'Callable[[str], None] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
 | `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool', transient: 'bool' = False) -> None` | What one pass of the consume loop did. |
 | `OnErrorPolicy` | `rakaia` | — | — |
@@ -281,6 +282,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-180 exported names across 16 sections. 157 carry a docstring; 23 do not and show `—` above.
+181 exported names across 16 sections. 158 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
