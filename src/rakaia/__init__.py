@@ -99,7 +99,7 @@ if TYPE_CHECKING:
         label_marker,
     )
     from .jsonl_outcomes import JsonlOutcomeStore
-    from .jsonl_store import JsonlStreamStore
+    from .jsonl_store import JsonlStreamStore, SegmentSizeMismatch
     from .migrate import Migration, migrate_all, migrate_stream
     from .offsets import ForeignOffset
     from .outcomes import (
@@ -213,6 +213,7 @@ _EXPORTS: dict[str, str] = {
     # Store
     "StreamStore": "rakaia.store",
     "JsonlStreamStore": "rakaia.jsonl_store",
+    "SegmentSizeMismatch": "rakaia.jsonl_store",
     "seed_stream": "rakaia.seed",
     # Moving a log between backends
     "migrate_stream": "rakaia.migrate",
@@ -436,6 +437,7 @@ __all__ = [
     "ReplayResult",
     "Retire",
     "RowEffect",
+    "SegmentSizeMismatch",
     "SequenceConflict",
     "ServerOptions",
     "SpareKeys",

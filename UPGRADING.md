@@ -17,6 +17,16 @@ ones you are crossing.
 
 # 0.10.0
 
+## The file store refuses a different `segment_size`
+
+`JsonlStreamStore` now writes its `segment_size` into each stream's `meta.json`
+and raises `SegmentSizeMismatch`, naming both values, when you open a stream with
+another one. Before, it quietly wrote new events into segments that were already
+full, which broke read order and made a resume skip events. Open existing data
+with the size it was written with; a stream whose `meta.json` predates this adopts
+the size its segment filenames show, and one still in its first segment adopts
+the size you pass. There is no way to change the size of a stream that has data.
+
 ## Handler fingerprints now follow helpers and constants
 
 A handler's drift fingerprint used to cover only the handler's own text, so

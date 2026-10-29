@@ -49,6 +49,9 @@ Imported from `rakaia`:
   Raised by a store whose streams are permanent: `StreamStore(permanent=True)`,
   `JsonlStreamStore(..., permanent=True)`, or `DjangoStreamStore` under
   `RAKAIA_PERMANENT_STREAMS`. `delete(path, force=True)` deletes from Python anyway.
+* `JsonlStreamStore` records its `segment_size` per stream and raises
+  `SegmentSizeMismatch` when opened with another; its deletes and creates take the
+  stream's lock, so they wait for a writer instead of failing it.
 * The time rakaia stamps on an event is taken after its position is settled and is
   never earlier than that stream's previous stamp, so ordering by `event_ts` agrees
   with ordering by offset. A producer's own `event_ts` is stored as sent.

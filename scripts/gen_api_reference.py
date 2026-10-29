@@ -45,6 +45,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "Stream",
         "StreamStore",
         "JsonlStreamStore",
+        "SegmentSizeMismatch",
         "DjangoStreamStore",
         "ReadableStore",
         "WritableStore",

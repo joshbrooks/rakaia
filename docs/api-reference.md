@@ -35,6 +35,7 @@ page is the contract.
 | `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, generation: 'str' = '', last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `(*, permanent: 'bool' = False) -> 'None'` | In-memory store for durable streams. |
 | `JsonlStreamStore` | `rakaia` | `(root: 'str \| Path', *, segment_size: 'int' = 10000, fsync: 'bool' = True, permanent: 'bool' = False)` | A `rakaia.StreamServerStore` over a directory of JSONL files. |
+| `SegmentSizeMismatch` | `rakaia` | — | The store was opened with a `segment_size` other than the stream's own. |
 | `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None, permanent: 'bool \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
 | `ReadableStore` | `rakaia` | `(*args, **kwargs)` | A store `replay()` can read events from. |
 | `WritableStore` | `rakaia` | `(*args, **kwargs)` | A store the event-sourcing framework both writes to and reads from. |
@@ -280,6 +281,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-179 exported names across 16 sections. 156 carry a docstring; 23 do not and show `—` above.
+180 exported names across 16 sections. 157 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

@@ -26,8 +26,12 @@ What the spike does implement, because they are the parts that were uncertain:
   trailing line — a crash mid-write — is ignored on read rather than parsed.
 * **One exclusive `flock` per stream**, held across the whole check-then-write,
   standing in for `DjangoStreamStore._locked_write`'s `select_for_update`.
-* **`append_many` is one buffer and one `write()`** under that lock, so a batch
-  cannot leave a prefix behind (#214, #222).
+* **`append_many` is one buffer and one `write()` per segment** under that lock.
+  A refused batch writes nothing (#214, #222). Each segment write is atomic, but
+  a batch that crosses a segment boundary is two writes, and a crash between
+  them leaves the first: recovery keeps that prefix.
+* **Deletes and creates take the same lock** as writes, so neither can pull a
+  stream out from under an append or reset its head beneath one (#346).
 
 What it deliberately does not do, as shipped: **Windows** (`fcntl` only — the
 import is optional so `import rakaia` still works there, and the store refuses
@@ -53,6 +57,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -98,6 +103,15 @@ from .types import (
 )
 
 _DEFAULT_SEGMENT_SIZE = 10_000
+
+
+class SegmentSizeMismatch(ValueError):
+    """The store was opened with a `segment_size` other than the stream's own.
+
+    Segment filenames are computed from the size, so a store opened with another
+    one would put new entries into sealed segments and a resumed read would skip
+    some. Open the stream with the size it was written with.
+    """
 
 
 def _discard_torn_tail(fh: Any) -> None:
@@ -204,6 +218,10 @@ class _Meta:
     producers: dict[str, ProducerState] = field(default_factory=dict)
     head: int = 0
     """The highest entry id issued. Also the numeric part of the head offset."""
+    segment_size: int | None = None
+    """Entries per segment, fixed when the stream is created. Segment filenames
+    are computed from it; `JsonlStreamStore._load_meta` refuses a store opened
+    with another. ``None`` for a stream written before it was recorded."""
     generation: str | None = None
     """Stamp made when the stream was created; ``None`` for a stream written
     before stamps existed. See `get_generation`."""
@@ -241,6 +259,7 @@ class _Meta:
                 for pid, s in self.producers.items()
             },
             "head": self.head,
+            "segment_size": self.segment_size,
             "generation": self.generation,
             "last_event_ts": self.last_event_ts,
         }
@@ -271,6 +290,7 @@ class _Meta:
                 for pid, s in raw.get("producers", {}).items()
             },
             head=raw.get("head", 0),
+            segment_size=raw.get("segment_size"),
             generation=raw.get("generation"),
             last_event_ts=raw.get("last_event_ts"),
         )
@@ -365,7 +385,7 @@ class JsonlStreamStore:
     # Metadata and the lock
     # =========================================================================
 
-    def _load_meta(self, path: str) -> _Meta | None:
+    def _load_meta(self, path: str, *, check_segment_size: bool = True) -> _Meta | None:
         f = self._dir(path) / "meta.json"
         try:
             raw = json.loads(f.read_text())
@@ -387,6 +407,15 @@ class JsonlStreamStore:
         # higher, or the next append reissues an offset already in the log (#346).
         # A fresh `meta.json` costs one read of the last segment's final line.
         meta.head = max(meta.head, self._scan_head(path))
+        if meta.segment_size is None:
+            meta.segment_size = self._segment_size_on_disk(path)
+        if check_segment_size and meta.segment_size != self.segment_size:
+            raise SegmentSizeMismatch(
+                f"Stream {path} was written with segment_size="
+                f"{meta.segment_size} but this store was opened with "
+                f"segment_size={self.segment_size}; open it with "
+                f"{meta.segment_size}."
+            )
         # Only a stream with a TTL has a sliding window, so only that stream
         # pays the extra read. Loading it unconditionally cost an `open()` on
         # every append to every stream, for a field nothing would consult.
@@ -396,6 +425,19 @@ class JsonlStreamStore:
             else meta.created_at
         )
         return meta
+
+    def _segment_size_on_disk(self, path: str) -> int:
+        """The size a stream's files show, for one whose meta never recorded it.
+
+        The second segment starts one size after the first, so the difference of
+        their names is the size; the first need not start at 0, because a
+        recreated stream resumes above its retired id. A stream still in its
+        first segment shows nothing and takes this store's own.
+        """
+        segments = self._segments(path)
+        if len(segments) > 1:
+            return int(segments[1].stem) - int(segments[0].stem)
+        return self.segment_size
 
     def _load_activity(self, path: str, default: float) -> float:
         try:
@@ -500,31 +542,62 @@ class JsonlStreamStore:
         the metadata is replaced. On an exception nothing is written at all,
         which is what makes a refused batch leave no prefix.
         """
-        d = self._dir(path)
-        if not d.is_dir():
-            raise StreamNotFound(f"Stream not found: {path}")
+        with self._stream_lock(path):
+            meta = self._load_meta(path)
+            if meta is None:
+                raise StreamNotFound(f"Stream not found: {path}")
+            if check_expiry and self._is_expired(meta):
+                # Expiry is decided under the lock, exactly as the durable
+                # store decides it inside its transaction, and the reap
+                # happens on the far side — nothing has been written yet.
+                raise _Expired(path)
+            buffer: list[dict[str, Any]] = []
+            yield meta, buffer
+            self._flush(path, buffer)
+            self._save_meta(path, meta)
+
+    @contextmanager
+    def _stream_lock(self, path: str, *, create: bool = False) -> Iterator[None]:
+        """Hold the stream's exclusive lock: the one door for writes, creates and deletes.
+
+        The lock file lives inside the stream's directory, and a delete removes
+        that directory while holding it. A waiter then wakes holding a lock on a
+        file that no longer exists, so after acquiring it compares the open file
+        with the one the directory now names and starts again if they differ. A
+        stream that is gone raises `StreamNotFound`, unless `create` is set, in
+        which case the directory is made afresh. Not re-entrant: a second
+        acquisition from the same process waits for the first.
+        """
         # Narrowing, not defence: `__init__` refuses to build a store on a
         # platform without `fcntl`, so by here it is always a module. Stated as
         # an assert rather than an ignore comment, the way `store.py` states the
         # same kind of guarantee about a producer verdict.
         assert fcntl is not None
-        with (d / ".lock").open("a+") as lockfile:
-            fcntl.flock(lockfile, fcntl.LOCK_EX)
+        d = self._dir(path)
+        lock_path = d / ".lock"
+        while True:
+            if create:
+                d.mkdir(parents=True, exist_ok=True)
             try:
-                meta = self._load_meta(path)
-                if meta is None:
-                    raise StreamNotFound(f"Stream not found: {path}")
-                if check_expiry and self._is_expired(meta):
-                    # Expiry is decided under the lock, exactly as the durable
-                    # store decides it inside its transaction, and the reap
-                    # happens on the far side — nothing has been written yet.
-                    raise _Expired(path)
-                buffer: list[dict[str, Any]] = []
-                yield meta, buffer
-                self._flush(path, buffer)
-                self._save_meta(path, meta)
+                lockfile = lock_path.open("a+")
+            except FileNotFoundError:
+                if create:
+                    continue
+                raise StreamNotFound(f"Stream not found: {path}") from None
+            try:
+                fcntl.flock(lockfile, fcntl.LOCK_EX)
+                try:
+                    same_file = (
+                        os.fstat(lockfile.fileno()).st_ino == lock_path.stat().st_ino
+                    )
+                except FileNotFoundError:
+                    same_file = False
+                if not same_file:
+                    continue  # deleted (and maybe recreated) while we waited
+                yield
+                return
             finally:
-                fcntl.flock(lockfile, fcntl.LOCK_UN)
+                lockfile.close()  # closing drops the flock
 
     def _flush(self, path: str, buffer: list[dict[str, Any]]) -> None:
         """Write the whole buffer, one `write()` per segment it spans."""
@@ -600,12 +673,10 @@ class JsonlStreamStore:
         already consumed. A segment is skippable when the *next* one starts at
         or below `after_id`, because every id it holds is then below that too.
 
-        Deliberately expressed against the next segment's start rather than
-        arithmetic on `self.segment_size`. The filenames record the boundaries
-        as they were when the records were written, and the store can be
-        reopened with a different `segment_size` — sizing is a constructor
-        argument, not a property of the data. Arithmetic against the current
-        size would skip a segment that a differently-sized past had filled.
+        Expressed against the next segment's start rather than arithmetic on
+        `self.segment_size`. The two agree, because a store opened with another
+        size than the stream was written with is refused, but the filenames are
+        what the data says and need no assumption.
         """
         segments = self._segments(path)
         if after_id <= 0:
@@ -695,70 +766,69 @@ class JsonlStreamStore:
         stream_rules.check_expiry_allowed(
             path, ttl_seconds, expires_at, permanent=self.permanent
         )
-        existing = self._live_meta(path)
-        if existing is not None:
-            if stream_rules.same_config(
-                stream_rules.StreamConfig(
-                    existing.content_type,
-                    existing.ttl_seconds,
-                    existing.expires_at,
-                    existing.closed,
-                ),
-                stream_rules.StreamConfig(
-                    content_type, ttl_seconds, expires_at, closed
-                ),
-                permanent=self.permanent,
-            ):
-                return self._as_stream(path, existing)
-            raise StreamConfigConflict(
-                f"Stream already exists with different configuration: {path}"
+        # The whole create runs under the stream lock: two creators, or a create
+        # racing a delete, must not each decide the stream is absent.
+        with self._stream_lock(path, create=True):
+            existing = self._load_meta(path)
+            if existing is not None and self._is_expired(existing):
+                self._delete_files(path, keep_directory=True)
+                existing = None
+            if existing is not None:
+                if stream_rules.same_config(
+                    stream_rules.StreamConfig(
+                        existing.content_type,
+                        existing.ttl_seconds,
+                        existing.expires_at,
+                        existing.closed,
+                    ),
+                    stream_rules.StreamConfig(
+                        content_type, ttl_seconds, expires_at, closed
+                    ),
+                    permanent=self.permanent,
+                ):
+                    return self._as_stream(path, existing)
+                raise StreamConfigConflict(
+                    f"Stream already exists with different configuration: {path}"
+                )
+
+            now = time.time()
+            meta = _Meta(
+                content_type=content_type,
+                ttl_seconds=ttl_seconds,
+                expires_at=expires_at,
+                created_at=now,
+                generation=uuid.uuid4().hex,
+                last_activity_at=now,
+                closed=closed,
+                # A recreated path resumes above the id it retired, so offsets
+                # stay globally monotonic across delete-and-recreate (#34).
+                head=self._retired(path),
+                segment_size=self.segment_size,
+                last_event_ts=self._retired_event_ts(path),
             )
+            self._save_meta(path, meta)
+            self._save_activity(path, now)
 
-        now = time.time()
-        d = self._dir(path)
-        d.mkdir(parents=True, exist_ok=True)
-        meta = _Meta(
-            content_type=content_type,
-            ttl_seconds=ttl_seconds,
-            expires_at=expires_at,
-            created_at=now,
-            generation=uuid.uuid4().hex,
-            last_activity_at=now,
-            closed=closed,
-            # A recreated path resumes above the id it retired, so offsets stay
-            # globally monotonic across delete-and-recreate (#34).
-            head=self._retired(path),
-            last_event_ts=self._retired_event_ts(path),
-        )
-        self._save_meta(path, meta)
-        self._save_activity(path, now)
-
-        if initial_data:
-            # `check_expiry=False`: a stream created with `ttl_seconds=0` is
-            # already expired the instant it exists, and `create` still has to
-            # return it — the reap belongs to the next *read*, not to the
-            # creation. Reload afterwards for the same reason `_require` cannot
-            # be used here.
-            try:
-                with self._locked(path, check_expiry=False) as (m, buffer):
+            if initial_data:
+                # No expiry check: a stream created with `ttl_seconds=0` is
+                # already expired the instant it exists, and `create` still has
+                # to return it — the reap belongs to the next *read*.
+                try:
+                    buffer: list[dict[str, Any]] = []
                     self._write_plan(
-                        m, buffer, plan_initial_write(m.content_type, initial_data)
+                        meta, buffer, plan_initial_write(content_type, initial_data)
                     )
-            except Exception:
-                # A create whose body is refused must leave nothing behind, not
-                # an empty stream where the caller's failed one would be. The
-                # other two stores get this from unwinding before they register
-                # the stream at all; here the directory is already on disk, so
-                # the rollback has to be explicit. Without it a `create` that
-                # raised still reaped the expired stream it was replacing and
-                # then left its own replacement — visible to `ls`, absent from
-                # the API, and holding the path against a later create with a
-                # different content type. Forced, because the stream it removes
-                # never existed as far as the caller is concerned.
-                self.delete(path, force=True)
-                raise
-            meta = self._load_meta(path) or meta
-        return self._as_stream(path, meta)
+                    self._flush(path, buffer)
+                    self._save_meta(path, meta)
+                except Exception:
+                    # A create whose body is refused must leave nothing behind,
+                    # not an empty stream where the caller's failed one would
+                    # be: the directory is already on disk, so the rollback is
+                    # explicit. It also does not retire a high mark, because the
+                    # stream it removes never existed as far as the caller knows.
+                    self._delete_files(path, retire=False)
+                    raise
+            return self._as_stream(path, meta)
 
     def _as_stream(self, path: str, meta: _Meta) -> Stream:
         ttl_seconds, expires_at = stream_rules.reported_expiry(
@@ -791,26 +861,49 @@ class JsonlStreamStore:
         recreate carries on above them. A permanent store refuses with
         `DeleteNotAllowed` unless `force` is set."""
         stream_rules.check_delete(path, permanent=self.permanent, force=force)
-        d = self._dir(path)
-        if not d.is_dir():
+        try:
+            with self._stream_lock(path):
+                self._delete_files(path)
+        except StreamNotFound:
             return False
-        meta = self._load_meta(path)
-        high = max(self._retired(path), meta.head if meta else 0)
-        self._retired_path(path).write_text(str(high))
-        stamps = [
-            ts
-            for ts in (
-                self._retired_event_ts(path),
-                meta.last_event_ts if meta else None,
-            )
-            if ts is not None
-        ]
-        if stamps:
-            self._retired_event_ts_path(path).write_text(repr(max(stamps)))
-        for child in d.iterdir():
-            child.unlink()
-        d.rmdir()
         return True
+
+    def _delete_files(
+        self, path: str, *, keep_directory: bool = False, retire: bool = True
+    ) -> None:
+        """Retire the high mark and remove the stream. The caller holds the lock.
+
+        `keep_directory` leaves the directory and its lock file, for a create
+        that reaps an expired stream and carries on inside the same lock.
+        """
+        d = self._dir(path)
+        # The size does not matter to a delete, so a store opened with the wrong
+        # one can still remove what it cannot read.
+        meta = self._load_meta(path, check_segment_size=False)
+        if retire:
+            high = max(self._retired(path), meta.head if meta else 0)
+            self._replace(self._retired_path(path), str(high))
+            stamps = [
+                ts
+                for ts in (
+                    self._retired_event_ts(path),
+                    meta.last_event_ts if meta else None,
+                )
+                if ts is not None
+            ]
+            if stamps:
+                self._replace(self._retired_event_ts_path(path), repr(max(stamps)))
+        if keep_directory:
+            for child in d.iterdir():
+                if child.name != ".lock":
+                    child.unlink()
+            return
+        # Renamed away in one step, then emptied: a writer queued on the lock
+        # sees the directory gone at once. Unlinking the lock file first and the
+        # directory after left a gap in which a waiter's `open` recreated it.
+        gone = self.root / _RETIRED_DIR / f"%trash-{uuid.uuid4().hex}"
+        d.rename(gone)
+        shutil.rmtree(gone)
 
     def check_protocol_delete(self, path: str) -> None:
         """Refuse a client's DELETE on a permanent store."""

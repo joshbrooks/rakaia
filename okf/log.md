@@ -2,6 +2,10 @@
 
 ## 2026-10-29
 
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — `JsonlStreamStore`
+  records `segment_size` per stream and raises the new exported `SegmentSizeMismatch` when opened
+  with another; deletes and creates take the stream lock (GitHub #346).
+
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
   `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the
   stream's stamp and `commit_cursor(..., generation=)` saves it. `register_transient_errors` is

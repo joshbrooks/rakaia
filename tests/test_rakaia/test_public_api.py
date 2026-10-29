@@ -23,6 +23,7 @@ RAKAIA_PUBLIC = {
     # store
     "StreamStore",
     "JsonlStreamStore",
+    "SegmentSizeMismatch",
     "seed_stream",
     # moving a log between backends
     "Migration",

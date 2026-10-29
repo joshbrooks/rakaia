@@ -45,6 +45,18 @@ runnable demo for each.
 
 ### Fixed
 
+- **The file store records its `segment_size` and refuses to be opened with
+  another.** Changing it used to put new events into full segments, so reads came
+  back out of order and a resume skipped events. `SegmentSizeMismatch` is new and
+  exported. See `UPGRADING.md`.
+- **Deleting or creating a stream in the file store now takes the stream's lock.**
+  A delete during an append used to fail the writer with a bare `FileNotFoundError`,
+  and two creates could each decide the stream was absent and reset its head. The
+  retired high mark is now written with the same atomic replace as the rest of the
+  store.
+- **The file store's documentation no longer promises that a batch is all or
+  nothing across a crash.** Each segment write is atomic; a batch that crosses a
+  segment boundary is two writes, and recovery keeps the first.
 - **A consumer whose stream went backwards no longer re-applies it.** When the
   log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
   re-read before the caller could reset what it had built. It now applies nothing,

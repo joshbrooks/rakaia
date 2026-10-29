@@ -15,7 +15,7 @@ from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
-from rakaia.jsonl_store import JsonlStreamStore
+from rakaia.jsonl_store import JsonlStreamStore, SegmentSizeMismatch
 
 PATH = "s"
 
@@ -34,6 +34,7 @@ class JsonlStoreMachine(RuleBasedStateMachine):
         self.acknowledged: list[tuple[str, bytes]] = []
         self.crashed: list[bytes] = []
         self.counter = 0
+        self.highest_offset = ""
 
     def _open(self) -> JsonlStreamStore:
         return JsonlStreamStore(self.root, segment_size=4, fsync=False)
@@ -70,6 +71,28 @@ class JsonlStoreMachine(RuleBasedStateMachine):
     @rule()
     def reopen(self):
         self.store = self._open()
+
+    @rule()
+    def reopen_with_another_segment_size_is_refused(self):
+        wider = JsonlStreamStore(self.root, segment_size=8, fsync=False)
+        with pytest.raises(SegmentSizeMismatch):
+            wider.append(PATH, b"must not land")
+        with pytest.raises(SegmentSizeMismatch):
+            wider.read(PATH)
+
+    @rule()
+    def delete_and_recreate(self):
+        """Offsets stay above everything a deleted stream ever issued (#34)."""
+        self.highest_offset = max(
+            [self.highest_offset, *(o for o, _ in self.acknowledged)]
+        )
+        assert self.store.delete(PATH)
+        self.acknowledged.clear()
+        self.store.create(PATH)
+        fresh = self.store.append(PATH, self._payload())
+        assert fresh.message is not None
+        assert fresh.message.offset > self.highest_offset
+        self.acknowledged.append((fresh.message.offset, fresh.message.data))
 
     @invariant()
     def offsets_are_unique_and_increasing(self):
