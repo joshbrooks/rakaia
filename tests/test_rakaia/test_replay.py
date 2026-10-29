@@ -396,7 +396,7 @@ class TestDrift:
 
         version = reg.register("h", "s", h, 0, None)
         # Tamper with the stored hash to simulate the live source having drifted
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream("s", [{"id": 1}, {"id": 2}], store=store)
 
@@ -419,7 +419,7 @@ class TestDrift:
             return None
 
         version = reg.register("h", "s", h, 0, None)
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
         seed_stream("s", [{"id": 1}], store=store)
 
         with caplog.at_level("WARNING"):
@@ -444,7 +444,7 @@ class TestDrift:
             return None
 
         version = reg.register("h", "s", h, 0, None)
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream("s", [{"id": i} for i in range(10)], store=store)
 
@@ -477,8 +477,8 @@ class TestDrift:
 
         v1 = reg.register("h", "s", h_v1, 0, 5)
         v2 = reg.register("h", "s", h_v2, 5, None)
-        object.__setattr__(v1, "source_hash", "deadbeef" * 8)
-        object.__setattr__(v2, "source_hash", "cafebabe" * 8)
+        object.__setattr__(v1, "source_hash", "v2:" + "deadbeef" * 8)
+        object.__setattr__(v2, "source_hash", "v2:" + "cafebabe" * 8)
 
         seed_stream("s", [{"id": i} for i in range(10)], store=store)
 
@@ -511,7 +511,7 @@ class TestDrift:
 
         handlers.register("h", "s", h, 0, None)
         up_version = upcasters.register("s", 1, upcast)
-        object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(up_version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream(
             "s", [{"id": i, "schema_version": 1} for i in range(10)], store=store
@@ -539,7 +539,7 @@ class TestDrift:
             return None
 
         version = reg.register("h", "s", h, 0, None)
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream("s", [{"id": 1}], store=store)
 
@@ -564,7 +564,7 @@ class TestDrift:
 
         handlers.register("h", "s", h, 0, None)
         up_version = upcasters.register("s", 1, upcast)
-        object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(up_version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
 
@@ -591,7 +591,7 @@ class TestDrift:
 
         handlers.register("h", "s", h, 0, None)
         up_version = upcasters.register("s", 1, upcast)
-        object.__setattr__(up_version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(up_version, "source_hash", "v2:" + "deadbeef" * 8)
 
         seed_stream("s", [{"id": 1, "schema_version": 1}], store=store)
 

@@ -17,6 +17,31 @@ ones you are crossing.
 
 # 0.10.0
 
+## Handler fingerprints now follow helpers and constants
+
+A handler's drift fingerprint used to cover only the handler's own text, so
+editing a helper it calls or a constant it reads went unnoticed. It now covers
+the plain functions the handler calls, the values of the constants it reads
+(globals, closure variables, default arguments) and the source of dataclasses,
+enums and named tuples you defined. **Expect new warnings on upgrade:** a handler
+that also reaches something that cannot be fingerprinted (a mutable global such
+as a list or dict, a module that is not part of the standard library or an
+installed package, a class that is not a dataclass, an `import` or `eval` inside
+the body) now logs an `ImpureHandlerWarning` at registration, naming each thing.
+Fix it by making the constant a plain value, the helper a plain function, or
+passing the dependency in with `functools.partial`; there is no silencing it
+short of that, apart from Python's own `warnings` filters. Set
+`RAKAIA_STRICT_HANDLER_FINGERPRINTS = True` (a Django setting, or the environment
+variable for core) to make it an error now; a later release will make that the
+default.
+
+Fingerprints now begin `v2:`. A fingerprint recorded by an older release is
+treated as unknown, not as drift: it is re-recorded the first time the handler
+registers, and drift is measured from that record onwards. An edit made *between*
+your last old-format registration and the upgrade is therefore not caught. A
+comment-only edit still counts as a change, as before, since the fingerprint
+hashes source text rather than bytecode.
+
 ## Python 3.13 is now the minimum
 
 rakaia now requires Python 3.13 or newer. On an older Python nothing fails

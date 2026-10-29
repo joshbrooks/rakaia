@@ -1170,6 +1170,42 @@ $ uv run pytest tests/test_rakaia/test_protocol_server_access.py \
 
 → Deep dive: [Protect the protocol app](django-integration.md#protect-the-protocol-app)
 
+## 34. A handler's fingerprint covers its helpers
+
+**The problem.** Drift detection hashed only the handler's own text. Change
+`_helper()` or the `THRESHOLD` it reads and the handler computed something else,
+while replay reported nothing.
+
+**What rakaia does.** The fingerprint now includes the plain functions a handler
+calls and the constants it reads. A handler that reaches something it cannot
+fingerprint (a mutable global, a module of yours, an `import` in the body) warns
+when it registers, naming the culprit. The setting turns that into an error.
+
+```python
+RAKAIA_STRICT_HANDLER_FINGERPRINTS = True  # default False; a later release flips it
+
+THRESHOLD = 100  # a plain value: part of the fingerprint
+
+
+def _helper(x):  # a plain function: part of the fingerprint
+    return x * 2
+
+
+@register_handler("big", "orders", effective_from=0)
+def big(event):
+    return _helper(event["n"]) if event["n"] > THRESHOLD else 0
+```
+
+**See it.** No example covers this yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_issue_352_fingerprint_misses_helpers.py \
+    tests/test_rakaia/test_properties_fingerprint.py \
+    tests/test_rakaia/test_handler_fingerprint.py -q
+```
+
+→ Deep dive: [Versioned handlers](versioned-handlers.md)
+
 ---
 
 ## Where to go next

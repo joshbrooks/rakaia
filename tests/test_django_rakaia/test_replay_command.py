@@ -126,7 +126,7 @@ class TestReplayCommand:
             if v.name == "test_autodiscovered_handler"
         )
         original_hash = version.source_hash
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
         try:
             with pytest.raises(HandlerDriftError):
                 call_command(

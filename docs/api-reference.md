@@ -67,6 +67,8 @@ page is the contract.
 | `merge_replay` | `rakaia` | `(store: 'ReadableStore', stream_paths: 'list[str]', executor: 'Executor', *, order_key: 'str \| _EnvelopeTs' = 'ts', handler_registry: 'HandlerRegistry \| None' = None, upcaster_registry: 'UpcasterRegistry \| None' = None, event_match: 'str \| None' = None, on_drift: 'OnDriftPolicy' = 'warn', reader: 'ProjectionReader \| None' = None) -> 'ReplayResult'` | Replay several streams merged into one deterministic total order. |
 | `ReplayResult` | `rakaia` | `(events_processed: 'int' = 0, effects_applied: 'int' = 0, external: 'list[ExternalEffect]' = <factory>, drift: 'DriftLedger' = <factory>) -> None` | Summary of a single replay() invocation. |
 | `DriftLedger` | `rakaia` | `(on_drift: 'OnDriftPolicy' = 'warn', warnings: 'list[str]' = <factory>, drifted: 'list[str]' = <factory>) -> None` | The drift check, its warn-once memory, and its hash memo, in one object. |
+| `ImpureHandlerError` | `rakaia` | — | A handler cannot be fingerprinted and strict fingerprints are on. |
+| `ImpureHandlerWarning` | `rakaia` | — | A handler cannot be fully fingerprinted: edits to part of it go unnoticed. |
 | `fold_events` | `django_rakaia` | `(events: 'Sequence[dict[str, Any]]', registry: 'HandlerRegistry', *, reader: 'ProjectionReader \| None' = None, executor: 'Any' = None, label: 'str' = 'import', scratch_path: 'str' = '_scratch/fold', start_seq: 'int') -> 'None'` | Project ``events`` now, through the handlers a replay would use. |
 | `project_latest` | `rakaia` | `(messages: 'Sequence[StreamMessage]', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[StreamMessage, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', tombstone_labels: 'Sequence[str]' = ('delete',)) -> 'list[Effect]'` | Project each subject's **latest** snapshot into one row — the current-state read model behind an event log. |
 
@@ -278,6 +280,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-177 exported names across 16 sections. 154 carry a docstring; 23 do not and show `—` above.
+179 exported names across 16 sections. 156 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

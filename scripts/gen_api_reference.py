@@ -74,6 +74,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "merge_replay",
         "ReplayResult",
         "DriftLedger",
+        "ImpureHandlerError",
+        "ImpureHandlerWarning",
         "fold_events",
         "project_latest",
     ),

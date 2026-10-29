@@ -11,7 +11,16 @@ class DjangoRakaiaConfig(AppConfig):
         # them to Django's registry via @register(). Kept first and dependency
         # -free so `manage.py check` reports a bad RAKAIA_STORE even when the
         # rest of `ready()` would fail for the same reason.
+        # Core has no settings object; hand it this one before any handler
+        # registers, so an impure handler is an error when the project asks.
+        from django.conf import settings
+
         from django_rakaia import checks  # noqa: F401
+        from rakaia.source_hash import set_strict_handler_fingerprints
+
+        set_strict_handler_fingerprints(
+            bool(getattr(settings, "RAKAIA_STRICT_HANDLER_FINGERPRINTS", False))
+        )
 
         # Framework tier: always wire handler/upcaster autodiscovery. This path
         # has no `channels` dependency, so it must load for a projections-only

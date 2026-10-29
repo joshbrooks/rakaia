@@ -112,6 +112,8 @@ RAKAIA_PUBLIC = {
     "REDUCERS_META_STREAM",
     "UPCASTERS_META_STREAM",
     "DriftLedger",
+    "ImpureHandlerError",
+    "ImpureHandlerWarning",
     "HandlerDriftError",
     "HandlerGapError",
     "HandlerOverlapError",

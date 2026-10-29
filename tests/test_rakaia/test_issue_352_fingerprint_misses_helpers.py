@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 
-import pytest
-
 from rakaia.source_hash import hash_function_source
 
 _TEMPLATE = """\
@@ -31,10 +29,6 @@ def _load(tmp_path, name, **values):
     return module.handler
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GitHub #352: fingerprint hashes only the handler's own source, not helpers or constants",
-)
 def test_changing_a_helper_or_constant_changes_the_fingerprint(tmp_path):
     before = _load(tmp_path, "before", threshold=1, factor=2)
     after = _load(tmp_path, "after", threshold=100, factor=3)

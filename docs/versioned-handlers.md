@@ -273,6 +273,17 @@ replay reports drift just as an in-process edit does. A comment or decorator
 edit changes the hash too, because it covers the function's text as written.
 Close a version's range rather than editing its body.
 
+The fingerprint also covers what the handler reaches: the plain functions it
+calls, the constants it reads (module globals, closure variables, default
+arguments) and any dataclass, enum or named tuple of yours it uses. Editing a
+helper or a threshold is drift in the handler that depends on it. A handler that
+reaches something that cannot be fingerprinted (a mutable global, a module
+outside the standard library and installed packages, a class that is not a
+dataclass, an `import` or `eval` in its body) warns at registration; set
+`RAKAIA_STRICT_HANDLER_FINGERPRINTS = True` to make it an error. A fingerprint
+stored by a release before `0.10` has no `v2:` prefix and is re-recorded, not
+reported as drift.
+
 The drift signal tells you that a function you'd promised to leave alone
 (because old events were processed under it) has been edited. The
 remedy is either to revert the change or to formalise it as a new

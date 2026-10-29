@@ -179,6 +179,8 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 No example exercises these yet — a good place to contribute a demo:
 
+- `RAKAIA_STRICT_HANDLER_FINGERPRINTS` and the impure-handler warning (covered by
+  `test_handler_fingerprint.py`, not by a demo).
 - `register_reducer` as the *public API* (the partisipa demos wire reducers via
   raw `{"reduce": […]}` stage config instead).
 - `reconcile_tree` (the `partisipa_repeaters` spike hand-rolls the equivalent

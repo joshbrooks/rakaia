@@ -59,9 +59,10 @@ class TestRegistration:
 
     def test_register_source_hash_captured(self, reg: HandlerRegistry):
         v = reg.register("mogrify", "room:*", _fn("v1"), 0, 10)
-        # hex SHA-256 is 64 chars
-        assert len(v.source_hash) == 64
-        assert all(c in "0123456789abcdef" for c in v.source_hash)
+        # "v2:" then a hex SHA-256 of 64 chars
+        assert v.source_hash.startswith("v2:")
+        assert len(v.source_hash) == 3 + 64
+        assert all(c in "0123456789abcdef" for c in v.source_hash[3:])
 
 
 class TestRegistrationValidation:

@@ -36,7 +36,7 @@ from rakaia.seed import seed_stream
 from rakaia.source_hash import hash_function_source
 from rakaia.store import StreamStore
 
-STORED = "deadbeef" * 8
+STORED = "v2:" + "deadbeef" * 8
 """A stored hash no live source can match — the drift, simulated."""
 
 
@@ -388,7 +388,9 @@ class TestTheLedgerItself:
         ledger = DriftLedger()
 
         ledger.check(kind="handler", name="h", stored_hash=STORED, fn=_handler)
-        ledger.check(kind="handler", name="h", stored_hash="cafebabe" * 8, fn=_handler)
+        ledger.check(
+            kind="handler", name="h", stored_hash="v2:" + "cafebabe" * 8, fn=_handler
+        )
 
         assert len(ledger.warnings) == 2
         assert ledger.drifted == ["h"]

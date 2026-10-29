@@ -21,6 +21,10 @@ runnable demo for each.
 - **`ServerOptions.sse_max_seconds`** (`RAKAIA_SSE_MAX_SECONDS`, 60) closes every
   live SSE connection on a timer, as the protocol asks, so clients reconnect.
 
+- **`RAKAIA_STRICT_HANDLER_FINGERPRINTS`** (default `False`; also an environment
+  variable for core) turns the new impure-handler warning into an
+  `ImpureHandlerError` at registration. A later release will make it the default.
+
 ### Changed
 
 - **Python 3.13 or newer is now required.** partisipa-import, the main
@@ -67,6 +71,13 @@ runnable demo for each.
   a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
   the new `StreamClosed`, and the event goes to the store you configured. See
   `UPGRADING.md`.
+- **A handler's drift fingerprint now covers the helpers it calls and the
+  constants it reads**, not only its own text, so changing `_helper()` or a
+  module-level threshold shows up as drift. A handler that reaches something that
+  cannot be fingerprinted (a mutable global, a module, a class that is not a
+  dataclass, an `import` or `eval` in the body) warns at registration naming it.
+  Fingerprints now start `v2:`; one stored by an older release reads as "re-record
+  quietly", not drift. See `UPGRADING.md`.
 - **A file-backed stream no longer reuses an offset after a crash.** If the
   process died just after writing an event and before saving the stream's
   bookkeeping, the next start handed the same offset to a new event. The store

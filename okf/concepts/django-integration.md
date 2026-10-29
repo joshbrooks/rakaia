@@ -50,6 +50,13 @@ Settings and operator commands:
 * `RAKAIA_MAX_BODY_BYTES` — largest create or append body, default 8 MiB, over it `413`.
 * `RAKAIA_SSE_MAX_SECONDS` — closes each live SSE connection on a timer, default 60.
   All four apply when `get_asgi_app()` is called without `options`.
+* `RAKAIA_STRICT_HANDLER_FINGERPRINTS` — off by default. A handler's drift fingerprint
+  (`v2:` + SHA-256) covers its own source, the plain functions it calls and the constants
+  it reads; one that reaches something unfingerprintable (a mutable global, a non-library
+  module, a class that is not a dataclass/enum/named tuple, `import` or `eval` in the body)
+  logs an `ImpureHandlerWarning` at registration, or raises `ImpureHandlerError` with this
+  on. Also read from the environment variable of the same name when there is no Django.
+  A pre-0.10 fingerprint (bare 64-hex) is re-recorded, not drift.
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
   returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream

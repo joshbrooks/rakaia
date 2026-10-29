@@ -15,6 +15,10 @@
   appends through the store `RAKAIA_STORE` names instead of writing database rows directly,
   so a closed stream refuses it with `StreamClosed`; check `rakaia.W003` warns when a streamed
   model meets the in-memory store.
+* **Update**: [Django integration](concepts/django-integration.md) and
+  [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) — handler
+  fingerprints cover helpers and constants (`v2:` prefix); `RAKAIA_STRICT_HANDLER_FINGERPRINTS`
+  turns the impure-handler warning into an error.
 
 ## 2026-10-27
 
