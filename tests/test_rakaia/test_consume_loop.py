@@ -350,3 +350,50 @@ def _fails_on_boom(sink: _Recorder):
         sink.applied.append(message.data)
 
     return apply
+
+
+class TestAStreamThatIsNotTheOneTheCursorWasSavedAgainst:
+    """GitHub #343 / #350: stop, apply nothing, leave the cursor alone."""
+
+    def test_a_cursor_from_before_stamps_adopts_the_current_one(self) -> None:
+        store = _store_with("s", [b"a", b"b"])
+        first = store.read("s")[0][0].offset
+        stamps: list[str] = []
+        seen: list[bytes] = []
+
+        result = consume(
+            store,
+            "s",
+            apply=lambda m: seen.append(m.data),
+            consumer="c",
+            on_error="halt",
+            cursor=first,
+            generation=None,
+            commit_generation=stamps.append,
+        )
+
+        assert seen == [b"b"] and not result.needs_rebuild
+        assert stamps == [store.get_generation("s")]
+
+    def test_a_replaced_stream_applies_nothing_and_keeps_the_cursor(self) -> None:
+        store = _store_with("s", [b"a", b"b"])
+        stamp = store.get_generation("s")
+        cursor = store.read("s")[0][0].offset
+        store.delete("s")
+        store.create("s")
+        store.append("s", b"new")
+        committed: list[str] = []
+
+        result = consume(
+            store,
+            "s",
+            apply=lambda _m: pytest.fail("applied"),
+            consumer="c",
+            on_error="skip",
+            cursor=cursor,
+            generation=stamp,
+            commit=committed.append,
+        )
+
+        assert result.status == "replaced" and result.needs_rebuild
+        assert result.applied == 0 and result.cursor == cursor and committed == []

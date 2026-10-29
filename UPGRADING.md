@@ -88,15 +88,24 @@ to it. Production should set both. See
 - **The dashboard's live feed (`stream_events_sse`) needs a signed-in user.** An
   anonymous request is redirected to the login page, where it used to be served.
 
-## A consumer now stops, applying nothing, when its stream went backwards
+## A consumer now stops, applying nothing, when its stream is not the one it was reading
 
 `consume` and `Consumer.run` return status `rewound` (the log is shorter than the
-cursor) with `applied == 0` and the cursor unchanged; `Consumed.needs_rebuild` is
-true. Before, `rewound` re-applied the whole re-read, so rows built from events no
-longer in the log stayed and the figures drifted. A consumer that does not look at
-`status` used to carry on and now makes no progress, quietly, on every run. Check
-`needs_rebuild`, rebuild the consumer's derived state, and delete its
+cursor) or `replaced` (the stream was deleted and recreated, or expired and
+recreated, since the cursor was saved) with `applied == 0` and the cursor
+unchanged; `Consumed.needs_rebuild` is true for either. Before, `rewound` re-applied
+the whole re-read and `replaced` was not detected at all, so a consumer that does
+not look at `status` used to carry on and now makes no progress, quietly, on every
+run. Check `needs_rebuild`, rebuild the consumer's derived state, and delete its
 `ConsumerCursor` row (or start with a new consumer name) to let it read again.
+
+Run `manage.py migrate django_rakaia`: `0014_generation` adds a `generation` column
+to `Stream` and to `ConsumerCursor`. A cursor saved before the upgrade has none and
+adopts the stream's current stamp the first time it runs, so it does not stop; a
+stream deleted and recreated *before* that first run cannot be told from the
+original. A custom `ConsumerCursorStore` keeps working but cannot detect a replaced
+stream until it adds `load_generation` and `commit_generation`; a custom stream
+store likewise needs `get_generation`.
 
 ---
 

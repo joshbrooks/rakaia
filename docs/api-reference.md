@@ -32,7 +32,7 @@ page is the contract.
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
-| `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
+| `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, generation: 'str' = '', last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `(*, permanent: 'bool' = False) -> 'None'` | In-memory store for durable streams. |
 | `JsonlStreamStore` | `rakaia` | `(root: 'str \| Path', *, segment_size: 'int' = 10000, fsync: 'bool' = True, permanent: 'bool' = False)` | A `rakaia.StreamServerStore` over a directory of JSONL files. |
 | `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None, permanent: 'bool \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
@@ -55,7 +55,7 @@ page is the contract.
 | `EnvelopeMetadata` | `rakaia` | — | The metadata keys rakaia reads or writes on an event. |
 | `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus') -> None` | The result of polling a stream from a cursor. |
 | `PollStatus` | `rakaia` | — | — |
-| `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None') -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
+| `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None', *, generation: 'str \| None' = None) -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
 | `poll_consumer` | `django_rakaia` | `(store: 'CursorStore', consumer_id: 'str', stream_path: 'str') -> 'Poll'` | Load this consumer's cursor and poll `stream_path` for the delta. |
 
 ## Rebuilding tables (replay)
@@ -196,7 +196,7 @@ page is the contract.
 | `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |
 | `DjangoConsumerCursorStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A `ConsumerCursorStore` over the ``ConsumerCursor`` table. |
 | `CallerTransactionOpen` | `django_rakaia` | — | Raised when a run is started inside a transaction the caller opened. |
-| `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
+| `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, generation: 'str \| None' = None, commit_generation: 'Callable[[str], None] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
 | `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool') -> None` | What one pass of the consume loop did. |
 | `OnErrorPolicy` | `rakaia` | — | — |
 | `Outcome` | `rakaia` | `(consumer: 'str', stream_path: 'str', subject: 'str', offset: 'str \| None', sequence_key: 'str', stage: 'Stage', status: 'OutcomeStatus', reasons: 'tuple[str, ...]' = (), params: 'dict[str, str]' = <factory>, attempt: 'int' = 1) -> None` | One event's failure to be applied cleanly, as a value. |

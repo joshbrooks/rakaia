@@ -281,6 +281,10 @@ class Stream:
     created_at: float = 0.0
     """Timestamp when the stream was created."""
 
+    generation: str = ""
+    """A stamp that changes whenever the stream is deleted and recreated, so a
+    consumer can tell a different stream at the same path from the same one."""
+
     last_activity_at: float = 0.0
     """Timestamp of the last TTL-extending activity (sliding-window anchor).
 

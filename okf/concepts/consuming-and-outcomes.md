@@ -35,10 +35,13 @@ must be idempotent**.
 Imported from `rakaia`:
 
 * `poll(store, path, cursor) -> Poll` — the incremental read. `PollStatus` is
-  `fresh` / `advanced` / `caught_up` / `rewound` / `absent`; `rewound` means the
-  log shrank beneath the cursor. `poll` still returns the re-read; `consume`
-  applies nothing, leaves the cursor alone, and sets `Consumed.needs_rebuild`, and
-  the operator rebuilds — nothing resets automatically.
+  `fresh` / `advanced` / `caught_up` / `rewound` / `replaced` / `absent`; `rewound`
+  means the log shrank beneath the cursor, `replaced` that the stream was deleted
+  and recreated (or expired) since the cursor was saved — compared through the
+  store's optional `get_generation(path)` stamp, which `poll(..., generation=)`
+  takes. `consume` applies nothing on either, leaves the cursor alone, and sets
+  `Consumed.needs_rebuild`; the operator rebuilds, nothing resets automatically.
+  A cursor with no saved stamp adopts the stream's current one.
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.

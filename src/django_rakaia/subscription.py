@@ -26,6 +26,27 @@ def load_cursor(
     return row.offset if row else None
 
 
+def load_generation(
+    consumer_id: str, stream_path: str, *, using: str | None = None
+) -> str | None:
+    """The stream stamp saved with the consumer's cursor, or None."""
+    row = (
+        ConsumerCursor.objects.using(using)
+        .filter(consumer_id=consumer_id, stream_path=stream_path)
+        .first()
+    )
+    return row.generation if row else None
+
+
+def commit_generation(
+    consumer_id: str, stream_path: str, generation: str, *, using: str | None = None
+) -> None:
+    """Save the stream's stamp on the consumer's existing cursor row."""
+    ConsumerCursor.objects.using(using).filter(
+        consumer_id=consumer_id, stream_path=stream_path
+    ).update(generation=generation)
+
+
 def commit_cursor(
     consumer_id: str, stream_path: str, offset: str, *, using: str | None = None
 ) -> None:
@@ -48,7 +69,13 @@ def poll_consumer(store: CursorStore, consumer_id: str, stream_path: str) -> Pol
     Does **not** advance the cursor — apply ``result.messages``, then call
     `commit_cursor(consumer_id, stream_path, result.cursor)`. A ``rewound``
     result means the log was rebuilt beneath the cursor; reset derived state
-    before applying, exactly as with the core `poll`.
+    before applying, exactly as with the core `poll`. A ``replaced`` result means
+    the stream was deleted and recreated since the cursor was saved.
     """
     cursor = load_cursor(consumer_id, stream_path)
-    return poll(store, stream_path, cursor)
+    return poll(
+        store,
+        stream_path,
+        cursor,
+        generation=load_generation(consumer_id, stream_path),
+    )

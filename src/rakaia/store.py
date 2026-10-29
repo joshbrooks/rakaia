@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
@@ -172,6 +173,7 @@ class StreamStore:
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             created_at=now,
+            generation=uuid.uuid4().hex,
             last_activity_at=now,
             closed=closed,
         )
@@ -431,6 +433,15 @@ class StreamStore:
         """Get the current offset for a stream."""
         stream = self._get_if_not_expired(path)
         return stream.current_offset if stream else None
+
+    def get_generation(self, path: str) -> str | None:
+        """The stream's creation stamp, or None if it is absent or expired.
+
+        Changes when the stream is deleted (or expires) and is created again,
+        which the offsets alone do not show: they keep rising across a recreate.
+        """
+        stream = self._get_if_not_expired(path)
+        return stream.generation if stream else None
 
     # =========================================================================
     # Producer validation

@@ -1063,5 +1063,14 @@ class DjangoStreamStore:
         # the expiry check and the absent-stream `None`.
         return stream.current_offset
 
+    def get_generation(self, path: str) -> str | None:
+        """The stream's creation stamp, or None if it is absent or expired.
+
+        Changes when the stream is deleted (or expires) and is created again;
+        the offsets keep rising across that, so they cannot show it.
+        """
+        stream = self._get_if_not_expired(path)
+        return None if stream is None else stream.generation
+
     def list_paths(self) -> list[str]:
         return list(self._streams().values_list("stream_id", flat=True))

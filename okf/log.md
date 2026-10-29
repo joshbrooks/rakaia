@@ -3,6 +3,13 @@
 ## 2026-10-29
 
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — a consumer whose
+  stream went backwards (`rewound`) or was deleted and recreated or expired (`replaced`) now
+  applies nothing and keeps its cursor (`Consumed.needs_rebuild`); the stream stamp
+  (`get_generation`, the `generation` column, migration `0014`) is saved beside the cursor.
+
+## 2026-10-29
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — a consumer whose
   stream went backwards (`rewound`) now applies nothing and keeps its cursor
   (`Consumed.needs_rebuild`) instead of re-applying the re-read.
 

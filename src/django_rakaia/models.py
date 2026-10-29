@@ -6,6 +6,7 @@ for efficient querying and real-time updates via Unix sockets.
 """
 
 import time
+import uuid
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import unquote
 
@@ -26,6 +27,11 @@ if TYPE_CHECKING:
     # These blocks are type-checker-only: nothing here runs, so Django still
     # builds the real reverse accessors and the real AutoField primary key.
     from django.db.models.manager import RelatedManager
+
+
+def new_generation() -> str:
+    """A fresh stamp for a newly created stream (see `Stream.generation`)."""
+    return uuid.uuid4().hex
 
 
 class Stream(models.Model):
@@ -56,6 +62,15 @@ class Stream(models.Model):
 
     stream_id = models.CharField(max_length=255, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    generation = models.CharField(max_length=32, default=new_generation)
+    """Changes when the stream is deleted and recreated at the same path.
+
+    Offsets keep rising across a recreate, so they cannot say "this is a
+    different stream"; a consumer saves this beside its cursor and stops when it
+    no longer matches. Streams that existed when the column was added share one
+    value, which is harmless: it is only ever compared against the same path.
+    """
 
     # --- protocol lifecycle ---------------------------------------------
     content_type = models.CharField(max_length=255, null=True, blank=True)
@@ -571,6 +586,10 @@ class ConsumerCursor(models.Model):
     consumer_id = models.CharField(max_length=128)
     stream_path = models.CharField(max_length=255)
     offset = models.CharField(max_length=64)
+    generation = models.CharField(max_length=32, null=True, blank=True)
+    """The stream's `Stream.generation` when the cursor was saved. ``None`` for a
+    cursor from before the column existed, which adopts the stream's current one
+    on its next run rather than stopping."""
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -45,6 +45,13 @@ runnable demo for each.
   re-read before the caller could reset what it had built. It now applies nothing,
   leaves the cursor alone, and returns status `rewound` with the new
   `Consumed.needs_rebuild` set. See `UPGRADING.md`.
+- **A consumer notices that its stream was deleted and recreated, or expired.**
+  Offsets keep rising across a recreate, so the unread events were skipped without
+  a word. Each stream now carries a stamp that changes when it is recreated
+  (`get_generation` on the stores, a `generation` column on `Stream` and
+  `ConsumerCursor`, migration `0014`); the consumer saves it beside its cursor and,
+  on a mismatch, stops exactly as for a rewind, with status `replaced`. A cursor
+  saved before the upgrade adopts the stream's current stamp. See `UPGRADING.md`.
 - **A file-backed stream no longer reuses an offset after a crash.** If the
   process died just after writing an event and before saving the stream's
   bookkeeping, the next start handed the same offset to a new event. The store

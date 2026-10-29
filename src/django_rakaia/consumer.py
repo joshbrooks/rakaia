@@ -39,7 +39,12 @@ from rakaia.subscription import Consumed, OnErrorPolicy
 from rakaia.types import StreamMessage
 
 from .outcomes import DjangoOutcomeStore
-from .subscription import commit_cursor, load_cursor
+from .subscription import (
+    commit_cursor,
+    commit_generation,
+    load_cursor,
+    load_generation,
+)
 
 
 class CallerTransactionOpen(RuntimeError):
@@ -78,6 +83,14 @@ class DjangoConsumerCursorStore:
 
     def commit(self, consumer: str, stream_path: str, offset: str) -> None:
         commit_cursor(consumer, stream_path, offset, using=self.using)
+
+    def load_generation(self, consumer: str, stream_path: str) -> str | None:
+        return load_generation(consumer, stream_path, using=self.using)
+
+    def commit_generation(
+        self, consumer: str, stream_path: str, generation: str
+    ) -> None:
+        commit_generation(consumer, stream_path, generation, using=self.using)
 
 
 _UNSET = object()

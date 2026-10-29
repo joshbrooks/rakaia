@@ -8,10 +8,6 @@ from django_rakaia.django_store import DjangoStreamStore
 from rakaia.subscription import consume
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GitHub #350: recreated stream silently drops events below the saved cursor",
-)
 @pytest.mark.django_db
 def test_a_recreated_stream_is_not_reported_as_a_plain_advance() -> None:
     store = DjangoStreamStore()
@@ -22,6 +18,7 @@ def test_a_recreated_stream_is_not_reported_as_a_plain_advance() -> None:
     # The consumer has read nothing yet; its cursor is the stream's start.
     # Pretend the consumer only got through event 0 before the stream vanished.
     cursor = store.read("s")[0][0].offset
+    generation = store.get_generation("s")
 
     store.delete("s")
     store.create("s")
@@ -35,6 +32,7 @@ def test_a_recreated_stream_is_not_reported_as_a_plain_advance() -> None:
         consumer="c",
         on_error="halt",
         cursor=cursor,
+        generation=generation,
     )
 
     # The new stream's events are all "new" to this consumer; it must be told.

@@ -55,6 +55,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -203,6 +204,9 @@ class _Meta:
     producers: dict[str, ProducerState] = field(default_factory=dict)
     head: int = 0
     """The highest entry id issued. Also the numeric part of the head offset."""
+    generation: str | None = None
+    """Stamp made when the stream was created; ``None`` for a stream written
+    before stamps existed. See `get_generation`."""
     last_event_ts: float | None = None
     """The last `event_ts` this store stamped itself, so its stamps never go
     backwards within the stream (#284). Producer-supplied times are not recorded.
@@ -237,6 +241,7 @@ class _Meta:
                 for pid, s in self.producers.items()
             },
             "head": self.head,
+            "generation": self.generation,
             "last_event_ts": self.last_event_ts,
         }
 
@@ -266,6 +271,7 @@ class _Meta:
                 for pid, s in raw.get("producers", {}).items()
             },
             head=raw.get("head", 0),
+            generation=raw.get("generation"),
             last_event_ts=raw.get("last_event_ts"),
         )
 
@@ -716,6 +722,7 @@ class JsonlStreamStore:
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             created_at=now,
+            generation=uuid.uuid4().hex,
             last_activity_at=now,
             closed=closed,
             # A recreated path resumes above the id it retired, so offsets stay
@@ -765,6 +772,7 @@ class JsonlStreamStore:
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             created_at=meta.created_at,
+            generation=meta.generation or "",
             last_activity_at=meta.last_activity_at,
             producers=dict(meta.producers),
             closed=meta.closed,
@@ -1037,6 +1045,12 @@ class JsonlStreamStore:
     def get_current_offset(self, path: str) -> str | None:
         meta = self._live_meta(path)
         return None if meta is None else PLAIN.render(meta.head)
+
+    def get_generation(self, path: str) -> str | None:
+        """The stream's creation stamp; ``None`` if absent, expired, or written
+        before stamps existed. Changes when the stream is recreated."""
+        meta = self._live_meta(path)
+        return None if meta is None else meta.generation
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.
