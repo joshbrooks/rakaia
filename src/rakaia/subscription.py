@@ -33,6 +33,7 @@ stream, where the head really does sort before the cursor.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
@@ -43,7 +44,9 @@ from .outcomes import Outcome
 from .protocols import CursorStore, OutcomeStore
 from .types import StreamMessage
 
-PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
+_log = logging.getLogger("rakaia.subscription")
+
+PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "replaced", "absent"]
 """Outcome of a `poll`:
 
 * ``fresh`` — first poll (no prior cursor); every message returned.
@@ -53,6 +56,10 @@ PollStatus = Literal["fresh", "advanced", "caught_up", "rewound", "absent"]
   high-water (a stream recreated but not yet re-appended, #34).
 * ``rewound`` — cursor sorts past the head (log truncated/rebuilt); re-read from
   the start. The consumer should reset any derived state before applying.
+* ``replaced`` — the stream is not the one the cursor was saved against: it was
+  deleted and recreated, or expired and recreated, since. Nothing returned; its
+  offsets may sort past the cursor and so look like an ordinary advance, which
+  is exactly why the stream's own ``get_generation`` stamp is compared (#350).
 * ``absent`` — the stream does not exist; nothing returned.
 """
 
@@ -72,6 +79,11 @@ class Poll:
 
     status: PollStatus
 
+    generation: str | None = None
+    """The stream's stamp as read by this poll, ``None`` if absent or the store
+    keeps none. Save it with the cursor so a later poll can tell the stream was
+    deleted and recreated."""
+
     @property
     def rewound(self) -> bool:
         """The log was rebuilt beneath the cursor; reset before applying."""
@@ -83,13 +95,23 @@ class Poll:
         return self.status == "caught_up"
 
 
-def poll(store: CursorStore, path: str, cursor: str | None) -> Poll:
+def poll(
+    store: CursorStore,
+    path: str,
+    cursor: str | None,
+    *,
+    generation: str | None = None,
+) -> Poll:
     """Read `path` forward from `cursor`, detecting a rewound log.
 
     Args:
         store: a `ReadableStore` that also exposes ``get_current_offset``.
         path: the stream to poll.
         cursor: the last offset this consumer applied, or ``None`` on first poll.
+        generation: the stream's stamp as saved with the cursor, or ``None`` if
+            none was saved (a cursor from before stamps existed, which adopts
+            whatever stamp the stream has now). A store with no
+            ``get_generation`` is never reported ``replaced``.
 
     Returns:
         A `Poll`. Persist ``.cursor`` only after the messages are applied, so a
@@ -100,18 +122,32 @@ def poll(store: CursorStore, path: str, cursor: str | None) -> Poll:
     if head is None:
         return Poll(messages=[], cursor=None, status="absent")
 
+    current = generation_of(store, path)
+    if generation is not None and current is not None and current != generation:
+        return Poll(messages=[], cursor=cursor, status="replaced", generation=current)
+
     if cursor is None:
         messages, _ = store.read(path)
-        return Poll(messages=messages, cursor=_tail(messages, head), status="fresh")
+        return Poll(
+            messages=messages,
+            cursor=_tail(messages, head),
+            status="fresh",
+            generation=current,
+        )
 
     if _after(cursor, head):
         # The cursor points beyond the current head: the log was truncated or
         # rebuilt shorter. Re-read from the start and signal the reset.
         messages, _ = store.read(path)
-        return Poll(messages=messages, cursor=_tail(messages, head), status="rewound")
+        return Poll(
+            messages=messages,
+            cursor=_tail(messages, head),
+            status="rewound",
+            generation=current,
+        )
 
     if cursor == head:
-        return Poll(messages=[], cursor=cursor, status="caught_up")
+        return Poll(messages=[], cursor=cursor, status="caught_up", generation=current)
 
     messages, _ = store.read(path, cursor)
     if not messages:
@@ -120,8 +156,25 @@ def poll(store: CursorStore, path: str, cursor: str | None) -> Poll:
         # re-appended (globally-monotonic offsets, #34). There is no delta to
         # apply, so this is `caught_up` — not an `advanced` with an empty delta,
         # which would falsely signal new content to a status-branching consumer.
-        return Poll(messages=[], cursor=cursor, status="caught_up")
-    return Poll(messages=messages, cursor=_tail(messages, cursor), status="advanced")
+        return Poll(messages=[], cursor=cursor, status="caught_up", generation=current)
+    return Poll(
+        messages=messages,
+        cursor=_tail(messages, cursor),
+        status="advanced",
+        generation=current,
+    )
+
+
+def generation_of(store: object, path: str) -> str | None:
+    """The stream's creation stamp, or ``None`` if the store keeps none.
+
+    The stamp changes when a stream is deleted and recreated, and is how a
+    consumer tells "the same stream, further on" from "a different stream that
+    happens to have later offsets". Optional on a store, so one written before
+    stamps existed keeps working — it just cannot report ``replaced``.
+    """
+    getter = getattr(store, "get_generation", None)
+    return None if getter is None else getter(path)
 
 
 def _tail(messages: list[StreamMessage], fallback: str) -> str:
@@ -180,8 +233,22 @@ class Consumed:
     polled. Below the poll's cursor when the pass halted."""
 
     halted: bool
-    """``on_error="halt"`` stopped the pass. Messages after the failure were not
-    applied and are still pending."""
+    """The pass stopped before the end of what it read: ``on_error="halt"`` hit a
+    failure, or `transient` is set. Messages from there on were not applied and
+    are still pending."""
+
+    transient: bool = False
+    """The apply raised a "try again later" error (a dropped connection, a
+    deadlock). Nothing was recorded for it and the cursor is still below it, so
+    run the consumer again; ``halted`` is set too."""
+
+    @property
+    def needs_rebuild(self) -> bool:
+        """The stream is not what this consumer was reading: it went backwards
+        (``rewound``) or was deleted and recreated (``replaced``). Nothing was
+        applied and the cursor did not move; the consumer's derived state no
+        longer matches the log and has to be rebuilt by the operator."""
+        return self.status in ("rewound", "replaced")
 
 
 def consume(
@@ -196,6 +263,9 @@ def consume(
     outcomes: OutcomeStore | None = None,
     subject_of: Callable[[StreamMessage], str] | None = None,
     sequence_of: Callable[[StreamMessage], str] | None = None,
+    generation: str | None = None,
+    commit_generation: Callable[[str], None] | None = None,
+    transient: tuple[type[BaseException], ...] | None = None,
 ) -> Consumed:
     """Poll `path`, apply each message, record any outcome, then commit.
 
@@ -253,11 +323,63 @@ def consume(
             sees is already in the log; a refused event that never reached the
             log is not this loop's to record.
         sequence_of: what a message is ordered *within*. Defaults to the subject.
+        generation: the stream stamp saved with `cursor`, or ``None``. If the
+            stream's stamp differs the pass stops with status ``replaced``.
+        commit_generation: called with the stream's stamp the first time this
+            consumer sees it (a first run, or a cursor from before stamps), and
+            after the first committed offset when there was no cursor yet.
+        transient: exception types that mean "try again later". Defaults to
+            none: core names no database library, so pass your driver's
+            (`django_consumer` passes Django's). An apply that raises one stops the
+            pass with ``Consumed.transient`` set, records nothing and leaves the
+            cursor where it was, under either `on_error`.
+
+    **A stream that went backwards or was replaced applies nothing.** The status
+    is ``rewound`` or ``replaced`` (`Consumed.needs_rebuild`), the cursor does
+    not move, and no automatic reset happens: derived rows built from events no
+    longer in the log are never removed by re-reading, so the operator rebuilds.
 
     Returns:
         A `Consumed` describing the pass.
     """
-    result = poll(store, path, cursor)
+    result = poll(store, path, cursor, generation=generation)
+    if result.status in ("rewound", "replaced"):
+        # Said out loud as well as returned: nothing in the library runs the
+        # consumer, so a caller that ignores the status would stall in silence.
+        _log.error(
+            "Consumer %r stopped on %r: the stream was %s, so its derived data "
+            "no longer matches the log. Nothing was applied; rebuild it.",
+            consumer,
+            path,
+            "rewound" if result.status == "rewound" else "deleted and recreated",
+        )
+        return Consumed(
+            status=result.status,
+            applied=0,
+            outcomes=(),
+            cursor=cursor,
+            halted=False,
+        )
+    transient_types = transient or ()
+    current_generation = (
+        generation_of(store, path) if result.status != "absent" else None
+    )
+    stamp_pending = (
+        commit_generation is not None
+        and current_generation is not None
+        and current_generation != generation
+    )
+
+    def _stamp() -> None:
+        # Saved beside the cursor, after it where there was none to save it on.
+        nonlocal stamp_pending
+        if stamp_pending and commit_generation and current_generation:
+            commit_generation(current_generation)
+            stamp_pending = False
+
+    if cursor is not None:
+        # A cursor saved before stamps existed adopts the stream's own.
+        _stamp()
     subject_of = subject_of or (lambda message: message.offset)
     sequence_of = sequence_of or subject_of
 
@@ -276,6 +398,25 @@ def consume(
         try:
             emitted = apply(message)
         except Exception as exc:
+            if transient_types and isinstance(exc, transient_types):
+                # Not a bad event: the database blinked. Writing a failure for
+                # it would skip it for good under "skip", so write nothing and
+                # leave the cursor below it for the next run.
+                _log.warning(
+                    "Consumer %r paused on %r at a temporary error (%s); "
+                    "it will retry on the next run.",
+                    consumer,
+                    path,
+                    type(exc).__name__,
+                )
+                return Consumed(
+                    status=result.status,
+                    applied=applied,
+                    outcomes=tuple(recorded),
+                    cursor=committed,
+                    halted=True,
+                    transient=True,
+                )
             code = exc.code if isinstance(exc, RakaiaError) else UNHANDLED
             _record(
                 Outcome(
@@ -315,6 +456,7 @@ def consume(
             # "skip" advances past it. The record is what makes that safe to do.
             _commit(commit, message.offset)
             committed = message.offset
+            _stamp()
             continue
 
         applied += 1
@@ -322,6 +464,7 @@ def consume(
             _record(outcome)
         _commit(commit, message.offset)
         committed = message.offset
+        _stamp()
 
     # `caught_up` and `absent` applied nothing, so they committed nothing and
     # `committed` is still the watermark they were handed. That is deliberate for

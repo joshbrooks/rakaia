@@ -8,6 +8,10 @@ SECRET_KEY = "insecure-sample-key-do-not-use-in-production"
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
+# `@stream_model` appends through the configured store, and the live feed is
+# driven by the database rows it writes, so this example needs the durable one.
+RAKAIA_STORE = "durable"
+
 INSTALLED_APPS = [
     "daphne",
     "channels",

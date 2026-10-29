@@ -165,6 +165,7 @@ if TYPE_CHECKING:
         generate_response_cursor,
     )
     from .seed import seed_stream
+    from .source_hash import ImpureHandlerError, ImpureHandlerWarning
     from .store import StreamStore
     from .subscription import Consumed, OnErrorPolicy, Poll, PollStatus, consume, poll
     from .types import (
@@ -190,6 +191,7 @@ if TYPE_CHECKING:
         ProducerValidationResult,
         SequenceConflict,
         Stream,
+        StreamClosed,
         StreamConfigConflict,
         StreamError,
         StreamMessage,
@@ -255,6 +257,7 @@ _EXPORTS: dict[str, str] = {
     # Store failures (each subclasses the builtin it replaced)
     "StreamError": "rakaia.types",
     "StreamNotFound": "rakaia.types",
+    "StreamClosed": "rakaia.types",
     "StreamConfigConflict": "rakaia.types",
     "SequenceConflict": "rakaia.types",
     "ContentTypeMismatch": "rakaia.types",
@@ -327,6 +330,8 @@ _EXPORTS: dict[str, str] = {
     "MergeKeyError": "rakaia.replaying",
     "TouchedSubject": "rakaia.replaying",
     "DriftLedger": "rakaia.drift",
+    "ImpureHandlerError": "rakaia.source_hash",
+    "ImpureHandlerWarning": "rakaia.source_hash",
     # Subscriber cursors
     "poll": "rakaia.subscription",
     "Poll": "rakaia.subscription",
@@ -375,6 +380,8 @@ __all__ = [
     "Delete",
     "DeleteNotAllowed",
     "DriftLedger",
+    "ImpureHandlerError",
+    "ImpureHandlerWarning",
     "DuplicateProducesError",
     "ENVELOPE_TS",
     "EXCEPTION_TYPE_KEY",
@@ -434,6 +441,7 @@ __all__ = [
     "SpareKeys",
     "Stage",
     "Stream",
+    "StreamClosed",
     "StreamConfigConflict",
     "StreamError",
     "StreamMessage",

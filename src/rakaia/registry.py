@@ -29,7 +29,15 @@ from .drift import HandlerDriftError as HandlerDriftError
 from .errors import RakaiaError
 from .protocols import WritableStore
 from .registration_log import RegistrationLog
-from .source_hash import hash_function_source, is_importable, unwrap_handler
+from .source_hash import (
+    ImpureHandlerError,
+    ImpureHandlerWarning,
+    fingerprint_handler,
+    is_importable,
+    is_legacy_hash,
+    strict_handler_fingerprints,
+    unwrap_handler,
+)
 
 HANDLERS_META_STREAM = "__rakaia__:handlers"
 UPCASTERS_META_STREAM = "__rakaia__:upcasters"
@@ -160,6 +168,57 @@ def _module_prefix(dotted_path: str | None) -> str | None:
     if not dotted_path or "." not in dotted_path:
         return dotted_path or None
     return dotted_path.rsplit(".", 1)[0]
+
+
+_warned_impure: set[tuple[str, int, str]] = set()
+
+
+def _warn_once(fn: Callable[..., Any], message: str) -> None:
+    """Warn about an impure handler once per process, pointing at its definition.
+
+    The registration call can be several frames inside this library, so a stack
+    level lands on nothing useful; the handler's own first line is where the fix
+    goes. Registering the same handler again says nothing new.
+    """
+    code = getattr(unwrap_handler(fn), "__code__", None)
+    filename = code.co_filename if code else "<unknown>"
+    lineno = code.co_firstlineno if code else 0
+    key = (filename, lineno, message)
+    if key in _warned_impure:
+        return
+    _warned_impure.add(key)
+    warnings.warn_explicit(
+        message,
+        ImpureHandlerWarning,
+        filename,
+        lineno,
+        module=getattr(unwrap_handler(fn), "__module__", None),
+    )
+
+
+def _fingerprint(fn: Callable[..., Any], what: str) -> str:
+    """The fingerprint to record for `fn`, complaining if it cannot be complete.
+
+    An impure function is one whose helpers or constants cannot be hashed, so an
+    edit to them would not read as drift. That is a warning now and an error
+    under `RAKAIA_STRICT_HANDLER_FINGERPRINTS`; a later release will make the
+    error the default.
+    """
+    result = fingerprint_handler(fn)
+    if result.impure:
+        listing = "; ".join(result.impure)
+        name = getattr(unwrap_handler(fn), "__qualname__", repr(fn))
+        message = (
+            f"{what} ({name}) cannot be fully fingerprinted, so edits to what it "
+            f"reaches will not show as drift: {listing}. Move constants to plain "
+            "values and helpers to plain functions, or pass them in with "
+            "functools.partial. A future release will make this an error; set "
+            "RAKAIA_STRICT_HANDLER_FINGERPRINTS=True to make it one now."
+        )
+        if strict_handler_fingerprints():
+            raise ImpureHandlerError(message)
+        _warn_once(fn, message)
+    return result.digest
 
 
 def _registration_site() -> str | None:
@@ -600,7 +659,7 @@ class HandlerRegistry(_LogBackedRegistry):
             effective_to=effective_to,
             fn=fn,
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
-            source_hash=hash_function_source(fn),
+            source_hash=_fingerprint(fn, f"handler {name!r}"),
             registered_in=_registration_site(),
             match_field=match_field,
             stage=stage,
@@ -633,7 +692,12 @@ class HandlerRegistry(_LogBackedRegistry):
         wanted = _range_of(version.fields_from_payload(version.to_payload()))
         for payload in self._handler_log.payloads():
             fields = HandlerVersion.fields_from_payload(payload)
-            if _range_of(fields) == wanted:
+            if _range_of(fields) == wanted and not is_legacy_hash(
+                str(fields["source_hash"])
+            ):
+                # A hash recorded before the `v2:` format says nothing about
+                # today's fingerprint, so the first *current-format* record is
+                # the reference: the old one is re-recorded, not drift.
                 return str(fields["source_hash"])
         return None
 
@@ -658,7 +722,7 @@ class HandlerRegistry(_LogBackedRegistry):
             stage=stage,
             fn=fn,
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
-            source_hash=hash_function_source(fn),
+            source_hash=_fingerprint(fn, f"reducer {name!r}"),
             registered_in=_registration_site(),
         )
 
@@ -908,7 +972,7 @@ class UpcasterRegistry(_LogBackedRegistry):
             from_version=from_version,
             fn=fn,
             dotted_path=_dotted_path(fn, persisted=self._store is not None),
-            source_hash=hash_function_source(fn),
+            source_hash=_fingerprint(fn, f"upcaster {event_match!r} v{from_version}"),
             match_field=match_field,
             registered_in=_registration_site(),
         )

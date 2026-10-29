@@ -93,9 +93,9 @@ rather the point of running the stress command with a tab open.
 * `polyglot/signals.py` — `post_save` / `post_delete` on `Translatable`
   append a JSON record to `/translations/{langcode}` through
   `get_store()`, which `RAKAIA_STORE = "jsonl"` resolves to the
-  file-backed store. Not `create_stream_event`: that writes `StreamEvent`
-  rows directly and never consults the setting. No decorator on the
-  library model either — the demo wires its own signal so the library
+  file-backed store. `@stream_model` and `create_stream_event` reach the
+  same store (they follow `RAKAIA_STORE` too), but there is no decorator on the
+  library model here — the demo wires its own signal so the library
   stays unopinionated.
 * `polyglot_project/asgi.py` — Django, plus rakaia's protocol server
   mounted on `/protocol/` over the same folder. This is what serves SSE.

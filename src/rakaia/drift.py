@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .errors import RakaiaError
-from .source_hash import hash_function_source
+from .source_hash import hash_function_source, is_legacy_hash
 
 # Deliberately the logger `replay()` has always warned through, and not renamed
 # with the module in 0.8: `RAKAIA_DRIFT` lines keep arriving on the name
@@ -110,6 +110,11 @@ class DriftLedger:
         `HandlerDriftError` instead of warning when `on_drift == "raise"`, which
         is what `--strict-drift` asks for: a first sighting is enough to fail.
         """
+        if is_legacy_hash(stored_hash):
+            # Recorded before fingerprints covered helpers and constants: a
+            # different format, not a different handler. Re-recorded at the next
+            # registration, so nothing to report.
+            return False
         if self.live_hash(fn) == stored_hash:
             return False
         key = (kind, name, stored_hash)

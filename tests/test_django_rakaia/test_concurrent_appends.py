@@ -251,6 +251,72 @@ def test_fanning_into_the_same_streams_in_opposite_orders_does_not_deadlock(
 
 @requires_row_locks
 @pytest.mark.django_db(transaction=True)
+def test_two_model_saves_fanning_out_in_opposite_orders_do_not_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`append_to_many` locks its streams in path order, whatever order it is given.
+
+    Two saves fan out to the same two streams, one listing them left-right and
+    the other right-left. Same forced interleave as the test above: each save
+    announces its first lock and waits for the other. Locked in the caller's
+    order they hold one stream each and deadlock every time; locked in path
+    order the second is still queued on the first stream, the first's wait runs
+    out and both commit.
+    """
+    from django.test import override_settings
+
+    from django_rakaia.decorators import create_stream_event
+
+    from .models import AreaData
+
+    store = DjangoStreamStore()
+    for path in ("left", "right"):
+        store.create(path)
+        store.append(path, b'{"seed": true}')
+
+    original = Stream.lock_watermark
+    local = threading.local()
+    first_taken = {"a": threading.Event(), "b": threading.Event()}
+
+    def announcing(self: Stream) -> Any:
+        watermark = original(self)
+        if not getattr(local, "announced", False):
+            local.announced = True
+            first_taken[local.me].set()
+            first_taken[local.other].wait(timeout=2)
+        return watermark
+
+    monkeypatch.setattr(Stream, "lock_watermark", announcing)
+
+    def save(me: str, other: str, order: list[str]) -> Any:
+        def inner() -> None:
+            local.me, local.other = me, other
+            create_stream_event(
+                stream_paths=order,
+                to_dataclass=lambda _i: AreaData(id=1, name=me),
+                instance=object(),  # type: ignore[arg-type]
+                action="update",
+            )
+
+        return inner
+
+    with override_settings(RAKAIA_STORE="durable"):
+        _run(
+            save("a", "b", ["left", "right"]),
+            save("b", "a", ["right", "left"]),
+        )
+
+    for path in ("left", "right"):
+        offsets = sorted(
+            StreamEntry.objects.filter(stream__stream_id=path).values_list(
+                "offset", flat=True
+            )
+        )
+        assert offsets == [1, 2, 3]
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
 def test_a_model_save_and_a_protocol_append_on_one_stream_do_not_deadlock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

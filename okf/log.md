@@ -1,5 +1,32 @@
 # Directory Update Log
 
+## 2026-10-29
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
+  `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the
+  stream's stamp and `commit_cursor(..., generation=)` saves it. `register_transient_errors` is
+  gone; `django_consumer` / `DjangoConsumer` pass Django's `OperationalError` and
+  `InterfaceError`, and core `consume` treats nothing as transient unless told. A file-backed
+  stream from before stamps is given one the first time it is asked for.
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — a consumer whose
+  stream went backwards (`rewound`) or was deleted and recreated or expired (`replaced`) now
+  applies nothing and keeps its cursor (`Consumed.needs_rebuild`); the stream stamp
+  (`get_generation`, the `generation` column, migration `0014`) is saved beside the cursor.
+  A dropped connection or deadlock stops the pass (`Consumed.transient`) instead of being
+  recorded as a failed event.
+* **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
+  diffs the rebuilt table against the live table both ways over `live_models`, and a
+  `RowDiff` reports which side holds a row the other lacks.
+* **Update**: [Django integration](concepts/django-integration.md) — a `@stream_model` save
+  appends through the store `RAKAIA_STORE` names instead of writing database rows directly,
+  so a closed stream refuses it with `StreamClosed`; check `rakaia.W003` warns when a streamed
+  model meets the in-memory store.
+* **Update**: [Django integration](concepts/django-integration.md) and
+  [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) — handler
+  fingerprints cover helpers and constants (`v2:` prefix); `RAKAIA_STRICT_HANDLER_FINGERPRINTS`
+  turns the impure-handler warning into an error.
+
 ## 2026-10-27
 
 * **Update**: [Effects & executors](concepts/effects-and-executors.md) — `CollectingExecutor`

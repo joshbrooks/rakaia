@@ -55,6 +55,11 @@ else:
         # `default` (see test_using_seam.py; #68 item 2).
         "overlay": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"},
     }
+# `@stream_model` appends through the configured store, and the suite reads its
+# events back from the database tables; the package default is the in-memory
+# store, so say so here. Tests of the default `del` it.
+RAKAIA_STORE = "durable"
+
 INSTALLED_APPS = [
     "daphne",
     "channels",

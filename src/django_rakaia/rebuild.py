@@ -20,14 +20,17 @@ refuses a from-scratch claim it cannot honour, and returns a
                                 live_models=[Submission, ProjectLink])
     report.raise_if_diff()   # or inspect report.problems
 
-**What is compared against what.** The replay's effects are the log's claim;
-:func:`~django_rakaia.verification.diff_effects_against_rows` checks that claim
-against the **live** rows. The ``into`` alias is not the thing being diffed — it
-exists so a stage > 0 handler can read what stage 0 wrote, which is a fact a
-:class:`~rakaia.executors.CollectingExecutor` cannot supply. Both are needed at
-once, and `ReplayResult` reports a *count* of effects applied rather than the
-effects themselves, which is why the executor here is wrapped in a
-:class:`~rakaia.executors.RecordingExecutor`.
+**What is compared against what.** For every model in ``live_models`` the rebuilt
+``into`` table is compared with the **live** table in both directions
+(`verification._diff_tables`): a live row the log never
+produced, a rebuilt row missing from live, and a row whose fields differ all fail,
+and the report names the model, key and side. Effects aimed at any other model are
+still checked one way, by
+:func:`~django_rakaia.verification.diff_effects_against_rows`. The ``into`` alias
+also lets a stage > 0 handler read what stage 0 wrote, which a
+:class:`~rakaia.executors.CollectingExecutor` cannot supply, and `ReplayResult`
+reports a *count* of effects rather than the effects themselves, which is why the
+executor is wrapped in a :class:`~rakaia.executors.RecordingExecutor`.
 
 See ADR 0003 (``docs/adr/0003-handler-hermeticity.md``).
 """
@@ -49,7 +52,12 @@ from .hermeticity import (
     deny_database_access,
 )
 from .projection_reader import DjangoProjectionReader
-from .verification import DiffReport, Normalizer, diff_effects_against_rows
+from .verification import (
+    DiffReport,
+    Normalizer,
+    _diff_tables,
+    diff_effects_against_rows,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.db.models import Model
@@ -228,12 +236,23 @@ def rebuild_and_verify(
         # Guard down: the diff's whole job is to read the live rows. `preload`
         # is the bulk-fetching reader — one query per lookup shape rather than
         # one per effect — built by the diff from the batch it is diffing.
-        return diff_effects_against_rows(
-            recorder.effects,
-            preload=True,
-            using=live_using,
+        # Models the rebuild owns are compared table against table, both ways: a
+        # live row the log never produced, a deleted row still live, and a row
+        # overwritten by a later event all show up, which an effect-by-effect
+        # check cannot see. Effects aimed at any other model keep the old check.
+        owned = {m._meta.label_lower for m in live_models}
+        others = [e for e in recorder.effects if e.model_label.lower() not in owned]
+        by_effect = diff_effects_against_rows(
+            others, preload=True, using=live_using, normalizers=normalizers
+        )
+        by_table = _diff_tables(
+            live_models,
+            rebuilt_using=into,
+            live_using=live_using,
+            effects=recorder.effects,
             normalizers=normalizers,
         )
+        return DiffReport(rows=[*by_effect.rows, *by_table])
 
 
 def _django_executor(into: str) -> Executor:

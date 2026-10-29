@@ -25,8 +25,9 @@ class TestHashFunctionSource:
         h1 = hash_function_source(sample_handler)
         h2 = hash_function_source(sample_handler)
         assert h1 == h2
-        assert len(h1) == 64
-        assert all(c in "0123456789abcdef" for c in h1)
+        assert h1.startswith("v2:")
+        assert len(h1) == 3 + 64
+        assert all(c in "0123456789abcdef" for c in h1[3:])
 
     def test_indentation_normalised(self) -> None:
         # The drift-detection contract: re-indenting a handler body (e.g. moving

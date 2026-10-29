@@ -179,6 +179,13 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 No example exercises these yet — a good place to contribute a demo:
 
+- `RAKAIA_STRICT_HANDLER_FINGERPRINTS` and the impure-handler warning (covered by
+  `test_handler_fingerprint.py`, not by a demo).
+- A consumer that stops on a rewound or replaced stream (`Consumed.needs_rebuild`)
+  and one that retries a temporary error (`Consumed.transient`): `partisipa_intake`
+  runs a consumer but never recreates its stream or drops a connection.
+- `@stream_model` on a closed stream (`StreamClosed`) and on the memory or file
+  store: `polyglot` wires its own signal instead.
 - `register_reducer` as the *public API* (the partisipa demos wire reducers via
   raw `{"reduce": […]}` stage config instead).
 - `reconcile_tree` (the `partisipa_repeaters` spike hand-rolls the equivalent

@@ -46,6 +46,12 @@ class ConsumerCursorStore(Protocol):
     public ``using`` attribute. `django_rakaia.consumer` reads it to know which
     connection must not already be inside the caller's transaction, and a store
     that spells it some other way is silently left unguarded.
+
+    Two more methods are optional and found by name, so a store written before
+    they existed keeps working: ``load_generation(consumer, stream_path)`` and
+    ``commit_generation(consumer, stream_path, generation)`` keep the stream's
+    stamp beside the watermark, which is what lets a consumer notice that its
+    stream was deleted and recreated (#350). Without them it cannot.
     """
 
     def load(self, consumer: str, stream_path: str) -> str | None:
@@ -68,12 +74,21 @@ class InMemoryConsumerCursorStore:
 
     def __init__(self) -> None:
         self._offsets: dict[tuple[str, str], str] = {}
+        self._generations: dict[tuple[str, str], str] = {}
 
     def load(self, consumer: str, stream_path: str) -> str | None:
         return self._offsets.get((consumer, stream_path))
 
     def commit(self, consumer: str, stream_path: str, offset: str) -> None:
         self._offsets[(consumer, stream_path)] = offset
+
+    def load_generation(self, consumer: str, stream_path: str) -> str | None:
+        return self._generations.get((consumer, stream_path))
+
+    def commit_generation(
+        self, consumer: str, stream_path: str, generation: str
+    ) -> None:
+        self._generations[(consumer, stream_path)] = generation
 
 
 @dataclass(frozen=True)
@@ -106,6 +121,11 @@ class Consumer:
     sequence_of: Callable[[StreamMessage], str] | None = None
     """What a message is ordered *within*. Defaults to the subject."""
 
+    transient: tuple[type[BaseException], ...] | None = None
+    """Exception types that mean "try again later", as `consume` takes them.
+    ``None`` treats none as transient; `django_consumer` passes Django's
+    ``OperationalError`` and ``InterfaceError``."""
+
     def run(
         self,
         apply: Callable[[StreamMessage], Iterable[Outcome] | None],
@@ -124,6 +144,8 @@ class Consumer:
                 applying and committing, delivers the same message again.
             on_error: ``"skip"`` or ``"halt"``. No default, deliberately.
         """
+        load_generation = getattr(self.cursors, "load_generation", None)
+        commit_generation = getattr(self.cursors, "commit_generation", None)
         return consume(
             self.store,
             self.path,
@@ -135,4 +157,17 @@ class Consumer:
             outcomes=self.outcomes,
             subject_of=self.subject_of,
             sequence_of=self.sequence_of,
+            generation=(
+                None
+                if load_generation is None
+                else load_generation(self.name, self.path)
+            ),
+            commit_generation=(
+                None
+                if commit_generation is None
+                else lambda generation: commit_generation(
+                    self.name, self.path, generation
+                )
+            ),
+            transient=self.transient,
         )

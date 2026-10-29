@@ -21,6 +21,11 @@ runnable demo for each.
 - **`ServerOptions.sse_max_seconds`** (`RAKAIA_SSE_MAX_SECONDS`, 60) closes every
   live SSE connection on a timer, as the protocol asks, so clients reconnect.
 
+- **`RAKAIA_STRICT_HANDLER_FINGERPRINTS`** (default `False`; also an environment
+  variable for core, which Django's setting overrides only when the project defines
+  it) turns the new impure-handler warning into an
+  `ImpureHandlerError` at registration. A later release will make it the default.
+
 ### Changed
 
 - **Python 3.13 or newer is now required.** partisipa-import, the main
@@ -39,6 +44,52 @@ runnable demo for each.
   `docs/dry-run-and-executors.md`.
 
 ### Fixed
+
+- **A consumer whose stream went backwards no longer re-applies it.** When the
+  log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
+  re-read before the caller could reset what it had built. It now applies nothing,
+  leaves the cursor alone, and returns status `rewound` with the new
+  `Consumed.needs_rebuild` set. See `UPGRADING.md`.
+- **A consumer notices that its stream was deleted and recreated, or expired.**
+  Offsets keep rising across a recreate, so the unread events were skipped without
+  a word. Each stream now carries a stamp that changes when it is recreated
+  (`get_generation` on the stores, a `generation` column on `Stream` and
+  `ConsumerCursor`, migration `0014`); the consumer saves it beside its cursor and,
+  on a mismatch, stops exactly as for a rewind, with status `replaced`. A cursor
+  saved before the upgrade adopts the stream's current stamp. See `UPGRADING.md`.
+- **Saving a cursor with `commit_cursor` can now carry the stream's stamp.** Pass
+  `generation=poll.generation` (a new field on `Poll`) so `poll_consumer` reports
+  `replaced` after a delete and recreate; without it the cursor has no stamp and
+  adopts the stream's current one, as before. A file-backed stream written before
+  stamps existed is now given one the first time it is asked for, so its first
+  recreate after the upgrade is noticed too.
+- **A dropped connection or a deadlock is no longer recorded as a failed event.**
+  Under `on_error="skip"` it was skipped for good. `consume` now stops the pass
+  with `Consumed.transient` set, writes no outcome and leaves the cursor below the
+  event, so the next run retries it. `django_consumer` and `DjangoConsumer` treat
+  `OperationalError` and `InterfaceError` as temporary; core `rakaia` takes
+  `transient=` and treats nothing as temporary until told. See `UPGRADING.md`.
+- **`rebuild_and_verify` now compares the rebuilt table with the live table in both
+  directions.** A live row the log never produced, a row the log deleted that is still
+  live, and a row a later event overwrote used to pass or fail by accident; each now
+  fails, and the report names the model, key and which side holds the row.
+- **Saving a `@stream_model` model now follows the same rules as every other
+  append.** The event used to be written straight to the database, so it landed in
+  a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
+  the new `StreamClosed`, and the event goes to the store you configured. See
+  `UPGRADING.md`.
+- **A handler's drift fingerprint now covers the helpers it calls and the
+  constants it reads**, not only its own text, so changing `_helper()` or a
+  module-level threshold shows up as drift. A handler that reaches something that
+  cannot be fingerprinted (a mutable global, a module, a class that is not a
+  dataclass, an `import` or `eval` in the body) warns at registration naming it.
+  Fingerprints now start `v2:`; one stored by an older release reads as "re-record
+  quietly", not drift. See `UPGRADING.md`.
+- **A file-backed stream no longer reuses an offset after a crash.** If the
+  process died just after writing an event and before saving the stream's
+  bookkeeping, the next start handed the same offset to a new event. The store
+  now takes the head from the log itself whenever it is ahead of the saved copy,
+  at the cost of reading one line from the end of the last segment on each open.
 
 - **An edited frozen handler is now drift after a restart, not only inside the
   process that edited it.** The hash a handler was first registered with is read

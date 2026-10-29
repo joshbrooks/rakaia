@@ -21,12 +21,19 @@ runs against.
 From `django_rakaia`:
 
 * `@stream_model(stream_paths=…, to_dataclass=…)` — decorate a model so saves/
-  deletes emit events.
-* `create_stream_event(...)` — emit an event manually (e.g. for built-in models).
+  deletes emit events. The event is appended through the store `RAKAIA_STORE` names, so a
+  closed stream refuses it with `StreamClosed`; with the durable store it is written in the
+  save's transaction, with the memory or file store it is written at once and is not
+  rolled back with the row. `manage.py check` warns (`rakaia.W003`) when a streamed model
+  exists and `RAKAIA_STORE` is `"memory"`.
+* `create_stream_event(...)` — emit an event manually (e.g. for built-in models); returns
+  `None` when the store is not the durable one.
 * `DjangoStreamStore` — the durable, DB-backed store (`RAKAIA_STORE="durable"`).
 * `DjangoExecutor`, `DjangoProjectionReader`, `replay_stream` — apply/replay
   against the ORM.
 * `diff_effects_against_rows` — migration/verification helper.
+* `rebuild_and_verify` — compares the rebuilt table with the live table over `live_models`
+  in both directions; a `RowDiff` says which side holds a row the other lacks.
 * `stream_coverage` and `manage.py check_stream_coverage` — check that a stream
   still has an event for every row of the table it is written from.
 * SSE views + Channels signals for live broadcast; the view needs a signed-in user.
@@ -43,6 +50,16 @@ Settings and operator commands:
 * `RAKAIA_MAX_BODY_BYTES` — largest create or append body, default 8 MiB, over it `413`.
 * `RAKAIA_SSE_MAX_SECONDS` — closes each live SSE connection on a timer, default 60.
   All four apply when `get_asgi_app()` is called without `options`.
+* `RAKAIA_STRICT_HANDLER_FINGERPRINTS` — off by default. A handler's drift fingerprint
+  (`v2:` + SHA-256) covers its own source, the plain functions it calls and the constants
+  it reads; one that reaches something unfingerprintable (a mutable global, a non-library
+  module, a class that is not a dataclass/enum/named tuple, `import` or `eval` in the body)
+  logs an `ImpureHandlerWarning` at registration, or raises `ImpureHandlerError` with this
+  on. Also read from the environment variable of the same name; under Django the setting
+  wins when the project defines it, and otherwise the environment variable applies. Library
+  code is told apart from yours by where its file lives, not by module name; the warning
+  points at the handler's own definition and appears once per handler per process.
+  A pre-0.10 fingerprint (bare 64-hex) is re-recorded, not drift.
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
   returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream

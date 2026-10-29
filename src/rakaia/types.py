@@ -83,6 +83,11 @@ class StreamNotFound(StreamError, KeyError):
     """The stream does not exist, or has expired."""
 
 
+class StreamClosed(StreamError):
+    """An append names a stream that has been closed, and the writer has no
+    result to carry the refusal back in (a model save), so it raises."""
+
+
 class StreamConfigConflict(StreamError, ValueError):
     """A create names an existing stream with a different configuration."""
 
@@ -280,6 +285,10 @@ class Stream:
 
     created_at: float = 0.0
     """Timestamp when the stream was created."""
+
+    generation: str = ""
+    """A stamp that changes whenever the stream is deleted and recreated, so a
+    consumer can tell a different stream at the same path from the same one."""
 
     last_activity_at: float = 0.0
     """Timestamp of the last TTL-extending activity (sliding-window anchor).

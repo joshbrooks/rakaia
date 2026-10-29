@@ -29,7 +29,7 @@ from typing import Any
 
 from rakaia import Effect, Upsert, reconcile_children, register_handler
 
-from . import mapping
+from .mapping import activities, activity_defaults, visit_defaults
 from .seed import POLICY_CHANGE_SEQ
 
 VISIT_MODEL = "submissions.MonitoringVisit"
@@ -40,7 +40,7 @@ def _visit_effect(event: dict[str, Any], *, lenient: bool) -> Effect:
     return Upsert(
         model_label=VISIT_MODEL,
         lookup={"submission_id": event["submission_id"]},
-        defaults=mapping.visit_defaults(event, lenient=lenient),
+        defaults=visit_defaults(event, lenient=lenient),
     )
 
 
@@ -87,6 +87,6 @@ def activity_rows(event: dict[str, Any]) -> list[Effect]:
         model_label=ACTIVITY_MODEL,
         parent_lookup={"submission_id": event["submission_id"]},
         child_key="activity_index",
-        items=mapping.activities(event),
-        defaults_fn=mapping.activity_defaults,
+        items=activities(event),
+        defaults_fn=activity_defaults,
     )

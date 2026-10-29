@@ -35,11 +35,21 @@ must be idempotent**.
 Imported from `rakaia`:
 
 * `poll(store, path, cursor) -> Poll` — the incremental read. `PollStatus` is
-  `fresh` / `advanced` / `caught_up` / `rewound` / `absent`; `rewound` means the
-  log shrank beneath the cursor and derived state must be reset first.
+  `fresh` / `advanced` / `caught_up` / `rewound` / `replaced` / `absent`; `rewound`
+  means the log shrank beneath the cursor, `replaced` that the stream was deleted
+  and recreated (or expired) since the cursor was saved — compared through the
+  store's optional `get_generation(path)` stamp, which `poll(..., generation=)`
+  takes. `consume` applies nothing on either, leaves the cursor alone, and sets
+  `Consumed.needs_rebuild`; the operator rebuilds, nothing resets automatically.
+  A cursor with no saved stamp adopts the stream's current one.
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.
+* A transient error (a dropped connection, a deadlock) is not a bad event:
+  `consume(..., transient=)` names the types (core defaults to none;
+  `django_consumer` / `DjangoConsumer` pass `OperationalError` and
+  `InterfaceError`), and one raised by an apply stops the pass with
+  `Consumed.transient` set, records no outcome and leaves the cursor below it.
 * `Consumer(store, path, name, cursors, outcomes)` with `run(apply, on_error=…)`
   — the loop as one object. `outcomes` is required, so the shape that records
   nothing cannot be built.
@@ -70,7 +80,7 @@ Imported from `django_rakaia`:
   alias the records are written to — the one hazard the dependency-free core
   cannot see.
 * `DjangoConsumerCursorStore`, `DjangoOutcomeStore`, `load_cursor`,
-  `commit_cursor`.
+  `commit_cursor` (`generation=poll.generation` saves the stream stamp beside the offset).
 * `manage.py prune_outcomes --older-than-days N` — retention. No default age:
   the right period differs per installation and a wrong guess deletes evidence.
 * A read-only admin for the records, the one screen this library's operational

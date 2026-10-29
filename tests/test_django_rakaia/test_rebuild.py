@@ -506,7 +506,7 @@ class TestWhatItForwardsToReplay:
             fn=lambda event: [],  # noqa: ARG005
             effective_from=0,
         )
-        object.__setattr__(version, "source_hash", "deadbeef" * 8)
+        object.__setattr__(version, "source_hash", "v2:" + "deadbeef" * 8)
 
         with pytest.raises(HandlerDriftError):
             rebuild_and_verify(

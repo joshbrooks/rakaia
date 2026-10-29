@@ -93,6 +93,21 @@ class TestConsumerCursor:
         # The recreated stream's offsets are strictly greater than the old head.
         assert result.cursor > first.cursor
 
+    def test_a_recreate_is_replaced_when_the_stamp_was_committed(self):
+        store = DjangoStreamStore()
+        store.create("s")
+        _append(store, "s", 3)
+        first = poll_consumer(store, CONSUMER, "s")
+        commit_cursor(CONSUMER, "s", first.cursor, generation=first.generation)
+
+        store.delete("s")
+        store.create("s")
+        _append(store, "s", 2)
+
+        result = poll_consumer(store, CONSUMER, "s")
+        assert result.status == "replaced"
+        assert result.messages == []
+
     def test_empty_recreate_does_not_spuriously_rewind(self):
         # #34 Defect #2, read side: in the window after a recreate but BEFORE the
         # first append, the stream looks empty but its watermark survives. The

@@ -105,3 +105,31 @@ def check_store_backend(app_configs: Any, **kwargs: Any) -> list[Any]:  # noqa: 
         ]
 
     return []
+
+
+@register()
+def check_stream_model_store(app_configs: Any, **kwargs: Any) -> list[Any]:  # noqa: ARG001
+    """Warn when `@stream_model` events would go to the in-memory store.
+
+    A model save appends through the configured store, and the default is
+    ``"memory"``, so a project that decorates a model and never set
+    ``RAKAIA_STORE`` loses those events on every restart (#341).
+    """
+    from .decorators import streamed_models
+
+    backend = getattr(settings, "RAKAIA_STORE", DEFAULT_BACKEND)
+    if backend != "memory" or not streamed_models:
+        return []
+    names = ", ".join(sorted(m.__name__ for m in streamed_models))
+    return [
+        Warning(
+            f"@stream_model is used on {names}, but RAKAIA_STORE is 'memory': "
+            "their events will not survive a restart.",
+            hint=(
+                "Set RAKAIA_STORE = 'durable' and run `manage.py migrate "
+                "django_rakaia`. Silence this with SILENCED_SYSTEM_CHECKS if "
+                "in-memory is deliberate here."
+            ),
+            id="rakaia.W003",
+        )
+    ]

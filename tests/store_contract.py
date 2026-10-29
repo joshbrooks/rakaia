@@ -91,6 +91,23 @@ class StoreContract:
 
         assert store.get_current_offset("s") == offset_before
 
+    def test_a_stream_keeps_its_generation_until_it_is_recreated(self, store):
+        """The stamp a consumer saves beside its cursor (#350): offsets keep
+        rising across a recreate, so only this says "a different stream"."""
+        assert store.get_generation("s") is None
+
+        store.create("s")
+        first = store.get_generation("s")
+        assert first
+        store.append("s", b"a")
+        store.create("s")  # idempotent: the same stream
+        assert store.get_generation("s") == first
+
+        store.delete("s")
+        assert store.get_generation("s") is None
+        store.create("s")
+        assert store.get_generation("s") not in (None, first)
+
     def test_has_reflects_existence(self, store):
         assert store.has("s") is False
         store.create("s")

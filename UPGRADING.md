@@ -17,12 +17,53 @@ ones you are crossing.
 
 # 0.10.0
 
+## Handler fingerprints now follow helpers and constants
+
+A handler's drift fingerprint used to cover only the handler's own text, so
+editing a helper it calls or a constant it reads went unnoticed. It now covers
+the plain functions the handler calls, the values of the constants it reads
+(globals, closure variables, default arguments) and the source of dataclasses,
+enums and named tuples you defined. **Expect new warnings on upgrade:** a handler
+that also reaches something that cannot be fingerprinted (a mutable global such
+as a list or dict, a module that is not part of the standard library or an
+installed package, a class that is not a dataclass, an `import` or `eval` inside
+the body) now logs an `ImpureHandlerWarning` at registration, naming each thing.
+Fix it by making the constant a plain value, the helper a plain function, or
+passing the dependency in with `functools.partial`; there is no silencing it
+short of that, apart from Python's own `warnings` filters. Set
+`RAKAIA_STRICT_HANDLER_FINGERPRINTS = True` (a Django setting, or the environment
+variable for core) to make it an error now; a later release will make that the
+default.
+
+Fingerprints now begin `v2:`. A fingerprint recorded by an older release is
+treated as unknown, not as drift: it is re-recorded the first time the handler
+registers, and drift is measured from that record onwards. An edit made *between*
+your last old-format registration and the upgrade is therefore not caught. A
+comment-only edit still counts as a change, as before, since the fingerprint
+hashes source text rather than bytecode.
+
 ## Python 3.13 is now the minimum
 
 rakaia now requires Python 3.13 or newer. On an older Python nothing fails
 loudly: pip quietly resolves the last release that still allowed it, `0.9.x`,
 so an unpinned install looks like an upgrade that did nothing. Move to 3.13
 before taking this release.
+
+## A rebuild check that used to certify can now fail
+
+`rebuild_and_verify` now compares the rebuilt table with the live table over every
+model in `live_models`, in both directions, instead of checking each write against the
+live row. A rebuild that passed only because nobody looked for extra or deleted live
+rows will now come back red, naming the model, key and side (`only in the live table`,
+`only in the rebuilt table`) -- that is the check working. Columns the database fills in
+itself (`auto_now`, `auto_now_add`) are not compared; a column that legitimately differs
+between a rebuild and production needs a normalizer.
+
+Two consequences to check before you rely on it. A model you list in `live_models`
+that no effect writes now fails if it has live rows, because those are rows the log
+never produced: leave out any table the log does not own. And a row is matched by
+the lookup fields its upsert uses (a model with no upsert is matched by primary key),
+so two rows that share those fields count as one.
 
 ## Replay can now report drift that used to pass in silence
 
@@ -67,6 +108,22 @@ matches more than one row, where it used to update the first. A lookup that name
 the natural key never does. It also reports flipped rows in key order, so integer
 keys read `1, 2, 10` where they read `1, 10, 2`.
 
+## Saving a `@stream_model` model now follows `RAKAIA_STORE`, and a closed stream refuses it
+
+The event a model save writes used to go straight to the database tables whatever
+`RAKAIA_STORE` said, and it was accepted by a closed stream. It now goes through the
+configured store like any other append. If you never set `RAKAIA_STORE` you are on the
+default, `"memory"`, so those events now live in the process and are gone on
+restart: set `RAKAIA_STORE = "durable"` to keep them in the database, which is
+where they were before. `manage.py check` now warns (`rakaia.W003`) when a
+`@stream_model` model exists and the store is `"memory"`. A save whose stream is closed now raises
+`rakaia.StreamClosed` (a `StreamError`) out of `save()`; inside an `atomic()` block
+the row is rolled back with it, and in autocommit the row stays and only the event
+is refused. `create_stream_event` returns `None` rather than a `StreamEvent` when the
+store is not the durable one. With a memory or file store the event is written at
+once and is not rolled back with the row, and a model that writes several streams
+makes one append per stream rather than one shared event.
+
 ## Set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS` before you expose the protocol app
 
 Nothing breaks, and nothing changes by default: the protocol server still allows
@@ -87,6 +144,42 @@ to it. Production should set both. See
   with `RAKAIA_SSE_MAX_SECONDS`, or `None` for never.
 - **The dashboard's live feed (`stream_events_sse`) needs a signed-in user.** An
   anonymous request is redirected to the login page, where it used to be served.
+
+## A consumer now stops, applying nothing, when its stream is not the one it was reading
+
+`consume` and `Consumer.run` return status `rewound` (the log is shorter than the
+cursor) or `replaced` (the stream was deleted and recreated, or expired and
+recreated, since the cursor was saved) with `applied == 0` and the cursor
+unchanged; `Consumed.needs_rebuild` is true for either. Before, `rewound` re-applied
+the whole re-read and `replaced` was not detected at all, so a consumer that does
+not look at `status` used to carry on and now makes no progress, quietly, on every
+run. Check `needs_rebuild`, rebuild the consumer's derived state, and delete its
+`ConsumerCursor` row (or start with a new consumer name) to let it read again.
+
+Run `manage.py migrate django_rakaia`: `0014_generation` adds a `generation` column
+to `Stream` and to `ConsumerCursor`. A cursor saved before the upgrade has none and
+adopts the stream's current stamp the first time it runs, so it does not stop; a
+stream deleted and recreated *before* that first run cannot be told from the
+original. A file-backed stream written before stamps existed is given one the first
+time anything asks for it, so recreates after that are noticed. If you poll with
+`poll_consumer` and `commit_cursor` by hand, pass `generation=result.generation`
+to `commit_cursor`, or the cursor has no stamp and cannot report `replaced`.
+A custom `ConsumerCursorStore` keeps working but cannot detect a replaced stream
+until it adds `load_generation` and `commit_generation`; a custom stream
+store likewise needs `get_generation`.
+
+## A dropped connection no longer counts as a bad event
+
+`OperationalError` and `InterfaceError` raised by an apply used to be written as a
+`failed` outcome and, under `on_error="skip"`, skipped for good. They now stop the
+pass (`Consumed.transient` and `halted` set), record nothing and leave the cursor
+below the event, so the next run retries it. A consumer that schedules runs needs
+no change; one that read `halted` as "`on_error="halt"` fired" should also check
+`transient`. Only
+`django_consumer` and `DjangoConsumer` know these two types; a bare `consume(...)`
+needs `transient=(OperationalError, InterfaceError)`. A database error that stays
+(a missing column raises `OperationalError` too) is no longer recorded and skipped:
+it stalls the consumer with a warning on every run until the cause is fixed.
 
 ---
 

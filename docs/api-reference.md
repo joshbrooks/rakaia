@@ -32,7 +32,7 @@ page is the contract.
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
-| `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
+| `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, generation: 'str' = '', last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `(*, permanent: 'bool' = False) -> 'None'` | In-memory store for durable streams. |
 | `JsonlStreamStore` | `rakaia` | `(root: 'str \| Path', *, segment_size: 'int' = 10000, fsync: 'bool' = True, permanent: 'bool' = False)` | A `rakaia.StreamServerStore` over a directory of JSONL files. |
 | `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None, permanent: 'bool \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
@@ -45,7 +45,7 @@ page is the contract.
 | `migrate_stream` | `rakaia` | `(source: 'ReadableStore', target: 'WritableStore', path: 'str', *, batch_size: 'int' = 500) -> 'Migration'` | Copy `path` from `source` to `target`, returning what survived. |
 | `migrate_all` | `rakaia` | `(source: 'ReadableStore', target: 'WritableStore', *, batch_size: 'int' = 500) -> 'list[Migration]'` | Copy every stream `source` can list, in listing order. |
 | `Migration` | `rakaia` | `(path: 'str', events: 'int', offsets_preserved: 'bool', head_preserved: 'bool', notes: 'tuple[str, ...]' = <factory>) -> None` | What one stream's copy achieved, and what it could not carry. |
-| `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str, using: str \| None = None) -> django_rakaia.models.StreamEvent` | Create a stream event for the given model instance. |
+| `create_stream_event` | `django_rakaia` | `(stream_paths: str \| list[str] \| collections.abc.Callable[[django.db.models.base.Model], str \| list[str]], to_dataclass: collections.abc.Callable[[django.db.models.base.Model], typing.Any], instance: django.db.models.base.Model, action: str, using: str \| None = None) -> django_rakaia.models.StreamEvent \| None` | Create a stream event for the given model instance. |
 | `AppendOptions` | `rakaia` | `(seq: 'str \| None' = None, content_type: 'str \| None' = None, producer_id: 'str \| None' = None, producer_epoch: 'int \| None' = None, producer_seq: 'int \| None' = None, close: 'bool' = False, label: 'ChangeLabel \| str' = '', metadata: 'EnvelopeMetadata \| dict[str, Any] \| None' = None, event_ts: 'float \| None' = None, tags: 'tuple[str, ...]' = (), correlation_id: 'str \| None' = None) -> None` | Options for append operations. |
 | `AppendResult` | `rakaia` | `(message: 'StreamMessage \| None' = None, producer_result: 'ProducerValidationResult \| None' = None, stream_closed: 'bool' = False, event_id: 'int \| None' = None) -> None` | Result of an append operation. |
 | `CloseResult` | `rakaia` | `(final_offset: 'str' = '', already_closed: 'bool' = False, producer_result: 'ProducerValidationResult \| None' = None) -> None` | Result of a close operation. |
@@ -53,9 +53,9 @@ page is the contract.
 | `StreamMessage` | `rakaia` | `(data: 'bytes', offset: 'str', timestamp: 'float', event_ts: 'float \| None' = None, label: 'ChangeLabel \| str' = '', metadata: 'EnvelopeMetadata \| dict[str, Any] \| None' = None, tags: 'tuple[str, ...]' = (), correlation_id: 'str \| None' = None) -> None` | A single message in a stream. |
 | `ChangeLabel` | `rakaia` | — | — |
 | `EnvelopeMetadata` | `rakaia` | — | The metadata keys rakaia reads or writes on an event. |
-| `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus') -> None` | The result of polling a stream from a cursor. |
+| `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus', generation: 'str \| None' = None) -> None` | The result of polling a stream from a cursor. |
 | `PollStatus` | `rakaia` | — | — |
-| `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None') -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
+| `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None', *, generation: 'str \| None' = None) -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
 | `poll_consumer` | `django_rakaia` | `(store: 'CursorStore', consumer_id: 'str', stream_path: 'str') -> 'Poll'` | Load this consumer's cursor and poll `stream_path` for the delta. |
 
 ## Rebuilding tables (replay)
@@ -67,6 +67,8 @@ page is the contract.
 | `merge_replay` | `rakaia` | `(store: 'ReadableStore', stream_paths: 'list[str]', executor: 'Executor', *, order_key: 'str \| _EnvelopeTs' = 'ts', handler_registry: 'HandlerRegistry \| None' = None, upcaster_registry: 'UpcasterRegistry \| None' = None, event_match: 'str \| None' = None, on_drift: 'OnDriftPolicy' = 'warn', reader: 'ProjectionReader \| None' = None) -> 'ReplayResult'` | Replay several streams merged into one deterministic total order. |
 | `ReplayResult` | `rakaia` | `(events_processed: 'int' = 0, effects_applied: 'int' = 0, external: 'list[ExternalEffect]' = <factory>, drift: 'DriftLedger' = <factory>) -> None` | Summary of a single replay() invocation. |
 | `DriftLedger` | `rakaia` | `(on_drift: 'OnDriftPolicy' = 'warn', warnings: 'list[str]' = <factory>, drifted: 'list[str]' = <factory>) -> None` | The drift check, its warn-once memory, and its hash memo, in one object. |
+| `ImpureHandlerError` | `rakaia` | — | A handler cannot be fingerprinted and strict fingerprints are on. |
+| `ImpureHandlerWarning` | `rakaia` | — | A handler cannot be fully fingerprinted: edits to part of it go unnoticed. |
 | `fold_events` | `django_rakaia` | `(events: 'Sequence[dict[str, Any]]', registry: 'HandlerRegistry', *, reader: 'ProjectionReader \| None' = None, executor: 'Any' = None, label: 'str' = 'import', scratch_path: 'str' = '_scratch/fold', start_seq: 'int') -> 'None'` | Project ``events`` now, through the handlers a replay would use. |
 | `project_latest` | `rakaia` | `(messages: 'Sequence[StreamMessage]', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[StreamMessage, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', tombstone_labels: 'Sequence[str]' = ('delete',)) -> 'list[Effect]'` | Project each subject's **latest** snapshot into one row — the current-state read model behind an event log. |
 
@@ -135,7 +137,7 @@ page is the contract.
 | `LiveWriteLeaked` | `django_rakaia` | — | A guarded model's row count changed inside ``assert_no_live_writes`` — a rebuild mutated the live database it was only supposed to reconstruct. |
 | `diff_effects_against_rows` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, reader: 'DjangoProjectionReader \| None' = None, preload: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, kinds: 'tuple[type, ...]' = (<class 'rakaia.effects.Upsert'>, <class 'rakaia.effects.Update'>)) -> 'DiffReport'` | Diff each write effect's ``defaults`` against its live projection row. |
 | `DiffReport` | `django_rakaia` | `(rows: 'list[RowDiff]') -> None` | Aggregate result of :func:`diff_effects_against_rows`. |
-| `RowDiff` | `django_rakaia` | `(model_label: 'str', lookup: 'dict[str, Any]', missing: 'bool', field_diffs: 'list[FieldDiff]' = <factory>) -> None` | The verification outcome for one write effect's target row. |
+| `RowDiff` | `django_rakaia` | `(model_label: 'str', lookup: 'dict[str, Any]', missing: 'bool', field_diffs: 'list[FieldDiff]' = <factory>, only_in: 'str \| None' = None) -> None` | The verification outcome for one write effect's target row. |
 | `FieldDiff` | `django_rakaia` | `(field: 'str', expected: 'Any', actual: 'Any') -> None` | One field whose stored value disagrees with the effect's ``defaults``. |
 | `snapshots_equal` | `rakaia` | `(a: 'Any', b: 'Any') -> 'bool'` | Whether two decoded snapshots are equal. |
 | `GREEN` | `django_rakaia` | — | — |
@@ -182,22 +184,22 @@ page is the contract.
 | `CursorOptions` | `rakaia` | `(interval_seconds: 'int' = 20, epoch: 'float' = 1728432000.0) -> None` | Configuration for cursor calculation. |
 | `calculate_cursor` | `rakaia` | `(options: 'CursorOptions \| None' = None) -> 'str'` | Calculate the current cursor value based on time intervals. |
 | `generate_response_cursor` | `rakaia` | `(client_cursor: 'str \| None', options: 'CursorOptions \| None' = None) -> 'str'` | Generate a cursor for a response, ensuring monotonic progression. |
-| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str', *, using: 'str \| None' = None) -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
+| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str', *, using: 'str \| None' = None, generation: 'str \| None' = None) -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
 | `load_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', *, using: 'str \| None' = None) -> 'str \| None'` | The consumer's last committed offset for `stream_path`, or None. |
 
 ## Consuming, and what happened to an event
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
-| `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
+| `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
 | `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
-| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> None` | A `Consumer` that checks the caller has no transaction open. |
+| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = (<class 'django.db.utils.OperationalError'>, <class 'django.db.utils.InterfaceError'>)) -> None` | A `Consumer` that checks the caller has no transaction open. |
 | `ConsumerCursorStore` | `rakaia` | `(*args, **kwargs)` | Somewhere to keep a consumer's watermark between runs. |
 | `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |
 | `DjangoConsumerCursorStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A `ConsumerCursorStore` over the ``ConsumerCursor`` table. |
 | `CallerTransactionOpen` | `django_rakaia` | — | Raised when a run is started inside a transaction the caller opened. |
-| `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
-| `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool') -> None` | What one pass of the consume loop did. |
+| `consume` | `rakaia` | `(store: 'CursorStore', path: 'str', apply: 'Callable[[StreamMessage], Iterable[Outcome] \| None]', *, consumer: 'str', on_error: 'OnErrorPolicy', cursor: 'str \| None' = None, commit: 'Callable[[str], None] \| None' = None, outcomes: 'OutcomeStore \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, generation: 'str \| None' = None, commit_generation: 'Callable[[str], None] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> 'Consumed'` | Poll `path`, apply each message, record any outcome, then commit. |
+| `Consumed` | `rakaia` | `(status: 'PollStatus', applied: 'int', outcomes: 'tuple[Outcome, ...]', cursor: 'str \| None', halted: 'bool', transient: 'bool' = False) -> None` | What one pass of the consume loop did. |
 | `OnErrorPolicy` | `rakaia` | — | — |
 | `Outcome` | `rakaia` | `(consumer: 'str', stream_path: 'str', subject: 'str', offset: 'str \| None', sequence_key: 'str', stage: 'Stage', status: 'OutcomeStatus', reasons: 'tuple[str, ...]' = (), params: 'dict[str, str]' = <factory>, attempt: 'int' = 1) -> None` | One event's failure to be applied cleanly, as a value. |
 | `OutcomeStatus` | `rakaia` | — | — |
@@ -261,6 +263,7 @@ page is the contract.
 | `ExpiryNotAllowed` | `rakaia` | — | A create asked for a TTL or an expiry on a store whose streams are permanent. |
 | `DeleteNotAllowed` | `rakaia` | — | A client asked to delete a stream on a store whose streams are permanent. |
 | `SpareKeys` | `rakaia` | `(keys: 'list[dict[str, Any]]') -> None` | Spare rows from a delete or retire by composite natural key. |
+| `StreamClosed` | `rakaia` | — | An append names a stream that has been closed, and the writer has no result to carry the refusal back in (a model save), so it raises. |
 | `StreamConfigConflict` | `rakaia` | — | A create names an existing stream with a different configuration. |
 | `HandlerDriftError` | `rakaia` | — | A handler/upcaster's source body differs from its registered hash. |
 | `HandlerGapError` | `rakaia` | — | No registered version of a handler covers the requested sequence. |
@@ -277,6 +280,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-176 exported names across 16 sections. 153 carry a docstring; 23 do not and show `—` above.
+179 exported names across 16 sections. 156 carry a docstring; 23 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.

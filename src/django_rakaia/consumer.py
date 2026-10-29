@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from django.db import DEFAULT_DB_ALIAS, connections
+from django.db import DEFAULT_DB_ALIAS, InterfaceError, OperationalError, connections
 
 from rakaia.consumer import Consumer
 from rakaia.outcomes import Outcome
@@ -39,7 +39,12 @@ from rakaia.subscription import Consumed, OnErrorPolicy
 from rakaia.types import StreamMessage
 
 from .outcomes import DjangoOutcomeStore
-from .subscription import commit_cursor, load_cursor
+from .subscription import (
+    commit_cursor,
+    commit_generation,
+    load_cursor,
+    load_generation,
+)
 
 
 class CallerTransactionOpen(RuntimeError):
@@ -79,6 +84,14 @@ class DjangoConsumerCursorStore:
     def commit(self, consumer: str, stream_path: str, offset: str) -> None:
         commit_cursor(consumer, stream_path, offset, using=self.using)
 
+    def load_generation(self, consumer: str, stream_path: str) -> str | None:
+        return load_generation(consumer, stream_path, using=self.using)
+
+    def commit_generation(
+        self, consumer: str, stream_path: str, generation: str
+    ) -> None:
+        commit_generation(consumer, stream_path, generation, using=self.using)
+
 
 _UNSET = object()
 
@@ -106,7 +119,15 @@ class DjangoConsumer(Consumer):
     hazard is: a consumer built during startup and run later from a request
     handler is fine, and one built outside a transaction and run inside one is
     the case being refused.
+
+    ``transient`` defaults to Django's ``OperationalError`` and ``InterfaceError``:
+    a dropped connection or a deadlock is "try again later", not a bad event.
     """
+
+    transient: tuple[type[BaseException], ...] | None = (
+        OperationalError,
+        InterfaceError,
+    )
 
     def run(
         self,
@@ -191,4 +212,5 @@ def django_consumer(
         outcomes=DjangoOutcomeStore(using=using),
         subject_of=subject_of,
         sequence_of=sequence_of,
+        transient=(OperationalError, InterfaceError),
     )

@@ -30,6 +30,9 @@ Imported from `rakaia`:
 * `replay(store, stream_path, executor, *, reader=…, on_drift=…, start_seq, end_seq)`.
 * `merge_replay(store, stream_paths, executor, *, order_key=…)` — replay N streams
   in one deterministic total order (`order_key=ENVELOPE_TS` for envelope time).
+* Drift fingerprints (`rakaia.source_hash.fingerprint_handler`) cover a handler's source, the
+  plain functions it calls and the constants it reads, and are prefixed `v2:`; see
+  `RAKAIA_STRICT_HANDLER_FINGERPRINTS` in [Django integration](django-integration.md).
 * Registries and drift errors: `HandlerRegistry`, `UpcasterRegistry`,
   `HandlerVersion`, `ReducerVersion`, `HandlerOverlapError`, `HandlerGapError`,
   `HandlerDriftError`, `UpcasterConflictError`, `UpcasterChainError`.
