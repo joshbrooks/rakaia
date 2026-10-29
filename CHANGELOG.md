@@ -58,6 +58,10 @@ runnable demo for each.
   event, so the next run retries it. `django_rakaia` registers `OperationalError`
   and `InterfaceError`; core `rakaia` takes `transient=` or
   `rakaia.subscription.register_transient_errors`. See `UPGRADING.md`.
+- **`rebuild_and_verify` now compares the rebuilt table with the live table in both
+  directions.** A live row the log never produced, a row the log deleted that is still
+  live, and a row a later event overwrote used to pass or fail by accident; each now
+  fails, and the report names the model, key and which side holds the row.
 - **A file-backed stream no longer reuses an offset after a crash.** If the
   process died just after writing an event and before saving the stream's
   bookkeeping, the next start handed the same offset to a new event. The store

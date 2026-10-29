@@ -124,13 +124,21 @@ class RowDiff:
     lookup: dict[str, Any]
     missing: bool
     field_diffs: list[FieldDiff] = field(default_factory=list)
+    only_in: str | None = None
+    """Set by a both-directions table diff: ``"live"`` for a row production has
+    and the rebuild did not produce, ``"rebuilt"`` for one the rebuild produced
+    and production lacks. ``None`` for the effect-by-effect diff."""
 
     @property
     def ok(self) -> bool:
-        return not self.missing and not self.field_diffs
+        return not self.missing and not self.field_diffs and self.only_in is None
 
     def __str__(self) -> str:
         head = f"{self.model_label} {self.lookup!r}"
+        if self.only_in == "live":
+            return f"{head}: only in the live table (the log never produced it)"
+        if self.only_in == "rebuilt":
+            return f"{head}: only in the rebuilt table (missing from live)"
         if self.missing:
             return f"{head}: no matching row"
         return f"{head}: " + "; ".join(str(d) for d in self.field_diffs)
@@ -365,6 +373,70 @@ def diff_effects_against_rows(
             RowDiff(eff.model_label, eff.lookup, missing=False, field_diffs=field_diffs)
         )
     return DiffReport(rows=rows)
+
+
+def _diff_tables(
+    models: Sequence[type],
+    *,
+    rebuilt_using: str,
+    live_using: str = "default",
+    effects: Iterable[Effect] = (),
+    normalizers: Sequence[Normalizer] | None = None,
+) -> list[RowDiff]:
+    """Compare the rebuilt table with the live table, in both directions.
+
+    A row is identified by the lookup fields the replay's upserts used for that
+    model (``effects`` supplies them), or by primary key when the model has no
+    upsert. Reports a row only in live, a row only in the rebuild, and a row whose
+    stored fields differ. Fields the database fills in itself (primary key,
+    ``auto_now`` / ``auto_now_add``) are not compared.
+    """
+    norms = DEFAULT_NORMALIZERS if normalizers is None else tuple(normalizers)
+    key_names: dict[type, list[str]] = {}
+    for eff in effects:
+        if isinstance(eff, Upsert):
+            model = apps.get_model(eff.model_label)
+            key_names.setdefault(model, sorted(eff.lookup))
+
+    out: list[RowDiff] = []
+    for model in models:
+        meta = model._meta
+        names = key_names.get(model) or [meta.pk.name]
+        key_attrs = [meta.get_field(n).attname for n in names]
+        compared = [
+            f
+            for f in meta.concrete_fields
+            if not f.primary_key
+            and f.attname not in key_attrs
+            and not getattr(f, "auto_now", False)
+            and not getattr(f, "auto_now_add", False)
+        ]
+
+        def load(alias: str, model: type = model, key_attrs: list[str] = key_attrs):
+            return {
+                tuple(getattr(r, a) for a in key_attrs): r
+                for r in model.objects.using(alias).all().iterator()  # type: ignore[attr-defined]
+            }
+
+        rebuilt, live = load(rebuilt_using), load(live_using)
+        label = meta.label
+        for key in sorted(rebuilt.keys() | live.keys(), key=repr):
+            lookup = dict(zip(names, key, strict=True))
+            if key not in live:
+                out.append(RowDiff(label, lookup, missing=False, only_in="rebuilt"))
+            elif key not in rebuilt:
+                out.append(RowDiff(label, lookup, missing=False, only_in="live"))
+            else:
+                diffs = []
+                for f in compared:
+                    exp = getattr(rebuilt[key], f.attname)
+                    act = getattr(live[key], f.attname)
+                    if _canonical(model, f.name, exp, norms) != _canonical(
+                        model, f.name, act, norms
+                    ):
+                        diffs.append(FieldDiff(f.name, exp, act))
+                out.append(RowDiff(label, lookup, missing=False, field_diffs=diffs))
+    return out
 
 
 # =============================================================================

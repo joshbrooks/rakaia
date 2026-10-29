@@ -8,6 +8,9 @@
   (`get_generation`, the `generation` column, migration `0014`) is saved beside the cursor.
   A dropped connection or deadlock stops the pass (`Consumed.transient`) instead of being
   recorded as a failed event.
+* **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
+  diffs the rebuilt table against the live table both ways over `live_models`, and a
+  `RowDiff` reports which side holds a row the other lacks.
 
 ## 2026-10-27
 

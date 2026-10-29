@@ -24,6 +24,16 @@ loudly: pip quietly resolves the last release that still allowed it, `0.9.x`,
 so an unpinned install looks like an upgrade that did nothing. Move to 3.13
 before taking this release.
 
+## A rebuild check that used to certify can now fail
+
+`rebuild_and_verify` now compares the rebuilt table with the live table over every
+model in `live_models`, in both directions, instead of checking each write against the
+live row. A rebuild that passed only because nobody looked for extra or deleted live
+rows will now come back red, naming the model, key and side (`only in the live table`,
+`only in the rebuilt table`) -- that is the check working. Columns the database fills in
+itself (`auto_now`, `auto_now_add`) are not compared; a column that legitimately differs
+between a rebuild and production needs a normalizer.
+
 ## Replay can now report drift that used to pass in silence
 
 A handler edited between two process starts is now compared with the hash it was
