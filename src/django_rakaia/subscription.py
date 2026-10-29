@@ -127,9 +127,11 @@ def locked_cursor(
     A second worker for the same ``(consumer, stream)`` waits at this line until
     the first leaves the block. Everything the pass writes on this alias, the
     cursor and any outcomes alike, lands together when the block exits, or not at
-    all if an exception leaves it. The lock is a real row lock only on a backend
-    with ``SELECT ... FOR UPDATE``; on SQLite the transaction is still opened but
-    nothing waits.
+    all if an exception leaves it. There is no limit on a pass: it is one
+    transaction over the whole backlog, so a long first run holds the lock
+    throughout and a crash loses that pass's progress. The lock is a real row lock
+    only on a backend with ``SELECT ... FOR UPDATE``; on SQLite the pass's first
+    write takes the database-wide write lock instead, held until the pass ends.
     """
     with transaction.atomic(using=using):
         _locked_row(consumer_id, stream_path, using=using)
@@ -161,8 +163,9 @@ def poll_consumer(store: CursorStore, consumer_id: str, stream_path: str) -> Pol
     Does **not** advance the cursor — apply ``result.messages``, then call
     `commit_cursor(consumer_id, stream_path, result.cursor,
     generation=result.generation)`. A ``rewound``
-    result means the log was rebuilt beneath the cursor; reset derived state
-    before applying, exactly as with the core `poll`. A ``replaced`` result means
+    result means the log was rebuilt beneath the cursor; rebuild derived state,
+    then delete the ``ConsumerCursor`` row to start over, because `commit_cursor`
+    raises `CursorMovedBackwards` for an offset behind the saved one. A ``replaced`` result means
     the stream was deleted and recreated since the cursor was saved, which is
     only detectable when the stamp was committed with the cursor.
     """

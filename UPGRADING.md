@@ -23,21 +23,30 @@ ones you are crossing.
 and raises `SegmentSizeMismatch`, naming both values, when you open a stream with
 another one. Before, it quietly wrote new events into segments that were already
 full, which broke read order and made a resume skip events. Open existing data
-with the size it was written with; a stream whose `meta.json` predates this adopts
-the size its segment filenames show, and one still in its first segment adopts
-the size you pass. There is no way to change the size of a stream that has data.
+with the size it was written with; a stream whose `meta.json` predates this takes
+the size its segment filenames show. One still in its first segment shows none, so
+it is opened with the size you pass only if every entry already fits that size's
+first segment, and otherwise refused as written with a larger size: open it with the
+size it was written with, which was not recorded. There is no way to change the size
+of a stream that has data.
 
 ## One worker at a time per consumer, and cursors only move forward
 
-`DjangoConsumer.run` now holds a lock on the consumer's cursor row for the whole
-pass, so a second worker with the same consumer name waits for the first, and each
-`apply` runs in its own savepoint. Nothing changes for one worker, but a pass that
-is slow now makes the next one wait (keep passes short), the pass's cursor and
+`DjangoConsumer.run` (with the database cursor store) now holds a lock on the
+consumer's cursor row for the whole pass, so a second worker with the same consumer
+name waits for the first, and each `apply` runs in its own savepoint on the cursor
+store's database. A pass is now one transaction over the whole backlog, with no
+limit ([#297](https://github.com/joshbrooks/rakaia/issues/297)): a big first run or
+catch-up holds the lock throughout, and a crash or a lost connection before it
+commits loses that pass's progress, where before each event committed as it went.
+A lost connection raises out of `run` instead of returning a `transient` result,
+and the next run retries. Nothing else changes for one worker: the pass's cursor and
 same-database outcomes land together or not at all, and a `ConsumerCursor` row
 exists, with an empty `offset`, as soon as a pass starts (`load_cursor` still
 returns `None` for it). `commit_cursor` now raises `CursorMovedBackwards` for an
 offset behind the saved one; to start a consumer over, delete its `ConsumerCursor`
-row as before. The lock is real on Postgres only; SQLite has no row locks.
+row as before. The lock is real on Postgres only; on SQLite the pass's first write
+takes the database-wide write lock until the pass ends.
 
 ## `prune_outcomes` keeps each event's latest record
 
@@ -155,7 +164,9 @@ is refused. `create_stream_event` returns `None` rather than a `StreamEvent` whe
 store is not the durable one. With a memory or file store the event is written at
 once and is not rolled back with the row, and a model that writes several streams
 makes one append per stream rather than one shared event, though every stream is
-checked first, so one closed stream refuses the whole save and none is written.
+checked first, so one closed stream refuses the whole save and none is written
+(unless a stream is closed between that check and the writes, in which case the
+streams before it have already been written).
 
 ## Set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS` before you expose the protocol app
 

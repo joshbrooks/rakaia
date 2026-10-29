@@ -116,7 +116,10 @@ def poll(
     Returns:
         A `Poll`. Persist ``.cursor`` only after the messages are applied, so a
         crash mid-apply re-delivers rather than skips (at-least-once). A
-        ``rewound`` result re-reads from the start; reset derived state first.
+        ``rewound`` result re-reads from the start, but the cursor it carries is
+        behind the saved one: rebuild the derived state, and to start over delete
+        the saved cursor first, because a database commit of a lower offset raises
+        `CursorMovedBackwards`.
     """
     head = store.get_current_offset(path)
     if head is None:

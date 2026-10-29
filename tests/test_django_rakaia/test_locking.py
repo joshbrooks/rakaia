@@ -680,6 +680,125 @@ class TestThePassAsksForTheCursorRowLock:
         assert open_during_apply == [True]
 
 
+@pytest.mark.django_db(transaction=True, databases=["default", "overlay"])
+class TestTheCursorTransactionsAreOpenedOnTheCursorsAlias:
+    """`commit_cursor` and the per-event savepoint must open on the cursor's own
+    alias. Without `using=` they bind to `default`, and everything written on
+    `overlay` happens in autocommit, so a failure leaves half of it behind."""
+
+    def test_a_failed_commit_on_the_alias_leaves_no_cursor_row_behind(self) -> None:
+        from unittest.mock import patch
+
+        from django_rakaia.models import ConsumerCursor
+
+        original = ConsumerCursor.save
+
+        def fail_on_the_update(self: Any, *args: Any, **kwargs: Any) -> None:
+            if kwargs.get("update_fields"):
+                raise RuntimeError("boom")
+            return original(self, *args, **kwargs)
+
+        with (
+            patch.object(ConsumerCursor, "save", fail_on_the_update),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            commit_cursor("rpt", "alias-commit", "0000000000000001", using="overlay")
+
+        # The row was created, empty, inside the transaction that then rolled back.
+        assert ConsumerCursor.objects.using("overlay").count() == 0
+
+    def test_a_pass_that_dies_leaves_no_cursor_row_behind_on_the_alias(self) -> None:
+        from django_rakaia.models import ConsumerCursor
+
+        stream = DjangoStreamStore(using="overlay")
+        stream.create("alias-pass")
+        stream.append("alias-pass", b'{"n": 1}')
+        consumer = django_consumer(stream, "alias-pass", "rpt", using="overlay")
+
+        def die(_message: Any) -> None:
+            raise KeyboardInterrupt  # not an `Exception`: nothing records it
+
+        with pytest.raises(KeyboardInterrupt):
+            consumer.run(die, on_error="skip")
+
+        assert ConsumerCursor.objects.using("overlay").count() == 0
+
+    def test_a_failed_apply_rolls_back_its_own_writes_on_the_alias(self) -> None:
+        from django_rakaia.models import ConsumerCursor
+
+        stream = DjangoStreamStore(using="overlay")
+        stream.create("alias-apply")
+        stream.append("alias-apply", b'{"n": 1}')
+        consumer = django_consumer(stream, "alias-apply", "rpt", using="overlay")
+
+        def apply(_message: Any) -> None:
+            Alert.objects.using("overlay").create(
+                stream_key="k", alert_type="t", field_key="", resolved_at=None
+            )
+            raise RuntimeError("bad event")
+
+        consumer.run(apply, on_error="skip")
+
+        assert Alert.objects.using("overlay").count() == 0
+        # The pass itself still landed: the cursor moved past the bad event.
+        assert ConsumerCursor.objects.using("overlay").get().offset != ""
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAPassIsOneTransaction:
+    """What a lost connection does to a pass, now that a pass commits once."""
+
+    def test_a_temporary_error_in_apply_stops_the_pass_and_keeps_earlier_events(
+        self,
+    ) -> None:
+        from django.db import OperationalError
+
+        from django_rakaia.subscription import load_cursor
+
+        store = _stream_of("blink", 3)
+        consumer = django_consumer(store, "blink", "rpt")
+        offsets = [m.offset for m in store.read("blink", None)[0]]
+        seen: list[str] = []
+
+        def apply(message: Any) -> None:
+            if len(seen) == 1:
+                raise OperationalError("deadlock detected")
+            seen.append(message.offset)
+
+        result = consumer.run(apply, on_error="skip")
+
+        assert result.transient and result.halted
+        assert load_cursor("rpt", "blink") == offsets[0]
+
+    def test_a_connection_lost_before_the_pass_commits_raises_and_the_next_run_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole backlog is one transaction, so a failed commit loses all of
+        it and surfaces as an exception out of `run`, not as a `transient`
+        result. Nothing was committed, so the next run applies every event."""
+        from django.db import OperationalError
+
+        from django_rakaia.subscription import load_cursor
+
+        store = _stream_of("lost", 3)
+        consumer = django_consumer(store, "lost", "rpt")
+        first: list[str] = []
+
+        def lose_the_connection() -> None:
+            raise OperationalError("server closed the connection unexpectedly")
+
+        monkeypatch.setattr(connection, "commit", lose_the_connection)
+        with pytest.raises(OperationalError, match="closed the connection"):
+            consumer.run(lambda m: first.append(m.offset), on_error="skip")
+        monkeypatch.undo()
+
+        assert len(first) == 3
+        assert load_cursor("rpt", "lost") is None
+        retried: list[str] = []
+        consumer.run(lambda m: retried.append(m.offset), on_error="skip")
+        assert retried == first
+
+
 def _a_worker_is_waiting_on_a_lock(timeout: float = 10.0) -> bool:
     """True once some other backend is blocked on a lock. Polls the server's own
     view, so the test releases the first worker as soon as the second is stuck

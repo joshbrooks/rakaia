@@ -195,6 +195,7 @@ def _contained(root: Path, name: str, suffix: str = "") -> Path:
 #: this was, and `quote` leaves a leading dot alone, so a stream *called*
 #: ``.retired`` would have been handed the watermark directory to live in.
 _RETIRED_DIR = "%retired"
+_TRASH_GRACE_SECONDS = 60
 
 
 @dataclass
@@ -408,7 +409,11 @@ class JsonlStreamStore:
         # A fresh `meta.json` costs one read of the last segment's final line.
         meta.head = max(meta.head, self._scan_head(path))
         if meta.segment_size is None:
-            meta.segment_size = self._segment_size_on_disk(path)
+            # A delete does not care about the size, so it must not be refused
+            # for one it cannot work out.
+            meta.segment_size = self._segment_size_on_disk(
+                path, meta.head, refuse=check_segment_size
+            )
         if check_segment_size and meta.segment_size != self.segment_size:
             raise SegmentSizeMismatch(
                 f"Stream {path} was written with segment_size="
@@ -426,17 +431,35 @@ class JsonlStreamStore:
         )
         return meta
 
-    def _segment_size_on_disk(self, path: str) -> int:
+    def _segment_size_on_disk(
+        self, path: str, head: int, *, refuse: bool = True
+    ) -> int:
         """The size a stream's files show, for one whose meta never recorded it.
 
         The second segment starts one size after the first, so the difference of
         their names is the size; the first need not start at 0, because a
         recreated stream resumes above its retired id. A stream still in its
-        first segment shows nothing and takes this store's own.
+        first segment shows no size, so this store's own is adopted only when
+        every entry already sits where that size would put it: the highest id
+        (`head`) falls in the one segment on disk, `head // size * size` being
+        that segment's start. Otherwise the stream was written with a larger
+        size, the old one cannot be known, and the open is refused.
         """
         segments = self._segments(path)
         if len(segments) > 1:
             return int(segments[1].stem) - int(segments[0].stem)
+        if (
+            refuse
+            and segments
+            and head // self.segment_size * self.segment_size != int(segments[0].stem)
+        ):
+            raise SegmentSizeMismatch(
+                f"Stream {path} has no recorded segment_size and already holds "
+                f"entries up to id {head} in one segment, which a store opened "
+                f"with segment_size={self.segment_size} would not have written "
+                f"there: it was written with a larger size. Open it with the "
+                f"size it was written with."
+            )
         return self.segment_size
 
     def _load_activity(self, path: str, default: float) -> float:
@@ -904,6 +927,21 @@ class JsonlStreamStore:
         gone = self.root / _RETIRED_DIR / f"%trash-{uuid.uuid4().hex}"
         d.rename(gone)
         shutil.rmtree(gone)
+        self._sweep_trash()
+
+    def _sweep_trash(self) -> None:
+        """Remove what a delete that died between its rename and its removal left.
+
+        Only directories untouched for a minute, so a delete still emptying its
+        own is never raced by another one's sweep.
+        """
+        cutoff = time.time() - _TRASH_GRACE_SECONDS
+        for stale in (self.root / _RETIRED_DIR).glob("%trash-*"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    shutil.rmtree(stale, ignore_errors=True)
+            except FileNotFoundError:
+                continue
 
     def check_protocol_delete(self, path: str) -> None:
         """Refuse a client's DELETE on a permanent store."""

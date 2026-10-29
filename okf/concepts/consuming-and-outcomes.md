@@ -47,8 +47,9 @@ Imported from `rakaia`:
   deliberately: the two modes have opposite invariants.
 * **One worker per `(consumer, stream)`.** `DjangoConsumer.run` holds a
   `select_for_update` lock on the `ConsumerCursor` row for the whole pass (one
-  transaction on the cursor's alias; each `apply` in a savepoint), so a second
-  worker waits and then reads the committed cursor. A row with an empty `offset`
+  transaction on the cursor's alias over the whole backlog, so a crash loses the pass; each
+  `apply` in a savepoint on that alias only), so a second worker waits and then reads the
+  committed cursor. Only with `DjangoConsumerCursorStore`. A row with an empty `offset`
   is created for a first pass; `load_cursor` reads it as `None`. `commit_cursor`
   is forward-only and raises `CursorMovedBackwards`; to start over, delete the
   row. The lock is real on Postgres only.

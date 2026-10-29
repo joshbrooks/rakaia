@@ -120,25 +120,33 @@ def _alias_of(target: object) -> str | None:
 
 @dataclass(frozen=True)
 class DjangoConsumer(Consumer):
-    """A `Consumer` that checks the caller has no transaction open, and that
-    runs one worker at a time per ``(consumer, stream)``.
+    """A `Consumer` that checks the caller has no transaction open and, with
+    `DjangoConsumerCursorStore`, runs one worker at a time per ``(consumer, stream)``.
 
     The check is on `run` rather than on construction because that is where the
     hazard is: a consumer built during startup and run later from a request
     handler is fine, and one built outside a transaction and run inside one is
     the case being refused.
 
-    **Within one pass, the cursor row is locked; a second worker waits.** The
-    pass runs in a single transaction on the cursor's alias holding a
-    ``select_for_update`` lock on the cursor row, so two workers under one
-    consumer name take turns instead of applying the same events twice, and the
-    second reads the cursor the first committed. Each `apply` runs in its own
-    savepoint, so one that raises rolls back only its own writes and the
-    transaction stays usable for the record of the failure. A worker that dies
-    mid-pass loses that pass's cursor and same-alias outcomes together and the
-    events are delivered again; and the lock is held as long as the pass runs, so
-    keep passes short. The lock is real only on a backend with
-    ``SELECT ... FOR UPDATE`` (Postgres); on SQLite nothing waits.
+    **With `DjangoConsumerCursorStore`, the cursor row is locked for the pass; a
+    second worker waits.** The pass runs in a single transaction on the cursor
+    store's alias holding a ``select_for_update`` lock on the cursor row, so two
+    workers under one consumer name take turns instead of applying the same events
+    twice, and the second reads the cursor the first committed. A custom cursor
+    store gets no lock and no transaction; a hand-run `poll_consumer` and
+    `commit_cursor` get only the forward-only guard. Each `apply` runs in its own
+    savepoint on that same alias, so one that raises undoes only its writes there
+    (a write to another alias is not undone) and the transaction stays usable for
+    the record of the failure.
+
+    A pass has no limit: it is one transaction over the whole backlog, so a big
+    first run or catch-up holds the lock throughout (GitHub #297), and a worker
+    that dies mid-pass loses that pass's cursor and same-alias outcomes together,
+    so the events are delivered again. A connection lost before the pass commits
+    raises out of `run` rather than returning ``Consumed(transient=True)``; the
+    next run retries. The lock is real only on a backend with
+    ``SELECT ... FOR UPDATE`` (Postgres); on SQLite the pass's first write takes
+    the database-wide write lock, held until the pass ends.
 
     ``transient`` defaults to Django's ``OperationalError`` and ``InterfaceError``:
     a dropped connection or a deadlock is "try again later", not a bad event.

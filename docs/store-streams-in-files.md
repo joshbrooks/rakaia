@@ -152,13 +152,18 @@ recovery keeps that prefix.
 because the segment a record goes in is worked out from it. Opening a stream with
 a different `segment_size` raises `SegmentSizeMismatch` naming both values rather
 than quietly writing into segments that are already full. A stream whose
-`meta.json` is lost takes the size from its segment filenames, or from the store
-if it still has only one segment.
+`meta.json` is lost, or predates the recorded size, takes the size from its segment
+filenames. With only one segment there is nothing to read, so the store's own size is
+used only if every entry already fits that size's first segment; otherwise the stream
+was written with a larger size, the open is refused, and you must open it with the size
+it was written with, which nobody recorded.
 
 **Delete and create.** Both take the stream's lock, so a delete waits for a writer
 that is mid-append instead of pulling the directory out from under it, and an
 append that was queued behind a delete fails with the store's own stream-not-found
-error.
+error. A delete moves the directory into `%retired` and then removes it, so a crash
+between the two leaves a `%trash-*` directory there; the next delete sweeps any that
+are over a minute old.
 
 **Durability.** With `fsync` on (the default) an append that has returned is on
 the disk, and a new segment's directory entry is synced too — syncing a file

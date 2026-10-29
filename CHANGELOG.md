@@ -60,7 +60,8 @@ runnable demo for each.
 - **Two workers on one consumer now take turns.** `django_consumer` runs each pass
   in one transaction that locks the consumer's cursor row, so a second worker waits
   and then reads the position the first saved, instead of applying the same events
-  twice. `commit_cursor` also refuses to move a position backwards, raising the new
+  twice; the pass is one transaction over the whole backlog, so a crash loses that
+  pass's progress. `commit_cursor` also refuses to move a position backwards, raising the new
   `CursorMovedBackwards`. See `UPGRADING.md`.
 - **A consumer whose stream went backwards no longer re-applies it.** When the
   log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
@@ -101,7 +102,8 @@ runnable demo for each.
   a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
   the new `StreamClosed`, and the event goes to the store you configured. A save
   to several streams where one is closed now writes to none of them on the
-  in-memory and file stores too, as it already did on the database one. See
+  in-memory and file stores too, as it already did on the database one (unless a
+  stream is closed between the check and the writes). See
   `UPGRADING.md`.
 - **A handler's drift fingerprint now covers the helpers it calls and the
   constants it reads**, not only its own text, so changing `_helper()` or a

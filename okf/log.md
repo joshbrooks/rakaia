@@ -1,5 +1,14 @@
 # Directory Update Log
 
+## 2026-10-30
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the lock covers only
+  `DjangoConsumerCursorStore`, a pass is one transaction over the whole backlog, and the savepoint
+  is on the cursor alias only.
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — a file stream with no
+  recorded `segment_size` still in its first segment is refused when its entries do not fit the
+  size you pass.
+
 ## 2026-10-29
 
 * **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — `JsonlStreamStore`

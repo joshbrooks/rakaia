@@ -8,6 +8,8 @@ so none of them depends on timing luck.
 from __future__ import annotations
 
 import fcntl
+import json
+import os
 import threading
 import time
 
@@ -61,6 +63,50 @@ def test_a_stream_written_without_a_recorded_size_adopts_the_size_its_files_show
     with pytest.raises(SegmentSizeMismatch):
         JsonlStreamStore(root, segment_size=8).read(PATH)
     assert len(_offsets(JsonlStreamStore(root, segment_size=4))) == 6
+
+
+def _strip_recorded_size(root) -> None:
+    meta = root / PATH / "meta.json"
+    raw = json.loads(meta.read_text())
+    raw.pop("segment_size")
+    meta.write_text(json.dumps(raw))
+
+
+def test_an_unrecorded_size_is_refused_when_the_entries_do_not_fit_the_new_one(
+    root,
+):
+    """Entries 1..50 in one segment were written with a size above 50. Adopting 40
+    would start a second segment at 40 and the resume skip would pass over events."""
+    store = JsonlStreamStore(root, segment_size=100)
+    store.create(PATH)
+    for i in range(50):
+        store.append(PATH, str(i).encode())
+    _strip_recorded_size(root)
+
+    smaller = JsonlStreamStore(root, segment_size=40)
+    with pytest.raises(SegmentSizeMismatch, match="larger size"):
+        smaller.append(PATH, b"must not land")
+    with pytest.raises(SegmentSizeMismatch):
+        smaller.read(PATH)
+    assert [p.name for p in (root / PATH).glob("*.jsonl")] == ["000000000000.jsonl"]
+    # A delete does not need the size, so it still removes what cannot be opened.
+    assert smaller.delete(PATH)
+
+
+def test_an_unrecorded_size_is_adopted_when_every_entry_fits_it(root):
+    store = JsonlStreamStore(root, segment_size=100)
+    store.create(PATH)
+    for i in range(30):
+        store.append(PATH, str(i).encode())
+    _strip_recorded_size(root)
+
+    smaller = JsonlStreamStore(root, segment_size=40)
+    for i in range(20):
+        smaller.append(PATH, str(30 + i).encode())
+    everything = smaller.read(PATH)[0]
+    assert len(everything) == 50
+    resumed = smaller.read(PATH, everything[44].offset)[0]
+    assert [m.offset for m in resumed] == [m.offset for m in everything[45:]]
 
 
 def test_delete_waits_for_a_writer_that_holds_the_lock(root):
@@ -143,6 +189,56 @@ def test_a_writer_queued_behind_a_delete_does_not_run_on_the_old_lock(root):
         new_lock.close()
     t.join(timeout=10)
     assert finished.is_set()
+
+
+def test_delete_takes_the_stream_path_away_before_it_empties_the_directory(
+    root, monkeypatch
+):
+    """A writer queued on the lock wakes and reopens `.lock` by path. If the
+    directory still exists while the delete empties it, that `open` recreates the
+    file and the removal fails or leaves the stream half there; so the path must
+    already be gone, in one step, by the time any file is removed."""
+    import rakaia.jsonl_store as module
+
+    store = JsonlStreamStore(root, segment_size=4)
+    store.create(PATH)
+    store.append(PATH, b"one")
+    emptied: list[str] = []
+    real_rmtree = module.shutil.rmtree
+
+    def rmtree_after_a_waiter_tries_to_reopen_the_lock(target, *args, **kwargs):
+        with pytest.raises(FileNotFoundError):
+            (root / PATH / ".lock").open("a+")
+        assert not (root / PATH).exists()
+        emptied.append(str(target))
+        return real_rmtree(target, *args, **kwargs)
+
+    monkeypatch.setattr(
+        module.shutil, "rmtree", rmtree_after_a_waiter_tries_to_reopen_the_lock
+    )
+    assert store.delete(PATH)
+
+    assert emptied, "the directory was emptied some other way"
+    assert not (root / PATH).exists()
+    assert not list((root / "%retired").glob("%trash-*"))
+
+
+def test_a_delete_cleans_up_the_leftovers_of_one_that_died_mid_removal(root):
+    store = JsonlStreamStore(root, segment_size=4)
+    store.create(PATH)
+    store.create("other")
+    stale = root / "%retired" / "%trash-dead"
+    stale.mkdir()
+    (stale / "0.jsonl").write_text("x")
+    old = time.time() - 3600
+    os.utime(stale, (old, old))
+    fresh = root / "%retired" / "%trash-running"
+    fresh.mkdir()
+
+    store.delete(PATH)
+
+    assert not stale.exists()
+    assert fresh.exists(), "a removal that may still be running was swept"
 
 
 def test_delete_writes_the_retired_high_mark_atomically(root, monkeypatch):
