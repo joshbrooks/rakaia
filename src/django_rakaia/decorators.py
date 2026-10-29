@@ -11,12 +11,14 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import models, transaction
+from django.db import models
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from django_rakaia.django_store import write_enveloped_event
-from django_rakaia.models import Stream, StreamEvent
+from django_rakaia.django_store import DjangoStreamStore
+from django_rakaia.models import StreamEvent
+from django_rakaia.store import get_store
+from rakaia.types import AppendOptions, StreamClosed, StreamNotFound
 
 StreamPathResolver = (
     str
@@ -27,11 +29,9 @@ StreamPathResolver = (
 DataclassTransformer = Callable[[models.Model], Any]
 DeleteEventType = Literal["delete", "update"] | None
 
-
-def _get_or_create_stream(stream_id: str, using: str | None = None) -> Stream:
-    """Get or create a Stream record on `using` (the default database if None)."""
-    stream, _ = Stream.objects.using(using).get_or_create(stream_id=stream_id)
-    return stream
+#: Every model decorated with `@stream_model`, for the startup check that warns
+#: when their events would go to a store that forgets them on restart.
+streamed_models: list[type[models.Model]] = []
 
 
 def create_stream_event(
@@ -40,7 +40,7 @@ def create_stream_event(
     instance: models.Model,
     action: str,
     using: str | None = None,
-) -> StreamEvent:
+) -> StreamEvent | None:
     """
     Create a stream event for the given model instance.
 
@@ -58,8 +58,15 @@ def create_stream_event(
             the save that produced it — the two are one write and must not be
             split (#159). Pass explicitly to override.
 
+    The event is appended through the store `RAKAIA_STORE` names, by the same
+    rules as any other append: a closed stream raises `StreamClosed`, and the
+    save that fired it fails with it. With the durable store the event is
+    written in the save's transaction; with the memory or file store it is
+    written immediately and cannot be rolled back with the row.
+
     Returns:
-        The created StreamEvent instance.
+        The created StreamEvent, or None when the configured store is not the
+        database one (it has no `StreamEvent` row to hand back).
 
     Example (single stream):
         create_stream_event(
@@ -117,58 +124,41 @@ def create_stream_event(
         json.dumps(dataclasses.asdict(dc_instance), cls=DjangoJSONEncoder)
     )
 
-    # `event_ts` is the deterministic merge key (ADR 0002 item 5), and the
-    # shared writer stamps one on every event that does not bring its own:
-    # leaving it NULL would force `merge_replay` onto transport time, which is
-    # the ordering trap that item closed. The stamp is taken under the offset
-    # lock, as `max(the stream's last stamp, now)`, so a stream's times agree
-    # with its positions (#284).
-    #
-    # Everything else about the envelope — the `"append"` sentinel, merging the
-    # ambient `provenance()` block into `metadata`, `{}` rather than NULL — is
-    # `write_enveloped_event`'s to decide, and the rows are written by
-    # `write_events`, shared with `DjangoStreamStore.append`. `@stream_model`
-    # used to have its own copy of those rules and the copies had drifted (#131).
-    # Atomic because the writer locks the per-path high-water for the duration
-    # of the transaction. A savepoint when the caller already has one
-    # open, so the event stays inside the save that produced it.
-    # The save being audited decides the database, unless a caller says
-    # otherwise. `write_enveloped_event` then takes the alias from the streams
-    # themselves.
-    # `getattr` rather than `instance._state.db`: this door accepts anything
-    # with the attributes `to_dataclass` reads, and the envelope-writer tests
-    # pass a plain stand-in with no ORM state. No state means no routing, which
-    # is the default database.
+    # The event goes through the configured store, like every other append, so a
+    # closed stream refuses it (`StreamClosed`) and `RAKAIA_STORE` decides where
+    # it lands (#341). The save being audited decides the database, unless a
+    # caller says otherwise. `getattr` rather than `instance._state.db`: this
+    # door accepts anything with the attributes `to_dataclass` reads, and the
+    # envelope-writer tests pass a plain stand-in with no ORM state; no state
+    # means the default database.
     state = getattr(instance, "_state", None)
     alias = using if using is not None else getattr(state, "db", None)
+    configured = get_store()
 
-    with transaction.atomic(using=alias):
-        # Streams are fetched or created, then row-locked, in path order: the
-        # order a protocol append takes the same locks in -- stream row first,
-        # offset watermark second. Going to the watermark first and needing the
-        # stream row later (inserting an entry that points at it) is the
-        # opposite order, and deadlocked against an append on one stream
-        # (#298). Creating them in path order too means two first saves into
-        # the same new streams also meet in one order.
-        by_id = {
-            stream_id: _get_or_create_stream(stream_id, using=alias)
-            for stream_id in sorted(set(stream_ids))
-        }
-        list(
-            Stream.objects.using(alias)
-            .select_for_update()
-            .filter(pk__in=[stream.pk for stream in by_id.values()])
-            .order_by("stream_id")
-        )
-        # One envelope shared by every entry: a fan-out is one event appearing
-        # in several streams, not several events that look alike.
-        event, _entries = write_enveloped_event(
-            [by_id[stream_id] for stream_id in stream_ids],
-            payload,
-            label=action,
-        )
+    if isinstance(configured, DjangoStreamStore):
+        # Same database as the save, and one transaction (a savepoint inside the
+        # caller's own) so the event stays with the row that produced it. The
+        # store stamps `event_ts` and merges `provenance()` under its locks.
+        return DjangoStreamStore(
+            using=alias, permanent=configured.permanent
+        ).append_to_many(stream_ids, payload, label=action)
 
-    return event
+    # A memory or file store cannot share a transaction with the row, so the
+    # event is written now rather than on commit: a refusal (a closed stream)
+    # must reach the code saving the model, and `on_commit` would raise it after
+    # the row had already committed. The price is that a save that later rolls
+    # back leaves its event behind. A fan-out is one append per stream here.
+    options = AppendOptions(content_type="application/json", label=action)
+    body = json.dumps(payload).encode()
+    for stream_id in sorted(set(stream_ids)):
+        try:
+            result = configured.append(stream_id, body, options)
+        except StreamNotFound:
+            configured.create(stream_id, content_type="application/json")
+            result = configured.append(stream_id, body, options)
+        if result.stream_closed and result.message is None:
+            raise StreamClosed(f"Stream is closed: {stream_id}")
+    return None
 
 
 def stream_model(
@@ -261,6 +251,8 @@ def stream_model(
         )
 
     def decorator(model_cls: type[models.Model]) -> type[models.Model]:
+        streamed_models.append(model_cls)
+
         @receiver(post_save, sender=model_cls, weak=False)
         def handle_post_save(
             sender: type[models.Model],  # noqa: ARG001

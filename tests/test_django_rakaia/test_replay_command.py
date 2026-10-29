@@ -7,7 +7,7 @@ import io
 import pytest
 from django.core.management import call_command
 
-from django_rakaia.store import get_store
+from django_rakaia.store import get_store, reset_store_cache
 from rakaia.registry import HandlerDriftError
 from rakaia.seed import seed_stream
 
@@ -24,11 +24,14 @@ def _seed(stream_path: str, events: list[dict]) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_store():
-    """Reset the singleton store between tests so streams don't leak."""
+def _clear_store(settings):
+    """Use the in-memory store, fresh for each test so streams don't leak."""
+    settings.RAKAIA_STORE = "memory"
+    reset_store_cache()
     get_store().clear()
     yield
     get_store().clear()
+    reset_store_cache()
 
 
 @pytest.mark.django_db

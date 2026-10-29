@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,11 +57,13 @@ from rakaia.context import correlation_for, merge_provenance
 from rakaia.json_mode import is_json_content_type
 from rakaia.read_decision import page_of
 from rakaia.types import (
+    AppendOptions,
     AppendResult,
     CloseResult,
     ProducerAccepted,
     ProducerState,
     ProducerValidationResult,
+    StreamClosed,
     StreamConfigConflict,
     StreamMessage,
     StreamNotFound,
@@ -683,6 +685,70 @@ class DjangoStreamStore:
     def append(self, path: str, data: bytes, options: Any = None) -> AppendResult:
         """Append one event: a batch of one. See `append_many`."""
         return self.append_many(path, [(data, options)])[0]
+
+    def append_to_many(
+        self, paths: Sequence[str], value: Any, *, label: str = ""
+    ) -> StreamEvent:
+        """Append one event, already a JSON value, to every stream in `paths`.
+
+        This is what a model save goes through: the same locks, the same
+        closed / content-type checks and the same envelope as `append`, but one
+        `StreamEvent` with an entry in each stream, so a fan-out stays one fact.
+        A missing stream (or an expired one, reaped first) is created as a JSON
+        stream. Raises `StreamClosed` if any stream is closed, having written
+        nothing.
+
+        Streams are locked in path order, stream row before offset watermark,
+        the order a protocol append takes them in (#298).
+        """
+        if not paths:
+            # An event with nowhere to go is still written, as it always was.
+            with transaction.atomic(using=self._using):
+                return write_enveloped_event([], value, label=label)[0]
+        ordered = sorted(set(paths))
+        options = AppendOptions(content_type="application/json", label=label)
+        body = json.dumps(value).encode()
+        with transaction.atomic(using=self._using), ExitStack() as locks:
+            for path in ordered:
+                self._reap_if_expired(path)
+                self._streams().get_or_create(
+                    stream_id=path,
+                    defaults={
+                        "content_type": "application/json",
+                        "last_activity_at": time.time(),
+                    },
+                )
+            locked = {
+                path: locks.enter_context(self._locked_write(path)) for path in ordered
+            }
+            plans = {
+                path: plan_appends(
+                    self._facts(stream), [options], payloads=[body], now=time.time()
+                )
+                for path, stream in locked.items()
+            }
+            for path, plan in plans.items():
+                if not plan.writes_anything:
+                    raise StreamClosed(f"Stream is closed: {path}")
+            first = plans[ordered[0]].writes[0]
+            assert first is not None
+            (event,), _per_stream = write_events(
+                [locked[path] for path in paths],
+                [
+                    NewEvent(
+                        data=value,
+                        event_type=first.label or _APPEND_EVENT_TYPE,
+                        metadata=first.metadata,
+                        event_ts=first.event_ts,
+                        tags=first.tags,
+                        correlation_id=first.correlation_id,
+                    )
+                ],
+                using=self._using,
+            )
+            for path, plan in plans.items():
+                self._save_changes(locked[path], plan)
+            return event
 
     @staticmethod
     def _stored_value(

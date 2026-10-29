@@ -11,6 +11,10 @@
 * **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
   diffs the rebuilt table against the live table both ways over `live_models`, and a
   `RowDiff` reports which side holds a row the other lacks.
+* **Update**: [Django integration](concepts/django-integration.md) — a `@stream_model` save
+  appends through the store `RAKAIA_STORE` names instead of writing database rows directly,
+  so a closed stream refuses it with `StreamClosed`; check `rakaia.W003` warns when a streamed
+  model meets the in-memory store.
 
 ## 2026-10-27
 

@@ -190,6 +190,7 @@ if TYPE_CHECKING:
         ProducerValidationResult,
         SequenceConflict,
         Stream,
+        StreamClosed,
         StreamConfigConflict,
         StreamError,
         StreamMessage,
@@ -255,6 +256,7 @@ _EXPORTS: dict[str, str] = {
     # Store failures (each subclasses the builtin it replaced)
     "StreamError": "rakaia.types",
     "StreamNotFound": "rakaia.types",
+    "StreamClosed": "rakaia.types",
     "StreamConfigConflict": "rakaia.types",
     "SequenceConflict": "rakaia.types",
     "ContentTypeMismatch": "rakaia.types",
@@ -434,6 +436,7 @@ __all__ = [
     "SpareKeys",
     "Stage",
     "Stream",
+    "StreamClosed",
     "StreamConfigConflict",
     "StreamError",
     "StreamMessage",

@@ -8,14 +8,10 @@ post_save / post_delete handlers and appends to:
 
 so a browser pinned to one language only receives updates for that language.
 
-**Why this writes to the store rather than calling `create_stream_event`.**
-`create_stream_event` is the ORM door: it writes `StreamEvent` and `StreamEntry`
-rows directly and never consults `RAKAIA_STORE`, so with the file-backed store
-selected it would keep filling the database while the log this app now serves
-from stayed empty. Appending through `get_store()` is what makes the setting
-load-bearing. The cost is that this demo gives up the envelope the ORM door
-builds — provenance, and the fan-out of one event into several streams — for a
-plain JSON record, which is all the page renders anyway.
+**Why this appends through `get_store()` itself.** The path is a protocol
+path, not the one `@stream_model` builds, and the page wants a plain JSON
+record rather than the envelope `create_stream_event` adds (provenance, and the
+fan-out of one event into several streams).
 
 The path is a protocol path (`/translations/tet`), not the old
 `translations:tet`, because the protocol server routes on the URL path verbatim:

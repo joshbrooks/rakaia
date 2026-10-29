@@ -77,6 +77,22 @@ matches more than one row, where it used to update the first. A lookup that name
 the natural key never does. It also reports flipped rows in key order, so integer
 keys read `1, 2, 10` where they read `1, 10, 2`.
 
+## Saving a `@stream_model` model now follows `RAKAIA_STORE`, and a closed stream refuses it
+
+The event a model save writes used to go straight to the database tables whatever
+`RAKAIA_STORE` said, and it was accepted by a closed stream. It now goes through the
+configured store like any other append. If you never set `RAKAIA_STORE` you are on the
+default, `"memory"`, so those events now live in the process and are gone on
+restart: set `RAKAIA_STORE = "durable"` to keep them in the database, which is
+where they were before. `manage.py check` now warns (`rakaia.W003`) when a
+`@stream_model` model exists and the store is `"memory"`. A save whose stream is closed now raises
+`rakaia.StreamClosed` (a `StreamError`) out of `save()`; inside an `atomic()` block
+the row is rolled back with it, and in autocommit the row stays and only the event
+is refused. `create_stream_event` returns `None` rather than a `StreamEvent` when the
+store is not the durable one. With a memory or file store the event is written at
+once and is not rolled back with the row, and a model that writes several streams
+makes one append per stream rather than one shared event.
+
 ## Set `RAKAIA_AUTHORIZE` and `RAKAIA_ALLOWED_ORIGINS` before you expose the protocol app
 
 Nothing breaks, and nothing changes by default: the protocol server still allows

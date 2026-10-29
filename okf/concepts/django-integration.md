@@ -21,8 +21,13 @@ runs against.
 From `django_rakaia`:
 
 * `@stream_model(stream_paths=…, to_dataclass=…)` — decorate a model so saves/
-  deletes emit events.
-* `create_stream_event(...)` — emit an event manually (e.g. for built-in models).
+  deletes emit events. The event is appended through the store `RAKAIA_STORE` names, so a
+  closed stream refuses it with `StreamClosed`; with the durable store it is written in the
+  save's transaction, with the memory or file store it is written at once and is not
+  rolled back with the row. `manage.py check` warns (`rakaia.W003`) when a streamed model
+  exists and `RAKAIA_STORE` is `"memory"`.
+* `create_stream_event(...)` — emit an event manually (e.g. for built-in models); returns
+  `None` when the store is not the durable one.
 * `DjangoStreamStore` — the durable, DB-backed store (`RAKAIA_STORE="durable"`).
 * `DjangoExecutor`, `DjangoProjectionReader`, `replay_stream` — apply/replay
   against the ORM.

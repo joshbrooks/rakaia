@@ -80,6 +80,7 @@ from .types import (
     ProducerStaleEpoch,
     ProducerStreamClosed,
     SequenceConflict,
+    StreamClosed,
     StreamConfigConflict,
     StreamError,
     StreamMessage,
@@ -94,6 +95,7 @@ from .types import (
 # 4xx into a 500 silently).
 STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     StreamNotFound: (404, b"Stream not found"),
+    StreamClosed: (409, b"Stream is closed"),
     StreamConfigConflict: (
         409,
         b"Stream already exists with different configuration",

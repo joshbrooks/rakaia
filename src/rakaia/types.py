@@ -83,6 +83,11 @@ class StreamNotFound(StreamError, KeyError):
     """The stream does not exist, or has expired."""
 
 
+class StreamClosed(StreamError):
+    """An append names a stream that has been closed, and the writer has no
+    result to carry the refusal back in (a model save), so it raises."""
+
+
 class StreamConfigConflict(StreamError, ValueError):
     """A create names an existing stream with a different configuration."""
 

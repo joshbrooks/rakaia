@@ -229,6 +229,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "ExpiryNotAllowed",
         "DeleteNotAllowed",
         "SpareKeys",
+        "StreamClosed",
         "StreamConfigConflict",
         "HandlerDriftError",
         "HandlerGapError",

@@ -72,6 +72,7 @@ RAKAIA_PUBLIC = {
     "ForeignOffset",
     "InvalidOffset",
     "SequenceConflict",
+    "StreamClosed",
     "StreamConfigConflict",
     "StreamError",
     "StreamNotFound",
