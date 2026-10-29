@@ -80,3 +80,24 @@ def test_a_model_save_event_lands_on_the_saves_database():
 
     assert Stream.objects.using("overlay").filter(stream_id="here").exists()
     assert not Stream.objects.using("default").filter(stream_id="here").exists()
+
+
+@pytest.mark.parametrize("backend", ["memory", "jsonl"])
+def test_a_save_to_a_closed_stream_is_refused_on_the_memory_and_file_stores(
+    backend: str, tmp_path
+) -> None:
+    reset_store_cache()
+    try:
+        with override_settings(
+            RAKAIA_STORE=backend, RAKAIA_JSONL_ROOT=str(tmp_path / "streams")
+        ):
+            store = get_store()
+            store.create("closed-one", content_type="application/json")
+            store.close_stream("closed-one")
+
+            with pytest.raises(StreamClosed):
+                _save_event("closed-one")
+
+            assert store.read("closed-one")[0] == []
+    finally:
+        reset_store_cache()

@@ -26,11 +26,14 @@ import inspect
 import logging
 import os
 import re
+import site
 import sys
+import sysconfig
 import textwrap
 import types
 import uuid
 from dataclasses import dataclass, is_dataclass
+from pathlib import Path
 from typing import Any
 
 FINGERPRINT_PREFIX = "v2:"
@@ -135,21 +138,59 @@ _VALUE_TYPES = (
 )
 
 _UNSAFE_NAMES = frozenset({"eval", "exec", "compile", "globals", "__import__"})
-_LIBRARY_ROOTS = frozenset(sys.stdlib_module_names) | {"rakaia", "django_rakaia"}
 _NAME_OPS = frozenset({"LOAD_GLOBAL", "LOAD_NAME"})
+
+
+def _library_dirs() -> tuple[str, ...]:
+    """Where code lives that an upgrade, not an edit, changes.
+
+    Decided by directory, not by module name: a package of your own called
+    ``queue`` or ``test`` shares a name with the standard library and must still
+    be fingerprinted.
+    """
+    dirs: list[str] = []
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        path = sysconfig.get_paths().get(key)
+        if path:
+            dirs.append(path)
+    dirs.extend(site.getsitepackages())
+    user = site.getusersitepackages()
+    if user:
+        dirs.append(user)
+    # rakaia itself, wherever it is installed (an editable install is not under
+    # site-packages).
+    here = Path(__file__).resolve().parent
+    dirs.extend([str(here), str(here.parent / "django_rakaia")])
+    return tuple(os.path.realpath(d) + os.sep for d in dirs)
+
+
+_LIBRARY_DIRS = _library_dirs()
+_PACKAGE_DIRS = frozenset({"site-packages", "dist-packages"})
 
 
 def _is_library(module: str | None, filename: str | None) -> bool:
     """Code whose version is pinned by the environment, not edited with the handler.
 
-    The standard library, rakaia itself and installed packages: their changes
-    arrive with an upgrade, which the lockfile records.
+    The standard library, rakaia itself and installed packages, judged by where
+    the file lives. A module with no file at all (built in or frozen) is library
+    code too. `filename` wins when given; otherwise it is looked up from `module`.
     """
-    if module and module.partition(".")[0] in _LIBRARY_ROOTS:
+    if filename is None and module:
+        loaded = sys.modules.get(module)
+        if loaded is None:
+            return False
+        filename = getattr(loaded, "__file__", None)
+        if filename is None:
+            origin = getattr(getattr(loaded, "__spec__", None), "origin", None)
+            return origin in ("built-in", "frozen")
+    if not filename:
+        return False
+    if filename.startswith("<frozen"):
         return True
-    return bool(filename) and any(
-        part in (filename or "") for part in ("site-packages", "dist-packages")
-    )
+    path = os.path.realpath(filename)
+    if path.startswith(_LIBRARY_DIRS):
+        return True
+    return bool(_PACKAGE_DIRS.intersection(Path(path).parts))
 
 
 def _immutable_text(value: Any) -> str | None:

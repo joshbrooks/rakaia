@@ -79,6 +79,11 @@ class Poll:
 
     status: PollStatus
 
+    generation: str | None = None
+    """The stream's stamp as read by this poll, ``None`` if absent or the store
+    keeps none. Save it with the cursor so a later poll can tell the stream was
+    deleted and recreated."""
+
     @property
     def rewound(self) -> bool:
         """The log was rebuilt beneath the cursor; reset before applying."""
@@ -117,23 +122,32 @@ def poll(
     if head is None:
         return Poll(messages=[], cursor=None, status="absent")
 
-    if generation is not None:
-        current = generation_of(store, path)
-        if current is not None and current != generation:
-            return Poll(messages=[], cursor=cursor, status="replaced")
+    current = generation_of(store, path)
+    if generation is not None and current is not None and current != generation:
+        return Poll(messages=[], cursor=cursor, status="replaced", generation=current)
 
     if cursor is None:
         messages, _ = store.read(path)
-        return Poll(messages=messages, cursor=_tail(messages, head), status="fresh")
+        return Poll(
+            messages=messages,
+            cursor=_tail(messages, head),
+            status="fresh",
+            generation=current,
+        )
 
     if _after(cursor, head):
         # The cursor points beyond the current head: the log was truncated or
         # rebuilt shorter. Re-read from the start and signal the reset.
         messages, _ = store.read(path)
-        return Poll(messages=messages, cursor=_tail(messages, head), status="rewound")
+        return Poll(
+            messages=messages,
+            cursor=_tail(messages, head),
+            status="rewound",
+            generation=current,
+        )
 
     if cursor == head:
-        return Poll(messages=[], cursor=cursor, status="caught_up")
+        return Poll(messages=[], cursor=cursor, status="caught_up", generation=current)
 
     messages, _ = store.read(path, cursor)
     if not messages:
@@ -142,8 +156,13 @@ def poll(
         # re-appended (globally-monotonic offsets, #34). There is no delta to
         # apply, so this is `caught_up` — not an `advanced` with an empty delta,
         # which would falsely signal new content to a status-branching consumer.
-        return Poll(messages=[], cursor=cursor, status="caught_up")
-    return Poll(messages=messages, cursor=_tail(messages, cursor), status="advanced")
+        return Poll(messages=[], cursor=cursor, status="caught_up", generation=current)
+    return Poll(
+        messages=messages,
+        cursor=_tail(messages, cursor),
+        status="advanced",
+        generation=current,
+    )
 
 
 def generation_of(store: object, path: str) -> str | None:
@@ -156,22 +175,6 @@ def generation_of(store: object, path: str) -> str | None:
     """
     getter = getattr(store, "get_generation", None)
     return None if getter is None else getter(path)
-
-
-_TRANSIENT_ERRORS: list[type[BaseException]] = []
-
-
-def register_transient_errors(*types: type[BaseException]) -> None:
-    """Say which exceptions mean "try again later" rather than "this event is bad".
-
-    Core rakaia imports no database library, so it cannot name a dropped
-    connection itself; `django_rakaia` registers ``OperationalError`` and
-    ``InterfaceError`` when it loads. Anything registered here is what `consume`
-    treats as transient unless the caller passes ``transient=`` explicitly.
-    """
-    for exc_type in types:
-        if exc_type not in _TRANSIENT_ERRORS:
-            _TRANSIENT_ERRORS.append(exc_type)
 
 
 def _tail(messages: list[StreamMessage], fallback: str) -> str:
@@ -326,7 +329,8 @@ def consume(
             consumer sees it (a first run, or a cursor from before stamps), and
             after the first committed offset when there was no cursor yet.
         transient: exception types that mean "try again later". Defaults to
-            those `django_rakaia` registered. An apply that raises one stops the
+            none: core names no database library, so pass your driver's
+            (`django_consumer` passes Django's). An apply that raises one stops the
             pass with ``Consumed.transient`` set, records nothing and leaves the
             cursor where it was, under either `on_error`.
 
@@ -356,7 +360,7 @@ def consume(
             cursor=cursor,
             halted=False,
         )
-    transient_types = tuple(_TRANSIENT_ERRORS) if transient is None else transient
+    transient_types = transient or ()
     current_generation = (
         generation_of(store, path) if result.status != "absent" else None
     )

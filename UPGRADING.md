@@ -59,6 +59,12 @@ rows will now come back red, naming the model, key and side (`only in the live t
 itself (`auto_now`, `auto_now_add`) are not compared; a column that legitimately differs
 between a rebuild and production needs a normalizer.
 
+Two consequences to check before you rely on it. A model you list in `live_models`
+that no effect writes now fails if it has live rows, because those are rows the log
+never produced: leave out any table the log does not own. And a row is matched by
+the lookup fields its upsert uses (a model with no upsert is matched by primary key),
+so two rows that share those fields count as one.
+
 ## Replay can now report drift that used to pass in silence
 
 A handler edited between two process starts is now compared with the hash it was
@@ -154,8 +160,12 @@ Run `manage.py migrate django_rakaia`: `0014_generation` adds a `generation` col
 to `Stream` and to `ConsumerCursor`. A cursor saved before the upgrade has none and
 adopts the stream's current stamp the first time it runs, so it does not stop; a
 stream deleted and recreated *before* that first run cannot be told from the
-original. A custom `ConsumerCursorStore` keeps working but cannot detect a replaced
-stream until it adds `load_generation` and `commit_generation`; a custom stream
+original. A file-backed stream written before stamps existed is given one the first
+time anything asks for it, so recreates after that are noticed. If you poll with
+`poll_consumer` and `commit_cursor` by hand, pass `generation=result.generation`
+to `commit_cursor`, or the cursor has no stamp and cannot report `replaced`.
+A custom `ConsumerCursorStore` keeps working but cannot detect a replaced stream
+until it adds `load_generation` and `commit_generation`; a custom stream
 store likewise needs `get_generation`.
 
 ## A dropped connection no longer counts as a bad event
@@ -165,7 +175,11 @@ store likewise needs `get_generation`.
 pass (`Consumed.transient` and `halted` set), record nothing and leave the cursor
 below the event, so the next run retries it. A consumer that schedules runs needs
 no change; one that read `halted` as "`on_error="halt"` fired" should also check
-`transient`. A permanent database error is still recorded and skipped.
+`transient`. Only
+`django_consumer` and `DjangoConsumer` know these two types; a bare `consume(...)`
+needs `transient=(OperationalError, InterfaceError)`. A database error that stays
+(a missing column raises `OperationalError` too) is no longer recorded and skipped:
+it stalls the consumer with a warning on every run until the cause is fixed.
 
 ---
 

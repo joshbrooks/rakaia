@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from django_rakaia.rebuild import rebuild_and_verify
@@ -111,3 +113,66 @@ def test_an_update_before_the_row_exists_cannot_hide_behind_the_live_value():
 
     assert not report.certified
     assert "delta" in str(report)
+
+
+def _cursor_on(alias: str, *, filler: int = 0, updated_at=None):
+    """A `ConsumerCursor` row keyed by (consumer, stream), after `filler` others.
+
+    The model has a database-chosen primary key and an `auto_now` column, which
+    are the two things a table diff must not call a difference.
+    """
+    from django_rakaia.models import ConsumerCursor
+
+    for i in range(filler):
+        ConsumerCursor.objects.using(alias).create(
+            consumer_id=f"filler{i}", stream_path="x", offset="1"
+        )
+    row = ConsumerCursor.objects.using(alias).create(
+        consumer_id="c", stream_path="s", offset="1"
+    )
+    if updated_at is not None:
+        ConsumerCursor.objects.using(alias).filter(pk=row.pk).update(
+            updated_at=updated_at
+        )
+
+
+def _diff_cursors():
+    from django_rakaia.models import ConsumerCursor
+    from django_rakaia.verification import _diff_tables
+
+    effect = Upsert(
+        model_label="django_rakaia.ConsumerCursor",
+        lookup={"consumer_id": "c", "stream_path": "s"},
+        defaults={"offset": "1"},
+    )
+    return _diff_tables(
+        [ConsumerCursor],
+        rebuilt_using="overlay",
+        live_using="default",
+        effects=[effect],
+    )
+
+
+def test_a_different_primary_key_is_not_a_difference():
+    _cursor_on("default")
+    _cursor_on("overlay", filler=3)
+
+    diffs = [
+        d
+        for d in _diff_cursors()
+        if d.lookup == {"consumer_id": "c", "stream_path": "s"}
+    ]
+
+    assert len(diffs) == 1 and diffs[0].ok, diffs
+
+
+def test_a_different_auto_now_time_is_not_a_difference():
+    from datetime import datetime, timedelta
+
+    then = datetime(2020, 1, 1, tzinfo=UTC)
+    _cursor_on("default", updated_at=then)
+    _cursor_on("overlay", updated_at=then + timedelta(days=9))
+
+    diffs = _diff_cursors()
+
+    assert len(diffs) == 1 and diffs[0].ok, diffs

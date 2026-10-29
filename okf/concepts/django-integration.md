@@ -55,7 +55,10 @@ Settings and operator commands:
   it reads; one that reaches something unfingerprintable (a mutable global, a non-library
   module, a class that is not a dataclass/enum/named tuple, `import` or `eval` in the body)
   logs an `ImpureHandlerWarning` at registration, or raises `ImpureHandlerError` with this
-  on. Also read from the environment variable of the same name when there is no Django.
+  on. Also read from the environment variable of the same name; under Django the setting
+  wins when the project defines it, and otherwise the environment variable applies. Library
+  code is told apart from yours by where its file lives, not by module name; the warning
+  points at the handler's own definition and appears once per handler per process.
   A pre-0.10 fingerprint (bare 64-hex) is re-recorded, not drift.
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
   returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a

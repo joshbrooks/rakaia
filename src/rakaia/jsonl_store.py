@@ -1047,10 +1047,23 @@ class JsonlStreamStore:
         return None if meta is None else PLAIN.render(meta.head)
 
     def get_generation(self, path: str) -> str | None:
-        """The stream's creation stamp; ``None`` if absent, expired, or written
-        before stamps existed. Changes when the stream is recreated."""
+        """The stream's creation stamp; ``None`` if absent or expired. Changes
+        when the stream is recreated.
+
+        A stream written before stamps existed is given one the first time it is
+        asked for, saved under the stream's lock, so a recreate after that is
+        told apart from the original.
+        """
         meta = self._live_meta(path)
-        return None if meta is None else meta.generation
+        if meta is None or meta.generation is not None:
+            return None if meta is None else meta.generation
+        try:
+            with self._locked(path) as (locked, _):
+                if locked.generation is None:
+                    locked.generation = uuid.uuid4().hex
+                return locked.generation
+        except (_Expired, StreamNotFound):
+            return None
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.

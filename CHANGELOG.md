@@ -22,7 +22,8 @@ runnable demo for each.
   live SSE connection on a timer, as the protocol asks, so clients reconnect.
 
 - **`RAKAIA_STRICT_HANDLER_FINGERPRINTS`** (default `False`; also an environment
-  variable for core) turns the new impure-handler warning into an
+  variable for core, which Django's setting overrides only when the project defines
+  it) turns the new impure-handler warning into an
   `ImpureHandlerError` at registration. A later release will make it the default.
 
 ### Changed
@@ -56,12 +57,18 @@ runnable demo for each.
   `ConsumerCursor`, migration `0014`); the consumer saves it beside its cursor and,
   on a mismatch, stops exactly as for a rewind, with status `replaced`. A cursor
   saved before the upgrade adopts the stream's current stamp. See `UPGRADING.md`.
+- **Saving a cursor with `commit_cursor` can now carry the stream's stamp.** Pass
+  `generation=poll.generation` (a new field on `Poll`) so `poll_consumer` reports
+  `replaced` after a delete and recreate; without it the cursor has no stamp and
+  adopts the stream's current one, as before. A file-backed stream written before
+  stamps existed is now given one the first time it is asked for, so its first
+  recreate after the upgrade is noticed too.
 - **A dropped connection or a deadlock is no longer recorded as a failed event.**
   Under `on_error="skip"` it was skipped for good. `consume` now stops the pass
   with `Consumed.transient` set, writes no outcome and leaves the cursor below the
-  event, so the next run retries it. `django_rakaia` registers `OperationalError`
-  and `InterfaceError`; core `rakaia` takes `transient=` or
-  `rakaia.subscription.register_transient_errors`. See `UPGRADING.md`.
+  event, so the next run retries it. `django_consumer` and `DjangoConsumer` treat
+  `OperationalError` and `InterfaceError` as temporary; core `rakaia` takes
+  `transient=` and treats nothing as temporary until told. See `UPGRADING.md`.
 - **`rebuild_and_verify` now compares the rebuilt table with the live table in both
   directions.** A live row the log never produced, a row the log deleted that is still
   live, and a row a later event overwrote used to pass or fail by accident; each now

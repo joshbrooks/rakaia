@@ -170,6 +170,32 @@ def _module_prefix(dotted_path: str | None) -> str | None:
     return dotted_path.rsplit(".", 1)[0]
 
 
+_warned_impure: set[tuple[str, int, str]] = set()
+
+
+def _warn_once(fn: Callable[..., Any], message: str) -> None:
+    """Warn about an impure handler once per process, pointing at its definition.
+
+    The registration call can be several frames inside this library, so a stack
+    level lands on nothing useful; the handler's own first line is where the fix
+    goes. Registering the same handler again says nothing new.
+    """
+    code = getattr(unwrap_handler(fn), "__code__", None)
+    filename = code.co_filename if code else "<unknown>"
+    lineno = code.co_firstlineno if code else 0
+    key = (filename, lineno, message)
+    if key in _warned_impure:
+        return
+    _warned_impure.add(key)
+    warnings.warn_explicit(
+        message,
+        ImpureHandlerWarning,
+        filename,
+        lineno,
+        module=getattr(unwrap_handler(fn), "__module__", None),
+    )
+
+
 def _fingerprint(fn: Callable[..., Any], what: str) -> str:
     """The fingerprint to record for `fn`, complaining if it cannot be complete.
 
@@ -191,7 +217,7 @@ def _fingerprint(fn: Callable[..., Any], what: str) -> str:
         )
         if strict_handler_fingerprints():
             raise ImpureHandlerError(message)
-        warnings.warn(message, ImpureHandlerWarning, stacklevel=4)
+        _warn_once(fn, message)
     return result.digest
 
 

@@ -2,6 +2,13 @@
 
 ## 2026-10-29
 
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
+  `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the
+  stream's stamp and `commit_cursor(..., generation=)` saves it. `register_transient_errors` is
+  gone; `django_consumer` / `DjangoConsumer` pass Django's `OperationalError` and
+  `InterfaceError`, and core `consume` treats nothing as transient unless told. A file-backed
+  stream from before stamps is given one the first time it is asked for.
+
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — a consumer whose
   stream went backwards (`rewound`) or was deleted and recreated or expired (`replaced`) now
   applies nothing and keeps its cursor (`Consumed.needs_rebuild`); the stream stamp

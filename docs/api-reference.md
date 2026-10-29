@@ -53,7 +53,7 @@ page is the contract.
 | `StreamMessage` | `rakaia` | `(data: 'bytes', offset: 'str', timestamp: 'float', event_ts: 'float \| None' = None, label: 'ChangeLabel \| str' = '', metadata: 'EnvelopeMetadata \| dict[str, Any] \| None' = None, tags: 'tuple[str, ...]' = (), correlation_id: 'str \| None' = None) -> None` | A single message in a stream. |
 | `ChangeLabel` | `rakaia` | — | — |
 | `EnvelopeMetadata` | `rakaia` | — | The metadata keys rakaia reads or writes on an event. |
-| `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus') -> None` | The result of polling a stream from a cursor. |
+| `Poll` | `rakaia` | `(messages: 'list[StreamMessage]', cursor: 'str \| None', status: 'PollStatus', generation: 'str \| None' = None) -> None` | The result of polling a stream from a cursor. |
 | `PollStatus` | `rakaia` | — | — |
 | `poll` | `rakaia` | `(store: 'CursorStore', path: 'str', cursor: 'str \| None', *, generation: 'str \| None' = None) -> 'Poll'` | Read `path` forward from `cursor`, detecting a rewound log. |
 | `poll_consumer` | `django_rakaia` | `(store: 'CursorStore', consumer_id: 'str', stream_path: 'str') -> 'Poll'` | Load this consumer's cursor and poll `stream_path` for the delta. |
@@ -184,7 +184,7 @@ page is the contract.
 | `CursorOptions` | `rakaia` | `(interval_seconds: 'int' = 20, epoch: 'float' = 1728432000.0) -> None` | Configuration for cursor calculation. |
 | `calculate_cursor` | `rakaia` | `(options: 'CursorOptions \| None' = None) -> 'str'` | Calculate the current cursor value based on time intervals. |
 | `generate_response_cursor` | `rakaia` | `(client_cursor: 'str \| None', options: 'CursorOptions \| None' = None) -> 'str'` | Generate a cursor for a response, ensuring monotonic progression. |
-| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str', *, using: 'str \| None' = None) -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
+| `commit_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', offset: 'str', *, using: 'str \| None' = None, generation: 'str \| None' = None) -> 'None'` | Persist `offset` as the consumer's watermark for `stream_path`. |
 | `load_cursor` | `django_rakaia` | `(consumer_id: 'str', stream_path: 'str', *, using: 'str \| None' = None) -> 'str \| None'` | The consumer's last committed offset for `stream_path`, or None. |
 
 ## Consuming, and what happened to an event
@@ -193,7 +193,7 @@ page is the contract.
 |---|---|---|---|
 | `Consumer` | `rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> None` | One consumer of one stream, with everywhere it keeps things attached. |
 | `django_consumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', *, using: 'str \| None' = None, subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None) -> 'DjangoConsumer'` | A consumer of `path`, named `name`, keeping both its cursor and its outcomes in the database. |
-| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = None) -> None` | A `Consumer` that checks the caller has no transaction open. |
+| `DjangoConsumer` | `django_rakaia` | `(store: 'CursorStore', path: 'str', name: 'str', cursors: 'ConsumerCursorStore', outcomes: 'OutcomeStore', subject_of: 'Callable[[StreamMessage], str] \| None' = None, sequence_of: 'Callable[[StreamMessage], str] \| None' = None, transient: 'tuple[type[BaseException], ...] \| None' = (<class 'django.db.utils.OperationalError'>, <class 'django.db.utils.InterfaceError'>)) -> None` | A `Consumer` that checks the caller has no transaction open. |
 | `ConsumerCursorStore` | `rakaia` | `(*args, **kwargs)` | Somewhere to keep a consumer's watermark between runs. |
 | `InMemoryConsumerCursorStore` | `rakaia` | `() -> 'None'` | Watermarks in a dict: the reference `ConsumerCursorStore`, for tests and demos. |
 | `DjangoConsumerCursorStore` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | A `ConsumerCursorStore` over the ``ConsumerCursor`` table. |

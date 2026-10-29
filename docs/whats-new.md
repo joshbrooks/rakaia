@@ -1206,6 +1206,99 @@ $ uv run pytest tests/test_rakaia/test_issue_352_fingerprint_misses_helpers.py \
 
 → Deep dive: [Versioned handlers](versioned-handlers.md)
 
+## 35. A consumer stops, and says so, when its stream is not the one it was reading
+
+**The problem.** Offsets keep rising when a stream is deleted and recreated, so a
+consumer's saved position still looked valid and the new events were skipped
+without a word. A log rebuilt shorter was re-applied on top of rows built from the
+old one, and a dropped database connection was written down as a failed event and
+skipped for good.
+
+**What rakaia does.** Each stream carries a stamp that changes when it is recreated,
+and the consumer saves it beside its position. On a mismatch, or a log that went
+backwards, `consume` applies nothing, leaves the position alone, logs an error and
+returns `needs_rebuild`. A dropped connection or deadlock stops the pass with
+`transient` set and is retried on the next run; `django_consumer` knows which Django
+errors those are, and bare `consume` takes `transient=`.
+
+```python
+consumer = django_consumer(store, "submissions", "reporting")
+result = consumer.run(apply, on_error="skip")
+if result.needs_rebuild:  # status "rewound" or "replaced"
+    ...  # rebuild the derived data, then delete the ConsumerCursor row
+elif result.transient:
+    ...  # nothing was recorded; the next run retries the same event
+```
+
+**See it.** No example covers this yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_consume_loop.py \
+    tests/test_rakaia/test_consumer_stamps.py \
+    tests/test_rakaia/test_properties_consumer.py \
+    tests/test_django_rakaia/test_consumer_generation.py \
+    tests/test_django_rakaia/test_issue_351_transient_error_skipped.py -q
+```
+
+→ Deep dive: [Subscriber cursors](subscriber-cursors.md)
+
+## 36. Saving a model follows the store's rules
+
+**The problem.** A `@stream_model` save wrote its event straight into the database
+tables. It landed in a closed stream, and it ignored `RAKAIA_STORE`, so a project on
+the memory or file store got events in a place nothing read.
+
+**What rakaia does.** The event is appended through the store you configured, by the
+same rules as any other append. A closed stream refuses it with `StreamClosed` and the
+save fails with it; on the durable store the event still commits with the row, and a
+fan-out to several streams takes its locks in a fixed order so two saves cannot
+deadlock.
+
+```python
+try:
+    area.save()  # an @stream_model whose stream has been closed
+except StreamClosed:
+    ...  # the event was refused; the row stays saved unless an enclosing atomic() rolls it back
+```
+
+**See it.** No example covers this yet; the tests that prove it are named below. The
+locking test needs Postgres (`just test-pg`).
+
+```console
+$ uv run pytest tests/test_django_rakaia/test_issue_341_stream_model_ignores_store_rules.py \
+    tests/test_django_rakaia/test_concurrent_appends.py -q
+```
+
+→ Deep dive: [Django integration](django-integration.md)
+
+## 37. The rebuild check compares both ways
+
+**The problem.** `rebuild_and_verify` only checked that each write the log produced
+matched the live row. A live row the log never produced, or one the log had deleted,
+passed.
+
+**What rakaia does.** It now compares the rebuilt table with the live table over every
+model in `live_models`, and the report names the model, the key and which side holds
+the row. Primary keys and `auto_now` columns are not compared.
+
+```python
+report = rebuild_and_verify(
+    "submissions", into="overlay", live_models=[MonitoringVisit]
+)
+if not report.certified:
+    print(report)  # ... 'ghost' only in the live table
+```
+
+**See it.** No example covers this yet (`projection_cookbook` composes the pieces by
+hand); the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_django_rakaia/test_issue_340_rebuild_misses_extra_live_rows.py \
+    tests/test_django_rakaia/test_properties_rebuild_check.py -q
+```
+
+→ Deep dive: [Dry run and executors](dry-run-and-executors.md)
+
 ---
 
 ## Where to go next

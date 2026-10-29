@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.db import OperationalError
+from django.db import InterfaceError, OperationalError
 
 from rakaia.outcomes import InMemoryOutcomeStore
 from rakaia.store import StreamStore
@@ -27,6 +27,7 @@ def test_a_transient_database_error_is_not_skipped_for_good() -> None:
         on_error="skip",
         outcomes=outcomes,
         commit=committed.append,
+        transient=(OperationalError, InterfaceError),
     )
 
     # Temporary errors must be retried: the cursor stays below the event and no
@@ -51,6 +52,7 @@ def test_a_transient_error_is_logged_as_a_warning(caplog) -> None:
             consumer="c",
             on_error="skip",
             commit=lambda _o: None,
+            transient=(OperationalError, InterfaceError),
         )
 
     assert any(

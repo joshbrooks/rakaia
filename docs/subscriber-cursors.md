@@ -186,9 +186,15 @@ from django_rakaia import poll_consumer, commit_cursor
 
 store = DjangoStreamStore()
 result = poll_consumer(store, consumer_id="reporting", stream_path="submissions")
+if result.status in ("rewound", "replaced"):
+    # The stream is not the one this consumer read. Committing here would adopt
+    # the new stream over the old cursor and hide that; rebuild instead.
+    raise RuntimeError(f"submissions was {result.status}: rebuild 'reporting'")
 for msg in result.messages:
     apply(msg)
-commit_cursor("reporting", "submissions", result.cursor)  # after applying
+commit_cursor(
+    "reporting", "submissions", result.cursor, generation=result.generation
+)  # after applying
 ```
 
 `poll_consumer` loads the stored cursor and calls `poll`; `commit_cursor` upserts

@@ -18,9 +18,12 @@ class DjangoRakaiaConfig(AppConfig):
         from django_rakaia import checks  # noqa: F401
         from rakaia.source_hash import set_strict_handler_fingerprints
 
-        set_strict_handler_fingerprints(
-            bool(getattr(settings, "RAKAIA_STRICT_HANDLER_FINGERPRINTS", False))
-        )
+        # Only when the project set it: otherwise the environment variable that
+        # core reads keeps working under Django too.
+        if hasattr(settings, "RAKAIA_STRICT_HANDLER_FINGERPRINTS"):
+            set_strict_handler_fingerprints(
+                bool(settings.RAKAIA_STRICT_HANDLER_FINGERPRINTS)
+            )
 
         # Framework tier: always wire handler/upcaster autodiscovery. This path
         # has no `channels` dependency, so it must load for a projections-only
@@ -28,14 +31,6 @@ class DjangoRakaiaConfig(AppConfig):
         from django_rakaia.handlers_autodiscover import autodiscover
 
         autodiscover()
-
-        # A dropped connection or a deadlock is "try again later", not a bad
-        # event; core rakaia cannot name them without importing Django.
-        from django.db import InterfaceError, OperationalError
-
-        from rakaia.subscription import register_transient_errors
-
-        register_transient_errors(OperationalError, InterfaceError)
 
         # Protocol tier: SSE broadcasting via Django Channels. Wired only when
         # wanted, so `channels`/`daphne` stay an optional extra for framework

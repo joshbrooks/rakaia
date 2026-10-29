@@ -279,8 +279,12 @@ arguments) and any dataclass, enum or named tuple of yours it uses. Editing a
 helper or a threshold is drift in the handler that depends on it. A handler that
 reaches something that cannot be fingerprinted (a mutable global, a module
 outside the standard library and installed packages, a class that is not a
-dataclass, an `import` or `eval` in its body) warns at registration; set
-`RAKAIA_STRICT_HANDLER_FINGERPRINTS = True` to make it an error. A fingerprint
+dataclass, an `import` or `eval` in its body) warns at registration, once per
+handler, pointing at the handler's own definition. Calling `mapping.fn()` counts
+as reaching a module, so import the function (`from .mapping import fn`) and
+call `fn()`: a module is not fingerprinted, and a function is. Set
+`RAKAIA_STRICT_HANDLER_FINGERPRINTS = True` (or the environment variable of the
+same name, when Django has no such setting) to make it an error. A fingerprint
 stored by a release before `0.10` has no `v2:` prefix and is re-recorded, not
 reported as drift.
 

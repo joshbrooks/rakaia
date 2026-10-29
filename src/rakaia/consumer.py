@@ -123,7 +123,8 @@ class Consumer:
 
     transient: tuple[type[BaseException], ...] | None = None
     """Exception types that mean "try again later", as `consume` takes them.
-    ``None`` uses the ones registered, which `django_rakaia` fills in."""
+    ``None`` treats none as transient; `django_consumer` passes Django's
+    ``OperationalError`` and ``InterfaceError``."""
 
     def run(
         self,

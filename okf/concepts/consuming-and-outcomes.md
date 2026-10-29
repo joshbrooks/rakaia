@@ -46,8 +46,8 @@ Imported from `rakaia`:
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.
 * A transient error (a dropped connection, a deadlock) is not a bad event:
-  `consume(..., transient=)` or `rakaia.subscription.register_transient_errors`
-  names the types (`django_rakaia` registers `OperationalError` and
+  `consume(..., transient=)` names the types (core defaults to none;
+  `django_consumer` / `DjangoConsumer` pass `OperationalError` and
   `InterfaceError`), and one raised by an apply stops the pass with
   `Consumed.transient` set, records no outcome and leaves the cursor below it.
 * `Consumer(store, path, name, cursors, outcomes)` with `run(apply, on_error=…)`
@@ -80,7 +80,7 @@ Imported from `django_rakaia`:
   alias the records are written to — the one hazard the dependency-free core
   cannot see.
 * `DjangoConsumerCursorStore`, `DjangoOutcomeStore`, `load_cursor`,
-  `commit_cursor`.
+  `commit_cursor` (`generation=poll.generation` saves the stream stamp beside the offset).
 * `manage.py prune_outcomes --older-than-days N` — retention. No default age:
   the right period differs per installation and a wrong guess deletes evidence.
 * A read-only admin for the records, the one screen this library's operational
