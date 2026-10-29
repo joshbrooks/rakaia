@@ -67,3 +67,6 @@ conformance-server.log
 
 # marimo writes a session cache beside each notebook it opens.
 __marimo__/
+
+# hypothesis example database
+.hypothesis/
