@@ -483,7 +483,7 @@ from rakaia.jsonl_store import JsonlStreamStore
 
 root, path, delay = sys.argv[1], sys.argv[2], float(sys.argv[3])
 time.sleep(delay)
-JsonlStreamStore(root).append(path, json.dumps({"from": "another process"}).encode())
+JsonlStreamStore(root, segment_size=8).append(path, json.dumps({"from": "another process"}).encode())
 """
 
 

@@ -147,9 +147,17 @@ def create_stream_event(
     # event is written now rather than on commit: a refusal (a closed stream)
     # must reach the code saving the model, and `on_commit` would raise it after
     # the row had already committed. The price is that a save that later rolls
-    # back leaves its event behind. A fan-out is one append per stream here.
+    # back leaves its event behind. A fan-out is one append per stream here, so
+    # every stream is checked first: one closed stream refuses the whole save,
+    # as it does on the database store, instead of leaving the earlier ones
+    # written (barring a close that lands between the check and the writes).
+    # An expired stream reads as missing and is started again.
     options = AppendOptions(content_type="application/json", label=action)
     body = json.dumps(payload).encode()
+    for stream_id in sorted(set(stream_ids)):
+        existing = configured.get(stream_id)
+        if existing is not None and existing.closed:
+            raise StreamClosed(f"Stream is closed: {stream_id}")
     for stream_id in sorted(set(stream_ids)):
         try:
             result = configured.append(stream_id, body, options)

@@ -1299,6 +1299,32 @@ $ uv run pytest tests/test_django_rakaia/test_issue_340_rebuild_misses_extra_liv
 
 → Deep dive: [Dry run and executors](dry-run-and-executors.md)
 
+## 38. Two workers on one consumer take turns
+
+**The problem.** Start two workers under one consumer name and both read the same
+saved position, so every event was applied twice, and the slower one could save an
+older position over the faster one's.
+
+**What rakaia does.** `django_consumer` locks the consumer's cursor row for the
+whole pass, so the second worker waits and then finds nothing left to do, and
+`commit_cursor` raises `CursorMovedBackwards` rather than move a position back.
+
+```python
+consumer = django_consumer(store, "submissions", "reporting")
+# Run this from two processes at once: the second waits for the first.
+consumer.run(apply, on_error="skip")
+```
+
+**See it.** No example runs two workers; the tests that prove it are named below
+(the contention test needs Postgres: `just test-pg`).
+
+```console
+$ just test-pg tests/test_django_rakaia/test_locking.py -k TwoWorkers -q
+$ uv run pytest tests/test_django_rakaia/test_subscription.py -q
+```
+
+→ Deep dive: [Subscriber cursors](subscriber-cursors.md)
+
 ---
 
 ## Where to go next

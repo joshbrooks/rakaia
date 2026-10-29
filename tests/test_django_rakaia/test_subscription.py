@@ -10,7 +10,12 @@ from __future__ import annotations
 import pytest
 
 from django_rakaia.django_store import DjangoStreamStore
-from django_rakaia.subscription import commit_cursor, load_cursor, poll_consumer
+from django_rakaia.subscription import (
+    CursorMovedBackwards,
+    commit_cursor,
+    load_cursor,
+    poll_consumer,
+)
 from rakaia.seed import seed_stream
 
 CONSUMER = "reporting"
@@ -146,3 +151,29 @@ class TestConsumerCursor:
         result = poll_consumer(store, CONSUMER, "s")
         assert result.status == "caught_up"
         assert result.messages == []
+
+
+@pytest.mark.django_db
+class TestACommitOnlyMovesForward:
+    """Two workers under one consumer name: a slow one must not move the cursor
+    back over events the other already applied."""
+
+    def test_a_commit_behind_the_watermark_is_refused_and_writes_nothing(self):
+        commit_cursor(CONSUMER, "s", "00000000000000000009")
+
+        with pytest.raises(CursorMovedBackwards):
+            commit_cursor(CONSUMER, "s", "00000000000000000005")
+
+        assert load_cursor(CONSUMER, "s") == "00000000000000000009"
+
+    def test_committing_the_same_offset_again_is_allowed(self):
+        commit_cursor(CONSUMER, "s", "00000000000000000009")
+        commit_cursor(CONSUMER, "s", "00000000000000000009")
+
+        assert load_cursor(CONSUMER, "s") == "00000000000000000009"
+
+    def test_a_commit_ahead_of_the_watermark_moves_it(self):
+        commit_cursor(CONSUMER, "s", "00000000000000000005")
+        commit_cursor(CONSUMER, "s", "00000000000000000009")
+
+        assert load_cursor(CONSUMER, "s") == "00000000000000000009"

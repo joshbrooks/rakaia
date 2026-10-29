@@ -14,6 +14,7 @@ from django.db import OperationalError
 from django_rakaia.consumer import django_consumer
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.models import ConsumerCursor, ConsumerOutcome, Stream
+from django_rakaia.subscription import load_cursor
 
 
 def _stream(*payloads: bytes) -> DjangoStreamStore:
@@ -98,7 +99,7 @@ def test_a_dropped_connection_is_retried_not_recorded_as_a_failure() -> None:
     first = consumer.run(drop, on_error="skip")
     assert first.transient and first.halted
     assert not ConsumerOutcome.objects.exists()
-    assert not ConsumerCursor.objects.exists()
+    assert load_cursor("c", "s") is None  # no position committed
 
     seen: list[bytes] = []
     second = consumer.run(lambda m: seen.append(m.data), on_error="skip")

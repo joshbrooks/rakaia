@@ -30,7 +30,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from django.db import DEFAULT_DB_ALIAS, InterfaceError, OperationalError, connections
+from django.db import (
+    DEFAULT_DB_ALIAS,
+    InterfaceError,
+    OperationalError,
+    connections,
+    transaction,
+)
 
 from rakaia.consumer import Consumer
 from rakaia.outcomes import Outcome
@@ -44,6 +50,7 @@ from .subscription import (
     commit_generation,
     load_cursor,
     load_generation,
+    locked_cursor,
 )
 
 
@@ -113,12 +120,33 @@ def _alias_of(target: object) -> str | None:
 
 @dataclass(frozen=True)
 class DjangoConsumer(Consumer):
-    """A `Consumer` that checks the caller has no transaction open.
+    """A `Consumer` that checks the caller has no transaction open and, with
+    `DjangoConsumerCursorStore`, runs one worker at a time per ``(consumer, stream)``.
 
     The check is on `run` rather than on construction because that is where the
     hazard is: a consumer built during startup and run later from a request
     handler is fine, and one built outside a transaction and run inside one is
     the case being refused.
+
+    **With `DjangoConsumerCursorStore`, the cursor row is locked for the pass; a
+    second worker waits.** The pass runs in a single transaction on the cursor
+    store's alias holding a ``select_for_update`` lock on the cursor row, so two
+    workers under one consumer name take turns instead of applying the same events
+    twice, and the second reads the cursor the first committed. A custom cursor
+    store gets no lock and no transaction; a hand-run `poll_consumer` and
+    `commit_cursor` get only the forward-only guard. Each `apply` runs in its own
+    savepoint on that same alias, so one that raises undoes only its writes there
+    (a write to another alias is not undone) and the transaction stays usable for
+    the record of the failure.
+
+    A pass has no limit: it is one transaction over the whole backlog, so a big
+    first run or catch-up holds the lock throughout (GitHub #297), and a worker
+    that dies mid-pass loses that pass's cursor and same-alias outcomes together,
+    so the events are delivered again. A connection lost before the pass commits
+    raises out of `run` rather than returning ``Consumed(transient=True)``; the
+    next run retries. The lock is real only on a backend with
+    ``SELECT ... FOR UPDATE`` (Postgres); on SQLite the pass's first write takes
+    the database-wide write lock, held until the pass ends.
 
     ``transient`` defaults to Django's ``OperationalError`` and ``InterfaceError``:
     a dropped connection or a deadlock is "try again later", not a bad event.
@@ -142,7 +170,18 @@ class DjangoConsumer(Consumer):
                     f"on {alias!r}. Everything it records would roll back with "
                     "that transaction — see ADR 0007."
                 )
-        return super().run(apply, on_error=on_error)
+        if not isinstance(self.cursors, DjangoConsumerCursorStore):
+            return super().run(apply, on_error=on_error)
+        using = self.cursors.using
+        with locked_cursor(self.name, self.path, using=using):
+
+            def apply_in_savepoint(
+                message: StreamMessage,
+            ) -> Iterable[Outcome] | None:
+                with transaction.atomic(using=using):
+                    return apply(message)
+
+            return super().run(apply_in_savepoint, on_error=on_error)
 
     def _aliases(self) -> list[str]:
         """Every connection this consumer's records depend on, in a stable order.

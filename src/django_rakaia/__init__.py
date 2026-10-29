@@ -122,6 +122,7 @@ _EXPORTS: dict[str, str] = {
     "poll_consumer": "django_rakaia.subscription",
     "load_cursor": "django_rakaia.subscription",
     "commit_cursor": "django_rakaia.subscription",
+    "CursorMovedBackwards": "django_rakaia.subscription",
     # -- what happened to an event a consumer could not apply -----------------
     # The store, not the model. `ConsumerOutcome` stays Tier 2 and out of `__all__`
     # with the other models — see `docs/public-api.md`.
@@ -171,7 +172,12 @@ if TYPE_CHECKING:
     from .replay import replay_stream
     from .store import get_store, reset_store_cache
     from .streams import ModelStreamReader
-    from .subscription import commit_cursor, load_cursor, poll_consumer
+    from .subscription import (
+        CursorMovedBackwards,
+        commit_cursor,
+        load_cursor,
+        poll_consumer,
+    )
     from .verification import (
         GREEN,
         RED,
@@ -191,6 +197,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AmbientDatabaseAccess",
     "CallerTransactionOpen",
+    "CursorMovedBackwards",
     "DEFAULT_NORMALIZERS",
     "DiffReport",
     "DjangoConsumer",

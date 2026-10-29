@@ -101,3 +101,30 @@ def test_a_save_to_a_closed_stream_is_refused_on_the_memory_and_file_stores(
             assert store.read("closed-one")[0] == []
     finally:
         reset_store_cache()
+
+
+@pytest.mark.parametrize("backend", ["memory", "jsonl"])
+def test_a_refused_fan_out_writes_to_none_of_its_streams_on_the_memory_and_file_stores(
+    backend: str, tmp_path
+) -> None:
+    # `a` sorts first and is open, `b` is closed: `a` must not keep the event.
+    reset_store_cache()
+    try:
+        with override_settings(
+            RAKAIA_STORE=backend, RAKAIA_JSONL_ROOT=str(tmp_path / "streams")
+        ):
+            store = get_store()
+            store.create("a", content_type="application/json")
+            store.create("b", content_type="application/json")
+            store.close_stream("b")
+
+            line = FinanceLine(submission_id="a", suku="s", delta=1)
+            with pytest.raises(StreamClosed):
+                create_stream_event(
+                    ["a", "b", "c"], lambda _obj: _Payload(), line, "update"
+                )
+
+            assert store.read("a")[0] == []
+            assert store.get("c") is None
+    finally:
+        reset_store_cache()

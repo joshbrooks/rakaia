@@ -45,6 +45,14 @@ Imported from `rakaia`:
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.
+* **One worker per `(consumer, stream)`.** `DjangoConsumer.run` holds a
+  `select_for_update` lock on the `ConsumerCursor` row for the whole pass (one
+  transaction on the cursor's alias over the whole backlog, so a crash loses the pass; each
+  `apply` in a savepoint on that alias only), so a second worker waits and then reads the
+  committed cursor. Only with `DjangoConsumerCursorStore`. A row with an empty `offset`
+  is created for a first pass; `load_cursor` reads it as `None`. `commit_cursor`
+  is forward-only and raises `CursorMovedBackwards`; to start over, delete the
+  row. The lock is real on Postgres only.
 * A transient error (a dropped connection, a deadlock) is not a bad event:
   `consume(..., transient=)` names the types (core defaults to none;
   `django_consumer` / `DjangoConsumer` pass `OperationalError` and
@@ -83,6 +91,8 @@ Imported from `django_rakaia`:
   `commit_cursor` (`generation=poll.generation` saves the stream stamp beside the offset).
 * `manage.py prune_outcomes --older-than-days N` — retention. No default age:
   the right period differs per installation and a wrong guess deletes evidence.
+  It keeps the latest record for each consumer, stream and subject however old, so a
+  skipped event never starts reading as a success; only older attempts are deleted.
 * A read-only admin for the records, the one screen this library's operational
   bookkeeping gets.
 

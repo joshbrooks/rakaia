@@ -1,6 +1,6 @@
 """
 `manage.py prune_outcomes --older-than-days N` — delete `ConsumerOutcome` rows
-recorded more than N days ago.
+recorded more than N days ago, except the latest record for each subject.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from django.db import DEFAULT_DB_ALIAS
 from django.utils import timezone
 
 from django_rakaia.models import ConsumerOutcome
+from rakaia.outcomes import decode_outcome
 
 
 class Command(BaseCommand):
@@ -25,6 +26,14 @@ class Command(BaseCommand):
     own obligations. A default would be applied by whoever ran the command
     without reading it, and what it destroys is the evidence someone is still
     working from.
+
+    **The latest record for each subject is never pruned, however old.** Success
+    writes no record, so an event with no record reads as one that worked
+    (ADR 0007, Decision 3). Deleting the only failure record of an event that was
+    skipped would turn it into a success without anyone having decided that. So
+    the row `DjangoOutcomeStore.latest` reports for each consumer, stream and
+    subject stays; older attempts at the same subject, and records no longer
+    readable by this version, go once they are past the age.
 
     ``--dry-run`` counts the same rows without deleting them, so the age can be
     checked against a real table before it is trusted in a cron entry. Deletion
@@ -91,20 +100,14 @@ class Command(BaseCommand):
         # Strictly older: a row stamped exactly on the cutoff is not older than
         # the age given, and keeping it is the reading that never deletes more
         # than the operator asked for.
-        stale = ConsumerOutcome.objects.using(alias).filter(recorded_at__lt=cutoff)
+        doomed = _older_and_not_latest(alias, cutoff)
 
         if dry_run:
-            deleted = stale.count()
+            deleted = len(doomed)
         else:
             deleted = 0
-            while True:
-                # Re-selecting the primary keys each pass rather than deleting
-                # the sliced queryset directly: a queryset with a LIMIT cannot be
-                # deleted, and the filter is on a timestamp that only ever moves
-                # rows *into* the selection, so a fresh pass cannot loop forever.
-                pks = list(stale.values_list("pk", flat=True)[:batch_size])
-                if not pks:
-                    break
+            for start in range(0, len(doomed), batch_size):
+                pks = doomed[start : start + batch_size]
                 ConsumerOutcome.objects.using(alias).filter(pk__in=pks).delete()
                 deleted += len(pks)
 
@@ -117,3 +120,37 @@ class Command(BaseCommand):
                 f"deleted={deleted}"
             )
         )
+
+
+def _older_and_not_latest(alias: str, cutoff: Any) -> list[int]:
+    """Primary keys of rows older than `cutoff` that are not a subject's latest.
+
+    Reads every row once, oldest first, because "latest" can only be decided
+    against the whole table: the newest record for a subject may be recent while
+    the rows beneath it are old, and the reverse. It applies the same rule as
+    `DjangoOutcomeStore.latest` — highest attempt, the later row on a tie — so
+    what survives is exactly what that method would have reported. Memory is one
+    number per subject plus one per row to be deleted, never the payloads.
+    """
+    latest: dict[tuple[str, str, str], tuple[int, int]] = {}
+    old: list[int] = []
+    rows = (
+        ConsumerOutcome.objects.using(alias)
+        .order_by("pk")
+        .values_list("pk", "payload", "recorded_at")
+        .iterator()
+    )
+    for pk, payload, recorded_at in rows:
+        if recorded_at < cutoff:
+            old.append(pk)
+        record = decode_outcome(payload)
+        if record is None:
+            # Nothing reads a row this version cannot build, so it cannot be the
+            # record a subject is judged by.
+            continue
+        key = (record.consumer, record.stream_path, record.subject)
+        held = latest.get(key)
+        if held is None or record.attempt >= held[0]:
+            latest[key] = (record.attempt, pk)
+    keep = {pk for _, pk in latest.values()}
+    return [pk for pk in old if pk not in keep]

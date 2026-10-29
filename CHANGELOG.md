@@ -45,11 +45,34 @@ runnable demo for each.
 
 ### Fixed
 
+- **The file store records its `segment_size` and refuses to be opened with
+  another.** Changing it used to put new events into full segments, so reads came
+  back out of order and a resume skipped events. `SegmentSizeMismatch` is new and
+  exported. See `UPGRADING.md`.
+- **Deleting or creating a stream in the file store now takes the stream's lock.**
+  A delete during an append used to fail the writer with a bare `FileNotFoundError`,
+  and two creates could each decide the stream was absent and reset its head. The
+  retired high mark is now written with the same atomic replace as the rest of the
+  store.
+- **The file store's documentation no longer promises that a batch is all or
+  nothing across a crash.** Each segment write is atomic; a batch that crosses a
+  segment boundary is two writes, and recovery keeps the first.
+- **Two workers on one consumer now take turns.** `django_consumer` runs each pass
+  in one transaction that locks the consumer's cursor row, so a second worker waits
+  and then reads the position the first saved, instead of applying the same events
+  twice; the pass is one transaction over the whole backlog, so a crash loses that
+  pass's progress. `commit_cursor` also refuses to move a position backwards, raising the new
+  `CursorMovedBackwards`. See `UPGRADING.md`.
 - **A consumer whose stream went backwards no longer re-applies it.** When the
   log is rebuilt shorter than a consumer's cursor, `consume` used to apply the
   re-read before the caller could reset what it had built. It now applies nothing,
   leaves the cursor alone, and returns status `rewound` with the new
   `Consumed.needs_rebuild` set. See `UPGRADING.md`.
+- **`prune_outcomes` no longer turns a skipped event into a success.** A consumer
+  writes nothing when an event works, so deleting the only failure record of an old
+  event made it read as one that succeeded. The command now keeps the latest record
+  for each consumer, stream and subject however old, and deletes only older attempts
+  and records this version cannot read. See `UPGRADING.md`.
 - **A consumer notices that its stream was deleted and recreated, or expired.**
   Offsets keep rising across a recreate, so the unread events were skipped without
   a word. Each stream now carries a stamp that changes when it is recreated
@@ -72,11 +95,15 @@ runnable demo for each.
 - **`rebuild_and_verify` now compares the rebuilt table with the live table in both
   directions.** A live row the log never produced, a row the log deleted that is still
   live, and a row a later event overwrote used to pass or fail by accident; each now
-  fails, and the report names the model, key and which side holds the row.
+  fails, and the report names the model, key and which side holds the row. Two live
+  rows behind one key are counted as two, not collapsed into one.
 - **Saving a `@stream_model` model now follows the same rules as every other
   append.** The event used to be written straight to the database, so it landed in
   a closed stream and ignored `RAKAIA_STORE`. A closed stream now refuses it with
-  the new `StreamClosed`, and the event goes to the store you configured. See
+  the new `StreamClosed`, and the event goes to the store you configured. A save
+  to several streams where one is closed now writes to none of them on the
+  in-memory and file stores too, as it already did on the database one (unless a
+  stream is closed between the check and the writes). See
   `UPGRADING.md`.
 - **A handler's drift fingerprint now covers the helpers it calls and the
   constants it reads**, not only its own text, so changing `_helper()` or a

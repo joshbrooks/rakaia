@@ -1,6 +1,32 @@
 # Directory Update Log
 
+## 2026-10-30
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the lock covers only
+  `DjangoConsumerCursorStore`, a pass is one transaction over the whole backlog, and the savepoint
+  is on the cursor alias only.
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — a file stream with no
+  recorded `segment_size` still in its first segment is refused when its entries do not fit the
+  size you pass.
+
 ## 2026-10-29
+
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) — `JsonlStreamStore`
+  records `segment_size` per stream and raises the new exported `SegmentSizeMismatch` when opened
+  with another; deletes and creates take the stream lock (GitHub #346).
+* **Update**: [Django integration](concepts/django-integration.md) — `rebuild_and_verify`
+  counts rows that share a key instead of collapsing them, so a second live row behind one
+  upsert key now fails the check.
+* **Update**: [Django integration](concepts/django-integration.md) — a `@stream_model` save that
+  fans out to several streams checks them all first, so one closed stream refuses the whole save
+  on the memory and file stores too, leaving none written.
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — two workers under
+  one consumer name take turns (`DjangoConsumer.run` locks the cursor row for the pass), and
+  `commit_cursor` raises the new `CursorMovedBackwards` for an offset behind the saved one.
+
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — `prune_outcomes`
+  keeps the latest record for each consumer, stream and subject, so pruning cannot turn a
+  skipped event into one that reads as succeeded.
 
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the manual
   `poll_consumer` + `commit_cursor` path can detect `replaced` too: `Poll.generation` carries the

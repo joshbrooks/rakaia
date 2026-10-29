@@ -200,6 +200,31 @@ commit_cursor(
 `poll_consumer` loads the stored cursor and calls `poll`; `commit_cursor` upserts
 the new watermark. Splitting them preserves the at-least-once guarantee above.
 
+## Two workers, one consumer
+
+`django_consumer` runs each pass in one transaction that holds a `select_for_update`
+lock on the consumer's cursor row. A second worker started under the same consumer
+name waits for the first to finish and then reads the position the first saved, so
+no event is applied twice. This holds with `DjangoConsumerCursorStore`; a custom
+cursor store gets no lock, and calling `poll_consumer` and `commit_cursor` yourself
+gets only the forward-only check below. Each `apply` runs in its own savepoint on the
+cursor store's database, so one that raises undoes only its own writes there, not on
+another alias.
+
+A pass is one transaction over the whole backlog: there is no per-pass limit
+([#297](https://github.com/joshbrooks/rakaia/issues/297)). A big first run or catch-up
+holds the lock from start to finish, and if the worker dies or the connection is lost
+before the pass commits, everything that pass did is lost and the next run does it
+again (before, each event committed as it went). A lost connection raises out of `run`
+rather than returning a `transient` result. The lock is real on Postgres only; on
+SQLite the pass's first write takes the whole database's write lock, so every other
+writer waits until the pass ends.
+
+`commit_cursor` is forward-only as well: an offset behind the saved one raises
+`CursorMovedBackwards` and writes nothing, so a slow worker that gets past the lock
+cannot move the position back. To start a consumer over after a rebuild, delete its
+`ConsumerCursor` row.
+
 ## Why this matters for the Partisipa migration
 
 Partisipa's `sync_identity/watermarks.py` + `list_options(last_change_id)`

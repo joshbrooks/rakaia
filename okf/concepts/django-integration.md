@@ -22,7 +22,7 @@ From `django_rakaia`:
 
 * `@stream_model(stream_paths=…, to_dataclass=…)` — decorate a model so saves/
   deletes emit events. The event is appended through the store `RAKAIA_STORE` names, so a
-  closed stream refuses it with `StreamClosed`; with the durable store it is written in the
+  closed stream refuses it with `StreamClosed` (a fan-out with any closed stream writes to none, on every store); with the durable store it is written in the
   save's transaction, with the memory or file store it is written at once and is not
   rolled back with the row. `manage.py check` warns (`rakaia.W003`) when a streamed model
   exists and `RAKAIA_STORE` is `"memory"`.
@@ -33,7 +33,7 @@ From `django_rakaia`:
   against the ORM.
 * `diff_effects_against_rows` — migration/verification helper.
 * `rebuild_and_verify` — compares the rebuilt table with the live table over `live_models`
-  in both directions; a `RowDiff` says which side holds a row the other lacks.
+  in both directions; a `RowDiff` says which side holds a row the other lacks, and rows sharing a key are counted.
 * `stream_coverage` and `manage.py check_stream_coverage` — check that a stream
   still has an event for every row of the table it is written from.
 * SSE views + Channels signals for live broadcast; the view needs a signed-in user.

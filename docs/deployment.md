@@ -277,6 +277,17 @@ another, and a default would be applied by whoever ran the command without
 reading this page. What it deletes is the evidence of a problem someone may still
 be working through, so the age is yours to state.
 
+**The latest record for each event is kept, however old.** A consumer writes
+nothing when an event works, so an event with no record reads as one that
+succeeded. If pruning removed the only record of an event that was skipped, that
+event would start reading as a success, and nobody would have decided it. So for
+every consumer, stream and subject the command keeps the record the store
+reports as the latest, and deletes only the older attempts beneath it and records
+this version of rakaia cannot read. The table therefore never shrinks below one
+row for each event that has ever failed. To drop one of those, delete it
+deliberately, knowing that it will then read as succeeded. `--dry-run` shows the
+count with the kept records already excluded.
+
 "Older than" is strict — a record stamped exactly at the cutoff is kept — and
 deletion is done in batches (`--batch-size`, default 1000) so a first prune over
 a large backlog does not hold one long lock on a table your consumers are still

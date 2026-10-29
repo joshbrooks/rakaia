@@ -140,7 +140,30 @@ A partial trailing line — a process killed mid-append — is ignored when read
 and truncated before the next append, so the log heals itself rather than
 needing a repair pass. What `meta.json` alone holds, and what a loss of it does
 cost, is the TTL configuration, the producer fencing state and the record of
-which producer closed the stream.
+which producer closed the stream: the log does not record them, so a close or a
+producer sequence that was only in a lost write is lost with it.
+
+**Batches.** Each write to a segment file is atomic, and a batch is one write per
+segment it touches. A batch that crosses a segment boundary is therefore two
+writes, and a crash between them can leave the first without the second;
+recovery keeps that prefix.
+
+**Segment size.** The size is recorded in `meta.json` when a stream is created,
+because the segment a record goes in is worked out from it. Opening a stream with
+a different `segment_size` raises `SegmentSizeMismatch` naming both values rather
+than quietly writing into segments that are already full. A stream whose
+`meta.json` is lost, or predates the recorded size, takes the size from its segment
+filenames. With only one segment there is nothing to read, so the store's own size is
+used only if every entry already fits that size's first segment; otherwise the stream
+was written with a larger size, the open is refused, and you must open it with the size
+it was written with, which nobody recorded.
+
+**Delete and create.** Both take the stream's lock, so a delete waits for a writer
+that is mid-append instead of pulling the directory out from under it, and an
+append that was queued behind a delete fails with the store's own stream-not-found
+error. A delete moves the directory into `%retired` and then removes it, so a crash
+between the two leaves a `%trash-*` directory there; the next delete sweeps any that
+are over a minute old.
 
 **Durability.** With `fsync` on (the default) an append that has returned is on
 the disk, and a new segment's directory entry is synced too — syncing a file
