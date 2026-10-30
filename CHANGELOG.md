@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-30
+
 ### Added
 
 - **Access control on the protocol server.** `ServerOptions.authorize` is a hook,
