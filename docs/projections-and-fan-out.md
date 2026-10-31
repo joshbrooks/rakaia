@@ -5,6 +5,9 @@ submission with a repeater, an order with line items, a survey with answers.
 This page covers how to project such collections safely, and the one trap to
 avoid: **orphans on shrink**.
 
+New to these terms? The [glossary](glossary.md) defines projection, subject,
+fan-out and reconcile.
+
 ## `@stream_model` is not this
 
 It's worth stating plainly, because the names are close. The

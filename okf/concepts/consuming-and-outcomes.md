@@ -41,7 +41,9 @@ Imported from `rakaia`:
   store's optional `get_generation(path)` stamp, which `poll(..., generation=)`
   takes. `consume` applies nothing on either, leaves the cursor alone, and sets
   `Consumed.needs_rebuild`; the operator rebuilds, nothing resets automatically.
-  A cursor with no saved stamp adopts the stream's current one.
+  A cursor with no saved stamp adopts the stream's current one. A migration that
+  keeps every offset copies the stamp over (`adopt_generation`), so a cursor
+  saved before it still matches and the consumer carries on.
 * `consume(...) -> Consumed` — the loop. `on_error` is `OnErrorPolicy`
   (`"skip"` for a live consumer, `"halt"` for a rebuild) and has **no default**,
   deliberately: the two modes have opposite invariants.

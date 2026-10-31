@@ -19,10 +19,15 @@ and no third-party dependencies. Everything in the [event-sourcing layer]
 Imported from `rakaia`:
 
 * `StreamStore` — `create` / `append` / `read` / `close_stream` / `delete` /
-  `get_current_offset`. `read(path, offset)` returns messages after an offset, so
-  a reader can resume, and takes a `limit` when the caller wants one page of them.
-  `delete` takes the events only that stream referred to; one shared with another
-  stream is kept.
+  `get_current_offset` / `get_generation` / `adopt_generation`. `read(path, offset)`
+  returns messages after an offset, so a reader can resume, and takes a `limit`
+  when the caller wants one page of them. `delete` takes the events only that
+  stream referred to; one shared with another stream is kept.
+  `get_generation` is the stamp that changes when a stream is recreated;
+  `adopt_generation` gives a copied stream the source's stamp, for `rakaia.migrate`
+  alone, and only when the copy kept every offset — so a consumer that ran before
+  the migration resumes instead of stopping as `replaced`. A custom target without
+  it still migrates, but the consumer stops, and `Migration.notes` says so.
 * `AppendOptions(producer_id, producer_epoch, producer_seq, close, label,
   metadata, event_ts)` and `AppendResult(message, producer_result,
   stream_closed)`.

@@ -265,7 +265,7 @@ Canonical five-label vocabulary, unmapped. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context. Domain language lives in `docs/glossary.md` (not `CONTEXT.md`); decisions in `docs/adr/`. See `docs/agents/domain.md`.
+Single-context. Domain language lives in `docs/glossary.md` (not `CONTEXT.md`); decisions in `docs/adr/`. When a skill asks to read or create `CONTEXT.md`, read or update `docs/glossary.md` instead — it is this repo's domain doc. See `docs/agents/domain.md`.
 
 ## gstack
 

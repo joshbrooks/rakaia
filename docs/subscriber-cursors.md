@@ -13,6 +13,9 @@ stream, a subscriber cursor lets an *external* consumer — a reporting job, a
 search indexer, a browser syncing into IndexedDB — pull the delta incrementally
 and resume exactly where it left off.
 
+New to these terms? The [glossary](glossary.md) defines cursor, consumer,
+outcome and stream stamp.
+
 ## The core: `poll`
 
 `poll(store, path, cursor)` is store-agnostic and pure with respect to the store:

@@ -8,6 +8,9 @@ idempotent even when business logic has changed over time.
 This page walks through the design and a realistic example based on
 Partisipa's `Submission` import pipeline.
 
+New to these terms? The [glossary](glossary.md) defines handler, effect, replay,
+seq and the rest in plain language.
+
 ## The problem
 
 Business logic that interprets events changes. A common workaround is to
@@ -383,6 +386,31 @@ registration state only; they do **not** delete the durable meta-streams
 store-backed registry, resetting the dedup cache means the next `register()`
 re-appends an audit event even for an already-persisted registration — delete the
 meta-stream via the store if you need a truly clean slate.
+
+### Handler dependencies
+
+A stage-0 handler is called as `fn(event)` and a stage > 0 handler as
+`fn(event, reader)`, so there is nowhere to pass anything else. When a handler
+genuinely needs an injected dependency — the usual case is a probe bound to the
+connection alias a rebuild is replaying into, which
+[ADR 0003](adr/0003-handler-hermeticity.md) forbids reading ambiently — bind it
+with `functools.partial`:
+
+```python
+registry.register(
+    name="project",
+    event_match="PROJECT",
+    effective_from=0,
+    fn=functools.partial(project_row, fk_exists=probe),
+)
+```
+
+**Not a closure.** A closure works and is quietly worse: its **drift** hash
+covers the wrapper only, so an edit to the function the wrapper calls is
+invisible, and `rehydrate()` restores it only if the module that registered it
+re-registers it on import — which a closure built inside a function does not. A
+`partial` is unwrapped, so the recorded path and the hash both describe the
+wrapped function. A persisting registry warns if you use a closure anyway.
 
 ### Reducers replace last-write-wins
 
