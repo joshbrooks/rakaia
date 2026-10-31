@@ -23,6 +23,7 @@ migrate themselves.
 * [partisipa_repeaters](partisipa-repeaters.md) - nested-repeater tree reconcile.
 * [partisipa_intake](partisipa-intake.md) - the consuming loop, durable reading position, outcome records.
 * [stream_coverage](stream-coverage.md) - `check_stream_coverage` finding a stream that fell behind its table.
+* [consumer_rebuild](consumer-rebuild.md) - a replaced stream, a transient error, and a pass that dies halfway.
 
 ## Live SSE (Django, browser)
 

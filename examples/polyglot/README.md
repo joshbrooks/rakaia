@@ -109,6 +109,23 @@ rather the point of running the stress command with a tab open.
   named `data` / `control` pair, not the single unnamed frame Django's
   endpoint sends.
 
+## Migrating the log under a live consumer
+
+```sh
+just migrate-consumer-demo
+```
+
+The demo builds a stream in the JSON-lines store, consumes it with a durable
+first-run position, then copies the stream into SQLite with `migrate_stream`.
+Because both stores count entries, every offset survives and the copy adopts the
+source's stream stamp, so the consumer resumes and applies only the events that
+arrived after its cursor.
+
+Then it copies a stream whose offsets *cannot* survive — the in-memory store
+counts bytes — and the copy keeps its own stamp instead. The same consumer run
+now reports `replaced`, applies nothing and leaves the cursor alone. That is the
+point of `adopt_generation`: a copy is the same log only when it can prove it.
+
 ## Production-style run
 
 ```sh

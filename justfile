@@ -41,6 +41,7 @@ MERGE_DIR       := "examples/partisipa_merge"
 REPEATERS_DIR   := "examples/partisipa_repeaters"
 INTAKE_DIR      := "examples/partisipa_intake"
 COVERAGE_DIR    := "examples/stream_coverage"
+CONSUMER_REBUILD_DIR := "examples/consumer_rebuild"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -89,7 +90,7 @@ demo:
 # Run EVERY demo and fail on the first one that breaks.
 #
 # `just demo` is the narrated two-part tour for a human reader. This is the
-# regression gate: all thirteen demos, no narration budget, non-zero exit on the
+# regression gate: every demo, no narration budget, non-zero exit on the
 # first failure. CI runs it, which is what makes the examples a tested surface
 # rather than a directory of prose that happened to compile.
 #
@@ -102,6 +103,8 @@ demos:
     @just multi-owner-demo
     @echo ">> orders — versioned handlers, upcasters, replay"
     @just orders-demo
+    @echo ">> orders (hermeticity) — impure handlers refused, closure vs partial drift"
+    @just hermeticity-demo
     @echo ">> formkit — projections, fan-out, migration parity"
     @just formkit-demo
     @echo ">> formkit stream — append log as source of truth"
@@ -122,6 +125,10 @@ demos:
     @just intake-demo
     @echo ">> stream coverage — a stream that fell behind its table, found and repaired"
     @just coverage-demo
+    @echo ">> consumer rebuild — replaced stream, transient error, crash mid-pass"
+    @just consumer-rebuild-demo
+    @echo ">> migrate consumer — a copy keeps a consumer's position, or stops it"
+    @just migrate-consumer-demo
     @echo ">> formkit emission — the real formkit-ninja seam"
     @just formkit-emission-demo
     @echo ">> notebook — every cell of the teaching notebook runs"
@@ -262,6 +269,13 @@ orders-demo:
     cd {{ORDERS_DIR}} && uv run python manage.py migrate
     cd {{ORDERS_DIR}} && uv run python manage.py demo_orders --twice
 
+# Which handlers the drift fingerprint can and cannot see into: the impure
+# warning, the strict setting that turns it into an error, and the closure that
+# hides an edit a `functools.partial` would catch.
+hermeticity-demo:
+    cd {{ORDERS_DIR}} && uv run python manage.py migrate
+    cd {{ORDERS_DIR}} && uv run python manage.py demo_hermeticity
+
 # Projection cookbook: staged replay + reader + executor + diff verification
 cookbook-demo:
     cd {{COOKBOOK_DIR}} && uv run python manage.py migrate
@@ -355,6 +369,18 @@ intake-demo:
 coverage-demo:
     cd {{COVERAGE_DIR}} && uv run python manage.py migrate
     cd {{COVERAGE_DIR}} && uv run python manage.py demo_coverage
+
+# Consumer failure paths — a stream replaced under the reader, a transient
+# apply error, and a process that dies mid-pass (examples/consumer_rebuild).
+consumer-rebuild-demo:
+    cd {{CONSUMER_REBUILD_DIR}} && uv run python manage.py migrate
+    cd {{CONSUMER_REBUILD_DIR}} && uv run python manage.py demo_consumer_rebuild
+
+# Move a stream under a live consumer (examples/polyglot): one copy keeps the
+# offsets and stamp so it resumes, one renumbers so it stops as `replaced`.
+migrate-consumer-demo:
+    cd {{POLYGLOT_DIR}} && uv run python manage.py migrate
+    cd {{POLYGLOT_DIR}} && uv run python manage.py demo_migrate_consumer
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)

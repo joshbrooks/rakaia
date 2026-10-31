@@ -24,9 +24,18 @@ dry-run, `ExternalEffect` receipt effects returned rather than applied, `Update`
 
 ```sh
 just orders-demo
+just hermeticity-demo
 ```
+
+`hermeticity-demo` exercises the fingerprint's limits: a handler that reads the
+projection table, and one that reads a clock object, both warn at registration and
+raise `ImpureHandlerError` under `RAKAIA_STRICT_HANDLER_FINGERPRINTS`. It also
+registers the same wrapped function with `functools.partial` and inside a closure,
+edits the policy constant the function reads, and shows drift in the partial but
+not the closure.
 
 # Concepts demonstrated
 
 * [Versioned handlers & replay](../concepts/versioned-handlers-and-replay.md)
 * [Effects & executors](../concepts/effects-and-executors.md)
+* [Django integration](../concepts/django-integration.md)

@@ -103,6 +103,10 @@ Imported from `django_rakaia`:
 * [partisipa_intake](../examples/partisipa-intake.md) — the whole loop end to
   end: an event refused before the log, one that failed to apply, one skipped on
   purpose, `halt` versus `skip`, and everything read back after a restart.
+* [consumer_rebuild](../examples/consumer-rebuild.md) — the failure paths: a
+  stream deleted and recreated (`needs_rebuild` / `replaced`), a transient apply
+  error retried from the unchanged cursor, and a pass cut short that converges on
+  the next run.
 * [protocol_streams](../examples/protocol-streams.md) — `poll` on its own, with
   no Django.
 

@@ -124,6 +124,27 @@ class TranslatableManager(models.Manager["Translatable"]):
         return singular if msg_idx == MsgIdx.SINGULAR.value else plural
 
 
+class TranslationSnapshot(models.Model):
+    """A translation as the consuming loop last applied it.
+
+    The demo's projection: one row per ``(langcode, msgid)``, written by
+    ``demo_migrate_consumer`` from the stream rather than by the editor. It is
+    deliberately separate from `Translatable`, which is the editable table — a
+    consumer's derived data must not be the thing a human is also writing.
+    """
+
+    langcode = models.CharField(max_length=3)
+    msgid = models.CharField(max_length=2048)
+    msgstr = models.CharField(max_length=2048, blank=True, default="")
+
+    class Meta:
+        ordering = ["langcode", "msgid"]
+        unique_together = [["langcode", "msgid"]]
+
+    def __str__(self) -> str:
+        return f"{self.langcode}:{self.msgid}"
+
+
 class Translatable(models.Model):
     """
     This represents a database-side interpretation of the `gettext`

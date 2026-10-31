@@ -31,6 +31,10 @@ From `django_rakaia`:
 * `DjangoStreamStore` — the durable, DB-backed store (`RAKAIA_STORE="durable"`).
 * `DjangoExecutor`, `DjangoProjectionReader`, `replay_stream` — apply/replay
   against the ORM.
+* `migrate_stream(source, target, path)` — copy one stream between backends. When
+  every offset and the head survive, the copy adopts the source's stream stamp
+  (`adopt_generation`), so a consumer that has already run resumes; when it
+  renumbers, the copy keeps its own stamp and the consumer stops as `replaced`.
 * `diff_effects_against_rows` — migration/verification helper.
 * `rebuild_and_verify` — compares the rebuilt table with the live table over `live_models`
   in both directions; a `RowDiff` says which side holds a row the other lacks, and rows sharing a key are counted.
@@ -90,6 +94,9 @@ Settings and operator commands:
 * [polyglot](../examples/polyglot.md) — `create_stream_event`, language-scoped streams, SSE.
 * [formkit_submissions (stream)](../examples/formkit-submission-stream.md) — durable `DjangoStreamStore`.
 * [partisipa_intake](../examples/partisipa-intake.md) — `django_consumer`, durable reading position, outcome records.
+* [consumer_rebuild](../examples/consumer-rebuild.md) — a replaced stream, a transient error and a crashed pass under `django_consumer`.
+* [polyglot](../examples/polyglot.md) — `migrate_stream` keeping a consumer's offsets and stamp, and renumbering so it stops.
+* [orders (hermeticity)](../examples/orders.md) — the impure-handler warning, the strict setting, and partial vs closure drift.
 * [stream_coverage](../examples/stream-coverage.md) — `check_stream_coverage` finding missing and stale rows, and passing after repair.
 
 # Deeper reference

@@ -1,5 +1,23 @@
 # Directory Update Log
 
+## 2026-11-01
+
+* **Creation**: [consumer_rebuild](examples/consumer-rebuild.md) — a consumer meets
+  a stream deleted and recreated (`replaced` / `Consumed.needs_rebuild`), a transient
+  apply error that records nothing and is retried, and a pass cut short that converges
+  on the next run.
+* **Update**: [polyglot](examples/polyglot.md) — `migrate_stream` keeping offsets and
+  adopting the source's stamp (`adopt_generation`) so a consumer resumes, and
+  renumbering so it stops as `replaced` (`just migrate-consumer-demo`).
+* **Update**: [orders](examples/orders.md) — the impure-handler warning,
+  `RAKAIA_STRICT_HANDLER_FINGERPRINTS`, and drift through a `functools.partial` that a
+  closure misses (`just hermeticity-demo`).
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) and
+  [Django integration](concepts/django-integration.md) — the new example, and
+  `migrate_stream` as the copy that makes a saved position valid or stops the consumer.
+* **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) —
+  partial vs closure fingerprints.
+
 ## 2026-10-31
 
 * **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) —
