@@ -90,6 +90,13 @@ both number events one, two, three. Coming from the in-memory store they never
 do, because it counts bytes instead. `migrate_all` copies every stream a store
 can list.
 
+When positions survive, so does the stream's stamp. A consumer keeps that stamp
+beside its position and stops with `replaced` if it changes, which is how it
+learns its stream was deleted and recreated; a copy that kept every offset is the
+same log, so a consumer that has run before carries on instead of being told to
+rebuild. When positions do not survive the copy keeps a stamp of its own, and
+consumers stop, which is what you want.
+
 One rule surprises people. A stream that has been deleted can never get its old
 numbering back, even by copying the same events in again — a store must not
 reissue a position a consumer may already have read past. So exporting a log,

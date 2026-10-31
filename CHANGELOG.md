@@ -9,6 +9,17 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A consumer that had run before was refused after a migration that said its
+  position was valid.** `migrate_stream` reported `cursors_valid: True`, but the
+  copy was given a new stream stamp, and a consumer stops with `replaced` when the
+  stamp it saved no longer matches (#350). A copy that kept every offset and the
+  head now keeps the source's stamp, so such a consumer resumes where it left off.
+  A copy that renumbered keeps its own, and consumers still stop. Each store gains
+  `adopt_generation(path, generation)` for this; a custom target without it leaves
+  a note in `Migration.notes`.
+
 ## [0.10.0] - 2026-10-30
 
 ### Added

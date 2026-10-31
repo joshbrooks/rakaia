@@ -443,6 +443,22 @@ class StreamStore:
         stream = self._get_if_not_expired(path)
         return stream.generation if stream else None
 
+    def adopt_generation(self, path: str, generation: str) -> None:
+        """Give the stream another log's stamp, because it is a copy of that log.
+
+        For `rakaia.migrate` alone, and only when the copy kept every offset: a
+        consumer's saved position then means the same event here, and the stamp
+        it saved beside it must not call this a different log. Anywhere else a
+        stream's stamp is what says it is *not* the stream another one was.
+
+        Raises:
+            StreamNotFound: if `path` is absent or expired.
+        """
+        stream = self._get_if_not_expired(path)
+        if stream is None:
+            raise StreamNotFound(f"Stream not found: {path}")
+        stream.generation = generation
+
     # =========================================================================
     # Producer validation
     # =========================================================================

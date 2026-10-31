@@ -20,6 +20,11 @@ same event on the other side. When it is False, consumers must be reset — and
 they must be reset *knowingly*, which is the whole reason this returns a report
 instead of None.
 
+A copy that kept every offset also keeps the source's stream stamp, so a
+consumer that has run before resumes rather than being told its stream was
+replaced (#350). One that renumbered keeps its own, and consumers stop, which is
+the right answer for them.
+
 What cannot cross the public store API at all is listed in `Migration.notes`
 rather than silently dropped: producer fencing state has no public setter, and a
 sliding TTL window necessarily restarts on the copy.
@@ -175,6 +180,9 @@ def migrate_stream(
     offsets_preserved = [m.offset for m in written] == [m.offset for m in messages]
     head_preserved = _head_preserved(source, target, path)
 
+    if offsets_preserved and head_preserved:
+        _carry_generation(source, target, path, notes)
+
     _close_if_needed(target, path, source_meta, notes)
     _note_what_cannot_cross(source_meta, notes)
     if not offsets_preserved:
@@ -267,6 +275,41 @@ def _head_preserved(source: ReadableStore, target: WritableStore, path: str) -> 
     if get_source is None or get_target is None:
         return False
     return get_source(path) == get_target(path)
+
+
+def _carry_generation(
+    source: ReadableStore, target: WritableStore, path: str, notes: list[str]
+) -> None:
+    """Give the copy the original's stamp, because it is the same log.
+
+    A consumer saves the stream's stamp beside its position, and stops when the
+    two disagree: that is how it learns its stream was deleted and recreated
+    (#350). A copy that kept every offset is not a recreate, and a stamp of its
+    own would make `cursors_valid` a promise the consumer's next run breaks.
+
+    Only when the offsets and the head both survived. A copy that renumbered is a
+    different log to every saved position, and keeping its fresh stamp is what
+    stops a consumer resuming against events it never saw.
+
+    Reading the source's stamp here can write it: a stream that predates stamps
+    is given one the first time it is asked, so a migrate can stamp a source
+    that had none.
+    """
+    get = getattr(source, "get_generation", None)
+    adopt = getattr(target, "adopt_generation", None)
+    generation = None if get is None else get(path)
+    if generation is None:
+        return
+    if adopt is None:
+        notes.append(
+            "The target store cannot take the source's stream stamp, so a "
+            "consumer that has run before will report the stream as replaced and "
+            "stop, even though its position is still valid; a target with no "
+            "stamp of its own cannot report `replaced`, and the position is "
+            "accepted silently."
+        )
+        return
+    adopt(path, generation)
 
 
 def _close_if_needed(

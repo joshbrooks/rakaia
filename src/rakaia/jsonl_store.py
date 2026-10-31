@@ -1200,6 +1200,24 @@ class JsonlStreamStore:
         except (_Expired, StreamNotFound):
             return None
 
+    def adopt_generation(self, path: str, generation: str) -> None:
+        """Give the stream another log's stamp, because it is a copy of that log.
+
+        For `rakaia.migrate` alone, and only when the copy kept every offset: a
+        consumer's saved position then means the same event here, and the stamp
+        it saved beside it must not call this a different log. Anywhere else a
+        stream's stamp is what says it is *not* the stream another one was.
+
+        Raises:
+            StreamNotFound: if `path` is absent or expired.
+        """
+        try:
+            with self._locked(path) as (meta, _buffer):
+                meta.generation = generation
+        except _Expired:
+            self.delete(path)
+            raise StreamNotFound(f"Stream not found: {path}") from None
+
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.
 

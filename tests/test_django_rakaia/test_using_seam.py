@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from django_rakaia.consumer import django_consumer
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
@@ -458,10 +459,11 @@ class TestTwoAliasesAreTwoLogs:
     file store does. What is new here is the same class at two locations.
 
     Nothing is wrong today — the alias seam exists so a rebuild can replay into a
-    disposable database, and nothing on that path resumes a consumer. This asserts
-    the defect so that leaving it is a decision, the way
-    `tests/test_rakaia/test_cross_backend_cursors.py` does for the backend pair.
-    #232 is what changes it, and this is where that change announces itself.
+    disposable database, and nothing on that path resumes a consumer. A bare
+    `poll` carries no stream stamp, so the defect below is asserted for it, the way
+    `tests/test_rakaia/test_cross_backend_cursors.py` does for the backend pair. A
+    consumer that has run keeps the stamp, and is refused: see
+    `test_a_consumer_that_has_run_is_refused_by_the_other_alias`.
     """
 
     @staticmethod
@@ -494,3 +496,23 @@ class TestTwoAliasesAreTwoLogs:
 
         assert mine == theirs
         assert format_of(mine) is format_of(theirs)
+
+    def test_a_consumer_that_has_run_is_refused_by_the_other_alias(self) -> None:
+        """The same two logs, met by a consumer (#350). Each alias stamped its
+        stream when it was created, so the stamp the consumer saved belongs to
+        one of them, and the other is not it."""
+        self._seed(DjangoStreamStore(), 3)
+        self._seed(DjangoStreamStore(using="overlay"), 10)
+        applied: list[int] = []
+
+        def run(store: DjangoStreamStore):
+            return django_consumer(store, "s", "worker").run(
+                lambda m: applied.append(json.loads(m.data)["n"]) or None,
+                on_error="halt",
+            )
+
+        assert run(DjangoStreamStore()).status == "fresh"
+        applied.clear()
+
+        assert run(DjangoStreamStore(using="overlay")).status == "replaced"
+        assert applied == []

@@ -13,8 +13,10 @@ import json
 
 import pytest
 
+from rakaia.consumer import Consumer, InMemoryConsumerCursorStore
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.migrate import migrate_all, migrate_stream
+from rakaia.outcomes import InMemoryOutcomeStore
 from rakaia.store import StreamStore
 from rakaia.subscription import poll
 from rakaia.types import AppendOptions, StreamNotFound
@@ -174,6 +176,93 @@ class TestBetweenTwoEntryCountingStores:
         migrate_stream(files, other_files, PATH)
 
         assert other_files.get(PATH).last_seq == "020"
+
+
+class TestAConsumerThatHasRunSurvivesAMigration:
+    """A consumer keeps the stream's stamp beside its position (#350), and the
+    stamp is what tells it a log was replaced. A copy that preserves every offset
+    is the *same* log, so it must keep the stamp, or `cursors_valid: True` is a
+    promise the consumer's next run breaks.
+
+    The tests above resume with a bare `poll(cursor)`, which carries no stamp and
+    so could not see this."""
+
+    @staticmethod
+    def _consumer(store, cursors):
+        return Consumer(
+            store=store,
+            path=PATH,
+            name="worker",
+            cursors=cursors,
+            outcomes=InMemoryOutcomeStore(),
+        )
+
+    def _run(self, consumer):
+        seen = []
+        result = consumer.run(
+            lambda m: seen.append(json.loads(m.data)) or None, on_error="halt"
+        )
+        return result, seen
+
+    def test_it_resumes_on_the_copy_where_it_left_off(self, files, other_files):
+        _seed(files, n=3)
+        cursors = InMemoryConsumerCursorStore()
+        self._run(self._consumer(files, cursors))
+        files.append(PATH, b'{"n": 99}')
+
+        migration = migrate_stream(files, other_files, PATH)
+        result, seen = self._run(self._consumer(other_files, cursors))
+
+        assert migration.cursors_valid is True
+        assert result.status == "advanced"
+        assert seen == [{"n": 99}]
+
+    def test_the_copy_reports_the_stamp_the_original_had(self, files, other_files):
+        _seed(files)
+
+        migrate_stream(files, other_files, PATH)
+
+        assert other_files.get_generation(PATH) == files.get_generation(PATH)
+
+    def test_a_copy_whose_offsets_moved_is_a_different_log(self, files):
+        """Offsets that changed mean every saved position is stale. Carrying the
+        stamp would let a consumer resume against events it never saw; keeping
+        the new stamp is what stops it."""
+        _seed(files)
+        memory = StreamStore()
+
+        migration = migrate_stream(files, memory, PATH)
+
+        assert migration.cursors_valid is False
+        assert memory.get_generation(PATH) != files.get_generation(PATH)
+
+    def test_a_target_that_cannot_take_the_stamp_says_so(self, files, other_files):
+        """The stamp cannot be carried to a store with no way to set it, and a
+        consumer there would stop on `replaced` with a valid position. That is
+        worth a note, not silence."""
+        _seed(files)
+
+        class CannotAdopt:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                if name == "adopt_generation":
+                    raise AttributeError(name)
+                return getattr(self._inner, name)
+
+        result = migrate_stream(files, CannotAdopt(other_files), PATH)
+
+        assert result.cursors_valid is True
+        assert any("stamp" in note for note in result.notes)
+
+    def test_two_unrelated_logs_still_do_not_share_a_stamp(self, files, other_files):
+        """What the stamp is *for*. Adopting it on a copy must not turn into
+        every log looking alike."""
+        _seed(files, n=3)
+        _seed(other_files, n=10)
+
+        assert files.get_generation(PATH) != other_files.get_generation(PATH)
 
 
 class TestBetweenStoresThatCountDifferently:
@@ -367,3 +456,32 @@ class TestMigrateAll:
 
         with pytest.raises(TypeError, match="cannot list its streams"):
             migrate_all(Unlistable(), other_files)
+
+
+def _store(kind, root):
+    return JsonlStreamStore(root, fsync=False) if kind == "files" else StreamStore()
+
+
+class TestAdoptingAStamp:
+    @pytest.mark.parametrize("kind", ["files", "memory"])
+    def test_the_stream_reports_the_stamp_it_was_given(self, tmp_path, kind):
+        store = _store(kind, tmp_path / "s")
+        store.create(PATH)
+
+        store.adopt_generation(PATH, "feedface")
+
+        assert store.get_generation(PATH) == "feedface"
+
+    def test_the_file_store_keeps_it_across_a_reopen(self, tmp_path):
+        store = JsonlStreamStore(tmp_path / "s", fsync=False)
+        store.create(PATH)
+        store.adopt_generation(PATH, "feedface")
+
+        assert JsonlStreamStore(tmp_path / "s", fsync=False).get_generation(PATH) == (
+            "feedface"
+        )
+
+    @pytest.mark.parametrize("kind", ["files", "memory"])
+    def test_a_missing_stream_cannot_be_given_one(self, tmp_path, kind):
+        with pytest.raises(StreamNotFound):
+            _store(kind, tmp_path / "s").adopt_generation(PATH, "feedface")
