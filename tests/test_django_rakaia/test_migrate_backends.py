@@ -13,12 +13,13 @@ import json
 
 import pytest
 
+from django_rakaia.consumer import django_consumer
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.subscription import commit_cursor, poll_consumer
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.migrate import migrate_all, migrate_stream
 from rakaia.subscription import poll
-from rakaia.types import AppendOptions
+from rakaia.types import AppendOptions, StreamNotFound
 
 PATH = "s"
 
@@ -151,3 +152,53 @@ class TestTheRoundTrip:
         assert back.offsets_preserved is False
         assert back.cursors_valid is False
         assert any("retired its offsets" in note for note in back.notes)
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAConsumerThatHasRunSurvivesTheMove:
+    """A consumer saves the stream's stamp beside its position, and stops when it
+    changes (#350). A move that keeps every offset must keep the stamp, in both
+    directions, or the copy that `cursors_valid` vouches for is refused."""
+
+    @staticmethod
+    def _run(store):
+        seen = []
+        result = django_consumer(store, PATH, "worker").run(
+            lambda m: seen.append(json.loads(m.data)) or None, on_error="halt"
+        )
+        return result, seen
+
+    def test_database_to_files(self, files):
+        db = _seed(DjangoStreamStore(), n=3)
+        self._run(db)
+        db.append(PATH, b'{"n": 99}')
+
+        migrate_stream(db, files, PATH)
+        result, seen = self._run(files)
+
+        assert result.status == "advanced"
+        assert seen == [{"n": 99}]
+
+    def test_files_to_database(self, files):
+        _seed(files, n=3)
+        self._run(files)
+        files.append(PATH, b'{"n": 99}')
+        db = DjangoStreamStore()
+
+        migrate_stream(files, db, PATH)
+        result, seen = self._run(db)
+
+        assert result.status == "advanced"
+        assert seen == [{"n": 99}]
+
+    def test_a_missing_stream_cannot_be_given_a_stamp(self):
+        with pytest.raises(StreamNotFound):
+            DjangoStreamStore().adopt_generation(PATH, "feedface")
+
+    def test_the_stamp_is_saved(self):
+        db = DjangoStreamStore()
+        db.create(PATH)
+
+        db.adopt_generation(PATH, "feedface")
+
+        assert DjangoStreamStore().get_generation(PATH) == "feedface"

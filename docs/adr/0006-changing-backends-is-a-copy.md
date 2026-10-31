@@ -10,7 +10,8 @@
   `src/rakaia/offsets.py`.
   Issues: [#233](https://github.com/joshbrooks/rakaia/issues/233) (this decision),
   #229 (the third backend that raised it), #232 (a cursor should name its store —
-  the gap this decision documents rather than closes),
+  the gap this decision documents; narrowed by the stream stamp, see the amendment),
+  #350 (the stamp),
   #34 (deletion retires offsets permanently — why a round trip cannot restore a log).
 
 ## Context
@@ -28,11 +29,14 @@ valid.
 What happens next depends on a detail nobody would think to check — whether the two
 stores issue the same offset *format*:
 
-| Store pair | What a resumed consumer gets |
-|---|---|
-| in-memory ↔ either other | `ForeignOffset`. Loud, immediate, correct. |
-| `DjangoStreamStore` ↔ `JsonlStreamStore` | **Accepted.** Both issue `PLAIN`. |
-| one store class, two locations | **Accepted.** Not a pair of backends at all. |
+| Store pair | A bare position (no stream stamp) | A consumer that has run before |
+|---|---|---|
+| in-memory ↔ either other | `ForeignOffset`. Loud, immediate, correct. | The same. |
+| `DjangoStreamStore` ↔ `JsonlStreamStore` | **Accepted.** Both issue `PLAIN`. | `replaced`: stops, applies nothing. |
+| one store class, two locations | **Accepted.** Not a pair of backends at all. | `replaced`, as above. |
+
+*The right-hand column is an amendment (see the end of this record): when this
+was written there was only the left.*
 
 All are symmetric — a format is refused in whichever direction it is carried,
 and accepted in whichever direction too.
@@ -170,12 +174,42 @@ consumers resume, so it belongs where decisions are recorded.
 - Nothing about the single-backend case changes. A deployment that never switches
   backends is unaffected by all of this.
 
+## Amendment — the stream stamp narrows the gap (#350, #232)
+
+Written after the fact, so the record above stays as it was decided.
+
+Since 0.10 each stream carries a stamp, set when it is created, and a consumer
+saves it beside its position. `consume` stops with `replaced` when the stamp it
+meets is not the one it saved, applying nothing. The stamp belongs to the log
+instance, not to the store class or the offset format, which is exactly the
+identity #232's discussion could not find: it tells two aliases, and two roots,
+apart. So the silent row of the table is now silent only for a position that
+carries no stamp — a bare `poll(cursor)`, a cursor a caller committed by hand, or
+one saved before stamps existed.
+
+That is why #232's `backend` column was not built. It would have guarded the same
+window with a label that could not tell two logs of one class apart, which is the
+case the stamp does.
+
+**What this decision still stands for.** Decision 1 is unchanged: the move is a
+copy. Decision 2 gains a clause — a copy that kept every offset and the head also
+keeps the source's stamp (`adopt_generation`, called by `migrate_stream`), because
+it is the same log. Without that, `cursors_valid: True` was a promise a consumer's
+next run broke with `replaced`; the migration tests missed it because they resumed
+with a bare `poll`. A copy that renumbered keeps a stamp of its own, so consumers
+stop, which is right for them.
+
+**What remains open.** A position with no stamp adopts the stream's on its first
+run, so it cannot tell which log it was saved against. That window closes as
+consumers run, and is pinned in `test_cross_backend_cursors.py`.
+
 ## What would reopen this
 
-- **#232 lands.** A cursor that names its issuing store makes the silent row of the
-  table above loud, at which point this decision is a convenience rather than the
-  only thing standing between an operator and skipped events. Amend, do not delete —
-  the copy is still the supported move.
+- **Unstamped positions matter again.** The stream stamp (see the amendment) makes
+  the silent row loud for any consumer that has run. If bare `poll` positions or
+  hand-committed cursors turn out to be common, something has to stamp them on the
+  way in, and this decision is again the only thing between an operator and skipped
+  events. Amend, do not delete — the copy is still the supported move.
 - **A fourth store.** Whether it shares `PLAIN` decides which row of the table it
   joins, and that is a decision to take deliberately rather than by picking a
   convenient format.

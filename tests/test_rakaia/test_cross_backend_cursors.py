@@ -16,6 +16,13 @@ A table in a Markdown file rots. This pins it where it is decided, the way
 gives `JsonlStreamStore` its own offset format, or lands #232, these go red and
 the ADR has to be amended rather than quietly left wrong.
 
+**The silent row is narrower than it was (#350, #232).** A consumer saves the
+stream's stamp beside its position, and `consume` stops with `replaced` when it
+meets a log with a different one, so a consumer that has run before is refused by
+the other store instead of skipping events. What still fails silently is a
+position with no stamp: a bare `poll(cursor)`, or a cursor saved before stamps
+existed. Both halves are pinned below.
+
 One store class at two locations is a *third* row of that table, and it is
 pinned in `tests/test_django_rakaia/test_using_seam.py` — it needs two database
 aliases, so it cannot live in this package (the same reason
@@ -35,8 +42,10 @@ import json
 
 import pytest
 
+from rakaia.consumer import Consumer, InMemoryConsumerCursorStore
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.offsets import COMPOUND, PLAIN, ForeignOffset, format_of
+from rakaia.outcomes import InMemoryOutcomeStore
 from rakaia.store import StreamStore
 from rakaia.subscription import poll
 
@@ -116,9 +125,11 @@ class TestWithinOneFormatACursorIsAccepted:
 
         A position from one store, resumed against another that is already past
         it, is accepted without a rewind and without an error — and every event
-        before it is skipped permanently. This asserts the *defect*, so that it
-        is a decision to leave it and not an oversight; #232 is what changes it,
-        and this test is where that change announces itself.
+        before it is skipped permanently. This asserts the *defect* for a
+        position that carries no stream stamp, which is all `poll` is given
+        here; `TestAConsumerThatHasRunIsRefused` is the same pair with the stamp
+        a consumer keeps. This test is where a change to the unstamped case
+        announces itself.
         """
         short = _seed(JsonlStreamStore(tmp_path / "short", fsync=False), 3, "OLD")
         cursor = poll(short, PATH, None).cursor
@@ -130,3 +141,58 @@ class TestWithinOneFormatACursorIsAccepted:
         delivered = [json.loads(m.data)["NEW"] for m in resumed.messages]
         assert delivered == [3, 4, 5, 6, 7, 8, 9]
         assert 0 not in delivered, "events 0-2 are skipped, silently"
+
+
+class TestAConsumerThatHasRunIsRefused:
+    """The same pair as above, met by a consumer instead of a bare `poll`.
+
+    A consumer keeps the stream's stamp beside its position (#350). Each log is
+    stamped when it is created, so two logs differ however alike their offsets
+    are, and a consumer resumed against the wrong one stops on `replaced` with
+    nothing applied. Two `JsonlStreamStore`s stand in for the pair, for the reason
+    the module docstring gives.
+    """
+
+    @staticmethod
+    def _consumer(store, cursors):
+        return Consumer(
+            store=store,
+            path=PATH,
+            name="worker",
+            cursors=cursors,
+            outcomes=InMemoryOutcomeStore(),
+        )
+
+    @staticmethod
+    def _run(consumer):
+        seen = []
+        result = consumer.run(
+            lambda m: seen.append(json.loads(m.data)) or None, on_error="halt"
+        )
+        return result, seen
+
+    def test_the_pair_that_skips_events_for_a_bare_poll_stops_the_consumer(
+        self, tmp_path
+    ):
+        short = _seed(JsonlStreamStore(tmp_path / "short", fsync=False), 3, "OLD")
+        longer = _seed(JsonlStreamStore(tmp_path / "long", fsync=False), 10, "NEW")
+        cursors = InMemoryConsumerCursorStore()
+        self._run(self._consumer(short, cursors))
+
+        result, seen = self._run(self._consumer(longer, cursors))
+
+        assert result.status == "replaced"
+        assert seen == [], "nothing is applied to a log the consumer never read"
+
+    def test_a_position_with_no_stamp_is_still_accepted(self, tmp_path):
+        """What is left of the hazard: a cursor from before stamps existed, or one
+        a caller committed by hand. It adopts the stream's stamp on its first run,
+        so it cannot tell which log it was saved against."""
+        longer = _seed(JsonlStreamStore(tmp_path / "long", fsync=False), 10, "NEW")
+        cursors = InMemoryConsumerCursorStore()
+        cursors.commit("worker", PATH, PLAIN.render(3))
+
+        result, seen = self._run(self._consumer(longer, cursors))
+
+        assert result.status == "advanced"
+        assert [m["NEW"] for m in seen] == [3, 4, 5, 6, 7, 8, 9]
