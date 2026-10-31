@@ -49,9 +49,17 @@ def staged_replay(
         for event in events:
             for form_type, fn in spec.get("events", []):
                 if event.get("form_type") == form_type:
-                    executor.apply([fn(event, refs)])  # fold; last write wins
+                    # One event may produce more than one effect — the close
+                    # both decides a CycleClose and retires the open finance
+                    # lines — so a handler's result is normalised to a list.
+                    executor.apply(_as_effects(fn(event, refs)))
         reduce_batch = []
         for reduce_fn in spec.get("reduce", []):
             reduce_batch.extend(reduce_fn(refs))
         if reduce_batch:
             executor.apply(reduce_batch)  # commit before the next stage
+
+
+def _as_effects(result: Any) -> list[Any]:
+    """A handler's return: one effect, or a list of them (rakaia's own shape)."""
+    return result if isinstance(result, list) else [result]

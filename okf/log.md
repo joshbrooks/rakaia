@@ -6,15 +6,28 @@
   a stream deleted and recreated (`replaced` / `Consumed.needs_rebuild`), a transient
   apply error that records nothing and is retried, and a pass cut short that converges
   on the next run.
+* **New**: [two_workers](examples/two-workers.md) — two worker processes under one consumer name:
+  the second is seen waiting on the cursor row in `pg_stat_activity` and applies nothing, a commit
+  behind the saved position raises `CursorMovedBackwards`, and a resume reads five events out of a
+  205-event log. The lock half needs Postgres; on SQLite the demo prints
+  `skipped: SQLite has no row locks`.
 * **Update**: [polyglot](examples/polyglot.md) — `migrate_stream` keeping offsets and
   adopting the source's stamp (`adopt_generation`) so a consumer resumes, and
   renumbering so it stops as `replaced` (`just migrate-consumer-demo`).
 * **Update**: [orders](examples/orders.md) — the impure-handler warning,
   `RAKAIA_STRICT_HANDLER_FINGERPRINTS`, and drift through a `functools.partial` that a
   closure misses (`just hermeticity-demo`).
+* **Update**: [partisipa_close](examples/partisipa-close.md) — an accepted close now `Retire`s the
+  suku's open finance lines, stamped with the close event's own timestamp rather than the replay
+  clock; the demo replays the same stream under a clock shifted six years and asserts identical
+  stamps, then replays a deliberately `now()`-stamped variant to show the check bites.
+* **Update**: [Effects & executors](concepts/effects-and-executors.md) — `Retire`'s stamp is
+  demonstrated end to end by `partisipa_close`: replay under a shifted clock writes the same values.
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) and
   [Django integration](concepts/django-integration.md) — the new example, and
   `migrate_stream` as the copy that makes a saved position valid or stops the consumer.
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — `two_workers` now
+  demonstrates the cursor row lock and the forward-only commit, not only `partisipa_intake`.
 * **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) —
   partial vs closure fingerprints.
 

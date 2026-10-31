@@ -107,6 +107,10 @@ Imported from `django_rakaia`:
   stream deleted and recreated (`needs_rebuild` / `replaced`), a transient apply
   error retried from the unchanged cursor, and a pass cut short that converges on
   the next run.
+* [two_workers](../examples/two-workers.md) — two processes under one consumer
+  name: the second waits on the cursor row (Postgres), `commit_cursor` refuses a
+  rewind with `CursorMovedBackwards`, and a resume reads the delta rather than
+  the log.
 * [protocol_streams](../examples/protocol-streams.md) — `poll` on its own, with
   no Django.
 

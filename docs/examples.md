@@ -152,6 +152,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Concept | Demonstrated by |
 |---|---|
 | The effect types: `Upsert`, `Update`, `Delete`+`Exclude`, `ExternalEffect` | `orders`, `partisipa_repeaters`, `multi_owner` |
+| `Retire` — soft delete whose stamp is the triggering event's timestamp, never the replay clock | `partisipa_close`, `multi_owner` |
 | `CollectingExecutor` (dry-run) | `orders`, `projection_cookbook` |
 | `DjangoExecutor` | every Django demo |
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
