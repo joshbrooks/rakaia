@@ -42,6 +42,7 @@ REPEATERS_DIR   := "examples/partisipa_repeaters"
 INTAKE_DIR      := "examples/partisipa_intake"
 COVERAGE_DIR    := "examples/stream_coverage"
 CONSUMER_REBUILD_DIR := "examples/consumer_rebuild"
+TWO_WORKERS_DIR := "examples/two_workers"
 
 # Note: we deliberately do NOT export DJANGO_SETTINGS_MODULE at the top
 # level. Doing so leaks into `just test`, overriding the value pytest
@@ -129,6 +130,8 @@ demos:
     @just consumer-rebuild-demo
     @echo ">> migrate consumer — a copy keeps a consumer's position, or stops it"
     @just migrate-consumer-demo
+    @echo ">> two workers — the cursor row lock, forward-only commits, resuming"
+    @just two-workers-demo
     @echo ">> formkit emission — the real formkit-ninja seam"
     @just formkit-emission-demo
     @echo ">> notebook — every cell of the teaching notebook runs"
@@ -381,6 +384,34 @@ consumer-rebuild-demo:
 migrate-consumer-demo:
     cd {{POLYGLOT_DIR}} && uv run python manage.py migrate
     cd {{POLYGLOT_DIR}} && uv run python manage.py demo_migrate_consumer
+
+# ---------------------------------------------------------------------------
+# Two workers under one consumer name (the cursor row lock — issue #359)
+# ---------------------------------------------------------------------------
+
+# Two processes, one consumer name: the second waits, both finish, the cursor
+# only moves forward, and resuming reads the delta.
+#
+# On SQLite `select_for_update()` compiles to a plain SELECT, so the demo prints
+# "skipped: SQLite has no row locks" for the contention check and runs the
+# forward-only and resume checks, which are real on both backends.
+two-workers-demo:
+    cd {{TWO_WORKERS_DIR}} && uv run python manage.py migrate
+    cd {{TWO_WORKERS_DIR}} && uv run python manage.py demo_two_workers
+
+# The same demo against Postgres, where the cursor row lock actually exists.
+# Needs a server first: `just pg-up` locally, or the `test-postgres` CI job's
+# service container, which sets the PG* variables itself.
+two-workers-demo-pg:
+    cd {{TWO_WORKERS_DIR}} && \
+        export RAKAIA_TEST_DB=postgres \
+               PGHOST=${PGHOST:-127.0.0.1} \
+               PGPORT=${PGPORT:-{{PG_PORT}}} \
+               PGUSER=${PGUSER:-postgres} \
+               PGPASSWORD=${PGPASSWORD:-postgres} \
+               PGDATABASE=${PGDATABASE:-postgres} && \
+        uv run python manage.py migrate && \
+        uv run python manage.py demo_two_workers
 
 # ---------------------------------------------------------------------------
 # Standalone Rakaia protocol server (no Django)
