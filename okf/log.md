@@ -1,5 +1,14 @@
 # Directory Update Log
 
+## 2026-10-31
+
+* **Update**: [Protocol layer & streams](concepts/protocol-and-streams.md) —
+  `StreamStore.adopt_generation`, and `get_generation` beside it in the method
+  list: a migration that kept every offset keeps the source's stamp, so a
+  consumer that had run before resumes instead of stopping as `replaced`.
+* **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the
+  same migration carries the saved cursor's stamp match forward.
+
 ## 2026-10-30
 
 * **Update**: [Consuming & outcomes](concepts/consuming-and-outcomes.md) — the lock covers only

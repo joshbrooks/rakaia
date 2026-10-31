@@ -11,7 +11,8 @@ Django integration). There is no `CONTEXT-MAP.md` and none is needed.
 - **`docs/glossary.md`** — this repo's domain-language document. It plays the role
   that `CONTEXT.md` plays in the skill templates: it defines the event-sourcing
   vocabulary (stream, event, projection, handler, cursor, fencing) in the precise
-  sense Rakaia uses. Read it before naming any domain concept.
+  sense Rakaia uses. Read it before naming any domain concept, and when a skill
+  asks you to read or create `CONTEXT.md`, read or update this file instead.
   There is no `CONTEXT.md` at the root and none is needed — don't create one.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
   Currently:

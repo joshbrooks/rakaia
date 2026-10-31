@@ -20,19 +20,56 @@ give.**
 
 A named, append-only, ordered sequence of events — e.g. `orders` or
 `room:5:messages`. It's the source of truth. Nothing is ever edited or deleted in
-place; you only ever append. → *[protocol](protocol.md), [django integration](django-integration.md)*
+place; you only ever append.
+
+_Avoid_: topic, feed, queue.
+
+→ *[protocol](protocol.md), [django integration](django-integration.md)*
 
 ### Event
 
 One immutable record appended to a stream: a JSON payload describing something
 that *happened* ("order placed", "activity updated"). Events are facts — they're
-never changed after the fact. → *[versioned handlers](versioned-handlers.md)*
+never changed after the fact.
+
+_Avoid_: message (that is a [StreamMessage](#streammessage)), row.
+
+→ *[versioned handlers](versioned-handlers.md)*
+
+### StreamMessage
+
+The wire form of one log entry: the payload (the [event](#event)) plus its
+[envelope](#envelope) and transport timestamp, as a store returns it from `read`
+and hands it to a [consumer](#consumer). "Message" on its own usually means this;
+the event is only the payload inside it.
+
+_Avoid_: record, packet.
+
+→ *[protocol](protocol.md), [event envelope](event-envelope.md)*
 
 ### Offset / seq
 
 An event's position in its stream, assigned monotonically (0, 1, 2, …). The same
 number does two jobs: as **seq** it selects which handler *version* applies to an
-event; as **offset** it's the cursor you resume reads from. → *[versioned handlers](versioned-handlers.md), [protocol](protocol.md)*
+event; as **offset** it is the position a reader resumes after. An offset alone is
+not a [cursor](#cursor) — a cursor also carries the stream's
+[stamp](#stream-stamp-generation).
+
+_Avoid_: position, index.
+
+→ *[versioned handlers](versioned-handlers.md), [protocol](protocol.md)*
+
+### Stream stamp (generation)
+
+A value that changes when a stream is deleted (or expires) and is created again,
+which the rising offsets do not show. A [consumer](#consumer) saves it beside its
+offset, so it can tell "the same log, further on" from "a different log at the
+same position". The prose calls it a stamp; the code calls it `generation`
+(`get_generation`, `adopt_generation`).
+
+_Avoid_: version (that is the handler series), id.
+
+→ *[subscriber cursors](subscriber-cursors.md), [store streams in files](store-streams-in-files.md)*
 
 ### Durable store
 
@@ -60,7 +97,21 @@ through every call. → *[event envelope](event-envelope.md#provenance-attaching
 Recording an event only when something actually changed. `append_if_changed`
 compares a new payload to the subject's *current* snapshot and appends only on a
 difference — the write-side analogue of pghistory's "record on change" and of the
-`skip_unchanged` executor. → *[event envelope](event-envelope.md#append_if_changed-suppress-no-op-appends)*
+`skip_unchanged` executor.
+
+→ *[event envelope](event-envelope.md#append_if_changed-suppress-no-op-appends)*
+
+### Producer fencing
+
+An appender that must not double-write on a retry names itself (`producer_id`)
+and sends an epoch and a sequence with each append. A superseded writer, a
+duplicate and a gap are then refused with `ProducerStaleEpoch`,
+`ProducerDuplicate` and `ProducerSequenceGap` instead of landing twice or out of
+order.
+
+_Avoid_: dedupe, idempotency key (that names the event, not the writer).
+
+→ *[producer fencing](producer-fencing.md), [protocol](protocol.md)*
 
 ## Deriving state
 
@@ -68,7 +119,21 @@ difference — the write-side analogue of pghistory's "record on change" and of 
 
 A database table *derived* from the log rather than written to directly. You
 don't `UPDATE` it by hand — you replay events and let handlers rebuild it.
-Because it's derived, you can drop it and regenerate it at will. → *[versioned handlers](versioned-handlers.md), [projections & fan-out](projections-and-fan-out.md)*
+Because it's derived, you can drop it and regenerate it at will.
+
+_Avoid_: view, cache, denormalised copy.
+
+→ *[versioned handlers](versioned-handlers.md), [projections & fan-out](projections-and-fan-out.md)*
+
+### Subject
+
+The thing a row is about — an order, a form submission, a room. A latest-state
+projection keeps one row per subject; a history read-model keeps one row per
+`(subject, version)`.
+
+_Avoid_: entity, object, aggregate.
+
+→ *[projections & fan-out](projections-and-fan-out.md)*
 
 ### Latest-state vs history read-model
 
@@ -89,7 +154,12 @@ everyday one. → *[history read-model](history-read-model.md#recovering-the-pea
 
 A **pure** function that turns one event into one or more [Effects](#effect). It
 performs no database writes itself and has no side effects — which is exactly
-what makes replay safe, repeatable, and testable. → *[versioned handlers](versioned-handlers.md)*
+what makes replay safe, repeatable, and testable.
+
+_Avoid_: listener, callback, processor, reducer (a reducer is a stage aggregate,
+not a per-event handler).
+
+→ *[versioned handlers](versioned-handlers.md)*
 
 ### Effect
 
@@ -166,13 +236,65 @@ Same effects, different destination. → *[dry-run & executors](dry-run-and-exec
 ### Replay
 
 Reading a stream from the start (or over a range) and running every event through
-its handlers to (re)build a projection. → *[versioned handlers](versioned-handlers.md)*
+its handlers to (re)build a projection.
+
+_Avoid_: rebuild (that is the response to a rewound or replaced log, below),
+reprocess.
+
+→ *[versioned handlers](versioned-handlers.md)*
+
+### Rebuild
+
+Replaying a projection from the start because the log underneath it was rewound
+or replaced — the action `Consumed.needs_rebuild` asks for, and the one
+`rebuild_and_verify` runs guarded by a diff. [Replay](#replay) is the act;
+rebuild is why you do it.
+
+_Avoid_: reindex (that is a search-index job).
+
+→ *[subscriber cursors](subscriber-cursors.md), [django integration](django-integration.md)*
 
 ### Idempotent
 
 Safe to run more than once with the same result. Replay is idempotent: running it
 twice produces identical rows, because handlers emit an [Upsert](#upsert)
-instead of blindly inserting. → *[versioned handlers](versioned-handlers.md)*
+instead of blindly inserting.
+
+→ *[versioned handlers](versioned-handlers.md)*
+
+## Consuming the log
+
+### Cursor
+
+Where a [consumer](#consumer) has got to: the last offset it applied *and* the
+[stream's stamp](#stream-stamp-generation). The offset alone says how far it has
+read; the stamp says whether the log underneath is still the one it read.
+
+_Avoid_: watermark (that is a database counter), position.
+
+→ *[subscriber cursors](subscriber-cursors.md)*
+
+### Consumer
+
+A loop that reads one stream forward from its [cursor](#cursor) and applies each
+event somewhere outside the [projections](#projection) — another system, an
+index, a file. Unlike a [handler](#handler) it has side effects, so it must be
+idempotent and record, per event, what it did.
+
+_Avoid_: subscriber, listener, worker; and handler, which is the pure case.
+
+→ *[subscriber cursors](subscriber-cursors.md), [django integration](django-integration.md)*
+
+### Outcome
+
+What a [consumer](#consumer) recorded for an event it could not simply apply: a
+status (`failed`, `refused`, `skipped`), a reason code from the closed published
+set, the attempt count and the error, kept in an outcome store. It is the
+per-event record behind `Consumed.transient`.
+
+_Avoid_: error (an outcome is the record, not the exception), log line.
+
+→ *[subscriber cursors](subscriber-cursors.md#the-reason-codes-rakaia-records-for-itself), [ADR 0007](adr/0007-an-outcome-is-recorded-where-the-cursor-is-committed.md)*
 
 ## Evolving safely
 
@@ -185,26 +307,11 @@ forward never rewrites the past. → *[versioned handlers](versioned-handlers.md
 ### Handler dependencies
 
 A stage-0 handler is called `fn(event)` and a stage > 0 handler `fn(event, reader)`,
-so there is nowhere to pass anything else. When a handler genuinely needs an
-injected dependency — the usual case is a probe bound to the connection alias a
-rebuild is replaying into, which [ADR 0003](adr/0003-handler-hermeticity.md)
-forbids reading ambiently — bind it with `functools.partial`:
+so anything else it needs is bound with `functools.partial` — not a closure, whose
+drift hash covers only the wrapper. The usual case is a probe bound to the alias a
+rebuild replays into.
 
-```python
-registry.register(
-    name="project",
-    event_match="PROJECT",
-    effective_from=0,
-    fn=functools.partial(project_row, fk_exists=probe),
-)
-```
-
-**Not a closure.** A closure works and is quietly worse: its **drift** hash
-covers the wrapper only, so an edit to the function the wrapper calls is
-invisible, and `rehydrate()` restores it only if the module that registered it
-re-registers it on import — which a closure built inside a function does not. A
-`partial` is unwrapped, so the recorded path and the hash both describe the
-wrapped function. A persisting registry warns if you use a closure anyway.
+→ *[versioned handlers](versioned-handlers.md#handler-dependencies), [ADR 0003](adr/0003-handler-hermeticity.md)*
 
 ### Registration site
 

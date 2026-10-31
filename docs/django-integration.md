@@ -9,6 +9,9 @@
 3. Broadcasts changes to connected SSE clients through Django Channels.
 4. Provides a Django admin interface for browsing streams and events.
 
+New to these terms? The [glossary](glossary.md) defines stream, projection,
+handler and effect.
+
 !!! tip "Which parts actually need Django (or Channels)?"
     Everything in the `rakaia` package is stdlib-only, and within `django_rakaia`
     only the SSE broadcast needs `channels`. See
