@@ -128,3 +128,21 @@ and the live hash from the same source — they always match. See
 for how `--strict-drift` catches a handler whose "frozen" source was edited after
 old events were already processed under it. The `--strict-drift` flag is wired
 through on `demo_orders` so you can see it pass on a clean run.
+
+## Hermeticity — what the fingerprint can and cannot see
+
+```sh
+just hermeticity-demo
+```
+
+The orders demo above only shows drift passing on a clean run. This one shows the
+two shapes registration refuses: a handler that reads the projection table
+directly, and one that reads a clock object. Both warn at registration, and with
+`RAKAIA_STRICT_HANDLER_FINGERPRINTS=1` both raise `ImpureHandlerError` instead.
+
+It also registers the same wrapped function and the same rate table twice — once
+with `functools.partial`, once inside a closure — then edits the policy constant
+the wrapped function reads. The partial's fingerprint tracks the edit and the
+closure's does not, because a partial is unwrapped while a closure only hashes
+its own wrapper. Use `functools.partial` when a stage-0 handler needs a
+dependency.

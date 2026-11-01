@@ -33,6 +33,8 @@ Imported from `rakaia`:
 * Drift fingerprints (`rakaia.source_hash.fingerprint_handler`) cover a handler's source, the
   plain functions it calls and the constants it reads, and are prefixed `v2:`; see
   `RAKAIA_STRICT_HANDLER_FINGERPRINTS` in [Django integration](django-integration.md).
+  A `functools.partial` is unwrapped, so its hash still describes the wrapped function;
+  a closure hashes its own wrapper, so an edit to what it calls is invisible.
 * Registries and drift errors: `HandlerRegistry`, `UpcasterRegistry`,
   `HandlerVersion`, `ReducerVersion`, `HandlerOverlapError`, `HandlerGapError`,
   `HandlerDriftError`, `UpcasterConflictError`, `UpcasterChainError`.
@@ -41,6 +43,7 @@ Imported from `rakaia`:
 # Demonstrated by
 
 * [orders](../examples/orders.md) — `effective_from`/`effective_to`, upcasters, drift.
+* [orders (hermeticity)](../examples/orders.md) — impure handlers, strict fingerprints, partial vs closure.
 * [projection_cookbook](../examples/projection-cookbook.md) — staged replay, `register_simple`, `match_field`, reader.
 * [partisipa_staged](../examples/partisipa-staged.md) — staged replay for late-arriving links.
 * [partisipa_close](../examples/partisipa-close.md) — staged replay with per-stage reducers.

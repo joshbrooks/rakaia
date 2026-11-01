@@ -90,6 +90,9 @@ One command each: seed a stream, replay it, assert the projection.
 | [`partisipa_repeaters`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_repeaters) | Nested-repeater tree reconcile — no deep orphans, no double-count | `just partisipa-tree-demo` |
 | [`partisipa_intake`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_intake) | The consuming loop — `django_consumer` / `run`, a durable reading position, and an outcome per refused, failed or skipped event | `just intake-demo` |
 | [`stream_coverage`](https://github.com/joshbrooks/rakaia/tree/main/examples/stream_coverage) | `check_stream_coverage` finding a stream that fell behind its table — rows loaded with `bulk_create` (missing) and changed with `update()` (stale) — and passing again after repair | `just coverage-demo` |
+| [`consumer_rebuild`](https://github.com/joshbrooks/rakaia/tree/main/examples/consumer_rebuild) | A consumer whose stream was deleted and recreated (`Consumed.needs_rebuild`), a `transient` apply error that is retried, and a pass that dies halfway and converges on re-run | `just consumer-rebuild-demo` |
+| `polyglot` (migrate) | `migrate_stream` keeping offsets so a consumer resumes, and renumbering so it stops as `replaced` (`adopt_generation`) | `just migrate-consumer-demo` |
+| `orders` (hermeticity) | The impure-handler warning and `RAKAIA_STRICT_HANDLER_FINGERPRINTS`, plus drift through a `functools.partial` that a closure misses | `just hermeticity-demo` |
 
 ### Standalone (no Django)
 
@@ -137,6 +140,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | `register_simple`, `match_field` routing | `projection_cookbook` |
 | Upcasters — `register_upcaster` (schema evolution) | `orders`, `formkit_submissions` |
 | Drift detection — `on_drift="raise"` | `orders` |
+| Handler fingerprints — impure-handler warning, `RAKAIA_STRICT_HANDLER_FINGERPRINTS`, partial vs closure | `orders` (hermeticity) |
 | `replay`, single-stage | most Django demos |
 | Staged replay (`stage=`) + `ProjectionReader` | `projection_cookbook`, `partisipa_staged`, `partisipa_close`, `partisipa_merge` |
 | `merge_replay` (multi-stream deterministic order) | `partisipa_merge` |
@@ -171,21 +175,20 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Durable `DjangoStreamStore` (log persisted in the DB) | `formkit_submissions` (stream) |
 | File-backed `JsonlStreamStore` under Django, with the protocol server mounted alongside it for live SSE | `polyglot` |
 | The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)`, and naming a record with `subject_of` / `sequence_of` | `partisipa_intake` |
-| Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake` |
+| A consumer meeting a replaced stream (`Consumed.needs_rebuild`) and a transient apply error (`Consumed.transient`) | `consumer_rebuild` |
+| Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake`, `consumer_rebuild` |
 | The outcome record — `Outcome`, `DjangoOutcomeStore`, the `append`/`project` stages and all three statuses | `partisipa_intake` |
+| `migrate_stream` keeping a consumer's offsets and stamp (`adopt_generation`), or renumbering so it stops | `polyglot` (migrate) |
 | Stream coverage — `RAKAIA_COVERAGE_CHECKS`, `manage.py check_stream_coverage`, missing and stale rows from a `changed_field` column | `stream_coverage` |
 
 ### Known gaps
 
 No example exercises these yet — a good place to contribute a demo:
 
-- `RAKAIA_STRICT_HANDLER_FINGERPRINTS` and the impure-handler warning (covered by
-  `test_handler_fingerprint.py`, not by a demo).
-- A consumer that stops on a rewound or replaced stream (`Consumed.needs_rebuild`)
-  and one that retries a temporary error (`Consumed.transient`): `partisipa_intake`
-  runs a consumer but never recreates its stream or drops a connection.
 - Two workers under one consumer name taking turns (the cursor row lock) and
   `CursorMovedBackwards`: covered by `test_locking.py` on Postgres, not by a demo.
+- A consumer that stops on a rewound stream (`Consumed.needs_rebuild`): the
+  `consumer_rebuild` demo recreates (replaces) a stream, but never rewinds one.
 - `@stream_model` on a closed stream (`StreamClosed`) and on the memory or file
   store: `polyglot` wires its own signal instead.
 - `register_reducer` as the *public API* (the partisipa demos wire reducers via
@@ -199,8 +202,7 @@ No example exercises these yet — a good place to contribute a demo:
 - `RecordingExecutor` — applying for real while keeping the effects. The demos
   either write (`DjangoExecutor`) or preview (`CollectingExecutor`); none needs
   both at once, which is the case this executor exists for.
-- `migrate_stream` / `migrate_all` — moving a log between backends. `polyglot`
-  runs *on* the file-backed store but was seeded there, never copied onto it.
+- `migrate_all` — copying every stream at once. `migrate_consumer` copies one.
 - `DjangoExecutor(batch_updates=True)` and `DjangoExecutor(normalizers=...)`.
 - `ChangeLabel` and `EnvelopeMetadata` — the named types for an event's change
   label and metadata keys. They annotate fields every example already writes, but
