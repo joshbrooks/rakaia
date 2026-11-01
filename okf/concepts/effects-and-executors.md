@@ -49,6 +49,9 @@ Imported from `rakaia`:
 * [multi_owner](../examples/multi-owner.md) — `Ref`/`RefResolver`, `check_disjoint_defaults`, routing `ExternalEffect`s.
 * [orders](../examples/orders.md) — `Update`, `ExternalEffect`, `CollectingExecutor` dry-run.
 * [projection_cookbook](../examples/projection-cookbook.md) — `diff_effects_against_rows` verification.
+* [partisipa_close](../examples/partisipa-close.md) — `Retire` stamped with the triggering
+  event's timestamp; replay under a clock shifted six years writes the same values, and a
+  deliberately `now()`-stamped variant is shown writing different ones.
 
 # Known gaps
 

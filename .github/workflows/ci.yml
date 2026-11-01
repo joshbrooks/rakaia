@@ -128,8 +128,21 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra django --extra postgres
 
+      - name: Install just
+        # The two-worker demo below is run through its recipe, so that the CI
+        # leg and a developer's `just two-workers-demo-pg` cannot drift apart.
+        uses: extractions/setup-just@v3
+
       - name: Run tests against Postgres
         run: uv run pytest
+
+      - name: Two workers against Postgres
+        # `just demos` runs the same demo on SQLite, where `select_for_update()`
+        # compiles to a plain SELECT: it prints "skipped: SQLite has no row
+        # locks" and checks only the forward-only commit and the resume. This is
+        # the run that means something about the lock, so it belongs on the leg
+        # that has one.
+        run: just two-workers-demo-pg
 
   demos:
     # The examples are a tested surface, not a directory of prose. Every demo

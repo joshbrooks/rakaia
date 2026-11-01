@@ -61,6 +61,15 @@ Seeded 13 events for 2 sukus, each ending in a POM_1 close request.
 [4] DETERMINISTIC — re-replay the whole stream:
     2 cycle-close decisions — unchanged ✓
 
+[5] EVENT TIME — a retired row carries the close event's clock:
+    line       retired_at                 source
+    f-fb-1     2025-01-15T10:00:00+00:00  the close event
+    ...
+    f-mb-4     2025-01-16T10:00:00+00:00  the close event
+               2031-06-01T09:30:00+00:00  the replay clock, if the retire read now()
+    → 7 rows retired at 2025-01-15T10:00:00+00:00 - 2025-01-16T10:00:00+00:00 whether the clock reads 2026 or 2031 ✓
+    → the now() variant wrote 2031-06-01T09:30:00+00:00: a replay a year later would rewrite history ✗ (caught, not shipped)
+
 All close-gate checks passed ✓
 ```
 
@@ -72,6 +81,7 @@ Each check is asserted hard — a regression raises `CommandError` and exits non
 |---|---|
 | **Guarded transition** — an event ACCEPTED/REJECTED by a predicate over the projected state | `handlers.cycle_close` + `close_preconditions` (stage 2) |
 | **Replay-safe aggregate** — recomputed from contributing rows, never incremented | `handlers.balance_rollup` (stage 1 `reduce`) |
+| **Event-time soft delete** — `Retire` stamps a retired row with the triggering event's `ts`, never `now()` | `handlers.cycle_close` (the `Retire`) + `[5]` in `demo_close` |
 | Staged replay + `refs` (from `partisipa_staged`) | `staged_replay.staged_replay` / `DjangoProjectionReader` |
 | Per-event fold within a stage (last-write-wins, no batch collision) | `staged_replay.staged_replay` |
 
@@ -86,6 +96,10 @@ Each assertion was verified to fail on an injected regression:
 - a **vacuous guard** (always ACCEPTED) fails `[1] GATE` (Maubara wrongly accepted);
 - an **incrementing** balance aggregate fails `[3] REPLAY-SAFE` (balance drifts
   50 → 150 across replays);
+- a **`now()`-stamped retire** fails `[5] EVENT TIME` — first because the stamp is
+  not the close event's, and then because a replay under a shifted clock writes a
+  different value. `handlers.retire_with_now` is that mutation, kept so the demo
+  can replay it rather than describing it;
 - `[2]` only passes because the guard re-evaluates the healed state.
 
 `[3]`/`[4]` deliberately re-replay **onto the existing projections** (no reset), so
@@ -97,8 +111,8 @@ non-replay-safe aggregate by clearing it first.
 * **`seed.py`** — two sukus (one passing, one failing three ways) + the heal events, and the expected initial verdicts.
 * **`handlers.py`** — the stage plan: per-event facts, the balance aggregate, and the `close_preconditions` guard.
 * **`staged_replay.py`** — the staged orchestrator with per-stage `reduce` steps and the read-only `DjangoProjectionReader`.
-* **`models.py`** — the five projections, incl. the replay-safe `Balance` and the `CycleClose` state.
-* **`management/commands/demo_close.py`** — seeds and runs all four asserted checks.
+* **`models.py`** — the five projections, incl. the replay-safe `Balance`, the `CycleClose` state and `FinanceLine.retired_at`.
+* **`management/commands/demo_close.py`** — seeds and runs all five asserted checks.
 
 ## Caveats
 

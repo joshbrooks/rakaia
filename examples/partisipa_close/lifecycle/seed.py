@@ -110,8 +110,17 @@ SAMPLE_EVENTS: list[dict] = [
         "form_type": "POM_1",
         "key": "close-fb",
         "suku": "Fatuberliu",
+        # The event's own clock. An accepted close retires that suku's finance
+        # lines with *this* value, so a replay years later still reads it.
+        "ts": "2025-01-15T10:00:00+00:00",
     },
-    {"schema_version": 1, "form_type": "POM_1", "key": "close-mb", "suku": "Maubara"},
+    {
+        "schema_version": 1,
+        "form_type": "POM_1",
+        "key": "close-mb",
+        "suku": "Maubara",
+        "ts": "2025-01-16T10:00:00+00:00",
+    },
 ]
 
 # Maubara's three failures, fixed: project finished, a second verified meeting,
@@ -154,3 +163,23 @@ EXPECTED_INITIAL = {
         ],
     ),
 }
+
+
+def expected_retired() -> dict[str, str]:
+    """Every finance line that a closed cycle should have retired, and its stamp.
+
+    Derived from the seed rather than written out: a line belongs to the suku
+    whose close retires it, and its stamp is that close event's `ts`. A second
+    expression of the same fact, not a copy of the demo's output — which is what
+    makes it an assertion.
+    """
+    stamps = {
+        event["suku"]: event["ts"]
+        for event in SAMPLE_EVENTS
+        if event["form_type"] == "POM_1"
+    }
+    return {
+        event["key"]: stamps[event["suku"]]
+        for event in SAMPLE_EVENTS + HEAL_EVENTS
+        if event["form_type"] == "FINANCE"
+    }

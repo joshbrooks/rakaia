@@ -93,6 +93,7 @@ One command each: seed a stream, replay it, assert the projection.
 | [`consumer_rebuild`](https://github.com/joshbrooks/rakaia/tree/main/examples/consumer_rebuild) | A consumer whose stream was deleted and recreated (`Consumed.needs_rebuild`), a `transient` apply error that is retried, and a pass that dies halfway and converges on re-run | `just consumer-rebuild-demo` |
 | `polyglot` (migrate) | `migrate_stream` keeping offsets so a consumer resumes, and renumbering so it stops as `replaced` (`adopt_generation`) | `just migrate-consumer-demo` |
 | `orders` (hermeticity) | The impure-handler warning and `RAKAIA_STRICT_HANDLER_FINGERPRINTS`, plus drift through a `functools.partial` that a closure misses | `just hermeticity-demo` |
+| [`two_workers`](https://github.com/joshbrooks/rakaia/tree/main/examples/two_workers) | Two worker processes under one consumer name: the cursor row lock (the second waits rather than applying the same events), a forward-only commit refusing a rewind, and a resume that reads the delta rather than the log | `just two-workers-demo`, `just two-workers-demo-pg` |
 
 ### Standalone (no Django)
 
@@ -151,6 +152,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Concept | Demonstrated by |
 |---|---|
 | The effect types: `Upsert`, `Update`, `Delete`+`Exclude`, `ExternalEffect` | `orders`, `partisipa_repeaters`, `multi_owner` |
+| `Retire` — soft delete whose stamp is the triggering event's timestamp, never the replay clock | `partisipa_close`, `multi_owner` |
 | `CollectingExecutor` (dry-run) | `orders`, `projection_cookbook` |
 | `DjangoExecutor` | every Django demo |
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
@@ -176,7 +178,9 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | File-backed `JsonlStreamStore` under Django, with the protocol server mounted alongside it for live SSE | `polyglot` |
 | The consuming loop — `Consumer`, `django_consumer`, `run(on_error=…)`, and naming a record with `subject_of` / `sequence_of` | `partisipa_intake` |
 | A consumer meeting a replaced stream (`Consumed.needs_rebuild`) and a transient apply error (`Consumed.transient`) | `consumer_rebuild` |
-| Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake`, `consumer_rebuild` |
+| Durable reading position (`ConsumerCursor`, `load_cursor`) and the run's status | `partisipa_intake`, `consumer_rebuild`, `two_workers` |
+| Two workers under one consumer name — the cursor row lock, and a forward-only commit (`CursorMovedBackwards`) | `two_workers` (Postgres leg) |
+| Resuming from a saved cursor reads the delta, not the whole log | `two_workers` |
 | The outcome record — `Outcome`, `DjangoOutcomeStore`, the `append`/`project` stages and all three statuses | `partisipa_intake` |
 | `migrate_stream` keeping a consumer's offsets and stamp (`adopt_generation`), or renumbering so it stops | `polyglot` (migrate) |
 | Stream coverage — `RAKAIA_COVERAGE_CHECKS`, `manage.py check_stream_coverage`, missing and stale rows from a `changed_field` column | `stream_coverage` |
@@ -185,8 +189,6 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 No example exercises these yet — a good place to contribute a demo:
 
-- Two workers under one consumer name taking turns (the cursor row lock) and
-  `CursorMovedBackwards`: covered by `test_locking.py` on Postgres, not by a demo.
 - A consumer that stops on a rewound stream (`Consumed.needs_rebuild`): the
   `consumer_rebuild` demo recreates (replaces) a stream, but never rewinds one.
 - `@stream_model` on a closed stream (`StreamClosed`) and on the memory or file

@@ -15,7 +15,10 @@ verified:
 Decides a POM_1 cycle-close purely from cross-form projected state: a guarded
 transition rejects a premature close, then self-heals once the preconditions
 are met. Demonstrates staged replay with per-stage reducers and
-`reconcile_children`.
+`reconcile_children`. An accepted close `Retire`s the suku's open finance lines
+with the close event's own timestamp: replaying under a clock shifted six years
+writes identical stamps, while the demo's deliberately `now()`-stamped variant
+does not.
 
 # Run
 
@@ -27,3 +30,4 @@ just partisipa-close-demo
 
 * [Versioned handlers & replay](../concepts/versioned-handlers-and-replay.md)
 * [Projections & fan-out](../concepts/projections-and-fan-out.md)
+* [Effects & executors](../concepts/effects-and-executors.md) — `Retire` at the event's time.
