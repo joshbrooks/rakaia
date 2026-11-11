@@ -42,6 +42,7 @@ nav = [
         { "Build a projection" = "projection-cookbook.md" },
         { "Read a stream incrementally" = "subscriber-cursors.md" },
         { "Store streams in files" = "store-streams-in-files.md" },
+        { "Write your own store" = "write-your-own-store.md" },
         { "Combine human and machine decisions" = "alerts-projection.md" },
         { "Check a stream still matches its table" = "check-stream-coverage.md" },
         { "Deploy it" = "deployment.md" },

@@ -41,6 +41,13 @@ Imported from `rakaia`:
   (wraps any executor, applies through it and keeps what it handed on — what a
   rebuild gate diffs); `InMemoryProjections` (dict-backed executor and reader; raises
   `MultipleRowsMatched` where Django raises `MultipleObjectsReturned`).
+* Writing your own executor: `apply_effects(effects, *, upsert, update_run, delete,
+  retire)` runs a batch in the shared order (writes, deletes, retires), with `Ref`s
+  resolved and defaults checked, and returns an `ApplyReport`; you supply the four writes.
+  `upsert` returns an `UpsertOutcome` (`created`, `written` or `skipped`) and a
+  `RowAccessor` for the row. `OnDriftPolicy` (`"warn"` or `"raise"`) is the type of
+  `replay(on_drift=…)`. `rakaia.testing.executor_contract.ExecutorContract` holds an
+  executor to the same checks as the built-in ones.
 * Django: `DjangoExecutor` (applies to the ORM, resolves `Ref`s);
   `diff_effects_against_rows` (verify replay reproduces existing rows).
 
@@ -56,6 +63,8 @@ Imported from `rakaia`:
 # Known gaps
 
 * `DjangoExecutor(skip_unchanged=True)` is not exercised by an example.
+* `apply_effects`, `plan_appends` and the other names for writing your own store or
+  executor are exercised by the built-in stores and a tested docs page, not by an example.
 
 # Deeper reference
 

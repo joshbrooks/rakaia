@@ -1059,7 +1059,7 @@ StreamEvent.objects.tagged("data-loss").correlated("INC-42")
 ```
 
 **See it.** No example covers this yet. The tests that prove it are
-`tests/store_contract.py` (the `tags and correlation id` block, run against all
+`rakaia/testing/store_contract.py` (the `tags and correlation id` block, run against all
 three stores), `tests/test_django_rakaia/test_event_tags.py`, and
 `TestBetweenTwoEntryCountingStores.test_tags_and_correlation_cross_too` in
 `tests/test_rakaia/test_migrate.py`.
@@ -1094,7 +1094,7 @@ store.delete("ida/submissions", force=True)  # deliberate, so carried out
 ```
 
 **See it.** No example covers this yet. The `Permanent streams` block in
-`tests/server_store_contract.py` runs against all three stores, and
+`rakaia/testing/server_store_contract.py` runs against all three stores, and
 `tests/test_rakaia/test_stream_rules.py` holds the rules themselves.
 
 ```console
@@ -1130,7 +1130,7 @@ ex.apply(
 ```
 
 **See it.** No example covers this yet. The checking half of
-`tests/executor_contract.py` runs against `CollectingExecutor`, `DjangoExecutor` and
+`rakaia/testing/executor_contract.py` runs against `CollectingExecutor`, `DjangoExecutor` and
 `InMemoryProjections` alike.
 
 ```console

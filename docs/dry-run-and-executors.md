@@ -105,11 +105,11 @@ proj.get("app.Balance", suku="A").total
 
 Because it is what the demos and tests rehearse on, "it worked in memory" has to
 mean something on Django. Two shared conformance suites enforce that:
-`tests/executor_contract.py` holds `InMemoryProjections` and `DjangoExecutor` to the
+`rakaia/testing/executor_contract.py` holds `InMemoryProjections` and `DjangoExecutor` to the
 same batch semantics (writes, then deletes, then retires; one `RefResolver` per
 `apply()`; collision detection before the first write), holds `CollectingExecutor`
 to the checking half of it (collisions, unresolved `Ref`s, the counts), and
-`tests/projection_reader_contract.py` does the same for its reader half against
+`rakaia/testing/projection_reader_contract.py` does the same for its reader half against
 `DjangoProjectionReader` and `PreloadedProjectionReader`.
 
 It is deliberately not an ORM: exact match, `__in` and `__isnull` are the only

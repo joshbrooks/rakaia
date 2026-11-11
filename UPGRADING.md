@@ -35,6 +35,16 @@ until it narrows the type first.
 a path or from one, still moves no data: the new store starts with whatever it
 already holds.
 
+## The contract suites moved out of `tests/`
+
+`tests/store_contract.py`, `server_store_contract.py`, `executor_contract.py`,
+`outcome_store_contract.py` and `projection_reader_contract.py` are now
+`rakaia.testing.<same name>`, in the wheel as well as the sdist. Anything that
+imported them from a checkout or an unpacked sdist as `tests.store_contract` (and so
+on) fails with `ModuleNotFoundError`: change it to `from rakaia.testing.store_contract
+import StoreContract`. The suites themselves are unchanged, and pytest is still not
+installed for you.
+
 ---
 
 # 0.10.0
