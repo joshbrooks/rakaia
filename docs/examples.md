@@ -200,6 +200,8 @@ No example exercises these yet — a good place to contribute a demo:
   raw `{"reduce": […]}` stage config instead).
 - `reconcile_tree` (the `partisipa_repeaters` spike hand-rolls the equivalent
   with `Delete`+`Exclude`).
+- Reading events by tag (`read_tagged`, `TaggedReads`): no example covers it; the
+  contract suite `rakaia/testing/tagged_reads_contract.py` proves it.
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
 - `rebuild_and_verify` (the one-call guarded rebuild-and-diff). The

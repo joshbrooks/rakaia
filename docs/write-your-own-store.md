@@ -157,6 +157,14 @@ framework store, there is a suite for each of the other jobs:
 | Applies effects to tables | `rakaia.testing.executor_contract.ExecutorContract` | `Executor` |
 | Records what a consumer did with each event | `rakaia.testing.outcome_store_contract.OutcomeStoreContract` | `OutcomeStore` |
 | Answers a handler's lookups | `rakaia.testing.projection_reader_contract.ProjectionReaderContract` | `ProjectionReader` |
+| Can return the events carrying given tags | `rakaia.testing.tagged_reads_contract.TaggedReadsContract` | `TaggedReads` |
+
+`TaggedReads` is optional: a protocol server store does not need it, and
+`ServerStoreContract` does not ask for it. Give your store `read_tagged(path, *tags,
+newest_first=False, limit=None)` to let a caller fetch the events carrying every one
+of the tags. It must not extend the stream's TTL
+window, and `check_tagged_read` and `pick_tagged` (both exported from `rakaia`) hold the
+argument checks and the matching the built-in stores share.
 
 One check sets the clock by replacing `time.time`, so a store that reads the
 time any other way (`from time import time`, `datetime.now()`) fails the
@@ -178,6 +186,7 @@ All of these import from `rakaia`; the signatures are in the
 | `AppendPlan`, `AppendVerdict`, `PlannedWrite` | What `plan_appends` returns: one verdict and one write (or `None`) per item, plus what the stream becomes afterwards (`last_seq`, `close`, `closed_by`, `producer_commits`). A verdict's `producer_result` is a `ProducerAccepted` when a producer-fenced append is written, and its `proposed_state` is what to save. |
 | `plan_initial_write` | The same, for the body of a create. |
 | `page_of`, `check_page_size` | Cut a page for `read(limit=...)`. `page_of` checks the size itself; call `check_page_size` alone to refuse a bad size before any side effect, such as extending a TTL. |
+| `check_tagged_read`, `pick_tagged` | For `read_tagged`: `check_tagged_read(tags, limit)` refuses no tags, a bad tag or a limit below 1 and returns the cleaned tags; `pick_tagged(messages, tags, newest_first=..., limit=...)` keeps the messages carrying every tag, in the order asked, cut to the limit. |
 | `apply_effects` | An executor supplies four writes (an upsert, a run of updates, a delete, a retire) and this runs them in the right order with `Ref` values filled in. |
 | `UpsertOutcome`, `RowAccessor`, `ApplyReport` | The types `apply_effects` takes and returns. |
 | `OnDriftPolicy` | The type of `replay(on_drift=...)`, for a wrapper that forwards it. |
