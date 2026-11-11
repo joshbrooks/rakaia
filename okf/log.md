@@ -2,6 +2,9 @@
 
 ## 2026-11-11
 
+* **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_STORE` accepts
+  the dotted import path of a store of your own, and `rakaia.E003` reports one that does not
+  import (#364).
 * **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_JSONL_ROOT`,
   `RAKAIA_JSONL_SEGMENT_SIZE`, `RAKAIA_JSONL_FSYNC` and `RAKAIA_ENABLE_SSE`, which the code
   read but the bundle never named.
