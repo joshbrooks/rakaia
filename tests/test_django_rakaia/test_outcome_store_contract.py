@@ -15,7 +15,7 @@ import pytest
 
 from django_rakaia.outcomes import DjangoOutcomeStore
 from rakaia.outcomes import Outcome
-from tests.outcome_store_contract import OutcomeStoreContract, project
+from rakaia.testing.outcome_store_contract import OutcomeStoreContract, project
 
 
 def an_outcome(**kw) -> Outcome:

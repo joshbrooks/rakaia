@@ -470,33 +470,19 @@ class RefResolver:
 class ApplyReport:
     """What ``Executor.apply`` observed while applying a batch.
 
-    ``retire_flips``: one ``(retire_effect, flipped_rows)`` entry per retire that
-    opted into notifications (a :class:`Transition`), where ``flipped_rows`` is the
-    list of identity dicts for the rows whose liveness sentinel actually went
-    NULL->set. The orchestrator turns these into one :class:`ExternalEffect` each.
-    Executors that don't observe flips (or predate this) may return ``None``; the
-    orchestrator treats that as empty.
+    ``upserts_created``, ``upserts_written`` and ``upserts_skipped`` count how the
+    batch's :class:`Upsert` effects resolved: ``created`` inserted a row,
+    ``written`` issued any write (so ``created`` is a subset of it), and
+    ``skipped`` matched a row whose stored values already equalled the effect's,
+    so no write was issued. ``written + skipped`` is the number of upserts, and an
+    executor that always writes reports ``skipped`` as 0.
 
-    ``upserts_created`` / ``upserts_written`` / ``upserts_skipped``: how the batch's
-    :class:`Upsert` effects resolved. ``created`` inserted a row, ``written`` issued
-    a write of either kind (so ``created`` is a subset of it), and ``skipped``
-    matched an existing row whose stored values already equalled the effect's — no
-    write issued. The three satisfy
-    ``written + skipped == <number of Upsert effects>``, and ``written - created``
-    is the number of updates.
-
-    **Scoped to :class:`Upsert` on purpose.** The question these answer is how much
-    write churn a replay actually caused, which is a property of the upsert path:
-    ``skip_unchanged`` is wired there and nowhere else, because :class:`Update`
-    already issues a single UPDATE that does not advance ``auto_now`` columns.
-    Deletes and retires are counted by their own effects.
-
-    Without ``skip_unchanged`` an executor writes unconditionally, so ``skipped`` is
-    0 and ``written`` equals the upsert count. A non-zero ``skipped`` is the
-    measurement that was previously unobservable: the executor computed which
-    columns changed and then discarded the answer, so a consumer could not tell a
-    replay that rewrote every row from one that wrote nothing — both reported the
-    same converged state."""
+    ``retire_flips`` holds one ``(retire_effect, flipped_rows)`` entry per retire
+    that asked to be notified (it carries a :class:`Transition`), where
+    ``flipped_rows`` are the identity dicts of the rows that actually went from
+    live to retired. An executor that does not observe flips may return ``None``
+    from ``apply`` instead of a report; the caller reads that as no flips.
+    """
 
     retire_flips: list[tuple[Retire, list[dict[str, Any]]]] = dc_field(
         default_factory=list
@@ -517,7 +503,7 @@ class Executor(Protocol):
 
     ``runtime_checkable`` so ``isinstance(x, Executor)`` works — every protocol
     in ``protocols.py`` carries it, and the shared conformance suite
-    (``tests/executor_contract.py``) opens with that assertion. It checks method
+    (``rakaia/testing/executor_contract.py``) opens with that assertion. It checks method
     *presence* only, which is why the suite goes on to pin behaviour.
     """
 

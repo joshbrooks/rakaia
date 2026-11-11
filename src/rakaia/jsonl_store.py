@@ -3,7 +3,7 @@
 **This is a proof of concept, not a shipped backend.** It exists to answer one
 question: is `rakaia.protocols.StreamServerStore` a real seam, or a description
 of what `DjangoStreamStore` happens to do? The measure is the two shared
-conformance suites — `tests/store_contract.py` and `tests/server_store_contract.py`
+conformance suites — `rakaia/testing/store_contract.py` and `rakaia/testing/server_store_contract.py`
 — passing against a backend with no database under it at all.
 
 Layout, one directory per stream::

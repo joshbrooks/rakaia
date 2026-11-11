@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from rakaia.jsonl_outcomes import JsonlOutcomeStore
-from tests.outcome_store_contract import OutcomeStoreContract
+from rakaia.testing.outcome_store_contract import OutcomeStoreContract
 
 
 class TestJsonlOutcomeStoreContract(OutcomeStoreContract):

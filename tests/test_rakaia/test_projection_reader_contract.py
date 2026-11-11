@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from rakaia.executors import InMemoryProjections
-from tests.projection_reader_contract import ProjectionReaderContract, ReaderSeam
+from rakaia.testing.projection_reader_contract import (
+    ProjectionReaderContract,
+    ReaderSeam,
+)
 
 
 class TestInMemoryProjectionsReaderContract(ProjectionReaderContract):

@@ -26,7 +26,7 @@ directly off the database. That is what removed the need for a second,
 partial implementation of the protocol in the Django integration.
 
 Every store is held to one shared conformance suite
-(`tests/server_store_contract.py`), and what an append may do and what it writes
+(`rakaia/testing/server_store_contract.py`), and what an append may do and what it writes
 are decided by one pure module (`rakaia.append_decision`) that every store
 calls, so they cannot drift.
 """

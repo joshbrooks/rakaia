@@ -93,7 +93,7 @@ def append_event(
 
     ``create()`` is called unconditionally rather than guarded by ``has()``:
     creation is idempotent by contract and — as
-    ``tests/store_contract.py::test_create_on_an_existing_stream_preserves_its_messages``
+    ``rakaia/testing/store_contract.py::test_create_on_an_existing_stream_preserves_its_messages``
     pins — a redundant create cannot truncate a populated stream or rewind its
     offsets. One round trip instead of two.
     """

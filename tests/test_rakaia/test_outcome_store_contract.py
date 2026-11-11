@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from rakaia.outcomes import InMemoryOutcomeStore
-from tests.outcome_store_contract import OutcomeStoreContract
+from rakaia.testing.outcome_store_contract import OutcomeStoreContract
 
 
 class TestInMemoryOutcomeStoreContract(OutcomeStoreContract):

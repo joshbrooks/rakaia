@@ -60,11 +60,21 @@ if TYPE_CHECKING:
 
     # BEGIN generated: imports (edit `_EXPORTS`, then run `just exports`)
     from .append import append_if_changed, snapshots_equal
+    from .append_decision import (
+        AppendPlan,
+        AppendVerdict,
+        PlannedWrite,
+        StreamFacts,
+        plan_appends,
+        plan_initial_write,
+    )
+    from .applying import RowAccessor, UpsertOutcome, apply_effects
     from .consumer import Consumer, ConsumerCursorStore, InMemoryConsumerCursorStore
     from .context import get_provenance, provenance
-    from .drift import DriftLedger
+    from .drift import DriftLedger, OnDriftPolicy
     from .effects import (
         AnyEffect,
+        ApplyReport,
         Delete,
         DuplicateProducesError,
         Effect,
@@ -114,6 +124,7 @@ if TYPE_CHECKING:
         StreamServerStore,
         WritableStore,
     )
+    from .read_decision import check_page_size, page_of
     from .registry import (
         HANDLERS_META_STREAM,
         REDUCERS_META_STREAM,
@@ -346,6 +357,22 @@ _EXPORTS: dict[str, str] = {
     "Consumer": "rakaia.consumer",
     "ConsumerCursorStore": "rakaia.consumer",
     "InMemoryConsumerCursorStore": "rakaia.consumer",
+    # What a store or executor written outside this repo is built from: the same
+    # rules the built-in ones share. The suites that hold them to account live
+    # in `rakaia.testing`.
+    "plan_appends": "rakaia.append_decision",
+    "plan_initial_write": "rakaia.append_decision",
+    "StreamFacts": "rakaia.append_decision",
+    "AppendPlan": "rakaia.append_decision",
+    "AppendVerdict": "rakaia.append_decision",
+    "PlannedWrite": "rakaia.append_decision",
+    "page_of": "rakaia.read_decision",
+    "check_page_size": "rakaia.read_decision",
+    "apply_effects": "rakaia.applying",
+    "RowAccessor": "rakaia.applying",
+    "UpsertOutcome": "rakaia.applying",
+    "ApplyReport": "rakaia.effects",
+    "OnDriftPolicy": "rakaia.drift",
     # Version
     # "__version__" is computed, not imported — see __getattr__.
 }
@@ -358,7 +385,10 @@ __all__ = [
     # BEGIN generated: __all__ (edit `_EXPORTS`, then run `just exports`)
     "AnyEffect",
     "AppendOptions",
+    "AppendPlan",
     "AppendResult",
+    "AppendVerdict",
+    "ApplyReport",
     "ChangeLabel",
     "CloseResult",
     "ClosedBy",
@@ -402,10 +432,12 @@ __all__ = [
     "MergeKeyError",
     "Migration",
     "MissingReaderError",
+    "OnDriftPolicy",
     "OnErrorPolicy",
     "Outcome",
     "OutcomeStatus",
     "OutcomeStore",
+    "PlannedWrite",
     "Poll",
     "PollStatus",
     "ProducerAccepted",
@@ -427,6 +459,7 @@ __all__ = [
     "RefResolver",
     "ReplayResult",
     "Retire",
+    "RowAccessor",
     "RowEffect",
     "SegmentSizeMismatch",
     "SequenceConflict",
@@ -437,6 +470,7 @@ __all__ = [
     "StreamClosed",
     "StreamConfigConflict",
     "StreamError",
+    "StreamFacts",
     "StreamMessage",
     "StreamNotFound",
     "StreamServerStore",
@@ -453,10 +487,13 @@ __all__ = [
     "UpcasterVersion",
     "Update",
     "Upsert",
+    "UpsertOutcome",
     "WritableStore",
     "append_if_changed",
+    "apply_effects",
     "calculate_cursor",
     "check_disjoint_defaults",
+    "check_page_size",
     "consume",
     "create_app",
     "decode_outcome",
@@ -471,6 +508,9 @@ __all__ = [
     "merge_replay",
     "migrate_all",
     "migrate_stream",
+    "page_of",
+    "plan_appends",
+    "plan_initial_write",
     "poll",
     "project_latest",
     "provenance",

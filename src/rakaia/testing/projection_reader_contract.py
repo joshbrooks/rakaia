@@ -7,7 +7,7 @@ and its batch-fetching subclass `PreloadedProjectionReader` — returning the sa
 answer for the same lookup. `diff_effects_against_rows` swaps one for the other
 purely as an optimisation, so a disagreement between them would not fail loudly;
 it would quietly report a clean rebuild that is not clean. This is the reader
-twin of `tests/store_contract.py`. Subclass `ProjectionReaderContract` in each
+twin of `rakaia/testing/store_contract.py`. Subclass `ProjectionReaderContract` in each
 backend's test package and provide a `seam` fixture returning a
 :class:`ReaderSeam`. See #121.
 
@@ -47,9 +47,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
-
 from rakaia.effects import Effect, Upsert
+
+from ._need_pytest import pytest
 
 
 @dataclass(frozen=True)

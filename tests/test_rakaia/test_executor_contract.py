@@ -12,7 +12,7 @@ from rakaia.executors import (
     MultipleRowsMatched,
     RecordingExecutor,
 )
-from tests.executor_contract import (
+from rakaia.testing.executor_contract import (
     ExecutorChecksContract,
     ExecutorContract,
     ExecutorSeam,

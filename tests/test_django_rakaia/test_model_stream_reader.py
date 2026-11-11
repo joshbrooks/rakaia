@@ -185,7 +185,7 @@ class TestTheStoreIsTheReaderForStoredEvents:
     that was not JSON.
 
     `DjangoStreamStore.read()` was already the correct reading of those tables,
-    already held to `tests/server_store_contract.py`, and — since #180 — already
+    already held to `rakaia/testing/server_store_contract.py`, and — since #180 — already
     able to take a database alias, which the deleted reader never could. It had
     no callers in this repository or in the one consumer (verified: no import, no
     dynamic reference, and an exact-minor pin between them), only its own tests,

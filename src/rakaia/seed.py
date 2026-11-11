@@ -24,7 +24,7 @@ nothing else:
 * **Payloads may be dicts or already-encoded bytes**, because callers pinning an
   exact on-the-wire shape pass bytes.
 * **Creation is unconditional.** `create()` is idempotent by store contract and,
-  as ``tests/store_contract.py::test_create_on_an_existing_stream_preserves_its_messages``
+  as ``rakaia/testing/store_contract.py::test_create_on_an_existing_stream_preserves_its_messages``
   pins, cannot truncate a populated stream — so seeding the same path twice
   appends, and no caller needs a ``has()`` guard.
 

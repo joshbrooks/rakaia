@@ -1,6 +1,6 @@
 """Shared conformance contract for the protocol-server store surface.
 
-`tests/store_contract.py` covers `WritableStore` — what `replay()` and
+`rakaia/testing/store_contract.py` covers `WritableStore` — what `replay()` and
 projections need. This covers `StreamServerStore`: the protocol lifecycle a
 Durable Streams server needs from whatever is under it — producer fencing,
 close, TTL, long-poll, response formatting.
@@ -27,10 +27,9 @@ drift while #214 was undecided. #214 decided it — both flatten, matching
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
-
-import pytest
 
 from rakaia.protocol_server import _wait_for_messages
 from rakaia.protocols import StreamServerStore
@@ -52,6 +51,8 @@ from rakaia.types import (
     StreamNotFound,
 )
 from rakaia.types import Stream as ProtocolStream
+
+from ._need_pytest import pytest
 
 
 def _protocol_methods() -> list[str]:
@@ -957,13 +958,19 @@ class ServerStoreContract:
     # code, but what it waits on is the store's answers, so it runs once per
     # backend.
 
-    async def test_wait_returns_immediately_when_messages_exist(self, store):
+    def test_wait_returns_immediately_when_messages_exist(self, store):
+        asyncio.run(self._wait_returns_immediately_when_messages_exist(store))
+
+    async def _wait_returns_immediately_when_messages_exist(self, store):
         await store.run_sync(store.create, "s")
         await store.run_sync(store.append, "s", b'{"id": 1}')
         messages, _, _ = await _wait_for_messages(store, "s", "-1", 5.0)
         assert len(messages) == 1
 
-    async def test_wait_times_out_empty_when_caught_up(self, store):
+    def test_wait_times_out_empty_when_caught_up(self, store):
+        asyncio.run(self._wait_times_out_empty_when_caught_up(store))
+
+    async def _wait_times_out_empty_when_caught_up(self, store):
         await store.run_sync(store.create, "s")
         await store.run_sync(store.append, "s", b'{"id": 1}')
         head = await store.run_sync(store.get_current_offset, "s")
@@ -971,7 +978,10 @@ class ServerStoreContract:
         assert messages == []
         assert timed_out is True
 
-    async def test_wait_returns_on_a_closed_stream(self, store):
+    def test_wait_returns_on_a_closed_stream(self, store):
+        asyncio.run(self._wait_returns_on_a_closed_stream(store))
+
+    async def _wait_returns_on_a_closed_stream(self, store):
         await store.run_sync(store.create, "s")
         await store.run_sync(store.append, "s", b'{"id": 1}')
         head = await store.run_sync(store.get_current_offset, "s")
@@ -980,9 +990,10 @@ class ServerStoreContract:
         assert messages == []
         assert closed is True
 
-    async def test_wait_wakes_for_an_append_made_while_waiting(self, store):
-        import asyncio
+    def test_wait_wakes_for_an_append_made_while_waiting(self, store):
+        asyncio.run(self._wait_wakes_for_an_append_made_while_waiting(store))
 
+    async def _wait_wakes_for_an_append_made_while_waiting(self, store):
         await store.run_sync(store.create, "s")
         head = await store.run_sync(store.get_current_offset, "s")
 
@@ -996,12 +1007,13 @@ class ServerStoreContract:
         assert timed_out is False
         assert [json.loads(m.data) for m in messages] == [{"id": 1}]
 
-    async def test_a_wait_that_returns_messages_extends_the_ttl_window(self, store):
+    def test_a_wait_that_returns_messages_extends_the_ttl_window(self, store):
+        asyncio.run(self._a_wait_that_returns_messages_extends_the_ttl_window(store))
+
+    async def _a_wait_that_returns_messages_extends_the_ttl_window(self, store):
         """The wait reads with `peek`, which does not touch, so it must touch on
         the way out with messages. Without that, a stream kept alive by
         long-polling readers alone would expire under them."""
-        import asyncio
-
         await store.run_sync(store.create, "s", ttl_seconds=1)
         await store.run_sync(store.append, "s", b'{"id": 1}')
         await asyncio.sleep(0.6)
@@ -1012,7 +1024,10 @@ class ServerStoreContract:
             "the wait did not extend the window"
         )
 
-    async def test_wait_on_a_missing_stream_raises(self, store):
+    def test_wait_on_a_missing_stream_raises(self, store):
+        asyncio.run(self._wait_on_a_missing_stream_raises(store))
+
+    async def _wait_on_a_missing_stream_raises(self, store):
         with pytest.raises(StreamNotFound):
             await _wait_for_messages(store, "nope", "-1", 0.1)
 

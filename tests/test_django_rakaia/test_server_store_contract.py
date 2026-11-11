@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from django_rakaia.django_store import DjangoStreamStore
-from tests.server_store_contract import ServerStoreContract
+from rakaia.testing.server_store_contract import ServerStoreContract
 
 
 @pytest.mark.django_db(transaction=True)

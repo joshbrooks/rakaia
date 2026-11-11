@@ -27,12 +27,12 @@ from .effects import (
     check_disjoint_defaults,
 )
 
-#: How an upsert resolved; see `ApplyReport` for what the three mean.
 UpsertOutcome = Literal["created", "written", "skipped"]
+"""How an upsert resolved; see `ApplyReport` for what the three mean."""
 
-#: `field -> value` over the row an upsert landed on, ``"pk"``/``"id"`` meaning
-#: the primary key — what a sibling's `Ref` reads.
 RowAccessor = Callable[[str], Any]
+"""``field -> value`` over the row an upsert landed on, with ``"pk"`` and ``"id"``
+meaning the primary key. It is what a sibling effect's `Ref` reads."""
 
 
 def apply_effects(
@@ -45,18 +45,18 @@ def apply_effects(
 ) -> ApplyReport:
     """Apply `effects` through the four writes an executor supplies.
 
-    One pass per write-order rank — writes, then deletes, then retires, as
-    `_write_order_rank` says — so a reconcile batch converges whatever order its
-    handlers emitted, and a ``produces=`` row is recorded before any later effect
-    that refs it. Every effect reaches its write with its `Ref`s already
-    resolved.
+    Writes go first, then deletes, then retires, so a batch converges whatever
+    order its handlers emitted. A ``produces=`` row is recorded as soon as its
+    upsert lands, and every effect reaches your function with its `Ref` values
+    already filled in. `upsert` returns how the row resolved (see `UpsertOutcome`)
+    and a `RowAccessor` for the row it landed on; `retire` returns the identity
+    dicts of the rows it flipped.
 
-    A run of consecutive `Update`s within a pass is handed over in one call, so
-    an executor can collapse a fanned-out change into one statement (#199). The
-    run ends at the first effect of any other kind, so the writes still land in
-    the order they were emitted: an update emitted before an upsert is applied
-    before it. A run whose `Ref` cannot be resolved raises before any of it is
-    handed over.
+    Consecutive `Update` effects are handed to `update_run` together, so you can
+    send them as one statement; the run ends at the first effect of any other
+    kind, so writes still land in the order they were emitted. Raises
+    `EffectCollisionError` if the batch's defaults overlap, and
+    `UnresolvedRefError` if a `Ref` has nothing to read.
     """
     effects_list = list(effects)
     check_disjoint_defaults(effects_list)

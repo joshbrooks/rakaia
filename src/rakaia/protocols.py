@@ -73,7 +73,7 @@ class WritableStore(ReadableStore, Protocol):
 
     `append` and `append_many` return `AppendResult`, and every store in this
     package does. `create` is left `Any`. The read-back behaviour is exercised
-    by the shared conformance suite (`tests/store_contract.py`).
+    by the shared conformance suite (`rakaia/testing/store_contract.py`).
     """
 
     def has(self, path: str) -> bool:
@@ -144,7 +144,7 @@ class StreamServerStore(WritableStore, Protocol):
     implementation raising a bare `ValueError` will surface as a 500.
 
     The shared conformance suite for this surface is
-    `tests/server_store_contract.py`.
+    `rakaia/testing/server_store_contract.py`.
     """
 
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:

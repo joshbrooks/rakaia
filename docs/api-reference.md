@@ -125,6 +125,24 @@ page is the contract.
 | `PreloadedProjectionReader` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, using: 'str \| None' = None) -> 'None'` | A :class:`DjangoProjectionReader` that bulk-fetches, up front, the rows a batch of effects will look up — so each :meth:`get` serves from an in-memory snapshot instead of issuing one ``SELECT``… |
 | `ModelStreamReader` | `django_rakaia` | `(*, queryset_for: 'Callable[[str], QuerySet[Any]]', order_by: 'str', to_payload: 'Callable[[Any], dict[str, Any]]', chunk_size: 'int' = 1000) -> 'None'` | A read-only adapter that satisfies the subset of the `StreamStore` interface that `rakaia.replay` uses. |
 
+## Writing your own store or executor
+
+| Name | Import from | Signature | What it does |
+|---|---|---|---|
+| `plan_appends` | `rakaia` | `(facts: 'StreamFacts', items: 'Sequence[AppendOptions \| None]', *, payloads: 'Sequence[bytes]', producer_states: 'Mapping[str, ProducerState \| None] \| None' = None, now: 'float') -> 'AppendPlan'` | Decide a batch of appends and work out what each admitted item stores. |
+| `plan_initial_write` | `rakaia` | `(content_type: 'str \| None', data: 'bytes') -> 'AppendPlan'` | What the body of a create writes, as a plan of one. |
+| `StreamFacts` | `rakaia` | `(closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None, content_type: 'str \| None' = None, last_seq: 'str \| None' = None) -> None` | What the admission rules need to know about a stream, whatever the backend. |
+| `AppendPlan` | `rakaia` | `(verdicts: 'list[AppendVerdict]', writes: 'list[PlannedWrite \| None]', last_seq: 'str \| None' = None, close: 'bool' = False, closed_by: 'ClosedBy \| None' = None, producer_commits: 'dict[str, ProducerAccepted]' = <factory>) -> None` | The decision for a batch of appends (one append is a batch of one) and what to store for it. |
+| `AppendVerdict` | `rakaia` | `(write: 'bool', stream_closed: 'bool' = False, producer_result: 'ProducerValidationResult \| None' = None) -> None` | What the rules decided for one append. |
+| `PlannedWrite` | `rakaia` | `(payloads: 'tuple[bytes, ...]', label: 'str' = '', metadata: 'dict[str, Any] \| None' = None, tags: 'tuple[str, ...]' = (), correlation_id: 'str \| None' = None, event_ts: 'float \| None' = None, close: 'bool' = False) -> None` | One admitted item, as it is to be stored. |
+| `page_of` | `rakaia` | `(messages: 'list[T]', limit: 'int \| None') -> 'tuple[list[T], bool]'` | Cut `messages` to one page: ``(page, up_to_date)``. |
+| `check_page_size` | `rakaia` | `(limit: 'int \| None') -> 'None'` | Raise `ValueError` for a page `limit` below 1; `None` is allowed. |
+| `apply_effects` | `rakaia` | `(effects: 'Iterable[Effect]', *, upsert: 'Callable[[Upsert], tuple[UpsertOutcome, RowAccessor]]', update_run: 'Callable[[list[Update]], None]', delete: 'Callable[[Delete], None]', retire: 'Callable[[Retire], list[dict[str, Any]]]') -> 'ApplyReport'` | Apply `effects` through the four writes an executor supplies. |
+| `RowAccessor` | `rakaia` | — | — |
+| `UpsertOutcome` | `rakaia` | — | — |
+| `ApplyReport` | `rakaia` | `(retire_flips: 'list[tuple[Retire, list[dict[str, Any]]]]' = <factory>, upserts_created: 'int' = 0, upserts_written: 'int' = 0, upserts_skipped: 'int' = 0) -> None` | What ``Executor.apply`` observed while applying a batch. |
+| `OnDriftPolicy` | `rakaia` | — | — |
+
 ## Rehearsing a rebuild safely
 
 | Name | Import from | Signature | What it does |
@@ -282,6 +300,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-181 exported names across 16 sections. 158 carry a docstring; 23 do not and show `—` above.
+194 exported names across 17 sections. 168 carry a docstring; 26 do not and show `—` above.
 
-Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `VACUOUS`, `__version__`, `app`.
+Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

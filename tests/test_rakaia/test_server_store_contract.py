@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from rakaia.store import StreamStore
-from tests.server_store_contract import ServerStoreContract
+from rakaia.testing.server_store_contract import ServerStoreContract
 
 
 class TestStreamStoreServerContract(ServerStoreContract):

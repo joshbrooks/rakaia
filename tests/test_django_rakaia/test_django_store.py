@@ -35,7 +35,7 @@ class TestDjangoStreamStore:
     # The shared read/append/create/has surface (create-idempotence, append-
     # requires-stream, ordered round-trip, partial read, envelope round-trip,
     # current-offset) is covered once for every backend by
-    # tests/store_contract.py::StoreContract (see test_store_contract.py). Only
+    # rakaia/testing/store_contract.py::StoreContract (see test_store_contract.py). Only
     # DjangoStreamStore-specific behaviour lives here: ORM persistence, integer
     # offset format, row locking, durability across instances, delete/list_paths.
     def test_create_persists_stream_row(self):

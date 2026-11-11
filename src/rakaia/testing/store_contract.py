@@ -14,7 +14,7 @@ close, Stream-Seq and producer fencing "genuine, permanent architectural
 divergences, not gaps to close", on the grounds that the durable `Stream` model
 had no content_type/ttl/closed columns and never would. That is no longer true:
 the durable store now backs a protocol server, so it models all of them, and
-both stores are held to them by `tests/server_store_contract.py`. They are out
+both stores are held to them by `rakaia/testing/server_store_contract.py`. They are out
 of scope *here* only because they belong to the protocol-server surface
 (`StreamServerStore`), not the framework one (`WritableStore`) — a different
 contract, not an absent one.
@@ -36,9 +36,9 @@ from __future__ import annotations
 import json
 from itertools import pairwise
 
-import pytest
-
 from rakaia.types import AppendOptions
+
+from ._need_pytest import pytest
 
 
 class StoreContract:

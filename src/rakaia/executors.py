@@ -177,8 +177,8 @@ class InMemoryProjections:
     (`rakaia.applying.apply_effects`), so the three ordered passes, `Ref`
     resolution, `check_disjoint_defaults` and the report are the same code, and
     only the four writes differ.
-    `tests/executor_contract.py` and
-    `tests/projection_reader_contract.py` hold it and the Django pair to the same
+    `rakaia/testing/executor_contract.py` and
+    `rakaia/testing/projection_reader_contract.py` hold it and the Django pair to the same
     behaviour::
 
         proj = InMemoryProjections()
