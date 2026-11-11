@@ -84,6 +84,8 @@ RAKAIA_PUBLIC = {
     "CollectingExecutor",
     "InMemoryProjections",
     "RecordingExecutor",
+    "SqliteExecutor",
+    "SqliteProjectionReader",
     "DuplicateProducesError",
     "Effect",
     "AnyEffect",

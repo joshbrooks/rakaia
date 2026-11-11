@@ -50,6 +50,7 @@ FRAMEWORK = {
     "replaying",
     "seed",
     "source_hash",
+    "sqlite_executor",
 }
 
 #: The Durable Streams protocol server: ASGI surface, wire semantics, the stores
