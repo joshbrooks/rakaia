@@ -1,5 +1,14 @@
 # Directory Update Log
 
+## 2026-11-11
+
+* **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_JSONL_ROOT`,
+  `RAKAIA_JSONL_SEGMENT_SIZE`, `RAKAIA_JSONL_FSYNC` and `RAKAIA_ENABLE_SSE`, which the code
+  read but the bundle never named.
+* **Update**: [Protocol & streams](concepts/protocol-and-streams.md) —
+  `RAKAIA_ENABLE_FAULT_INJECTION`. A test now fails when a setting or management command is
+  missing from `okf/`.
+
 ## 2026-11-01
 
 * **Creation**: [consumer_rebuild](examples/consumer-rebuild.md) — a consumer meets

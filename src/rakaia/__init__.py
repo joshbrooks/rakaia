@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     app: Any
     __version__: str
 
+    # BEGIN generated: imports (edit `_EXPORTS`, then run `just exports`)
     from .append import append_if_changed, snapshots_equal
     from .consumer import Consumer, ConsumerCursorStore, InMemoryConsumerCursorStore
     from .context import get_provenance, provenance
@@ -82,22 +83,9 @@ if TYPE_CHECKING:
         Upsert,
         check_disjoint_defaults,
     )
-    from .errors import (
-        EXCEPTION_TYPE_KEY,
-        REASON_CODES,
-        UNHANDLED,
-        RakaiaError,
-    )
-    from .executors import (
-        CollectingExecutor,
-        InMemoryProjections,
-        RecordingExecutor,
-    )
-    from .history import (
-        envelope_actor,
-        history_effects,
-        label_marker,
-    )
+    from .errors import EXCEPTION_TYPE_KEY, REASON_CODES, UNHANDLED, RakaiaError
+    from .executors import CollectingExecutor, InMemoryProjections, RecordingExecutor
+    from .history import envelope_actor, history_effects, label_marker
     from .jsonl_outcomes import JsonlOutcomeStore
     from .jsonl_store import JsonlStreamStore, SegmentSizeMismatch
     from .migrate import Migration, migrate_all, migrate_stream
@@ -197,6 +185,7 @@ if TYPE_CHECKING:
         StreamMessage,
         StreamNotFound,
     )
+    # END generated: imports
 
 # No export shares its name with a submodule. Importing a submodule sets it as
 # an attribute of this package, and once that attribute exists `__getattr__` is
@@ -361,10 +350,12 @@ _EXPORTS: dict[str, str] = {
     # "__version__" is computed, not imported — see __getattr__.
 }
 
-# Written out rather than computed from `_EXPORTS`: a type checker reads this
-# file without running it, and only a literal list tells it what is public.
-# `test_public_api.py` fails if the two disagree.
+# A literal list rather than one computed from `_EXPORTS` at import: a type
+# checker reads this file without running it, and only a literal list tells it
+# what is public. `just exports` writes it from `_EXPORTS`; `just exports-check`
+# and `test_public_api.py` fail if the two disagree.
 __all__ = [
+    # BEGIN generated: __all__ (edit `_EXPORTS`, then run `just exports`)
     "AnyEffect",
     "AppendOptions",
     "AppendResult",
@@ -381,8 +372,6 @@ __all__ = [
     "Delete",
     "DeleteNotAllowed",
     "DriftLedger",
-    "ImpureHandlerError",
-    "ImpureHandlerWarning",
     "DuplicateProducesError",
     "ENVELOPE_TS",
     "EXCEPTION_TYPE_KEY",
@@ -401,6 +390,8 @@ __all__ = [
     "HandlerOverlapError",
     "HandlerRegistry",
     "HandlerVersion",
+    "ImpureHandlerError",
+    "ImpureHandlerWarning",
     "InMemoryConsumerCursorStore",
     "InMemoryOutcomeStore",
     "InMemoryProjections",
@@ -498,6 +489,7 @@ __all__ = [
     "upcast",
     "app",
     "__version__",
+    # END generated: __all__
 ]
 
 

@@ -144,6 +144,7 @@ _EXPORTS: dict[str, str] = {
 if TYPE_CHECKING:
     # For type checkers only: the runtime path is `__getattr__` below, which they
     # cannot follow. Without this every name reads as `Any` to a consumer.
+    # BEGIN generated: imports (edit `_EXPORTS`, then run `just exports`)
     from .admin import register_stream_event_admin
     from .canonicalisation import DEFAULT_NORMALIZERS, Normalizer, canonical_value
     from .consumer import (
@@ -191,10 +192,13 @@ if TYPE_CHECKING:
         VerificationError,
         diff_effects_against_rows,
     )
+    # END generated: imports
 
-# Written out rather than computed from `_EXPORTS`, for the same reason as
-# rakaia's: a type checker only believes a literal list.
+# A literal list written by `just exports`, not computed from `_EXPORTS` at
+# import, for the same reason as rakaia's: a type checker only believes a
+# literal list.
 __all__ = [
+    # BEGIN generated: __all__ (edit `_EXPORTS`, then run `just exports`)
     "AmbientDatabaseAccess",
     "CallerTransactionOpen",
     "CursorMovedBackwards",
@@ -243,6 +247,7 @@ __all__ = [
     "reset_store_cache",
     "stream_coverage",
     "stream_model",
+    # END generated: __all__
 ]
 
 
