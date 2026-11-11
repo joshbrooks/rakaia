@@ -64,6 +64,15 @@ Settings and operator commands:
   code is told apart from yours by where its file lives, not by module name; the warning
   points at the handler's own definition and appears once per handler per process.
   A pre-0.10 fingerprint (bare 64-hex) is re-recorded, not drift.
+* `RAKAIA_JSONL_ROOT` — the directory the file-backed store keeps its logs in, needed when
+  `RAKAIA_STORE="jsonl"`. No default: `get_store()` raises `ImproperlyConfigured` and
+  `manage.py check` fails when it is missing, because a guessed location would hold a log
+  nothing else can find.
+* `RAKAIA_JSONL_SEGMENT_SIZE` (default 10,000) and `RAKAIA_JSONL_FSYNC` (default `True`) —
+  the file store's segment size and whether each append is synced to disk.
+* `RAKAIA_ENABLE_SSE` — `False` never loads the live-update views (and `channels` need not
+  be installed), `True` loads them and lets an `ImportError` propagate when `channels` is
+  missing, unset loads them only if `channels` imports.
 * `RAKAIA_PERMANENT_STREAMS` — off by default. With it on the store `get_store()`
   returns, whichever backend (the durable one only, before 0.9), refuses a create that asks for a TTL or an expiry (`ExpiryNotAllowed`) and a
   client's `DELETE` (`DeleteNotAllowed`), and serves an already-expired stream

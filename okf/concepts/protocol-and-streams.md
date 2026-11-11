@@ -49,6 +49,10 @@ Imported from `rakaia`:
   with, a thousand by default and `None` to turn paging off. A page that stops
   short omits `Stream-Up-To-Date` and points `Stream-Next-Offset` at its last
   message, which the protocol permits, so a conforming client reads on unchanged.
+* `RAKAIA_ENABLE_FAULT_INJECTION` — an environment variable, not a Django setting, read
+  when `ServerOptions(enable_fault_injection=…)` is left at its default. A truthy value
+  (`1`/`true`/`yes`/`on`) routes the unauthenticated `/_test/inject-error` endpoint; off,
+  that path answers `404` like any other. Never set it on a deployed server.
 * Permanent streams: `ExpiryNotAllowed` (a create asking for a TTL or an expiry,
   answered `400`) and `DeleteNotAllowed` (a client `DELETE`, answered `405`).
   Raised by a store whose streams are permanent: `StreamStore(permanent=True)`,
