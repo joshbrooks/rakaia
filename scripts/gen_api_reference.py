@@ -10,7 +10,7 @@ and commit the result. CI checks the committed file is up to date.
 Grouping is the one editorial choice here: `GROUPS` below assigns names to
 sections by hand, because the module a name happens to live in is an
 implementation detail the public API deliberately does not promise. Anything
-unassigned lands in "Everything else", which is the signal to come and group it.
+unassigned makes the script exit non-zero, naming it, so it cannot go unfiled.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ django.setup()
 
 import django_rakaia  # noqa: E402
 import rakaia  # noqa: E402
+
+TARGET = pathlib.Path(__file__).resolve().parent.parent / "docs" / "api-reference.md"
 
 GROUPS: dict[str, tuple[str, ...]] = {
     "Running a server": (
@@ -305,10 +307,16 @@ def main() -> int:
     grouped = {n for names in GROUPS.values() for n in names}
     ungrouped = sorted(n for n in home if n not in grouped)
 
+    if ungrouped:
+        print(
+            f"exported but not in GROUPS in {pathlib.Path(__file__).name}: "
+            f"{', '.join(ungrouped)}. Add each to a section.",
+            file=sys.stderr,
+        )
+        return 1
+
     out = [INTRO]
     sections = list(GROUPS.items())
-    if ungrouped:
-        sections.append(("Everything else", tuple(ungrouped)))
 
     for title, names in sections:
         present = [n for n in names if n in home]
@@ -342,11 +350,8 @@ def main() -> int:
     if missing:
         out.append("Undocumented: " + ", ".join(f"`{n}`" for n in missing) + ".\n")
 
-    target = (
-        pathlib.Path(__file__).resolve().parent.parent / "docs" / "api-reference.md"
-    )
-    target.write_text("\n".join(out))
-    print(f"wrote {target} — {len(home)} names, {len(ungrouped)} ungrouped")
+    TARGET.write_text("\n".join(out))
+    print(f"wrote {TARGET} — {len(home)} names")
     return 0
 
 
