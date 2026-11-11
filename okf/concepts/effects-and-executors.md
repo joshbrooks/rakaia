@@ -41,6 +41,11 @@ Imported from `rakaia`:
   (wraps any executor, applies through it and keeps what it handed on — what a
   rebuild gate diffs); `InMemoryProjections` (dict-backed executor and reader; raises
   `MultipleRowsMatched` where Django raises `MultipleObjectsReturned`).
+* `SqliteExecutor` and `SqliteProjectionReader` — replay into a SQLite file with only the
+  standard library (no Django). A model label is a table created on first use, holding an
+  integer `pk` and the row as JSON, so values must be JSON-serialisable. A batch runs in one
+  savepoint and lands whole or not at all. Held to the same executor and reader contracts
+  as `InMemoryProjections`; `skip_unchanged` is not implemented.
 * Writing your own executor: `apply_effects(effects, *, upsert, update_run, delete,
   retire)` runs a batch in the shared order (writes, deletes, retires), with `Ref`s
   resolved and defaults checked, and returns an `ApplyReport`; you supply the four writes.
@@ -53,6 +58,7 @@ Imported from `rakaia`:
 
 # Demonstrated by
 
+* [sqlite_replay](../examples/sqlite-replay.md) — replay into a SQLite file, no Django.
 * [multi_owner](../examples/multi-owner.md) — `Ref`/`RefResolver`, `check_disjoint_defaults`, routing `ExternalEffect`s.
 * [orders](../examples/orders.md) — `Update`, `ExternalEffect`, `CollectingExecutor` dry-run.
 * [projection_cookbook](../examples/projection-cookbook.md) — `diff_effects_against_rows` verification.

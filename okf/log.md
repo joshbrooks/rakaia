@@ -1,5 +1,12 @@
 # Directory Update Log
 
+## 2026-11-12
+
+* **Creation**: [sqlite_replay](examples/sqlite-replay.md) — replay an order stream into a
+  SQLite file with `SqliteExecutor`, no Django (#368).
+* **Update**: [Effects & executors](concepts/effects-and-executors.md) — `SqliteExecutor` and
+  `SqliteProjectionReader`.
+
 ## 2026-11-11 (store author kit)
 
 * **Update**: [Protocol & streams](concepts/protocol-and-streams.md) — `plan_appends`,

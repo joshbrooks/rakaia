@@ -97,15 +97,17 @@ One command each: seed a stream, replay it, assert the projection.
 
 ### Standalone (no Django)
 
-Scripts with no database and no server. These cover the half of rakaia that
-isn't Django at all. All but the last are zero-dependency; `formkit_emission`
-pulls formkit-ninja in through `uv run --with`, because driving another
-library's real seam is the whole point of it.
+Scripts with no Django and no server; `sqlite_replay` writes a SQLite file, the
+rest need no database at all. These cover the half of rakaia that isn't Django.
+Every one is zero-dependency except `formkit_emission`, which pulls formkit-ninja
+in through `uv run --with`, because driving another library's real seam is the
+whole point of it.
 
 | Example | Proves | Run |
 |---|---|---|
 | [`protocol_streams`](https://github.com/joshbrooks/rakaia/tree/main/examples/protocol_streams) | `StreamStore` append/read, `append_if_changed`, producer fencing, `close`, `poll` subscriber cursors, CDN cursors | `just protocol-demo` |
 | [`multi_owner`](https://github.com/joshbrooks/rakaia/tree/main/examples/multi_owner) | `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key(retire=)`, `check_disjoint_defaults`, routing `ExternalEffect`s | `just multi-owner-demo` |
+| [`sqlite_replay`](https://github.com/joshbrooks/rakaia/tree/main/examples/sqlite_replay) | `SqliteExecutor` and `SqliteProjectionReader`: replay into a SQLite file, a second connection reading it, a failed batch rolling back whole | `just sqlite-replay-demo` |
 | [`formkit_emission`](https://github.com/joshbrooks/rakaia/tree/main/examples/formkit_emission) | formkit-ninja's own `emit`/`wire` decomposition appended to a rakaia log; an absent key and an explicit `null` coming back as different events; `schema_version` never fabricated | `just formkit-emission-demo` |
 
 ## Concept → example coverage matrix
@@ -155,6 +157,7 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | `Retire` — soft delete whose stamp is the triggering event's timestamp, never the replay clock | `partisipa_close`, `multi_owner` |
 | `CollectingExecutor` (dry-run) | `orders`, `projection_cookbook` |
 | `DjangoExecutor` | every Django demo |
+| `SqliteExecutor` / `SqliteProjectionReader` (a real database, no Django) | `sqlite_replay` |
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
 | `check_disjoint_defaults` (multi-owner guard) | `multi_owner` |
 | `diff_effects_against_rows` (replay-vs-rows verification) | `projection_cookbook` |
@@ -216,6 +219,13 @@ No example exercises these yet — a good place to contribute a demo:
   `apply_effects` and the `rakaia.testing` suites. [Write your own
   store](write-your-own-store.md) holds a worked store and a test runs it against
   `StoreContract`, but no `examples/` demo does, and nothing shows a custom executor.
+- `SqliteExecutor` with a handler that emits a value JSON cannot hold (a `Decimal`,
+  a `datetime`): `sqlite_replay` keeps money in cents and shows only the batch that
+  fails on such a value rolling back. The `orders` handlers would need converting
+  before they could replay into SQLite. Three more JSON round-trip limits have no
+  demo: a column nothing wrote raises `AttributeError` where Django gives `None`,
+  tuples come back as lists, and a label spelled with different case writes to the
+  same table but reads, updates and deletes through it find nothing.
 - `CollectingExecutor`'s checks and `InMemoryProjections`' differences from the
   database (a column nothing wrote, type coercion, NOT NULL). The demos dry-run
   without tripping a check, and none shows one failing, or a case where the
