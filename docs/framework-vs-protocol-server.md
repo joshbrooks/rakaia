@@ -102,7 +102,7 @@ The framework reads and writes through **exported, conformance-tested
 protocols** (`rakaia.__all__`): `ReadableStore`, `WritableStore`, `CursorStore`,
 and `ProjectionReader`. "Test on the in-memory store, ship on the durable store"
 is safe because both `StreamStore` and `DjangoStreamStore` pass one shared
-[conformance suite](../tests/store_contract.py) (#36).
+[conformance suite](write-your-own-store.md) (#36).
 
 Two divergences between the stores are **intentional and pinned**, not gaps:
 
@@ -117,8 +117,8 @@ Two divergences between the stores are **intentional and pinned**, not gaps:
   stream close, TTL, and the reads long-poll is built from). Those Tier-2 concerns used
   to be deliberately absent; they are present now, which is what lets
   `rakaia.create_app` serve the protocol straight off the database. Both stores
-  are held to the same two contracts — `tests/store_contract.py` and
-  `tests/server_store_contract.py` — and the fencing rules are one shared pure
+  are held to the same two contracts — `rakaia/testing/store_contract.py` and
+  `rakaia/testing/server_store_contract.py` — and the fencing rules are one shared pure
   module (`rakaia.producer`), so the two implementations cannot drift.
 
 ## See also

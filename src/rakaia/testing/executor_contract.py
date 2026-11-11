@@ -5,7 +5,7 @@ Rakaia has more than one executor that actually *applies* effects — the durabl
 against whichever one the demo, test or app happens to hold. "Test on the
 in-memory executor, ship on the Django one" is only safe if both converge to the
 same rows from the same batch, so this is the executor twin of
-`tests/store_contract.py`. Subclass `ExecutorContract` in each backend's test
+`rakaia/testing/store_contract.py`. Subclass `ExecutorContract` in each backend's test
 package and provide a `seam` fixture returning an :class:`ExecutorSeam`. See
 ADR 0002 / #121.
 
@@ -54,8 +54,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
-
 from rakaia.effects import (
     Delete,
     Effect,
@@ -70,6 +68,8 @@ from rakaia.effects import (
     Update,
     Upsert,
 )
+
+from ._need_pytest import pytest
 
 
 @dataclass(frozen=True)

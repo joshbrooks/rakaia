@@ -1,6 +1,6 @@
 """DjangoExecutor against the shared Executor conformance contract.
 
-Same contract as the in-memory `InMemoryProjections` (tests/executor_contract.py) —
+Same contract as the in-memory `InMemoryProjections` (rakaia/testing/executor_contract.py) —
 this is what makes "rehearse the batch in memory, apply it on Django" safe.
 """
 
@@ -10,7 +10,7 @@ import pytest
 
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
-from tests.executor_contract import ExecutorContract, ExecutorSeam
+from rakaia.testing.executor_contract import ExecutorContract, ExecutorSeam
 
 from .models import Alert
 

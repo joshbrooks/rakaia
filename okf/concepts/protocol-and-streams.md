@@ -65,11 +65,30 @@ Imported from `rakaia`:
   never earlier than that stream's previous stamp, so ordering by `event_ts` agrees
   with ordering by offset. A producer's own `event_ts` is stored as sent.
 
+* Writing your own store: `plan_appends(facts, items, *, payloads, producer_states,
+  now)` decides a whole batch of appends (all or nothing) and returns an `AppendPlan` of
+  `AppendVerdict`s and `PlannedWrite`s; `StreamFacts(closed, closed_by, content_type,
+  last_seq)` is what it is told about the stream; `plan_initial_write(content_type,
+  data)` does the same for a create's body; `AppendPlan.stamped(last_event_ts, now)` fills
+  in the store's own event times. `page_of(messages, limit)` cuts a read to
+  `(page, up_to_date)` and `check_page_size(limit)` refuses a limit below 1. These are
+  the rules `StreamStore`, `JsonlStreamStore` and `DjangoStreamStore` share, so a store
+  that calls them cannot disagree with those three.
+* `rakaia.testing` — the contract suites a store, executor, outcome store or reader is
+  held to, shipped in the wheel: `store_contract.StoreContract` (`WritableStore`),
+  `server_store_contract.ServerStoreContract` (`StreamServerStore`),
+  `executor_contract.ExecutorContract`, `outcome_store_contract.OutcomeStoreContract`
+  and `projection_reader_contract.ProjectionReaderContract`. Subclass one in your own
+  tests and provide the fixture it names. The package and the five module paths are
+  Tier 1. Importing a suite needs pytest (all but `outcome_store_contract`) and says so if it is missing;
+  `import rakaia.testing` does not.
+
 # Demonstrated by
 
 * [protocol_streams](../examples/protocol-streams.md) — every item above, asserted in one script.
 
 # Deeper reference
 
-* Human docs: `docs/protocol.md`, `docs/producer-fencing.md`, `docs/subscriber-cursors.md`.
+* Human docs: `docs/protocol.md`, `docs/producer-fencing.md`, `docs/subscriber-cursors.md`,
+  `docs/write-your-own-store.md`.
 * Source: `src/rakaia/store.py`, `src/rakaia/subscription.py`, `src/rakaia/append.py`, `src/rakaia/cursor.py`, `src/rakaia/types.py`.

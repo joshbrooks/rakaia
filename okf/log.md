@@ -1,5 +1,14 @@
 # Directory Update Log
 
+## 2026-11-11 (store author kit)
+
+* **Update**: [Protocol & streams](concepts/protocol-and-streams.md) — `plan_appends`,
+  `plan_initial_write`, `StreamFacts`, `AppendPlan`, `AppendVerdict`, `PlannedWrite`,
+  `page_of`, `check_page_size`, and the `rakaia.testing` contract suites, now importable
+  from the installed package.
+* **Update**: [Effects & executors](concepts/effects-and-executors.md) — `apply_effects`,
+  `UpsertOutcome`, `RowAccessor`, `ApplyReport` and `OnDriftPolicy` for writing an executor.
+
 ## 2026-11-11
 
 * **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_STORE` accepts

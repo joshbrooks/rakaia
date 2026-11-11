@@ -63,7 +63,7 @@ Each check is asserted hard — a regression raises `CommandError` and the comma
 |---|---|
 | `@register_handler(..., stage=0)` reference handler | `handlers.project_registry` (TF_6_1_1 → `Project`) |
 | `@register_handler(..., stage=1)` handler taking `(event, refs)` | `handlers.sf12_link` (SF_1_2 → `Sf12`, resolves project via `refs`) |
-| `refs` read-only view of earlier stages | `DjangoProjectionReader` (rakaia ships it; held to `tests/projection_reader_contract.py`) |
+| `refs` read-only view of earlier stages | `DjangoProjectionReader` (rakaia ships it; held to `rakaia/testing/projection_reader_contract.py`) |
 | `staged_replay(store, stages)` in core | `staged_replay.staged_replay(...)` (example-local) |
 | "signals today" baseline | `staged_replay.naive_replay(...)` (one pass, per-event apply) |
 

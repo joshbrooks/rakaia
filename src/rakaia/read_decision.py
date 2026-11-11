@@ -117,12 +117,13 @@ class ReadVerdict:
 def page_of[T](messages: list[T], limit: int | None) -> tuple[list[T], bool]:
     """Cut `messages` to one page: ``(page, up_to_date)``.
 
-    The one rule every store's paged `read` shares (#289). `limit=None` is no
-    page at all: everything, up to date. Otherwise at most `limit` messages,
-    and `up_to_date` false exactly when some were left over — so a store that
-    fetches ``limit + 1`` rows can tell "more remain" from "this was the last
-    page" without a second query. A `limit` below 1 is a caller error, not an
-    empty page: a server that asked for none would never make progress.
+    `limit=None` means no paging: everything, up to date. Otherwise at most
+    `limit` messages, and `up_to_date` is false exactly when some were left over,
+    so a store that fetches ``limit + 1`` rows can tell "more remain" from "this
+    was the last page" without a second query.
+
+    A `limit` below 1 raises `ValueError` rather than returning an empty page,
+    because a reader that asked for none would never make progress.
     """
     check_page_size(limit)
     if limit is None:
@@ -131,8 +132,11 @@ def page_of[T](messages: list[T], limit: int | None) -> tuple[list[T], bool]:
 
 
 def check_page_size(limit: int | None) -> None:
-    """Refuse a `limit` below 1. A store asks before it touches the TTL window,
-    so a refused read extends nothing."""
+    """Raise `ValueError` for a page `limit` below 1; `None` is allowed.
+
+    Call it before anything else in `read`, so a refused read has no side
+    effects such as extending a TTL window.
+    """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be >= 1, got {limit}")
 

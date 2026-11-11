@@ -212,6 +212,10 @@ No example exercises these yet — a good place to contribute a demo:
 - `ServerOptions(read_page_size=...)` and the `RAKAIA_READ_PAGE_SIZE` setting.
   Every example that serves the protocol takes the default page of a thousand,
   and none holds a stream long enough for a read to stop short.
+- Writing a store or executor outside this repo: `plan_appends`, `page_of`,
+  `apply_effects` and the `rakaia.testing` suites. [Write your own
+  store](write-your-own-store.md) holds a worked store and a test runs it against
+  `StoreContract`, but no `examples/` demo does, and nothing shows a custom executor.
 - `CollectingExecutor`'s checks and `InMemoryProjections`' differences from the
   database (a column nothing wrote, type coercion, NOT NULL). The demos dry-run
   without tripping a check, and none shows one failing, or a case where the

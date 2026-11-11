@@ -325,7 +325,7 @@ class InMemoryOutcomeStore:
     """An `OutcomeStore` held in a list. The reference implementation.
 
     Every backend is measured against this one through
-    `tests/outcome_store_contract.py`, and it is what a test uses when the point
+    `rakaia/testing/outcome_store_contract.py`, and it is what a test uses when the point
     under test is a consumer's behaviour rather than its storage.
 
     Not durable, deliberately: an outcome that has to survive a restart needs a

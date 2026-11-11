@@ -17,7 +17,7 @@ envelope (`envelope_actor`, `merge_replay(order_key=...)`,
 `create_stream_event` populate, read with `DjangoStreamStore` — it carries the
 label, metadata, event timestamp and offset those rows genuinely hold, inverts
 `payload_encoding`, takes a `using=` database alias, and is held to
-`tests/server_store_contract.py`. A second reader over those same tables used to
+`rakaia/testing/server_store_contract.py`. A second reader over those same tables used to
 live here and returned the payload alone, so a replay through it silently lost
 all of that; it had no callers and was deleted (#186).
 

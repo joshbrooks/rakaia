@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from rakaia.jsonl_store import JsonlStreamStore
-from tests.server_store_contract import ServerStoreContract
-from tests.store_contract import StoreContract
+from rakaia.testing.server_store_contract import ServerStoreContract
+from rakaia.testing.store_contract import StoreContract
 
 
 @pytest.fixture

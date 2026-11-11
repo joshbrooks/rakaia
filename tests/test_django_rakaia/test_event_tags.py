@@ -1,7 +1,7 @@
 """Tags and a correlation id on durable events: where they are stored, how they
 are found, and what still has to fail loudly around them.
 
-What every store must do with them on read is in `tests/store_contract.py`. This
+What every store must do with them on read is in `rakaia/testing/store_contract.py`. This
 file covers what only the database has: the tag table and the column, the two
 lookups, `append_event`, the event listing endpoint and the admin.
 """

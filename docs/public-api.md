@@ -55,13 +55,27 @@ while breaking nobody who only calls it. That is what `0.6.0` did to
 `StreamServerStore.read` — though that release broke readers too, by a different
 route, which its `UPGRADING.md` entry covers.
 
-If you implement one of these rather than only calling it, the `*_contract.py`
-files under `tests/` are what tell you whether you still satisfy them. They ship
-in the sdist, not the wheel, so `pip download --no-binary :all:` or a checkout is
-how you get them. Read them before trusting one: `server_store_contract.py`
-exercises the page size directly, while `CursorStore` is currently held only by an
-`isinstance` check, which on a `runtime_checkable` Protocol compares method names
-and would not have caught the `0.6.0` widening.
+If you implement one of these rather than only calling it, the contract suites in
+`rakaia.testing` are what tell you whether you satisfy them, and whether you still do
+after an upgrade. They ship in the wheel: see
+[Write your own store](write-your-own-store.md). Read them before trusting one:
+`server_store_contract` exercises the page size directly, while `CursorStore` is
+currently held only by an `isinstance` check, which on a `runtime_checkable` Protocol
+compares method names and would not have caught the `0.6.0` widening.
+
+**`rakaia.testing` is Tier 1, and so are its five module paths:**
+`rakaia.testing.store_contract`, `rakaia.testing.server_store_contract`,
+`rakaia.testing.executor_contract`, `rakaia.testing.outcome_store_contract` and
+`rakaia.testing.projection_reader_contract`. They are the one place a submodule path
+is promised, because a suite is something you subclass rather than call. The promise
+is the same narrow one as above, with one addition: a suite may gain checks on a
+minor release, so an implementation that passed before may fail afterwards, and the
+`UPGRADING.md` entry says which rule changed. Importing a suite needs pytest (every one but
+`outcome_store_contract`) and says so when it is missing; `import rakaia` and
+`import rakaia.testing` never do.
+
+The names a store or executor is built from, such as `plan_appends`, `page_of` and
+`apply_effects`, are in `rakaia.__all__` like any other Tier 1 name.
 
 `django_rakaia`'s names resolve lazily, so importing the package does not pull in
 the ORM — that would raise `AppRegistryNotReady` during Django's own startup, and
@@ -129,7 +143,7 @@ Everything else:
 - any name beginning with `_`, in either package;
 - any submodule of `django_rakaia` not listed in `_EXPORTS`;
 - `rakaia`'s submodules as *import paths* — the names they hold may be public,
-  the layout is not;
+  the layout is not — except the five under `rakaia.testing`;
 - the templates, URLs, views and admin registrations, unless you have registered
   them yourself.
 
@@ -228,8 +242,8 @@ them is easy and the failure is quiet:
   `DjangoExecutor` converge to the same rows from the same batch, and
   `DjangoProjectionReader`, `PreloadedProjectionReader` and `InMemoryProjections`
   answer the same lookup the same way — including `model_label` being
-  positional-only. Enforced by `tests/executor_contract.py` and
-  `tests/projection_reader_contract.py`, the executor and reader twins of the
+  positional-only. Enforced by `rakaia.testing.executor_contract` and
+  `rakaia.testing.projection_reader_contract`, the executor and reader twins of the
   store conformance suite.
 
 ## What is *not* a promise

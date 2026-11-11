@@ -119,6 +119,7 @@ from .json_mode import (
 )
 from .producer import validate_producer
 from .types import (
+    AppendOptions,
     ClosedBy,
     ContentTypeMismatch,
     ProducerAccepted,
@@ -132,10 +133,11 @@ from .types import (
 
 @dataclass(frozen=True)
 class StreamFacts:
-    """What the decision needs to know about a stream, with no store attached.
+    """What the admission rules need to know about a stream, whatever the backend.
 
-    A deliberately small surface: whatever a backend holds, these are the only
-    fields the admission rules read.
+    ``closed_by`` is the producer tuple that closed the stream, if one did, and
+    ``last_seq`` is the highest `Stream-Seq` it has accepted. These four fields
+    are all the rules read.
     """
 
     closed: bool = False
@@ -146,11 +148,16 @@ class StreamFacts:
 
 @dataclass(frozen=True)
 class AppendVerdict:
-    """The decision. ``write`` is the only field a caller must branch on.
+    """What the rules decided for one append.
 
-    ``producer_result`` is carried whether or not the write is allowed: on a
-    refusal it is the fencing outcome to report, and on an acceptance it is the
-    state to commit *after* the write lands (or None for an unfenced append).
+    ``write`` says whether the item is to be written. When it is not,
+    ``producer_result`` is the refusal to report (a `ProducerDuplicate`,
+    `ProducerStaleEpoch`, `ProducerStreamClosed` and so on) and ``stream_closed``
+    says the stream is closed.
+
+    When it is, ``producer_result`` is a `ProducerAccepted` for an append with a
+    producer, whose ``proposed_state`` is what to save once the write lands, or
+    None for an append with none.
     """
 
     write: bool
@@ -258,11 +265,11 @@ def own_stamp(last_event_ts: float | None, now: float) -> float:
 class PlannedWrite:
     """One admitted item, as it is to be stored.
 
-    ``payloads`` is one entry per stored message — more than one only for a
-    JSON-mode array. The envelope is resolved: ``metadata`` has the ambient
-    `provenance()` merged under it (None when there is neither), and ``tags``
-    and ``correlation_id`` are checked. ``event_ts`` is the producer's time, or
-    None until `AppendPlan.stamped` fills in the store's own.
+    ``payloads`` has one entry per stored message: more than one only when a JSON
+    array was split. ``metadata`` has the ambient `provenance()` merged under the
+    item's own, ``tags`` and ``correlation_id`` are already checked, and
+    ``event_ts`` is the producer's time, or None until `AppendPlan.stamped` fills
+    in the store's own. ``close`` is true if this item closes the stream.
     """
 
     payloads: tuple[bytes, ...]
@@ -276,26 +283,18 @@ class PlannedWrite:
 
 @dataclass(frozen=True)
 class AppendPlan:
-    """The decision for a batch of appends — a single append is a batch of one —
-    and everything the store must persist for it.
+    """The decision for a batch of appends (one append is a batch of one) and what
+    to store for it.
 
-    ``verdicts`` and ``writes`` are one per input item, in order, so a store
-    can zip them back against its inputs: an item the batch refuses keeps its
-    slot, with a verdict saying why and no write.
+    ``verdicts`` and ``writes`` have one entry per input item, in order; an item
+    that is not written keeps its slot, with a verdict and ``None``. Once the
+    writes land, save ``last_seq`` as the stream's `Stream-Seq`, close the stream
+    with ``closed_by`` if ``close`` is set, and save the ``proposed_state`` of each
+    `ProducerAccepted` in ``producer_commits`` (one per producer: its last accepted
+    item).
 
-    The rest is what the stream becomes once the writes land:
-
-    - ``producer_commits``: the *last* accepted outcome per producer id, the only
-      one worth persisting. Committing each accepted item's outcome in turn
-      reaches the same state but costs a write per item, and `append_many`
-      promises a query count that does not grow with the batch.
-    - ``last_seq``: the `Stream-Seq` the stream holds afterwards (unchanged if
-      no written item carried one).
-    - ``close`` and ``closed_by``: whether a written item closed the stream, and
-      the producer tuple that did, if any.
-
-    A write extends the sliding TTL window, so a plan that `writes_anything`
-    asks for that too.
+    ``writes_anything`` says whether to allocate offsets at all, ``message_count``
+    how many a block needs, and ``stamped`` fills in the event times.
     """
 
     verdicts: list[AppendVerdict]
@@ -339,29 +338,30 @@ class AppendPlan:
 
 def plan_appends(
     facts: StreamFacts,
-    items: Sequence[Any],
+    items: Sequence[AppendOptions | None],
     *,
     payloads: Sequence[bytes],
     producer_states: Mapping[str, ProducerState | None] | None = None,
     now: float,
 ) -> AppendPlan:
-    """Decide a batch of appends, as a loop of :func:`decide_append` over
-    advancing facts, and resolve what each admitted item writes. See the
-    "Batches" section of the module docstring for the rules a batch adds and
-    why they are here rather than in each store.
+    """Decide a batch of appends and work out what each admitted item stores.
 
-    ``items`` is the per-item options, in order — the same objects
-    ``decide_append`` takes, and ``None`` for a raw append with no options.
-    ``payloads`` is the bodies for those same items, in the same order and of
-    the same length; it is a required argument rather than an optional one so
-    that a store cannot obtain a plan without having its bodies checked.
-    ``producer_states`` is the pre-batch state for every producer id appearing
-    in the batch; a missing key is read as "no state", the same as ``None``.
+    ``items`` is the `AppendOptions` for each append, in order (``None`` for a
+    raw append with no options), and ``payloads`` the bodies for the same items;
+    lists of different lengths raise `ValueError`. ``producer_states`` is the
+    saved state for each producer id in the batch (leave out an id that has none;
+    state old enough to have expired counts as absent), and ``now`` is the
+    store's clock.
 
-    Nothing is mutated: ``producer_states`` is copied, and the caller's
-    ``facts`` is untouched. A conflict, a bad body, or a bad tag or correlation
-    id propagates out of the loop, which is what makes the batch all-or-nothing
-    — the caller has written nothing by the time it sees the exception.
+    A content-type mismatch, a `Stream-Seq` that does not advance, a body the
+    stream cannot hold and a bad tag all raise before anything is stored, so the
+    batch writes nothing. A closed stream and a producer the fence refuses do not
+    raise: that item's verdict has ``write=False`` and its slot in ``writes`` is
+    ``None``, while the other items are still decided and written. Build one
+    `AppendResult` per item from ``verdict.producer_result`` and
+    ``stream_closed`` (``write.close`` for a written item, ``verdict.stream_closed``
+    otherwise). Facts advance across the batch only for items that are written, as
+    if `append` were called once per item. Nothing you pass in is changed.
     """
     states = dict(producer_states or {})
     closed = facts.closed
@@ -447,13 +447,11 @@ def plan_appends(
 
 
 def plan_initial_write(content_type: str | None, data: bytes) -> AppendPlan:
-    """What a create's initial body writes, as a plan of one.
+    """What the body of a create writes, as a plan of one.
 
-    A `PUT` body is not an append in the protocol's sense: there is no stream yet
-    to be closed, fenced or sequenced against, and no envelope or provenance is
-    recorded on it, so none of `plan_appends` applies. What it shares is the
-    split and the store's own event time. An empty JSON array is an empty
-    stream, and plans no write.
+    There is no stream yet to fence or sequence against and no envelope is
+    recorded, so only the body split and the store's own event time apply. An
+    empty JSON array is an empty stream and plans no write.
     """
     payloads = split_payload(content_type, data, is_initial_create=True)
     write = PlannedWrite(payloads=tuple(payloads)) if payloads else None

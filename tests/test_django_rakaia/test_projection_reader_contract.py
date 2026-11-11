@@ -14,7 +14,10 @@ import pytest
 from django_rakaia.effect_executor import DjangoExecutor
 from django_rakaia.projection_reader import DjangoProjectionReader
 from django_rakaia.verification import PreloadedProjectionReader
-from tests.projection_reader_contract import ProjectionReaderContract, ReaderSeam
+from rakaia.testing.projection_reader_contract import (
+    ProjectionReaderContract,
+    ReaderSeam,
+)
 
 MODEL = "test_django_rakaia.Alert"
 

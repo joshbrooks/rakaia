@@ -17,6 +17,22 @@ runnable demo for each.
   result that is not a `StreamServerStore`, raises `ImproperlyConfigured` rather
   than falling back, and `manage.py check` reports an unimportable path as
   `rakaia.E003`. `get_store()` now returns `StreamServerStore` instead of `Any`.
+- **A store or executor written outside this repository can be built from the
+  supported surface.** `plan_appends`, `plan_initial_write`, `StreamFacts`,
+  `AppendPlan`, `AppendVerdict` and `PlannedWrite` (the rules for whether an append
+  is allowed and what it writes), `page_of` and `check_page_size` (paging a read),
+  and `apply_effects`, `UpsertOutcome`, `RowAccessor`, `ApplyReport` and
+  `OnDriftPolicy` (applying a batch of effects) are exported from `rakaia`. They are
+  the same functions the built-in stores and executors call.
+- **`rakaia.testing`: the contract suites ship in the wheel.** `store_contract`,
+  `server_store_contract`, `executor_contract`, `outcome_store_contract` and
+  `projection_reader_contract` moved from `tests/` into the package, so a store,
+  executor, outcome store or reader of your own is held to the same checks as the
+  built-in ones. The package and the five module paths are Tier 1. Importing a suite
+  needs pytest (all but `outcome_store_contract`) and says so if it is missing;
+  `import rakaia` still needs nothing.
+- **A new page, [Write your own store](docs/write-your-own-store.md),** with a
+  working store and how to run the contract against it.
 
 ### Changed
 

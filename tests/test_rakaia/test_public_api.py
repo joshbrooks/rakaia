@@ -167,6 +167,20 @@ RAKAIA_PUBLIC = {
     "InMemoryConsumerCursorStore",
     "decode_outcome",
     "encode_outcome",
+    # what a store or executor written outside this repo is built from (#363)
+    "AppendPlan",
+    "AppendVerdict",
+    "ApplyReport",
+    "OnDriftPolicy",
+    "PlannedWrite",
+    "RowAccessor",
+    "StreamFacts",
+    "UpsertOutcome",
+    "apply_effects",
+    "check_page_size",
+    "page_of",
+    "plan_appends",
+    "plan_initial_write",
     # version
     "__version__",
 }
