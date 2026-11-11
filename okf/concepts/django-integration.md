@@ -64,6 +64,13 @@ Settings and operator commands:
   code is told apart from yours by where its file lives, not by module name; the warning
   points at the handler's own definition and appears once per handler per process.
   A pre-0.10 fingerprint (bare 64-hex) is re-recorded, not drift.
+* `RAKAIA_STORE` — which store `get_store()` builds: `"memory"` (default), `"durable"`,
+  `"jsonl"`, or the dotted import path of a class or function that takes no arguments and
+  returns a `StreamServerStore`. Anything else raises `ImproperlyConfigured` rather than
+  falling back to memory, and `manage.py check` reports it (`rakaia.E001` for a misspelt
+  name, `rakaia.E003` for a path that does not import; the check imports and does not build
+  the store). A custom store reads `RAKAIA_PERMANENT_STREAMS` itself; the built-in ones take
+  it for you. Changing it moves no data.
 * `RAKAIA_JSONL_ROOT` — the directory the file-backed store keeps its logs in, needed when
   `RAKAIA_STORE="jsonl"`. No default: `get_store()` raises `ImproperlyConfigured` and
   `manage.py check` fails when it is missing, because a guessed location would hold a log

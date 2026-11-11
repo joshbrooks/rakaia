@@ -91,19 +91,32 @@ The store is chosen by the `RAKAIA_STORE` Django setting via
 # settings.py
 RAKAIA_STORE = "durable"  # DjangoStreamStore (persisted in the DB)
 # RAKAIA_STORE = "memory"  # StreamStore (default — in-memory, process-local)
+# RAKAIA_STORE = "jsonl"   # JsonlStreamStore (files; needs RAKAIA_JSONL_ROOT)
+# RAKAIA_STORE = "myapp.stores.build_store"  # a store of your own
 ```
 
 Both `manage.py replay` and the mounted protocol app resolve their store through
 `get_store()`, so flipping this one setting switches the whole integration over.
 The chosen store is cached one-per-backend for the process.
 
-Only those two values are accepted. Anything else — a typo like `"durrable"`, a
+A value with a dot in it names a store of your own: the import path of a class
+or a function that takes no arguments and returns a store. Rakaia calls it once
+per process and keeps the result. It must be a complete store, which is what the
+protocol server needs (`rakaia.StreamServerStore`); if what comes back is not,
+`get_store()` raises `ImproperlyConfigured` and says which methods are missing.
+Changing `RAKAIA_STORE` moves no data, so a new store starts with whatever it
+already holds. Your store reads its own settings, including
+`RAKAIA_PERMANENT_STREAMS` if it wants it, because it is called with no
+arguments; the three built-in stores take that setting for you.
+
+Anything else — a typo like `"durrable"`, a
 stray space, a plausible guess like `"postgres"` — raises `ImproperlyConfigured`
 rather than falling back. It used to fall back to the in-memory store, which made
 a one-character mistake indistinguishable from a working durable deployment:
 appends succeeded, nothing complained, and the whole log vanished on the next
 restart. `manage.py check` reports the same problem at startup as `rakaia.E001`,
-so a misconfigured deployment fails before it serves a request. Running
+and a dotted path that does not import as `rakaia.E003`, so a misconfigured
+deployment fails before it serves a request. Running
 `"memory"` with `DEBUG = False` is allowed but warns (`rakaia.W001`) — silence it
 via `SILENCED_SYSTEM_CHECKS` if that is deliberate.
 
@@ -479,6 +492,19 @@ register_stream_event_admin(MyStreamEvent)
 ```
 
 ## Appendix
+
+**A store named by dotted path, precisely.** `get_store()` runs
+`import_string` on the value, calls the result with no arguments, and checks the
+returned object with `isinstance(store, rakaia.StreamServerStore)`. That protocol
+is `runtime_checkable`, so the check sees that the methods exist and not their
+signatures or behaviour. Run your store against the shared conformance suites to
+see those. A path that does not import, something that is not callable, and a
+result that is not a store each raise `ImproperlyConfigured`, and none of them is
+cached, so correcting the setting works without a restart. The cache is keyed by
+the setting's value, and `reset_store_cache()` drops it. `manage.py check` only
+imports the path (`rakaia.E003` if that fails or the target cannot be called): it
+does not build your store, since building may open connections or touch files, so
+a result that is not a store shows up on the first `get_store()`.
 
 **Permanent streams, precisely.** The rules live in `rakaia.stream_rules`, which
 every store asks. The switch makes a store's expiry check report every stream as

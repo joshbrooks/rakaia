@@ -3,8 +3,9 @@ from typing import Any
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.module_loading import import_string
 
-from rakaia import StreamStore
+from rakaia import StreamServerStore, StreamStore
 
 #: The backends ``RAKAIA_STORE`` accepts, mapped to what they build. Anything
 #: else is a configuration error, not a fallback — see `_build_store`.
@@ -24,11 +25,36 @@ DEFAULT_BACKEND = "memory"
 # serving two stores. The other two backends survive it, since their state is
 # not in the object. That is why the way to *drive* a caller with a store of
 # your own is to pass one (`get_asgi_app(store=...)`), not to reset the cache.
-_stores: dict[str, Any] = {}
+_stores: dict[str, StreamServerStore] = {}
 _store_lock = threading.Lock()
 
 
-def _build_store(backend: str) -> Any:
+def import_store_factory(path: str) -> Any:
+    """Import the class or function a dotted ``RAKAIA_STORE`` names, or refuse.
+
+    Only imports: it does not call the result, so `django_rakaia.checks` can use
+    it to report a bad path without building someone's store.
+    """
+    try:
+        factory = import_string(path)
+    except (ImportError, ValueError, TypeError) as exc:
+        # An empty part is not an `ImportError`: ".memory" gives `ValueError`
+        # and ".." gives `TypeError`, both from `import_module`.
+        raise ImproperlyConfigured(
+            f"RAKAIA_STORE={path!r} could not be imported: {exc}. "
+            "Use a short name ("
+            f"{', '.join(repr(b) for b in BACKENDS)}) or the dotted path of a "
+            "class or function that returns a store."
+        ) from exc
+    if not callable(factory):
+        raise ImproperlyConfigured(
+            f"RAKAIA_STORE={path!r} is not callable. It must name a class or a "
+            "function that takes no arguments and returns a StreamServerStore."
+        )
+    return factory
+
+
+def _build_store(backend: str) -> StreamServerStore:
     """Build the store `backend` names, or refuse.
 
     An unrecognised name is **refused rather than defaulted**. This used to
@@ -43,10 +69,27 @@ def _build_store(backend: str) -> Any:
     `django_rakaia.checks` reports the same problem at startup, so a misspelling
     fails `manage.py check` rather than waiting for the first append.
 
-    ``RAKAIA_PERMANENT_STREAMS`` applies whichever backend is chosen. The
-    in-memory and file stores take it when they are built; the durable store
-    reads it on every call.
+    A value with a dot in it is the import path of a class or function that is
+    called with no arguments and must return a `StreamServerStore`.
+    ``RAKAIA_PERMANENT_STREAMS`` applies to the three built-in backends (the
+    in-memory and file stores take it when built; the durable store reads it on
+    every call). A custom store gets no arguments, so it reads the setting
+    itself if it wants it.
     """
+    if isinstance(backend, str) and "." in backend:
+        store = import_store_factory(backend)()
+        if not isinstance(store, StreamServerStore):
+            missing = sorted(
+                name
+                for name in dir(StreamServerStore)
+                if not name.startswith("_") and not hasattr(store, name)
+            )
+            raise ImproperlyConfigured(
+                f"RAKAIA_STORE={backend!r} returned {type(store).__name__}, "
+                "which is not a StreamServerStore. It is missing: "
+                f"{', '.join(missing)}."
+            )
+        return store
     permanent = bool(getattr(settings, "RAKAIA_PERMANENT_STREAMS", False))
     if backend == "durable":
         from .django_store import DjangoStreamStore
@@ -76,20 +119,22 @@ def _build_store(backend: str) -> Any:
         )
     raise ImproperlyConfigured(
         f"RAKAIA_STORE={backend!r} is not a known store backend. "
-        f"Valid backends are: {', '.join(repr(b) for b in BACKENDS)}. "
+        f"Valid backends are: {', '.join(repr(b) for b in BACKENDS)}, or the "
+        "dotted import path of a class or function that returns a store. "
         f"(The default is {DEFAULT_BACKEND!r}, which is in-memory and "
         f"process-local — it does not survive a restart.)"
     )
 
 
-def get_store() -> Any:
+def get_store() -> StreamServerStore:
     """
     Get the configured stream store.
 
     Selected by the ``RAKAIA_STORE`` Django setting: ``"memory"`` (default) for
     the in-memory `StreamStore`, ``"durable"`` for the DB-backed
     `DjangoStreamStore`, or ``"jsonl"`` for the file-backed `JsonlStreamStore`
-    (which also needs ``RAKAIA_JSONL_ROOT``). Any other value raises
+    (which also needs ``RAKAIA_JSONL_ROOT``). A dotted import path names a class
+    or function that builds a store of your own. Any other value raises
     `ImproperlyConfigured`. Thread-safe lazy initialization, one instance per
     backend.
     """

@@ -24,8 +24,8 @@ from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 from .outcomes import Outcome
+from .types import AppendResult, CloseResult, StreamMessage
 from .types import Stream as StreamMetadata
-from .types import StreamMessage
 
 
 @runtime_checkable
@@ -71,10 +71,9 @@ class WritableStore(ReadableStore, Protocol):
     back `replay()`/projections. That lifecycle is `StreamServerStore` below.
     See ADR 0002.
 
-    Return types stay loose (`Any`) so a backend can return whatever suits it;
-    both current stores return `AppendResult` from `append`. What they guarantee
-    is the read-back behaviour exercised by the shared conformance suite
-    (`tests/store_contract.py`).
+    `append` and `append_many` return `AppendResult`, and every store in this
+    package does. `create` is left `Any`. The read-back behaviour is exercised
+    by the shared conformance suite (`tests/store_contract.py`).
     """
 
     def has(self, path: str) -> bool:
@@ -94,7 +93,7 @@ class WritableStore(ReadableStore, Protocol):
         """
         ...
 
-    def append(self, path: str, data: bytes, options: Any = None) -> Any:
+    def append(self, path: str, data: bytes, options: Any = None) -> AppendResult:
         """Append one (optionally enveloped) event to `path`.
 
         Raises `StreamNotFound` (a `KeyError`) if the stream does not exist —
@@ -109,7 +108,9 @@ class WritableStore(ReadableStore, Protocol):
         """
         ...
 
-    def append_many(self, path: str, events: Iterable[tuple[bytes, Any]]) -> list[Any]:
+    def append_many(
+        self, path: str, events: Iterable[tuple[bytes, Any]]
+    ) -> list[AppendResult]:
         """Append an ordered batch of `(data, options)` events, returning one
         result per item in input order.
 
@@ -117,8 +118,7 @@ class WritableStore(ReadableStore, Protocol):
         `StreamNotFound`-if-missing guarantee and same per-event envelope handling —
         but a backend may collapse the batch into a single transaction (the
         durable `DjangoStreamStore` does, which is the point). An empty batch is
-        a no-op returning `[]`. Result element types stay backend-specific and
-        loose, exactly as `append`'s do.
+        a no-op returning `[]`.
         """
         ...
 
@@ -266,7 +266,7 @@ class StreamServerStore(WritableStore, Protocol):
         producer_id: str | None = None,
         producer_epoch: int | None = None,
         producer_seq: int | None = None,
-    ) -> Any:
+    ) -> CloseResult | None:
         """Close `path`, returning a `CloseResult` (or `None` if absent).
 
         Idempotent: closing an already-closed stream reports the same final

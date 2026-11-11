@@ -9,6 +9,23 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **`RAKAIA_STORE` can name a store of your own.** A value with a dot in it is the
+  import path of a class or function that is called with no arguments and returns a
+  store; the three short names work as before. A path that does not import, or a
+  result that is not a `StreamServerStore`, raises `ImproperlyConfigured` rather
+  than falling back, and `manage.py check` reports an unimportable path as
+  `rakaia.E003`. `get_store()` now returns `StreamServerStore` instead of `Any`.
+
+### Changed
+
+- **The store protocols say what they return.** `WritableStore.append` returns
+  `AppendResult`, `append_many` returns `list[AppendResult]` and
+  `StreamServerStore.close_stream` returns `CloseResult | None`; they were `Any`.
+  Every store in the package already did. Nothing changes at runtime; see
+  `UPGRADING.md` if you implement these protocols.
+
 ### Fixed
 
 - **A consumer that had run before was refused after a migration that said its

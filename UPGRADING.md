@@ -15,6 +15,28 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## The store protocols say what they return
+
+If you wrote your own store and type-check it, `append` must now be annotated as
+returning `rakaia.AppendResult`, `append_many` as `list[AppendResult]` and
+`close_stream` as `CloseResult | None`; the protocols declared `Any` before, so a
+store that returned something else type-checked and now does not. Nothing changes
+at runtime, and the stores in this package already returned these types.
+`create` is unchanged.
+
+`django_rakaia.get_store()` is now declared as returning
+`rakaia.StreamServerStore` rather than `Any`. Code that calls a method only one
+store has on what `get_store()` returns still runs, and now fails type checking
+until it narrows the type first.
+
+`RAKAIA_STORE` now also takes the dotted import path of a store. Changing it, to
+a path or from one, still moves no data: the new store starts with whatever it
+already holds.
+
+---
+
 # 0.10.0
 
 ## The file store refuses a different `segment_size`
