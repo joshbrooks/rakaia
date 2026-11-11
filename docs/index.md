@@ -48,9 +48,10 @@ Two packages, either usable on its own:
 - **`django_rakaia`** — the part most people want. Records changes to your Django
   models, rebuilds tables from those records, and can rehearse a rebuild without
   touching the database.
-- **`rakaia`** — a standalone server speaking the
-  [Durable Streams protocol](protocol.md), with no dependencies at all. Run it
-  with `uvicorn`, or mount it inside Django, FastAPI, or Starlette.
+- **`rakaia`** — no dependencies at all. It holds the replay engine, so you can
+  rebuild tables without Django (the README has a short example), and a
+  standalone server speaking the [Durable Streams protocol](protocol.md). Run
+  the server with `uvicorn`, or mount it inside Django, FastAPI, or Starlette.
 
 ## Try it without installing anything
 
