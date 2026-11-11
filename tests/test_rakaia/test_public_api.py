@@ -467,6 +467,26 @@ class TestTheLazyRootAndItsTypeCheckingBlockAgree:
             "`Any` — add them to the block."
         )
 
+    def test_the_block_imports_each_name_from_the_module_exports_names(self, package):
+        import ast
+
+        from_block: dict[str, str] = {}
+        for node in ast.walk(_package_tree(package)):
+            if isinstance(node, ast.If) and getattr(node.test, "id", "") == (
+                "TYPE_CHECKING"
+            ):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.ImportFrom):
+                        for alias in child.names:
+                            from_block[alias.name] = f"{package}.{child.module}"
+
+        wrong = {
+            name: (from_block[name], module)
+            for name, module in _exports(package).items()
+            if from_block.get(name) != module
+        }
+        assert not wrong, f"name: (type checkers see, runtime resolves): {wrong}"
+
     def test_the_block_imports_nothing_that_is_not_exported(self, package):
         extra = _type_checking_imports(package) - set(_exports(package))
 
