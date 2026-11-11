@@ -1,20 +1,29 @@
 # Rakaia
 
-**Rakaia** is a Python implementation of the [Durable Streams protocol](docs/protocol.md) —
-an HTTP-based protocol for append-only, ordered, durable byte streams.
+**Rakaia** has two halves, and you can use either without the other.
+
+- **A server for the [Durable Streams protocol](docs/protocol.md)** — an
+  HTTP-based protocol for append-only, ordered, durable byte streams. Choose this
+  if you want to publish or follow ordered streams over HTTP, including live updates
+  over SSE.
+- **A way to build tables from a record of events** — keep an append-only log,
+  replay it through versioned handlers to fill tables, and rebuild them after you
+  fix a bug in a handler. Choose this if you want tables you can reproduce, rehearse
+  and repair rather than patch.
 
 It ships two installable packages:
 
-- **`rakaia`** — A zero-dependency ASGI app implementing the protocol. Run it
-  standalone (`uvicorn`/`daphne`/`granian`) or mount it inside Django/FastAPI/Starlette.
+- **`rakaia`** — Zero dependencies. The ASGI protocol server (run it standalone
+  with `uvicorn`/`daphne`/`granian`, or mount it inside Django/FastAPI/Starlette),
+  plus the replay engine, handlers and in-memory projections.
 - **`django_rakaia`** — A Django app with normalized stream models, a
-  `@stream_model` decorator, Channels-based SSE broadcasting, and an admin
-  interface.
+  `@stream_model` decorator, Channels-based SSE broadcasting, an admin
+  interface, and Django-backed replay.
 
 ## Install
 
 ```bash
-pip install rakaia-streams                 # core protocol server
+pip install rakaia-streams                 # core: protocol server + replay
 pip install "rakaia-streams[django]"       # + Django integration
 pip install "rakaia-streams[django,prod]"  # + channels-redis + hypercorn for prod
 ```
@@ -41,13 +50,43 @@ app = create_app()  # in-memory store
 app = create_app(store=StreamStore())
 ```
 
+## Quick start (replay, no Django)
+
+```python
+from rakaia import (
+    HandlerRegistry,
+    InMemoryProjections,
+    StreamStore,
+    Upsert,
+    register_simple,
+    replay,
+    seed_stream,
+)
+
+registry = HandlerRegistry()  # private, so the snippet can be re-run
+
+
+@register_simple("rooms", "room:*", registry=registry)
+def project_room(event):
+    return Upsert("Room", lookup={"id": event["id"]}, defaults={"name": event["name"]})
+
+
+events = [{"id": 1, "name": "lobby"}, {"id": 1, "name": "Lobby"}]
+store = seed_stream("room:1", events, store=StreamStore())
+tables = InMemoryProjections()
+replay(store, "room:1", tables, handler_registry=registry)
+print(tables.rows("Room"))  # [{'pk': 1, 'id': 1, 'name': 'Lobby'}]
+```
+
+Fix the handler, replay again into fresh tables, and the rows follow.
+
 ## Quick start (Django)
 
 ```python
 # models.py
 from dataclasses import dataclass
 from django.db import models
-from django_rakaia.decorators import stream_model
+from django_rakaia import stream_model
 
 
 @dataclass
@@ -68,37 +107,27 @@ Every save/delete now emits a stream event you can subscribe to over SSE.
 
 ## Documentation
 
-The documentation site is built with [Zensical](https://zensical.org/).
-
-```bash
-uv sync --extra docs
-uv run zensical serve   # live preview at http://localhost:8000
-uv run zensical build   # static build into ./site
-```
-
-Pages live in [`docs/`](docs/) and the site config is in
+Built with [Zensical](https://zensical.org/): `uv sync --extra docs`, then
+`uv run zensical serve` (preview at http://localhost:8000) or
+`uv run zensical build`. Pages live in [`docs/`](docs/), config in
 [`zensical.toml`](zensical.toml):
 
 - [Overview & quick start](docs/index.md)
 - [**What's new — a guided tour**](docs/whats-new.md) — start here to see the recent features, each with a one-command demo
 - [Glossary](docs/glossary.md) — plain-language definitions of the event-sourcing terms
-- [Django integration](docs/django-integration.md)
-- [Versioned handlers](docs/versioned-handlers.md)
-- [Projections & fan-out](docs/projections-and-fan-out.md)
-- [Dry-run & executors](docs/dry-run-and-executors.md)
+- [Django integration](docs/django-integration.md) · [Deployment](docs/deployment.md)
+- [Versioned handlers](docs/versioned-handlers.md) · [Projections & fan-out](docs/projections-and-fan-out.md) · [Dry-run & executors](docs/dry-run-and-executors.md)
 - [Translations](docs/translations.md) (example)
-- [Deployment](docs/deployment.md)
 - [Protocol specification](docs/protocol.md) · [Backend storage](docs/streams-backend-storage.md)
 
 ## Versioned handlers (event replay with history)
 
-Rakaia ships a subsystem for replaying a stream through handlers whose
-*current* and *historical* versions are both kept in source. Handlers are
-pure — they return `Effect` descriptions that an executor applies via
-idempotent `update_or_create`, so replay can be re-run safely.
+Replay runs a stream through handlers whose *current* and *historical* versions
+are both kept in source. Handlers are pure — they return `Effect` descriptions
+that an executor applies idempotently, so replay can be re-run safely.
 
 ```python
-from rakaia import Upsert, register_handler, register_upcaster
+from rakaia import Upsert, register_handler
 
 
 @register_handler(
@@ -115,20 +144,12 @@ def mogrify_v1(event):
 @register_handler(name="mogrify", event_match="room:*:messages", effective_from=10_000)
 def mogrify_v2(event):  # bugfix only for events from seq 10_000 onward
     ...
-
-
-@register_upcaster(event_match="room:*:messages", from_version=1)
-def upcast_v1_to_v2(event):  # schema-shape change handled separately
-    return {**event, "currency": "USD"}
 ```
 
-`python manage.py replay room:5:messages --from 0` then runs every event
-through its time-correct handler version, with drift detection (`--strict-drift`)
-and dry-run (`--dry-run`) modes.
-
-See [`docs/versioned-handlers.md`](docs/versioned-handlers.md) for the
-full story, including a worked example based on Partisipa's submissions
-pipeline.
+`python manage.py replay room:5:messages --from 0` runs every event through its
+time-correct handler version, with drift detection (`--strict-drift`) and
+dry-run (`--dry-run`) modes. See [`docs/versioned-handlers.md`](docs/versioned-handlers.md)
+for upcasters and a worked example.
 
 ## Sample applications
 
@@ -145,40 +166,22 @@ projects; two are zero-dependency scripts (no Django). Run them all with
 | [`examples/chat/`](examples/chat/) | `@stream_model`, multi-stream events, live SSE | `just dev` |
 | [`examples/polyglot/`](examples/polyglot/) | Language-scoped streams, live-editable translations | `just polyglot-dev` |
 
-For the full catalog with a concept-coverage matrix, see
-[`docs/examples.md`](docs/examples.md) (human) or the machine-readable
+The full catalog with a concept-coverage matrix is in
+[`docs/examples.md`](docs/examples.md), and the machine-readable
 [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog)
-bundle in [`okf/`](okf/) (agents/tools). For a narrated walkthrough, see
-[`docs/whats-new.md`](docs/whats-new.md).
+bundle is in [`okf/`](okf/).
 
 ## Running it
 
-If you have [`just`](https://github.com/casey/just) and `podman`:
-
-```bash
-just install
-just dev      # single-worker dev server
-just serve    # production-style: 4 hypercorn workers + Redis (podman)
-```
-
-`just --list` shows everything. The full guide is in
-[`docs/deployment.md`](docs/deployment.md).
+With [`just`](https://github.com/casey/just) and `podman`: `just install`, then
+`just dev` (single-worker dev server) or `just serve` (4 hypercorn workers +
+Redis). `just --list` shows everything; see [`docs/deployment.md`](docs/deployment.md).
 
 ## Development
 
-```bash
-just install
-just check   # lint + format + types + tests + docs build
-```
-
-Or by hand:
-
-```bash
-uv sync --extra dev --extra django
-uv run pytest
-uv run ruff check src/
-uv run pyright src/
-```
+`just install`, then `just check` (lint + format + types + tests + docs build).
+Or by hand: `uv sync --extra dev --extra django`, then `uv run pytest`,
+`uv run ruff check`, `uv run pyright src/`.
 
 ### Protocol conformance
 
