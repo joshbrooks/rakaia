@@ -533,6 +533,15 @@ fmt:
 typecheck:
     PYRIGHT_PYTHON_IGNORE_WARNINGS=1 PYRIGHT_PYTHON_FORCE_VERSION=1.1.411 uv run pyright src/
 
+# Rewrite `__all__` and the TYPE_CHECKING imports in both packages from `_EXPORTS`.
+# Run it after adding or removing an export, then commit the result.
+exports:
+    uv run python scripts/gen_exports.py
+
+# Fail if `__all__` or the TYPE_CHECKING imports do not match `_EXPORTS`.
+exports-check:
+    uv run python scripts/gen_exports.py --check
+
 # Regenerate docs/api-reference.md from what the packages actually export.
 # Commit the result; `api-reference-check` fails if it drifts.
 api-reference:
@@ -568,7 +577,7 @@ docs-serve: install
 # `typecheck` was excluded here while pyright still surfaced pre-existing
 # Django ORM dynamism warnings. That stopped being true in #143 — pyright is a
 # hard gate at zero errors in CI — so it belongs in the local gate too.
-check: lint fmt-check typecheck test api-reference-check docs
+check: lint fmt-check typecheck test exports-check api-reference-check docs
 
 # ---------------------------------------------------------------------------
 # Release / publishing (dist name: rakaia-streams)

@@ -58,6 +58,11 @@ jobs:
           PYRIGHT_PYTHON_FORCE_VERSION: "1.1.411"
         run: uv run pyright src/
 
+      - name: Check the export lists match _EXPORTS
+        # `__all__` and the TYPE_CHECKING imports are written from `_EXPORTS` by
+        # `just exports`; a hand edit or a forgotten run fails here.
+        run: just exports-check
+
       - name: Check the API reference is not stale
         # `docs/api-reference.md` is generated from `__all__`. Without this step
         # the only thing enforcing it was `just check`, which nobody is obliged

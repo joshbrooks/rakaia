@@ -69,12 +69,17 @@
   the count line at the bottom is a single line two branches will both rewrite.
   The check compares against the last commit, so run it *after* committing;
   before that, a correctly regenerated file still reads as out of date.
-- **Adding a public name touches five places.** `_EXPORTS` in the package
-  `__init__` (and, for `rakaia`, its `if TYPE_CHECKING` import block), the
-  expected set in `tests/test_rakaia/test_public_api.py`, `GROUPS` in
-  `scripts/gen_api_reference.py`, then `just api-reference`. Two of those fail
-  nothing when missed: a name absent from `GROUPS` lands under *Everything else*,
-  and one absent from the `TYPE_CHECKING` block is invisible to type checkers.
+- **Adding a public name is three edits and two commands.** Add it to `_EXPORTS`
+  in the package `__init__`, to the expected set in
+  `tests/test_rakaia/test_public_api.py` (kept independent on purpose), and to a
+  section of `GROUPS` in `scripts/gen_api_reference.py`; then run `just exports`
+  (writes `__all__` and the `TYPE_CHECKING` imports between the `# BEGIN generated`
+  markers — never hand-edit those) and `just api-reference`. In CI,
+  `just exports-check` fails naming the stale `__init__.py` and
+  `just api-reference-check` fails naming the ungrouped name when either is
+  forgotten.
+  Also name a new `RAKAIA_*` setting or management command in `okf/`: a test fails
+  until it is there.
 - To reproduce the **full** CI gate locally you also need the docs extra
   (`zensical` isn't in `dev`/`django`): `uv sync --extra dev --extra django --extra docs`,
   then `uv run zensical build`. Without `--extra docs` that step fails with
@@ -120,10 +125,10 @@
     the matrix imply coverage that does not exist.
   - `okf/` — the machine-readable bundle. A new name, setting or command goes in
     the concept page that owns it, and every such edit gets a dated entry in
-    `okf/log.md`. Only *examples* are gated (`test_docs_names_resolve.py` fails
-    when an `examples/` directory has no bundle page), so a change that ships a
-    setting or a command without shipping an example walks straight past the
-    suite.
+    `okf/log.md`. *Examples* are gated (`test_docs_names_resolve.py` fails
+    when an `examples/` directory has no bundle page), and so are every `RAKAIA_*`
+    setting and management command (`test_okf_covers_settings_and_commands.py`);
+    a new exported name is not, so that one is on whoever writes the PR.
 - **A new setting or management command is a feature, not plumbing.** The tour's
   *headline capability* test reads as an invitation to skip anything that sounds
   internal, and that is how `0.7.0` shipped: paged catch-up reads, the event
@@ -132,7 +137,7 @@
   `CHANGELOG.md` and none of them reached `docs/whats-new.md` or `okf/` until
   after the tag. If a consumer would change a setting, run a command, or get a
   different answer from the same call, it belongs in the tour and the bundle.
-  Nothing checks either of those two files, so this is on whoever writes the PR;
+  Nothing checks `docs/whats-new.md`, and `okf/` only for settings, commands and examples, so this is on whoever writes the PR;
   the repair costs an afternoon of reading eleven commits back, which is what it
   cost here.
 - **Tag a release `v<version>`, with the `v`.** `publish.yml` triggers on `v*`
