@@ -12,6 +12,7 @@ import pytest
 from rakaia.jsonl_store import JsonlStreamStore
 from rakaia.testing.server_store_contract import ServerStoreContract
 from rakaia.testing.store_contract import StoreContract
+from rakaia.testing.tagged_reads_contract import TaggedReadsContract
 
 
 @pytest.fixture
@@ -28,6 +29,12 @@ class TestJsonlStoreContract(StoreContract):
 
 
 class TestJsonlStoreServerContract(ServerStoreContract):
+    @pytest.fixture
+    def store(self, tmp_path) -> JsonlStreamStore:
+        return JsonlStreamStore(tmp_path / "streams", segment_size=4)
+
+
+class TestJsonlStoreTaggedReads(TaggedReadsContract):
     @pytest.fixture
     def store(self, tmp_path) -> JsonlStreamStore:
         return JsonlStreamStore(tmp_path / "streams", segment_size=4)

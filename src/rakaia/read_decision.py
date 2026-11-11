@@ -54,6 +54,8 @@ from .types import (
     SSE_CURSOR_FIELD,
     SSE_OFFSET_FIELD,
     SSE_UP_TO_DATE_FIELD,
+    StreamMessage,
+    clean_tags,
 )
 
 # Response header names, title-cased by HTTP convention. `rakaia.types` holds
@@ -139,6 +141,38 @@ def check_page_size(limit: int | None) -> None:
     """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be >= 1, got {limit}")
+
+
+def check_tagged_read(tags: tuple[str, ...], limit: int | None) -> tuple[str, ...]:
+    """The cleaned `tags` of a `read_tagged` call, or `ValueError` for a bad call.
+
+    No tags, a tag no event could carry, or a `limit` below 1 all raise. Call it
+    after the stream is known to exist and before anything is written, so a
+    refused call is `StreamNotFound` for a missing stream and extends nothing.
+    """
+    if not tags:
+        raise ValueError("read_tagged needs at least one tag")
+    check_page_size(limit)
+    return clean_tags(tags)
+
+
+def pick_tagged(
+    messages: list[StreamMessage],
+    tags: tuple[str, ...],
+    *,
+    newest_first: bool,
+    limit: int | None,
+) -> list[StreamMessage]:
+    """The messages of `messages` (oldest first) that carry every one of `tags`.
+
+    Reversed when `newest_first`, and cut to `limit` after that, so a limit
+    keeps the newest matches when newest first and the oldest otherwise.
+    """
+    wanted = set(tags)
+    found = [m for m in messages if wanted.issubset(m.tags)]
+    if newest_first:
+        found.reverse()
+    return found if limit is None else found[:limit]
 
 
 def closed_at_tail(*, closed: bool, at_tail: bool, up_to_date: bool) -> bool:

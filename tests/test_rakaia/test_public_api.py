@@ -34,6 +34,7 @@ RAKAIA_PUBLIC = {
     "ProjectionReader",
     "ReadableStore",
     "StreamServerStore",
+    "TaggedReads",
     "WritableStore",
     # envelope / provenance
     "append_if_changed",
@@ -180,7 +181,9 @@ RAKAIA_PUBLIC = {
     "UpsertOutcome",
     "apply_effects",
     "check_page_size",
+    "check_tagged_read",
     "page_of",
+    "pick_tagged",
     "plan_appends",
     "plan_initial_write",
     # version

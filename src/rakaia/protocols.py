@@ -280,6 +280,34 @@ class StreamServerStore(WritableStore, Protocol):
 
 
 @runtime_checkable
+class TaggedReads(Protocol):
+    """An optional extra for a store that can return the events carrying given tags.
+
+    `StreamServerStore` can only answer "everything after this point"; this asks
+    for the events a producer tagged (`AppendOptions.tags`), whenever they were
+    written. It is separate so a store written before it exists is not broken.
+    The shared checks are `rakaia/testing/tagged_reads_contract.py`.
+    """
+
+    def read_tagged(
+        self,
+        path: str,
+        *tags: str,
+        newest_first: bool = False,
+        limit: int | None = None,
+    ) -> list[StreamMessage]:
+        """The messages in `path` that carry **every** one of `tags`.
+
+        Oldest first, or newest first with `newest_first`; `limit` then keeps the
+        first that many in that order. Each message is the one `read` returns for
+        that event. Like `peek`, it does not extend the TTL window. Raises
+        `StreamNotFound` if the stream is absent or expired, and `ValueError` for
+        no tags, a tag no event could carry, or a `limit` below 1.
+        """
+        ...
+
+
+@runtime_checkable
 class SignalsNewMessages(Protocol):
     """An optional extra for a `StreamServerStore` whose appends happen in the
     server's own process.

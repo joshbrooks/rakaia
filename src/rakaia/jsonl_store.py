@@ -88,7 +88,7 @@ from .append_decision import (
 )
 from .offsets import PLAIN
 from .producer import is_producer_state_expired
-from .read_decision import check_page_size, page_of
+from .read_decision import check_page_size, check_tagged_read, page_of, pick_tagged
 from .types import (
     AppendResult,
     ClosedBy,
@@ -1168,6 +1168,23 @@ class JsonlStreamStore:
         """`read` without extending the TTL window; see `StreamServerStore.peek`."""
         self._require(path)
         return self._read_since(path, offset)
+
+    def read_tagged(
+        self,
+        path: str,
+        *tags: str,
+        newest_first: bool = False,
+        limit: int | None = None,
+    ) -> list[StreamMessage]:
+        """The messages carrying every one of `tags`; see `TaggedReads`."""
+        self._require(path)
+        wanted = check_tagged_read(tags, limit)
+        return pick_tagged(
+            self._read_since(path, None),
+            wanted,
+            newest_first=newest_first,
+            limit=limit,
+        )
 
     def _read_since(self, path: str, offset: str | None) -> list[StreamMessage]:
         if not offset or offset == "-1":

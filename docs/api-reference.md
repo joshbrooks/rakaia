@@ -40,6 +40,7 @@ page is the contract.
 | `ReadableStore` | `rakaia` | `(*args, **kwargs)` | A store `replay()` can read events from. |
 | `WritableStore` | `rakaia` | `(*args, **kwargs)` | A store the event-sourcing framework both writes to and reads from. |
 | `StreamServerStore` | `rakaia` | `(*args, **kwargs)` | A store that can back a Durable Streams **protocol server**. |
+| `TaggedReads` | `rakaia` | `(*args, **kwargs)` | An optional extra for a store that can return the events carrying given tags. |
 | `append_event` | `django_rakaia` | `(store: 'WritableStore', stream_path: 'str', payload: 'dict[str, Any]', *, label: 'str', actor: 'Any' = None, event_ts: 'float \| None' = None, metadata: 'dict[str, Any] \| None' = None, tags: 'Sequence[str]' = (), correlation_id: 'str \| None' = None) -> 'AppendResult'` | Append one enveloped event to ``stream_path``, creating the stream if absent. |
 | `append_if_changed` | `rakaia` | `(store: 'Any', path: 'str', data: 'bytes', *, current: 'Any', options: 'Any' = None, snapshot_of: 'Callable[[dict[str, Any]], Any] \| None' = None) -> 'bool'` | Append `data` to `path` only if its snapshot differs from `current`. |
 | `seed_stream` | `rakaia` | `(path: 'str', events: 'Iterable[SeedEvent]' = (), *, store: 'S \| None' = None, encoder: 'type[json.JSONEncoder] \| None' = None) -> 'S \| StreamStore'` | Create ``path`` and append ``events`` to it, in list order. |
@@ -139,6 +140,8 @@ page is the contract.
 | `PlannedWrite` | `rakaia` | `(payloads: 'tuple[bytes, ...]', label: 'str' = '', metadata: 'dict[str, Any] \| None' = None, tags: 'tuple[str, ...]' = (), correlation_id: 'str \| None' = None, event_ts: 'float \| None' = None, close: 'bool' = False) -> None` | One admitted item, as it is to be stored. |
 | `page_of` | `rakaia` | `(messages: 'list[T]', limit: 'int \| None') -> 'tuple[list[T], bool]'` | Cut `messages` to one page: ``(page, up_to_date)``. |
 | `check_page_size` | `rakaia` | `(limit: 'int \| None') -> 'None'` | Raise `ValueError` for a page `limit` below 1; `None` is allowed. |
+| `check_tagged_read` | `rakaia` | `(tags: 'tuple[str, ...]', limit: 'int \| None') -> 'tuple[str, ...]'` | The cleaned `tags` of a `read_tagged` call, or `ValueError` for a bad call. |
+| `pick_tagged` | `rakaia` | `(messages: 'list[StreamMessage]', tags: 'tuple[str, ...]', *, newest_first: 'bool', limit: 'int \| None') -> 'list[StreamMessage]'` | The messages of `messages` (oldest first) that carry every one of `tags`. |
 | `apply_effects` | `rakaia` | `(effects: 'Iterable[Effect]', *, upsert: 'Callable[[Upsert], tuple[UpsertOutcome, RowAccessor]]', update_run: 'Callable[[list[Update]], None]', delete: 'Callable[[Delete], None]', retire: 'Callable[[Retire], list[dict[str, Any]]]') -> 'ApplyReport'` | Apply `effects` through the four writes an executor supplies. |
 | `RowAccessor` | `rakaia` | — | — |
 | `UpsertOutcome` | `rakaia` | — | — |
@@ -302,6 +305,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-196 exported names across 17 sections. 170 carry a docstring; 26 do not and show `—` above.
+199 exported names across 17 sections. 173 carry a docstring; 26 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

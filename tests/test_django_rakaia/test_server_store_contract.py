@@ -15,10 +15,18 @@ import pytest
 
 from django_rakaia.django_store import DjangoStreamStore
 from rakaia.testing.server_store_contract import ServerStoreContract
+from rakaia.testing.tagged_reads_contract import TaggedReadsContract
 
 
 @pytest.mark.django_db(transaction=True)
 class TestDjangoStreamStoreServerContract(ServerStoreContract):
+    @pytest.fixture
+    def store(self) -> DjangoStreamStore:
+        return DjangoStreamStore()
+
+
+@pytest.mark.django_db(transaction=True)
+class TestDjangoStreamStoreTaggedReads(TaggedReadsContract):
     @pytest.fixture
     def store(self) -> DjangoStreamStore:
         return DjangoStreamStore()

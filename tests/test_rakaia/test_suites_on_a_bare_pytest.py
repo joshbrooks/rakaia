@@ -79,6 +79,15 @@ CASES = {
                     model="app.Alert",
                 )
     """,
+    "tagged_reads_contract": """
+        from rakaia import StreamStore
+        from rakaia.testing.tagged_reads_contract import TaggedReadsContract
+
+        class TestIt(TaggedReadsContract):
+            @pytest.fixture
+            def store(self):
+                return StreamStore()
+    """,
     "outcome_store_contract": """
         from rakaia import InMemoryOutcomeStore
         from rakaia.testing.outcome_store_contract import OutcomeStoreContract
