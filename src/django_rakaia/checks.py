@@ -10,6 +10,9 @@ The one that matters is `rakaia.E001`: the setting is free-form text, so a
 misspelt backend used to select the in-memory store and lose every append on
 restart. `rakaia.E002` is the same idea for the file-backed store, which cannot
 be built without a root directory and must not be handed a guessed one.
+`rakaia.E003` is the same for a dotted path that does not import or is not
+callable; the check only imports it, and `get_store` is what verifies the
+result is a store.
 `rakaia.W001` is softer — a correctly-spelt ``"memory"`` is legitimate for
 development but is worth flagging if `DEBUG` is off, because a production
 deployment almost never means it. `rakaia.W002` is the same kind of warning
@@ -28,8 +31,9 @@ from django.conf import settings
 # `Warning` shadows the builtin, but it is Django's own check class and this
 # module's whole job is returning them; aliasing it would obscure that.
 from django.core.checks import Error, Warning, register  # noqa: A004
+from django.core.exceptions import ImproperlyConfigured
 
-from .store import BACKENDS, DEFAULT_BACKEND
+from .store import BACKENDS, DEFAULT_BACKEND, import_store_factory
 
 
 def _channels_is_installed() -> bool:
@@ -44,12 +48,30 @@ def check_store_backend(app_configs: Any, **kwargs: Any) -> list[Any]:  # noqa: 
     """Verify ``RAKAIA_STORE`` names a real backend, and flag in-memory in prod."""
     backend = getattr(settings, "RAKAIA_STORE", DEFAULT_BACKEND)
 
+    if isinstance(backend, str) and "." in backend:
+        # Import only: building a user's store may open connections or touch
+        # files, and a wrong path is already reported by the import.
+        try:
+            import_store_factory(backend)
+        except ImproperlyConfigured as exc:
+            return [
+                Error(
+                    str(exc),
+                    hint=(
+                        "Until this is fixed every append raises ImproperlyConfigured."
+                    ),
+                    id="rakaia.E003",
+                )
+            ]
+        return []
+
     if backend not in BACKENDS:
         return [
             Error(
                 f"RAKAIA_STORE={backend!r} is not a known store backend.",
                 hint=(
-                    f"Set it to one of {', '.join(repr(b) for b in BACKENDS)}. "
+                    f"Set it to one of {', '.join(repr(b) for b in BACKENDS)}, "
+                    "or the dotted import path of a store. "
                     "Until this is fixed every append raises "
                     "ImproperlyConfigured."
                 ),
