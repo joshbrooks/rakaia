@@ -40,6 +40,7 @@ CLOSE_DIR       := "examples/partisipa_close"
 MERGE_DIR       := "examples/partisipa_merge"
 REPEATERS_DIR   := "examples/partisipa_repeaters"
 INTAKE_DIR      := "examples/partisipa_intake"
+PIPELINE_DIR    := "examples/partisipa_pipeline"
 COVERAGE_DIR    := "examples/stream_coverage"
 CONSUMER_REBUILD_DIR := "examples/consumer_rebuild"
 TWO_WORKERS_DIR := "examples/two_workers"
@@ -126,6 +127,8 @@ demos:
     @just partisipa-tree-demo
     @echo ">> partisipa intake — consuming loop, durable position and records"
     @just intake-demo
+    @echo ">> partisipa pipeline — one suku's forms, step by step, then rebuilt and compared"
+    @just pipeline-demo
     @echo ">> stream coverage — a stream that fell behind its table, found and repaired"
     @just coverage-demo
     @echo ">> consumer rebuild — replaced stream, transient error, crash mid-pass"
@@ -367,6 +370,13 @@ partisipa-tree-demo:
 intake-demo:
     cd {{INTAKE_DIR}} && uv run python manage.py migrate
     cd {{INTAKE_DIR}} && uv run python manage.py demo_intake
+
+# One suku's forms through the whole pipeline, step by step, then a rebuild
+# compared with live (examples/partisipa_pipeline; docs/explainers/). Pass
+# `--until <step>` to stop after one step. The command migrates both of its
+# databases itself, since the rebuild's is in memory.
+pipeline-demo *ARGS:
+    cd {{PIPELINE_DIR}} && uv run python manage.py demo_pipeline {{ARGS}}
 
 # Stream coverage — open a gap between a table and its stream, find it with
 # check_stream_coverage, and repair it (examples/stream_coverage). The demo
