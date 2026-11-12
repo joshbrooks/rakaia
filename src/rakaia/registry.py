@@ -21,9 +21,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
-# `HandlerDriftError` is defined next to the rule that raises it, in
-# `rakaia.drift`, and re-exported here so `rakaia.registry.HandlerDriftError` —
-# where callers have always imported it from — keeps working.
+# `HandlerDriftError` lives in `rakaia.drift` and is re-exported here, where
+# callers import it from.
 from .drift import DriftLedger
 from .drift import HandlerDriftError as HandlerDriftError
 from .errors import RakaiaError
@@ -73,11 +72,7 @@ class UpcasterChainError(RakaiaError):
 # One rule per rule
 # =============================================================================
 #
-# Everything in this section exists once and is used by every registration kind.
-# Each of these used to be written out per kind — content routing twice, the
-# frozenset serialization rule three times, and identity/payload/identity-again
-# nine times across three record types. `rakaia.registration_log` did the same
-# consolidation one level down and its module docstring says why.
+# Everything in this section is shared by every registration kind.
 
 
 def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[str]:
@@ -89,9 +84,7 @@ def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[
     members in a different order dedup). Raises on an empty collection or a
     non-string member, which are always mistakes.
 
-    Also the **decoder** for a persisted `event_match`, which is a string or a
-    list: reading a payload back is the same normalisation as accepting an
-    argument, so there is no second implementation to keep in step.
+    Also the decoder for a persisted `event_match` (a string or a list).
     """
     if isinstance(event_match, str):
         return event_match
@@ -108,10 +101,9 @@ def _canonical_event_match(event_match: str | Iterable[str]) -> str | frozenset[
 def _event_match_payload(event_match: str | frozenset[str]) -> str | list[str]:
     """The JSON form of a stored `event_match`.
 
-    A frozenset serializes as a **sorted** list, so the meta-stream is stable
-    regardless of set iteration order — otherwise every restart would see a
-    "new" identity and re-append the same handler. `_canonical_event_match`
-    reads it back.
+    A frozenset serializes as a **sorted** list: otherwise set iteration order
+    would give every restart a "new" identity and re-append the same handler.
+    `_canonical_event_match` reads it back.
     """
     return event_match if isinstance(event_match, str) else sorted(event_match)
 
@@ -131,22 +123,15 @@ def _routing_subject(
     registrant: str,
     remedy: str,
 ) -> str:
-    """The string a registration's glob is tested against — the content-routing
+    """The string a registration's glob is tested against: the content-routing
     rule, for handlers and upcasters alike.
 
-    Without a `match_field` the subject is the stream/event-match string and the
-    event is irrelevant. With one, it is ``str(event[match_field])``.
-
-    Two edges carry the weight, and both are the same for both kinds:
-
-    * the field is **absent** from an event that is present → ``""``, which
-      simply does not match. A stream carrying a different form_type is normal
-      traffic, not a configuration error.
-    * the **event** is absent → `ValueError`. A caller who forgot to pass it
-      would otherwise silently leave the event unhandled or un-upcast.
-
-    `registrant` and `remedy` only shape that error, so each caller keeps the
-    wording that names the right entry point.
+    Without a `match_field` the subject is the stream/event-match string. With
+    one, it is ``str(event[match_field])``; a field **absent** from a present event
+    gives ``""``, which simply does not match (a stream carrying a different
+    form_type is normal traffic), but an absent **event** raises `ValueError`, or
+    the event would silently go unhandled or un-upcast. `registrant` and `remedy`
+    only shape that error.
     """
     if match_field is None:
         return stream_subject
@@ -160,10 +145,9 @@ def _routing_subject(
 def _module_prefix(dotted_path: str | None) -> str | None:
     """The module part of a dotted path, by chopping the last segment.
 
-    Only correct when the path is ``module.function``, which is why it is no
-    longer how `rehydrate()` finds a module — see `_registration_site`. Kept as
-    the fallback for meta-stream payloads written before `registered_in`
-    existed.
+    Only correct when the path is ``module.function``, so it is only the
+    fallback for meta-stream payloads written before `registered_in` existed;
+    see `_registration_site`.
     """
     if not dotted_path or "." not in dotted_path:
         return dotted_path or None
@@ -178,7 +162,7 @@ def _warn_once(fn: Callable[..., Any], message: str) -> None:
 
     The registration call can be several frames inside this library, so a stack
     level lands on nothing useful; the handler's own first line is where the fix
-    goes. Registering the same handler again says nothing new.
+    goes.
     """
     code = getattr(unwrap_handler(fn), "__code__", None)
     filename = code.co_filename if code else "<unknown>"
@@ -226,14 +210,9 @@ def _registration_site() -> str | None:
 
     Restoring a registration means re-running its **decorator**, so the module
     that matters is the one holding the decorator call, not the one holding the
-    function. Those are different whenever a shared function is wired up
-    elsewhere — which `functools.partial(fn, **deps)` dependency binding makes
-    the normal layout, since the partial is built at the wiring site while `fn`
-    lives in a library module.
-
-    Walks out of rakaia's own frames, so it lands on the caller whether they
-    used `@register_handler`, `@register_simple`, or called `register()`
-    directly.
+    function (they differ whenever `functools.partial(fn, **deps)` binds
+    dependencies at a wiring site). Walks out of rakaia's own frames, so it works
+    for `@register_handler`, `@register_simple` or a direct `register()`.
     """
     frame = inspect.currentframe()
     try:
@@ -257,9 +236,8 @@ _REQUIRED: Any = object()
 class _PayloadField:
     """One persisted field of a registration record, and how it crosses JSON.
 
-    Declaring the fields is what lets `_MetaStreamRecord` derive `identity`,
-    `to_payload` and `identity_from_payload` from a single list per record type
-    instead of three hand-written methods that had to agree.
+    `_MetaStreamRecord` derives `identity`, `to_payload` and
+    `identity_from_payload` from one list of these per record type.
     """
 
     name: str
@@ -290,10 +268,7 @@ class _MetaStreamRecord:
     """`identity` / `to_payload` / `identity_from_payload`, derived once.
 
     Satisfies `rakaia.registration_log.RegistrationRecord` for any subclass that
-    declares `_PAYLOAD_FIELDS`. The three methods were written out per record
-    type — an identity built in one place and rebuilt in another, three times
-    over — which is exactly the pair that drifts. Here the round trip is a
-    property of the field list, so adding a field is one line in one place.
+    declares `_PAYLOAD_FIELDS`, so adding a field is one line in one place.
     """
 
     _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = ()
@@ -319,8 +294,7 @@ class _MetaStreamRecord:
 
 
 #: The registration-site field, shared by all three record kinds. The fallback
-#: is the old derivation — right whenever the decoration site and the definition
-#: site were the same module, which is the case that used to work.
+#: is right whenever the decoration site and the definition site are one module.
 _REGISTERED_IN = _PayloadField(
     "registered_in", default=lambda p: _module_prefix(p.get("dotted_path"))
 )
@@ -334,29 +308,17 @@ _REGISTERED_IN = _PayloadField(
 def _dotted_path(fn: Any, *, persisted: bool = False) -> str:
     """The importable path recorded for `fn`, warning when there isn't one.
 
-    Taken from the *unwrapped* callable so a `functools.partial` records the
-    function it binds rather than being unrecordable. This is "where the logic
-    is", for drift detection; "where it was registered" is a separate field
-    (`registered_in`, from `_registration_site`), because those are not the same
-    module once dependencies are bound at a wiring site.
+    Taken from the *unwrapped* callable, so a `functools.partial` records the
+    function it binds. This is "where the logic is", for drift detection;
+    "where it was registered" is `registered_in`.
 
-    A closure or a nested lambda has a `<locals>` qualname. Its `source_hash`
-    then covers only the wrapper, so drift detection is blind to whatever the
-    wrapper calls — and `rehydrate()` restores it only if the module that
-    registered it re-registers it on import, which a closure built inside a
-    function does not.
-
-    Warned rather than refused: a closure is legitimate in a test, and rakaia's
-    own suite registers lambdas. The point is that it stops being silent. Bind
-    dependencies with `functools.partial` instead, which records the wrapped
-    function and keeps both properties.
-
-    Only warned when the registry **persists** (`persisted=True`). A registry
-    with no backing store records nothing and restores nothing, so an
-    unimportable path costs it nothing — warning there would fire on every
-    throwaway registry in every test suite, which is how a real warning gets
-    filtered out and stops being read. The drift caveat applies either way, and
-    is stated in the message.
+    A closure or nested lambda has a `<locals>` qualname: its `source_hash` covers
+    only the wrapper, so drift detection is blind to what the wrapper calls, and
+    `rehydrate()` cannot restore it. That is warned about, not refused (a
+    closure is legitimate in a test); bind dependencies with `functools.partial`
+    instead. Only warned when the registry **persists** (`persisted=True`): an
+    unbacked registry records and restores nothing, and warning on every
+    throwaway test registry would get the real warning filtered out.
     """
     target = unwrap_handler(fn)
     path = f"{target.__module__}.{target.__qualname__}"
@@ -401,7 +363,7 @@ class HandlerVersion(_MetaStreamRecord):
     the unwrapped callable. Used for drift reporting, not for restoring."""
 
     source_hash: str
-    """SHA-256 of fn's source body — for drift detection in Step 6."""
+    """Fingerprint of fn's source, which replay compares to detect drift."""
 
     match_field: str | None = None
     """When set, `event_match` is matched against `event[match_field]` (e.g.
@@ -434,11 +396,8 @@ class HandlerVersion(_MetaStreamRecord):
 
     # -- meta-stream record (see `rakaia.registration_log`) -----------------
     #
-    # Identity and serialization are derived from this list by
-    # `_MetaStreamRecord`, so adding a field is one line here rather than three
-    # methods that have to agree. Fields added after the format shipped carry a
-    # `default`, because meta-streams written without them still have to load.
-    # Order is the identity tuple's order; append, don't insert.
+    # Order is the identity tuple's order; append, don't insert. Fields added
+    # after the format shipped carry a `default`.
 
     _PAYLOAD_FIELDS: ClassVar[tuple[_PayloadField, ...]] = (
         _PayloadField("name"),
@@ -461,29 +420,19 @@ class ReducerVersion(_MetaStreamRecord):
 
     Unlike a handler, a reducer is not matched or called per event. During
     staged replay it runs **once** per its stage, after that stage's per-event
-    handlers have committed, and is invoked as `fn(reader)` — reading the
-    accumulated projections (e.g. all contributing rows for a group) and
-    returning the idempotent Effects that materialise the aggregate. It is the
-    replay-time hook that `reconcile_aggregate` is designed to fill.
+    handlers have committed, as `fn(reader)`, and returns the idempotent Effects
+    that materialise the aggregate. A reducer that declares a second parameter is
+    invoked as `fn(reader, touched)`, where ``touched`` is the deterministic,
+    deduplicated tuple of `rakaia.TouchedSubject`s the pass's handlers wrote, so
+    one reducer can scope its recompute to ``touched`` (incremental) or ignore it
+    (full rebuild). The arg is detected by signature.
 
-    **Optional touched-subjects arg.** A reducer that declares a second
-    parameter is invoked as `fn(reader, touched)`, where ``touched`` is the
-    deterministic, deduplicated tuple of `rakaia.TouchedSubject`s the pass's
-    per-event handlers wrote (their effects' ``(model_label, lookup)``). This
-    lets one reducer serve both paths: scope the recompute to ``touched`` on an
-    incremental forward replay, or ignore it and recompute everything on a full
-    rebuild. A plain ``fn(reader)`` reducer is unaffected (the arg is detected by
-    signature, mirroring how a stage > 0 handler opts in to the reader).
-
-    **Replacement semantics — last-write-wins by name, not seq-versioned.**
-    A reducer is a single *current* definition keyed by `name`, unlike a handler,
-    which is a series of `[from_seq, to_seq)`-bracketed versions. Registering a
-    different function under an existing name **replaces** the prior one. This is
-    intentional: a reducer recomputes an aggregate *wholesale* from the committed
-    projections on every replay, so there is no per-sequence window a reducer
-    could be versioned over — the only thing that matters is the definition in
-    force when replay runs. If you need two coexisting reduce steps, give them
-    distinct names.
+    **Last-write-wins by name, not seq-versioned.** A reducer is a single current
+    definition keyed by `name`, unlike a handler's `[from_seq, to_seq)` series;
+    registering a different function under an existing name **replaces** the
+    prior one. A reducer recomputes wholesale from the committed projections on
+    every replay, so there is no per-sequence window to version it over. For two
+    coexisting reduce steps, give them distinct names.
     """
 
     name: str
@@ -522,9 +471,7 @@ class _LogBackedRegistry:
     """The meta-stream half of a registry, once for both of them.
 
     A registry keeps one `RegistrationLog` per record kind it owns (handlers
-    keep two — handlers and reducers — upcasters keep one). Loading them,
-    clearing them and re-importing the modules they name is the same work in
-    each case, and used to be written out in each.
+    keep two, handlers and reducers; upcasters keep one).
     """
 
     _logs: tuple[RegistrationLog, ...]
@@ -541,10 +488,8 @@ class _LogBackedRegistry:
         """Import the module that made each recorded registration, so its
         `@register_*` decorator runs again and re-registers here.
 
-        No-op without a backing store. Modules are imported once (Python caches
-        imports), so calling this after some are already imported is safe — but
-        note that it therefore restores nothing for a module already imported in
-        this process, which is the normal case outside a fresh start.
+        No-op without a backing store. Python caches imports, so this is safe to
+        repeat but restores nothing for a module already imported in this process.
         """
         modules: set[str] = set()
         for log in self._logs:
@@ -578,11 +523,8 @@ class HandlerRegistry(_LogBackedRegistry):
     registration is safe to call from module-import-time decorators across
     process restarts.
 
-    Any `WritableStore` will do, which is the point: surviving a *process*
-    restart needs a durable meta-stream, so this is where a `DjangoStreamStore`
-    belongs. The parameter used to be annotated as the in-memory `StreamStore`
-    and pyright rejected exactly that call — a framework seam typed against one
-    protocol-server implementation instead of the protocol both satisfy.
+    Any `WritableStore` will do; surviving a *process* restart needs a durable
+    one, such as a `DjangoStreamStore`.
     """
 
     def __init__(
@@ -600,9 +542,8 @@ class HandlerRegistry(_LogBackedRegistry):
         self._store = store
         self._stream_path = stream_path
         self._reducer_stream_path = REDUCERS_META_STREAM
-        # One log per record kind. Each owns create/read/dedup/append for its
-        # stream; `RegistrationLog` is a no-op when `store` is None, so nothing
-        # below needs to special-case an unbacked registry.
+        # One log per record kind; `RegistrationLog` is a no-op when `store` is
+        # None.
         self._handler_log = RegistrationLog(store, stream_path, HandlerVersion)
         self._reducer_log = RegistrationLog(
             store, self._reducer_stream_path, ReducerVersion
@@ -696,8 +637,8 @@ class HandlerRegistry(_LogBackedRegistry):
                 str(fields["source_hash"])
             ):
                 # A hash recorded before the `v2:` format says nothing about
-                # today's fingerprint, so the first *current-format* record is
-                # the reference: the old one is re-recorded, not drift.
+                # today's fingerprint, so the first current-format record is the
+                # reference.
                 return str(fields["source_hash"])
         return None
 
@@ -739,13 +680,11 @@ class HandlerRegistry(_LogBackedRegistry):
         """Clear all in-memory registrations (handlers, reducers, and the
         persisted-id dedup caches) so a fresh set can be registered.
 
-        This resets **in-memory registration state only** — it is the seam for
-        per-test isolation (see `reset_default_registries()` and the test-isolation
-        section of ``docs/versioned-handlers.md``). It does **not** delete the
-        durable meta-streams (``__rakaia__:handlers`` / ``__rakaia__:reducers``);
-        to discard those, delete the streams via the store. On a store-backed
-        registry, clearing the dedup cache means the next `register()` re-appends
-        an audit event even for an already-persisted registration.
+        This resets **in-memory registration state only** (the seam for per-test
+        isolation; see `reset_default_registries()`). It does **not** delete the
+        durable meta-streams (``__rakaia__:handlers`` / ``__rakaia__:reducers``).
+        On a store-backed registry, the next `register()` re-appends an audit
+        event even for an already-persisted registration.
         """
         self._versions.clear()
         self._reducers.clear()
@@ -754,10 +693,9 @@ class HandlerRegistry(_LogBackedRegistry):
     def reducers_for_stage(self, stage: int | None) -> list[ReducerVersion]:
         """Reducers registered for `stage`, in deterministic (name) order.
 
-        `stage=None` is the single, non-staged pass, and it is a defined input
-        rather than an accident: a reducer always registers against a numbered
-        stage, so a non-staged pass has no reducers and this returns an empty
-        list. Callers on that path (``replay._run_stage_reducers``) rely on it.
+        `stage=None` is the single, non-staged pass: a reducer always registers
+        against a numbered stage, so this returns an empty list, which the replay
+        loop relies on.
         """
         return sorted(
             (r for r in self._reducers.values() if r.stage == stage),
@@ -843,8 +781,7 @@ class HandlerRegistry(_LogBackedRegistry):
 
         `match_field` is consistent within a (name, pattern) series, so the
         first version decides. A registration that failed after `setdefault()`
-        can leave an empty series behind; that falls back to stream-path routing
-        rather than an IndexError on `versions[0]`.
+        can leave an empty series behind, which falls back to stream-path routing.
         """
         match_field = versions[0].match_field if versions else None
         return _routing_subject(
@@ -999,10 +936,8 @@ class UpcasterRegistry(_LogBackedRegistry):
     ) -> str:
         """The string an upcaster's pattern is matched against.
 
-        The same content-routing rule handler dispatch uses — one function,
-        `_routing_subject`, rather than a second copy that a comment promised
-        was kept in step. ADR 0002 item 3 made content routing available to
-        upcasters; this is where that lands, not a walk-back of it.
+        The same content-routing rule handler dispatch uses (`_routing_subject`;
+        ADR 0002 item 3).
         """
         return _routing_subject(
             up.match_field,
@@ -1048,23 +983,18 @@ class UpcasterRegistry(_LogBackedRegistry):
         `event[match_field]` for content-routed upcasters) and the current
         version, then bumps schema_version on the result.
 
-        Content-routing note: each step is re-matched against the *progressively
-        upcasted* event, so a content-routed chain's `match_field` discriminator
-        must stay stable across the chain. An upcaster that renames or rewrites
-        the discriminator (e.g. v1→v2 renaming `form_type`) re-routes subsequent
-        steps off the new value — keep the discriminator field constant, or route
-        those steps on the stream path.
+        Each step is re-matched against the *progressively upcasted* event, so a
+        content-routed chain's `match_field` discriminator must stay stable: an
+        upcaster that rewrites it (e.g. v1->v2 renaming `form_type`) re-routes
+        later steps off the new value. Keep it constant, or route on the stream
+        path.
 
-        Pass a `DriftLedger` as `drift` to have each step checked against the
-        source hash it was registered with; the ledger holds the policy (warn or
-        raise), reports each drifted upcaster once however many events pass
-        through it, and memoises the hashing. Omit it and no step is checked.
-
-        This used to be two options — a callback and a hasher — that had to
-        agree: the callback without the hasher re-read the upcaster's source for
-        every event (a measurable share of replay time, #156), and the hasher
-        without the callback skipped the check in silence. One object cannot be
-        half-passed (#187).
+        Pass a `DriftLedger` as `drift` to check each step against the source hash
+        it was registered with; the ledger holds the policy (warn or raise),
+        reports each drifted upcaster once, and memoises the hashing. Omit it and
+        no step is checked. It is one object rather than a callback plus a hasher
+        because half-passing those either re-read source per event (#156) or
+        skipped the check silently (#187).
         """
         current = int(event.get("schema_version", 1))
         if current > target_version:
@@ -1130,9 +1060,8 @@ class UpcasterRegistry(_LogBackedRegistry):
     def reset(self) -> None:
         """Clear all in-memory upcaster registrations and the dedup cache.
 
-        In-memory state only — mirrors `HandlerRegistry.reset()`: the seam for
-        per-test isolation, not a delete of the durable ``__rakaia__:upcasters``
-        meta-stream (delete that via the store if you need to).
+        In-memory state only, like `HandlerRegistry.reset()`: it does not delete
+        the durable ``__rakaia__:upcasters`` meta-stream.
         """
         self._upcasters.clear()
         self._reset_logs()
@@ -1161,12 +1090,10 @@ def reset_default_registries() -> None:
     """Reset both process-wide default registries (handlers + upcasters).
 
     The one call a test's teardown needs to stop registrations leaking between
-    tests when they use the default registries (via the bare `@register_handler`
-    / `@register_upcaster` / `@register_reducer` decorators). Prefer constructing
-    fresh `HandlerRegistry()` / `UpcasterRegistry()` instances and injecting them
-    into `replay()` where you can; use this when the code under test registers
-    against the module-global default. See the test-isolation section of
-    ``docs/versioned-handlers.md``.
+    tests that use the bare `@register_handler` / `@register_upcaster` /
+    `@register_reducer` decorators. Prefer injecting fresh `HandlerRegistry()` /
+    `UpcasterRegistry()` instances into `replay()`. See the test-isolation section
+    of ``docs/versioned-handlers.md``.
 
     Resets in-memory registration state only — it does not touch any durable
     meta-streams (see `HandlerRegistry.reset()`).
@@ -1192,10 +1119,8 @@ def upcast(
     Uses the process-wide default registry unless `registry` is given.
 
     Normalise-on-read is **not** drift-checked by default: a one-off read has
-    nowhere to report to, and warning on every read of an edited upcaster would
-    be noise. Pass a `DriftLedger` to opt in — then this path answers the same
-    question a replay does, and the answers land in `ledger.warnings` /
-    `ledger.drifted` (or raise, with `on_drift="raise"`).
+    nowhere to report to. Pass a `DriftLedger` to opt in; the answers land in
+    `ledger.warnings` / `ledger.drifted` (or raise, with `on_drift="raise"`).
     """
     target = registry if registry is not None else _default_upcaster_registry
     return target.upcast_to_current(event, event_match, drift=drift)
@@ -1310,8 +1235,8 @@ def register_reducer(
     scope its recompute to what changed (incremental) or recompute everything
     (full rebuild). The arg is detected by signature; `fn(reader)` is unchanged.
 
-    A reducer is a single current definition keyed by `name` (last-write-wins),
-    not a seq-versioned series like a handler — see `ReducerVersion`.
+    A reducer is last-write-wins by `name`, not seq-versioned; see
+    `ReducerVersion`.
 
     Example:
         @register_reducer(name="balance", stage=1)
@@ -1365,16 +1290,13 @@ def register_upcaster(
         def upcast_tf1321_v1_to_v2(event: dict) -> dict:
             return {**event, ...}
 
-    **Upcasters rewrite history — the contract.** An upcaster is keyed by
-    ``(event_match, from_version)``, *not* by a stream sequence range. It is not
-    versioned the way a handler is. So editing the body of a shipped upcaster
-    retroactively changes the effective shape of **every** historical event at
-    that schema step: the next replay upcasts them through the new code, not the
-    code that was live when they were written. Source-hash drift **detects** this
-    (replay warns, or raises under ``on_drift="raise"``) but does **not** prevent
-    it. The rule: once events exist at a schema version, treat that version's
-    upcaster body as append-only history — evolve the schema by adding a **new**
-    ``from_version`` step, never by editing a shipped one in place.
+    **Upcasters rewrite history.** An upcaster is keyed by
+    ``(event_match, from_version)``, not by a stream sequence range, so editing the
+    body of a shipped upcaster retroactively changes **every** historical event at
+    that schema step. Source-hash drift **detects** this (replay warns, or raises
+    under ``on_drift="raise"``) but does not prevent it. Once events exist at a
+    schema version, treat its upcaster body as append-only: add a **new**
+    ``from_version`` step instead of editing a shipped one.
     """
     target = registry if registry is not None else _default_upcaster_registry
 
