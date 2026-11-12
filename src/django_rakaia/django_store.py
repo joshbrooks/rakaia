@@ -10,25 +10,18 @@ cannot support.
 
 It is **JSON-oriented**: `append` expects JSON-encodable bytes and stores the
 decoded object in `StreamEvent.data` (a `JSONField`); `read` re-encodes it to
-bytes. `replay()` only needs the decoded event, so an exact byte round-trip is
-not required there.
-
-A protocol stream, though, may declare any content type at all, so a payload
-that is not JSON is stored as text — or base64, if it is not valid UTF-8 —
-and marked with `StreamEvent.payload_encoding`, which `read` inverts. Those
-payloads *do* round-trip byte for byte. See `encode_payload`.
+bytes. A protocol stream may declare any content type, so a payload that is not
+JSON is stored as text (or base64, if it is not valid UTF-8) and marked with
+`StreamEvent.payload_encoding`, which `read` inverts; those payloads round-trip
+byte for byte. See `encode_payload`.
 
 Scope: the whole `rakaia.StreamServerStore` surface. As well as the
-event-sourcing read/emit path, it implements the protocol lifecycle — producer
+event-sourcing read/emit path, it implements the protocol lifecycle (producer
 epoch/seq fencing, close, the TTL sliding window, and the reads long-poll is
-built from — so `rakaia.create_app` can serve the Durable Streams protocol
-directly off the database. That is what removed the need for a second,
-partial implementation of the protocol in the Django integration.
-
-Every store is held to one shared conformance suite
-(`rakaia/testing/server_store_contract.py`), and what an append may do and what it writes
-are decided by one pure module (`rakaia.append_decision`) that every store
-calls, so they cannot drift.
+built from) so `rakaia.create_app` can serve the Durable Streams protocol
+directly off the database. Every store is held to one shared conformance suite
+(`rakaia/testing/server_store_contract.py`), and what an append may do is decided
+by one pure module (`rakaia.append_decision`) that every store calls.
 """
 
 from __future__ import annotations
@@ -90,10 +83,8 @@ from .models import (
     delete_events,
 )
 
-# Re-exported: the payload helpers used to live here, and `format_offset` has
-# always been reachable through here; both this package and its tests import
-# them from this module. Moving the helpers to `event_message` (#153) keeps the
-# names at their old home rather than rippling through every call site.
+# Re-exported: the payload helpers live in `event_message` (#153) but callers
+# import them from here.
 from .offsets import format_offset, parse_offset
 
 __all__ = [
@@ -132,10 +123,10 @@ def write_events(
     """Write `events` into every one of `streams`. The **only** writer of events.
 
     Returns the `StreamEvent` rows in `events` order, and the `StreamEntry` rows
-    per stream, in `streams` order, each list in `events` order. A protocol append is one stream and one event, a batch is one
-    stream and many, and `@stream_model`'s fan-out is one event and many streams:
-    one `StreamEvent` with one envelope and an entry in each stream, each with its
-    own offset there — not several events that happen to look alike.
+    per stream, in `streams` order, each list in `events` order. A protocol append
+    is one stream and one event, a batch is one stream and many, and
+    `@stream_model`'s fan-out is one event and many streams: one `StreamEvent`
+    with an entry (and its own offset) in each stream.
 
     The caller must already hold the `streams` rows' locks, taken in `stream_id`
     order, inside a transaction on their database. This locks the offset
@@ -151,13 +142,9 @@ def write_events(
     the event lands in (#284). Every watermark is brought up to it, or a stream
     whose last stamp was earlier could stamp its next event before this one.
 
-    Everything is `bulk_create`d — events, tags, entries — so the statement count
+    Everything is `bulk_create`d (events, tags, entries), so the statement count
     does not grow with the batch, and the entries are published to live
     subscribers explicitly, since `bulk_create` fires no `post_save`.
-
-    There used to be two of this: one event at a time for an append and for
-    `@stream_model`, and an inline bulk version in `append_many`. Changes to how
-    events are stamped and tagged reached the two unevenly (#324).
     """
     streams = list(streams)
     if not events:
@@ -166,9 +153,9 @@ def write_events(
     # save is never split across two (#159).
     if streams:
         using = streams[0]._state.db
-    # One lock per distinct path, taken in path order. A resolver can name the
-    # same path twice, and each occurrence then takes its own block of offsets
-    # from that one watermark, rather than both reading the same `high`.
+    # One lock per distinct path, in path order. A resolver can name the same
+    # path twice; each occurrence then takes its own block of offsets from that
+    # one watermark rather than both reading the same `high`.
     watermarks: dict[str, StreamOffsetWatermark] = {}
     for stream in sorted(streams, key=lambda stream: stream.stream_id):
         if stream.stream_id not in watermarks:
@@ -176,8 +163,8 @@ def write_events(
 
     stamp: float | None = None
     if any(e.event_ts is None for e in events):
-        # Read the clock only now, with the locks held: a time read before them
-        # belongs to whichever writer got there first, not to these positions.
+        # Read the clock only with the locks held: an earlier read would belong
+        # to whichever writer got there first, not to these positions.
         last = [
             w.last_event_ts for w in watermarks.values() if w.last_event_ts is not None
         ]
@@ -271,10 +258,9 @@ def write_enveloped_event(
 def _publish(stream_id: str, entries: list[StreamEntry]) -> None:
     """Publish appended entries to live subscribers.
 
-    Delegates to `channels_signals.broadcast_entries`, the single definition of
-    the wire frame. Imported lazily and tolerantly: `channels` is an optional
-    extra (ADR 0002 / #41), and a framework-tier consumer that never installed
-    it must still be able to append.
+    Delegates to `channels_signals.broadcast_entries`, the one definition of the
+    wire frame. Imported lazily and tolerantly: `channels` is an optional extra
+    (ADR 0002 / #41), and a consumer that never installed it must still append.
     """
     if not entries:
         return
@@ -294,8 +280,7 @@ _ORPHAN_DELETE_CHUNK = 500
 def _permanent_streams() -> bool:
     """Whether `RAKAIA_PERMANENT_STREAMS` is on. Off unless a project sets it.
 
-    Read on every call rather than once at import, so `override_settings` and a
-    settings change between calls are both honoured.
+    Read on every call, so `override_settings` is honoured.
     """
     return bool(getattr(settings, "RAKAIA_PERMANENT_STREAMS", False))
 
@@ -303,9 +288,9 @@ def _permanent_streams() -> bool:
 class _StreamExpired(Exception):
     """Internal: the locked stream row had aged out. Never leaves this module.
 
-    Raised inside a write transaction and caught immediately outside it, which
-    is the only way the reap can survive the rollback that reporting the expiry
-    causes. `DjangoStreamStore._locked_write` is the whole of its lifetime.
+    Raised inside a write transaction and caught immediately outside it, so the
+    reap survives the rollback that reporting the expiry causes.
+    `DjangoStreamStore._locked_write` is the whole of its lifetime.
     """
 
     def __init__(self, path: str) -> None:
@@ -320,19 +305,11 @@ class DjangoStreamStore:
     plus the full protocol lifecycle.
 
     Pass ``using`` to read and write the log on a named database alias instead of
-    the default — the same seam `DjangoExecutor` and `DjangoProjectionReader`
-    already sit on. That is what lets a from-scratch rebuild replay into a
-    *disposable* database and be verified against the real ORM without touching
-    production (ADR 0003): the projections went to the alias already, and now the
-    log they are derived from can come from it too.
-
-    Before this, the log was the one part of a rebuild that could not leave the
-    default database, so `hermeticity.py` documented a drain-to-memory as the
-    workaround — six lines every consumer wrote, tested nowhere, because the store
-    was untestable off ``default``.
-
-    ``using=None`` targets the default alias, exactly as before. Pair with
-    ``DjangoExecutor(using=...)`` and ``DjangoProjectionReader(using=...)``.
+    the default, the same seam `DjangoExecutor` and `DjangoProjectionReader` sit
+    on, so a from-scratch rebuild can replay into a disposable database and be
+    verified without touching production (ADR 0003). ``using=None`` targets the
+    default alias. Pair with ``DjangoExecutor(using=...)`` and
+    ``DjangoProjectionReader(using=...)``.
     """
 
     def __init__(
@@ -340,8 +317,7 @@ class DjangoStreamStore:
     ) -> None:
         self._using = using
         #: Whether every stream here is kept for good (see `rakaia.stream_rules`).
-        #: None, the default, reads `RAKAIA_PERMANENT_STREAMS` on every call, so
-        #: `override_settings` and a settings change are both honoured.
+        #: None, the default, reads `RAKAIA_PERMANENT_STREAMS` on every call.
         self.permanent = permanent
 
     @property
@@ -358,16 +334,13 @@ class DjangoStreamStore:
         """`Stream` rows on this store's alias.
 
         Every read and write of a model goes through one of these accessors, so
-        the alias is applied in one place rather than being remembered at each of
-        the ten call sites it used to be absent from. `.using(None)` keeps
-        Django's default routing, so this is uniform whether or not an alias was
-        given — the same shape as `DjangoExecutor._manager`.
+        the alias is applied in one place. `.using(None)` keeps Django's default
+        routing, as in `DjangoExecutor._manager`.
 
         It also fixes the alias for rows *derived* from a stream: the write path
-        takes its alias from the stream row it was handed
-        (`write_events`, #159), and `Stream.lock_watermark` from
-        ``self._state.db``. Loading the stream on the right alias is therefore
-        what puts its event, its entry and its offset high-water there too.
+        takes its alias from the stream row it was handed (`write_events`, #159),
+        and `Stream.lock_watermark` from ``self._state.db``, so loading the stream
+        on the right alias puts its event, entry and offset high-water there too.
         """
         return Stream.objects.using(self._using)
 
@@ -389,8 +362,8 @@ class DjangoStreamStore:
 
     def _is_expired(self, stream: Stream) -> bool:
         """Whether the stream has aged out; always false on a permanent store,
-        which is what stops every read and write path from reaping, since they
-        all ask here."""
+        which stops every read and write path from reaping, since they all ask
+        here."""
         return stream_rules.is_expired(
             stream.ttl_seconds,
             stream.expires_at or None,
@@ -422,15 +395,10 @@ class DjangoStreamStore:
     def _reap_if_expired(self, path: str) -> None:
         """Expire-and-delete `path` now, outside any write transaction.
 
-        `create` calls this before opening `transaction.atomic()`. Its own
-        in-transaction reap does normally survive — it goes on to insert the
-        replacement row and commit — but not if the `initial_data` it was given
-        then fails validation, and the rollback that reports *that* takes the
-        reap with it.
-
-        The append paths do not need it: `_locked_write` carries the expiry out
-        of the transaction itself, and so reaps with one read of the stream row
-        rather than two (#202).
+        `create` calls this before opening `transaction.atomic()`, because a
+        reap inside it is lost if the `initial_data` then fails validation and the
+        rollback takes it too. The append paths do not need it: `_locked_write`
+        carries the expiry out of the transaction itself (#202).
         """
         self._get_if_not_expired(path)
 
@@ -441,27 +409,18 @@ class DjangoStreamStore:
         The single door every append and every close goes through. It yields
         the `Stream` inside `transaction.atomic()` with the row locked, so a
         writer's closed / content-type / producer checks and its write are one
-        indivisible step against concurrent writers. Raises `StreamNotFound`
-        for an absent *or* expired stream, and the expired one is reaped.
+        indivisible step against concurrent writers. Raises `StreamNotFound` for
+        an absent *or* expired stream, and the expired one is reaped.
 
-        **One read of the stream row, not two.** Reaping an expired stream and
-        locking a live one look like two different jobs — the reap has to
-        commit, and a write transaction that ends in `StreamNotFound` rolls
-        back — so the write paths used to do both: an unlocked read to reap
-        before `atomic()`, then the locked read inside it. That is one wasted
-        SELECT on *every* append, to handle a case that is rare and already
-        handled by every read path (#202).
+        **One read of the stream row, not two.** The reap has to commit, and a
+        write transaction that ends in `StreamNotFound` rolls back, so the locked
+        read decides and the expiry leaves the transaction as `_StreamExpired` to
+        be reaped on the far side of the rollback (#202). Nothing has been written
+        at that point, so the rollback loses nothing. `TestExpiryReaping` holds
+        this to actually deleting the row; it caught a version that reported 404s
+        forever without reaping.
 
-        Instead the locked read decides, and the expiry leaves the transaction
-        as `_StreamExpired` — a signal, not an outcome — to be reaped on the
-        far side of the rollback and reported as `StreamNotFound`. Nothing has
-        been written at that point, so there is nothing for the rollback to
-        lose. `TestExpiryReaping` is what holds this to actually deleting the
-        row; it is the test that caught the version of this that reported 404s
-        forever without ever reaping.
-
-        Only for the *write* paths. A reader wants `_require`, which does not
-        lock and does not need a transaction.
+        Only for the *write* paths; a reader wants `_require`, which does not lock.
         """
         try:
             with transaction.atomic(using=self._using):
@@ -482,9 +441,8 @@ class DjangoStreamStore:
         """A locked stream row as `rakaia.append_decision` sees it.
 
         The one place a row is narrowed to the four fields an append is decided
-        from, so a fifth fact cannot reach one write path and miss another. A
-        close is decided by `rakaia.stream_rules.decide_close`, which takes the
-        two fields it needs directly.
+        from. A close is decided by `rakaia.stream_rules.decide_close`, which takes
+        the two fields it needs directly.
         """
         return StreamFacts(
             closed=stream.closed,
@@ -497,12 +455,9 @@ class DjangoStreamStore:
         """Record what an append that has already landed changes about the
         stream, as `plan_appends` decided it.
 
-        Producer state is one row per producer, and the batch rule hands back
-        only the last accepted outcome for each, so the count of writes does not
-        grow with the batch. Everything on the stream row itself — `Stream-Seq`,
-        the close and its producer tuple, the TTL window — is one save, and only
-        of the columns that moved: an append that changes none of them costs no
-        statement here, which is most of them.
+        Producer state is one row per producer (the batch rule hands back only the
+        last accepted outcome for each). The stream row itself is one save of only
+        the columns that moved, so an append that changes none costs no statement.
         """
         for accepted in plan.producer_commits.values():
             self._commit_producer(stream, accepted)
@@ -555,16 +510,12 @@ class DjangoStreamStore:
 
         Re-creating with the *same* configuration returns the existing stream;
         with a different one it raises `StreamConfigConflict`, matching the
-        in-memory store. (Before the lifecycle columns existed this store had
-        nowhere to record a configuration, so it accepted any re-create
-        silently — that divergence is now closed.)
+        in-memory store.
 
         Runs in a transaction, like every other write path: `initial_data`
-        routes through offset allocation, whose `select_for_update()` demands
-        one on Postgres. SQLite has no row locks, so a missing transaction
-        here is invisible to the test suite but a guaranteed 500 in
-        production — hence the contract's create-with-body case and this
-        comment. Do not unwrap it.
+        routes through offset allocation, whose `select_for_update()` demands one
+        on Postgres. SQLite has no row locks, so a missing transaction is invisible
+        there but a guaranteed 500 on Postgres. Do not unwrap it.
 
         On a permanent store a `ttl_seconds` or `expires_at` raises
         `ExpiryNotAllowed` before anything is written, including on an idempotent
@@ -634,8 +585,7 @@ class DjangoStreamStore:
             and producer_seq is not None
             else None
         )
-        # An absent or expired stream is reported as `None` here, not raised, so
-        # the one `StreamNotFound` `_locked_write` can raise is translated back.
+        # An absent or expired stream is reported as `None`, not raised.
         try:
             return self._close_locked(path, producer)
         except StreamNotFound:
@@ -691,9 +641,8 @@ class DjangoStreamStore:
     ) -> StreamEvent:
         """Append one event, already a JSON value, to every stream in `paths`.
 
-        This is what a model save goes through: the same locks, the same
-        closed / content-type checks and the same envelope as `append`, but one
-        `StreamEvent` with an entry in each stream, so a fan-out stays one fact.
+        This is what a model save goes through: the same locks, checks and
+        envelope as `append`, but one `StreamEvent` with an entry in each stream.
         A missing stream (or an expired one, reaped first) is created as a JSON
         stream. Raises `StreamClosed` if any stream is closed, having written
         nothing.
@@ -702,7 +651,7 @@ class DjangoStreamStore:
         the order a protocol append takes them in (#298).
         """
         if not paths:
-            # An event with nowhere to go is still written, as it always was.
+            # An event with nowhere to go is still written.
             with transaction.atomic(using=self._using):
                 return write_enveloped_event([], value, label=label)[0]
         ordered = sorted(set(paths))
@@ -807,8 +756,8 @@ class DjangoStreamStore:
     ) -> ProducerState | None:
         """The last known state for `producer_id`, or None.
 
-        The one fact `decide_append` cannot work out for itself, since only the
-        store knows where producer state lives — here, a `StreamProducer` row.
+        The one fact `decide_append` cannot work out for itself: here, producer
+        state lives in a `StreamProducer` row.
         """
         if producer_id is None:
             return None
@@ -843,21 +792,19 @@ class DjangoStreamStore:
         """Append an ordered batch in ONE transaction, returning one result per
         item in input order.
 
-        Semantically a loop of :meth:`append` — the same rows, the same envelope,
-        the same frames delivered to live subscribers — because both are this:
-        `rakaia.append_decision.plan_appends` decides every item and resolves what
-        it writes, shared with the other two stores, and `write_events` writes it.
-        A refusal anywhere in the batch (a conflict, a body the stream cannot
-        hold, a bad tag) raises before a row is written; a fencing outcome comes
-        back in its own item's slot instead; an item with ``close=True`` closes
-        the stream for the items after it.
+        Semantically a loop of :meth:`append` (same rows, envelope and frames
+        delivered to live subscribers): `rakaia.append_decision.plan_appends`
+        decides every item, shared with the other two stores, and `write_events`
+        writes it. A refusal anywhere in the batch (a conflict, a body the stream
+        cannot hold, a bad tag) raises before a row is written; a fencing outcome
+        comes back in its own item's slot instead; an item with ``close=True``
+        closes the stream for the items after it.
 
         It locks the stream's high-water once and ``bulk_create``s the events,
-        tags and entries, so a batch of N items is a handful of statements
-        rather than the 2N of N transactions. One ``append_many`` holds the
-        watermark lock for the whole batch, which is ideal for exclusive
-        backfills; on a live, high-throughput stream a very large batch would
-        stall concurrent appends, so chunk it caller-side if that matters.
+        tags and entries, so a batch of N items is a handful of statements. That
+        lock is held for the whole batch, which is ideal for exclusive backfills
+        but would stall concurrent appends on a live, high-throughput stream if the
+        batch is very large; chunk it caller-side if that matters.
 
         An empty batch is a no-op that returns ``[]`` without touching the
         database, so it never raises for a missing stream; a non-empty one raises
@@ -884,8 +831,7 @@ class DjangoStreamStore:
                 },
                 now=time.time(),
             )
-            # An all-refused plan writes nothing and allocates nothing: a refused
-            # append costs only the read that refused it.
+            # An all-refused plan writes nothing and allocates nothing.
             written = (
                 self._write_plan(stream, plan)
                 if plan.writes_anything
@@ -921,16 +867,14 @@ class DjangoStreamStore:
         `InvalidOffset` if the offset is not one this store issued.
 
         A read of a stream with a TTL extends its sliding window, which is a
-        write; the Durable Streams conformance suite requires it ("should extend
-        TTL on read"). A stream without a TTL has no window, and its reads write
-        nothing.
+        write; the Durable Streams conformance suite requires it. A stream
+        without a TTL has no window, and its reads write nothing.
         """
         stream = self._require(path)
         if limit is not None and limit < 1:
-            # After the lookup, so a missing stream is `StreamNotFound` as on
-            # every other store; before the TTL write, so a refused read extends
-            # nothing; and before `limit + 1` below turns -2 into a negative
-            # slice, which Django refuses with an error of its own.
+            # After the lookup, so a missing stream is `StreamNotFound`; before
+            # the TTL write, so a refused read extends nothing; and before
+            # `limit + 1` below turns -2 into a negative slice.
             raise ValueError(f"limit must be >= 1, got {limit}")
         self._touch(stream)
         if limit is None:
@@ -974,8 +918,8 @@ class DjangoStreamStore:
         """The messages after `offset`, without extending the TTL window.
 
         Split out from `read` so `peek` can check for new messages on every
-        long-poll tick without writing `last_activity_at` on every tick with it. `limit`
-        caps the rows fetched; `None` fetches them all.
+        long-poll tick without writing `last_activity_at`. `limit` caps the rows
+        fetched; `None` fetches them all.
         """
         entries = (
             stream.entries.select_related("event")
@@ -997,22 +941,18 @@ class DjangoStreamStore:
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.
 
-        Django raises `SynchronousOnlyOperation` on any ORM access from an
-        async context, so every sync call the protocol server makes has to
-        cross into a thread. `thread_sensitive=True` keeps them all on the same
-        one, which is what makes them share a transaction and a connection.
+        Django raises `SynchronousOnlyOperation` on any ORM access from an async
+        context, so every sync call the protocol server makes has to cross into a
+        thread. `thread_sensitive=True` keeps them all on the same one, so they
+        share a transaction and a connection.
 
         **The hermeticity guard is carried across the hop.** Django's connections
         are thread-local, so a `deny_database_access` armed by the caller is
-        invisible on the worker thread — the ORM work would step straight past a
-        guard the caller believes is on, and the rebuild gate would report green
-        without having checked anything (#147). Re-arming it here is what makes
-        the guard mean the same thing on both sides of the boundary.
-
-        A store reading its log from a guarded alias will now raise rather than
-        pass. That is the intended answer, not a regression: a hermetic rebuild
-        must read its log from somewhere other than the database it is proving it
-        can reconstruct, which `deny_database_access` has always documented.
+        invisible on the worker thread: the ORM work would step past a guard the
+        caller believes is on, and the rebuild gate would report green without
+        checking anything (#147). A store reading its log from a guarded alias
+        therefore raises, as intended: a hermetic rebuild must read its log from
+        somewhere other than the database it is proving it can reconstruct.
         """
         denied = armed_deny_aliases()
         if not denied:
@@ -1027,16 +967,12 @@ class DjangoStreamStore:
     def get(self, path: str) -> ProtocolStream | None:
         """Return a snapshot of the stream's metadata, or None if absent.
 
-        Deliberately **not** the ORM row. A protocol server is async, and an
-        ORM row is lazy: reading `stream.current_offset` off it would issue a
-        query at attribute access, outside the `run_sync` bridge, which Django
-        refuses from an async context. Everything the server reads is resolved
-        here, inside the sync call, and handed over inert.
-
-        Returns a `rakaia.types.Stream` — the same type the in-memory store
-        returns — carrying metadata only. It never carried messages; read the
-        stream with `read()`. On a permanent store the TTL and expiry read as
-        unset, so a stream given one earlier is not advertised as lapsing.
+        Deliberately **not** the ORM row: a protocol server is async, and reading
+        `stream.current_offset` off a lazy row would query outside the `run_sync`
+        bridge, which Django refuses. Everything the server reads is resolved here
+        and handed over inert, as a `rakaia.types.Stream` carrying metadata only
+        (read messages with `read()`). On a permanent store the TTL and expiry read
+        as unset.
         """
         row = self._get_if_not_expired(path)
         if row is None:
@@ -1071,26 +1007,19 @@ class DjangoStreamStore:
         offsets a subscriber has already seen. Returns whether the stream existed.
 
         Under `RAKAIA_PERMANENT_STREAMS` this raises `DeleteNotAllowed` unless
-        `force=True`, which is how an application rebuilds a stream on purpose.
-        0.7.0 carried a Python delete out unconditionally, reasoning that a call
-        from Python was already an operator's decision; a management command run
-        by hand on a production restore is a Python call too, and it is the
-        operation someone switching this on is most likely to think they have
-        covered. The decision is still the operator's — it now has to be
-        expressed. `force` is accepted and does nothing while the switch is off,
-        so a caller may pass it unconditionally rather than branch on a setting.
-
-        Both internal callers are the expiry reap, and neither passes `force`.
-        Under the switch `_is_expired` is always false so neither is reachable;
-        if that ever stops being true, refusing is the right outcome and is
-        precisely what the switch promises.
+        `force=True`, which is how an application rebuilds a stream on purpose: a
+        Python call is not assumed to be an operator's decision, since a
+        management command run by hand on a production restore is one too. `force`
+        does nothing while the switch is off, so a caller may pass it
+        unconditionally. Both internal callers are the expiry reap and neither
+        passes `force`; under the switch `_is_expired` is always false, so neither
+        is reachable.
 
         The entries are walked in primary-key order, `_ORPHAN_DELETE_CHUNK` at a
-        time, reading only ids: each chunk's entries are deleted, then that
-        chunk's events that no entry points at any more ("no entry left" is a
-        left join), and the stream row goes last. `.only("pk")` keeps Django's
-        cascade collector from loading payloads, so neither memory nor the
-        query count grows with anything but the number of chunks.
+        time, reading only ids: each chunk's entries are deleted, then that chunk's
+        events that no entry points at any more, and the stream row goes last.
+        `.only("pk")` keeps Django's cascade collector from loading payloads, so
+        memory and query count grow only with the number of chunks.
         """
         stream_rules.check_delete(path, permanent=self._permanent, force=force)
         with transaction.atomic(using=self._using):
@@ -1123,11 +1052,9 @@ class DjangoStreamStore:
     def check_protocol_delete(self, path: str) -> None:
         """Raise `DeleteNotAllowed` if a client may not delete `path`.
 
-        The protocol server calls this before `delete`, and the server answers
-        the refusal with `405 Method Not Allowed`. It refuses every path while
-        the store is permanent and none otherwise. `delete()`
-        refuses as well unless called with `force=True`; this is the check for
-        a client's request, made before that.
+        The protocol server calls this before `delete` and answers the refusal
+        with `405 Method Not Allowed`. It refuses every path while the store is
+        permanent and none otherwise.
         """
         stream_rules.check_protocol_delete(path, permanent=self._permanent)
 
@@ -1136,23 +1063,14 @@ class DjangoStreamStore:
         the stream is absent.
 
         Reflects the persisted high-water (``StreamOffsetWatermark``), not only
-        the live entries: a stream recreated at the same path reports a head at
-        or above its retired high mark even before the first re-append, so a
-        stale subscriber cursor reads as ``caught_up`` rather than a spurious
-        ``rewound`` (#34, Defect #2). Reads the high-water the same way
-        ``Stream.lock_watermark`` reads it for allocation — the watermark row,
-        falling back to the entries only when it has never been advanced — so
-        allocation and tail-reporting cannot name different heads.
-
-        An expired stream reports ``None`` exactly as an absent one does — the
-        in-memory store behaves the same, and every other read on this store
-        applies the expiry check.
+        the live entries: a stream recreated at the same path reports a head at or
+        above its retired high mark even before the first re-append, so a stale
+        subscriber cursor reads as ``caught_up`` rather than a spurious
+        ``rewound`` (#34). An expired stream reports ``None`` as an absent one does.
         """
         stream = self._get_if_not_expired(path)
         if stream is None:
             return None
-        # The head itself is `Stream.current_offset`; all this method adds is
-        # the expiry check and the absent-stream `None`.
         return stream.current_offset
 
     def get_generation(self, path: str) -> str | None:
