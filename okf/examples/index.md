@@ -23,6 +23,7 @@ migrate themselves.
 * [partisipa_merge](partisipa-merge.md) - `merge_replay` deterministic order.
 * [partisipa_repeaters](partisipa-repeaters.md) - nested-repeater tree reconcile.
 * [partisipa_intake](partisipa-intake.md) - the consuming loop, durable reading position, outcome records.
+* [partisipa_pipeline](partisipa-pipeline.md) - one suku's forms through every step, then `rebuild_and_verify` against live.
 * [two_workers](two-workers.md) - the cursor row lock, a forward-only commit, resuming the delta.
 * [stream_coverage](stream-coverage.md) - `check_stream_coverage` finding a stream that fell behind its table.
 * [consumer_rebuild](consumer-rebuild.md) - a replaced stream, a transient error, and a pass that dies halfway.

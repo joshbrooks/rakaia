@@ -89,6 +89,7 @@ One command each: seed a stream, replay it, assert the projection.
 | [`partisipa_merge`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_merge) | `merge_replay` of N streams into one deterministic order; cross-stream rollup | `just partisipa-merge-demo` |
 | [`partisipa_repeaters`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_repeaters) | Nested-repeater tree reconcile — no deep orphans, no double-count | `just partisipa-tree-demo` |
 | [`partisipa_intake`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_intake) | The consuming loop — `django_consumer` / `run`, a durable reading position, and an outcome per refused, failed or skipped event | `just intake-demo` |
+| [`partisipa_pipeline`](https://github.com/joshbrooks/rakaia/tree/main/examples/partisipa_pipeline) | One suku's forms through a six-step pipeline, saved one at a time, then rebuilt and compared with live — the code behind the [explainers](explainers/index.md) | `just pipeline-demo` |
 | [`stream_coverage`](https://github.com/joshbrooks/rakaia/tree/main/examples/stream_coverage) | `check_stream_coverage` finding a stream that fell behind its table — rows loaded with `bulk_create` (missing) and changed with `update()` (stale) — and passing again after repair | `just coverage-demo` |
 | [`consumer_rebuild`](https://github.com/joshbrooks/rakaia/tree/main/examples/consumer_rebuild) | A consumer whose stream was deleted and recreated (`Consumed.needs_rebuild`), a `transient` apply error that is retried, and a pass that dies halfway and converges on re-run | `just consumer-rebuild-demo` |
 | `polyglot` (migrate) | `migrate_stream` keeping offsets so a consumer resumes, and renumbering so it stops as `replaced` (`adopt_generation`) | `just migrate-consumer-demo` |
@@ -148,12 +149,13 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | Staged replay (`stage=`) + `ProjectionReader` | `projection_cookbook`, `partisipa_staged`, `partisipa_close`, `partisipa_merge` |
 | `merge_replay` (multi-stream deterministic order) | `partisipa_merge` |
 | Stage reducers (via `{"reduce": […]}` stage config) | `partisipa_close`, `partisipa_merge` |
+| `register_reducer` (the public API), and a save that replays one event (`start_seq`/`end_seq`) through the same handlers as a rebuild | `partisipa_pipeline` |
 
 ### Effects & executors
 
 | Concept | Demonstrated by |
 |---|---|
-| The effect types: `Upsert`, `Update`, `Delete`+`Exclude`, `ExternalEffect` | `orders`, `partisipa_repeaters`, `multi_owner` |
+| The effect types: `Upsert`, `Update`, `Delete`+`Exclude`, `ExternalEffect` | `orders`, `partisipa_repeaters`, `multi_owner`, `partisipa_pipeline` |
 | `Retire` — soft delete whose stamp is the triggering event's timestamp, never the replay clock | `partisipa_close`, `multi_owner` |
 | `CollectingExecutor` (dry-run) | `orders`, `projection_cookbook` |
 | `DjangoExecutor` | every Django demo |
@@ -161,12 +163,13 @@ example exercises it yet (see [known gaps](#known-gaps)).
 | `Ref` / `RefResolver` (bind FK to a sibling's generated key) | `multi_owner` |
 | `check_disjoint_defaults` (multi-owner guard) | `multi_owner` |
 | `diff_effects_against_rows` (replay-vs-rows verification) | `projection_cookbook` |
+| `rebuild_and_verify` (guarded rebuild into a scratch alias, diffed table against table) | `partisipa_pipeline` |
 
 ### Projections & fan-out
 
 | Concept | Demonstrated by |
 |---|---|
-| `reconcile_children` (positional fan-out, orphan-safe) | `formkit_submissions`, `partisipa_close`, `partisipa_repeaters` |
+| `reconcile_children` (positional fan-out, orphan-safe) | `formkit_submissions`, `partisipa_close`, `partisipa_repeaters`, `partisipa_pipeline` |
 | `project_latest` (subject → latest snapshot) | `formkit_submissions` (stream) |
 | `reconcile_aggregate` (grouped rollup) + multi-owner `owns=` | `multi_owner` |
 | `reconcile_by_key` (composite natural key) + soft-delete `retire=` | `multi_owner` |
@@ -196,16 +199,12 @@ No example exercises these yet — a good place to contribute a demo:
   `consumer_rebuild` demo recreates (replaces) a stream, but never rewinds one.
 - `@stream_model` on a closed stream (`StreamClosed`) and on the memory or file
   store: `polyglot` wires its own signal instead.
-- `register_reducer` as the *public API* (the partisipa demos wire reducers via
-  raw `{"reduce": […]}` stage config instead).
 - `reconcile_tree` (the `partisipa_repeaters` spike hand-rolls the equivalent
   with `Delete`+`Exclude`).
 - Reading events by tag (`read_tagged`, `TaggedReads`): no example covers it; the
   contract suite `rakaia/testing/tagged_reads_contract.py` proves it.
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
-- `rebuild_and_verify` (the one-call guarded rebuild-and-diff). The
-  `projection_cookbook` demo composes the pieces by hand instead.
 - `RecordingExecutor` — applying for real while keeping the effects. The demos
   either write (`DjangoExecutor`) or preview (`CollectingExecutor`); none needs
   both at once, which is the case this executor exists for.
@@ -221,8 +220,6 @@ No example exercises these yet — a good place to contribute a demo:
   `apply_effects` and the `rakaia.testing` suites. [Write your own
   store](write-your-own-store.md) holds a worked store and a test runs it against
   `StoreContract`, but no `examples/` demo does, and nothing shows a custom executor.
-- `RAKAIA_STORE` naming a store of your own by its import path: no example serves
-  one; `tests/test_django_rakaia/test_store_by_dotted_path.py` is the only cover.
 - `SqliteExecutor` with a handler that emits a value JSON cannot hold (a `Decimal`,
   a `datetime`): `sqlite_replay` keeps money in cents and shows only the batch that
   fails on such a value rolling back. The `orders` handlers would need converting

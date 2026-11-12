@@ -18,7 +18,7 @@ from pathlib import Path
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
-for _project in ("partisipa_intake",):
+for _project in ("partisipa_intake", "partisipa_pipeline"):
     _path = str(_EXAMPLES / _project)
     if _path not in sys.path:
         sys.path.insert(0, _path)
