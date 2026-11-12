@@ -2,6 +2,9 @@
 
 ## 2026-11-12
 
+* **Note**: released as 0.11.0. `docs/whats-new.md` sections 39–42 tour the store-author kit,
+  `RAKAIA_STORE` by import path, `read_tagged` and `SqliteExecutor`; the bundle pages above
+  already name each of them.
 * **Creation**: [sqlite_replay](examples/sqlite-replay.md) — replay an order stream into a
   SQLite file with `SqliteExecutor`, no Django (#368).
 * **Update**: [Effects & executors](concepts/effects-and-executors.md) — `SqliteExecutor` and

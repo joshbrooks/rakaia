@@ -1325,6 +1325,109 @@ $ uv run pytest tests/test_django_rakaia/test_subscription.py -q
 
 → Deep dive: [Subscriber cursors](subscriber-cursors.md)
 
+## 39. Write a store of your own, and check it
+
+**The problem.** The rules that decide whether an append is allowed, and the tests
+that hold a store to them, lived inside this repository. A store written anywhere
+else had to copy the rules and could not run the checks.
+
+**What rakaia does.** The rules are exported from `rakaia` (`plan_appends`,
+`page_of`, and for executors `apply_effects`), the same functions the built-in
+stores call, and the contract suites ship in the package as `rakaia.testing`.
+Point a suite at your store and run pytest.
+
+```python
+import pytest
+from rakaia.testing.store_contract import StoreContract
+
+
+class TestMyStore(StoreContract):
+    @pytest.fixture
+    def store(self):
+        return MyStore()
+```
+
+**See it.** [Write your own store](write-your-own-store.md) builds a working store
+step by step; the tests below run it, and the suites, from a plain pytest.
+
+```console
+$ uv run pytest tests/test_rakaia/test_write_your_own_store.py \
+    tests/test_rakaia/test_suites_on_a_bare_pytest.py -q
+```
+
+→ Deep dive: [Write your own store](write-your-own-store.md)
+
+## 40. Name your own store in settings
+
+**The problem.** `RAKAIA_STORE` chose one of three built-in stores, so a project
+with a store of its own could not plug it into the protocol server or `@stream_model`.
+
+**What rakaia does.** A value with a dot in it is an import path, to a class or a
+function that takes no arguments and returns the store. A path that does not import
+is refused at startup, and `manage.py check` reports it as `rakaia.E003`.
+
+```python
+# settings.py
+RAKAIA_STORE = "myproject.streams.MyStore"
+```
+
+**See it.** No example uses a custom store from settings; the tests that prove it
+are named below.
+
+```console
+$ uv run pytest tests/test_django_rakaia/test_store_by_dotted_path.py -q
+```
+
+→ Deep dive: [Write your own store](write-your-own-store.md)
+
+## 41. Ask a stream for the events carrying a tag
+
+**The problem.** Tags rode on every event, but finding the ones with a given tag
+meant reading the whole stream and filtering by hand.
+
+**What rakaia does.** `read_tagged(path, *tags)` returns the events carrying every
+tag named, oldest first unless you ask for `newest_first`, and `limit` caps how many.
+All three built-in stores have it; the Django store matches in the database.
+
+```python
+store.append("orders", b'{"id": 1}', AppendOptions(tags=("refund",)))
+store.append("orders", b'{"id": 2}', AppendOptions())
+[m.data for m in store.read_tagged("orders", "refund")]  # [b'{"id":1}']
+```
+
+**See it.** No example covers it yet; the shared contract runs against all three
+stores.
+
+```console
+$ uv run pytest tests/ -q -k tagged
+```
+
+→ Deep dive: [Write your own store](write-your-own-store.md)
+
+## 42. Replay into a real database without Django
+
+**The problem.** Replay never needed Django, but the only executor that wrote to an
+actual database was the Django one.
+
+**What rakaia does.** `SqliteExecutor` writes replayed rows to a SQLite file with
+nothing but the standard library, and `SqliteProjectionReader` reads them back. Each
+label is a table of JSON rows, so there is nothing to migrate, and values must be
+plain numbers, text, lists or dicts. A batch lands whole or not at all.
+
+```python
+executor = SqliteExecutor("orders.db")
+replay(store, "orders", executor, handler_registry=registry)
+SqliteProjectionReader(executor.connection).query("shop.Order")
+```
+
+**See it.**
+
+```console
+$ just sqlite-replay-demo
+```
+
+→ Deep dive: [Dry run and executors](dry-run-and-executors.md)
+
 ---
 
 ## Where to go next

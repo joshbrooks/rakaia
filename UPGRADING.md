@@ -15,7 +15,7 @@ ones you are crossing.
 
 ---
 
-# Unreleased
+# 0.11.0
 
 ## The store protocols say what they return
 
