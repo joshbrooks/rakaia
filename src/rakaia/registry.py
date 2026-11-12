@@ -21,6 +21,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
+from .declared_tables import canonical_tables
+
 # `HandlerDriftError` lives in `rakaia.drift` and is re-exported here, where
 # callers import it from.
 from .drift import DriftLedger
@@ -389,6 +391,16 @@ class HandlerVersion(_MetaStreamRecord):
     persisted and not part of the identity; None means `source_hash` is the
     reference."""
 
+    reads: frozenset[str] | None = None
+    """Tables (``app.Model``) or columns (``app.Model.field``) the handler reads
+    through its reader. None = not declared, so replay does not check reads. Not
+    persisted and not part of the identity; see `rakaia.declared_tables`."""
+
+    writes: frozenset[str] | None = None
+    """Tables whose rows the handler creates or removes, or columns it sets.
+    None = not declared, so replay does not check writes. Not persisted and not
+    part of the identity."""
+
     @property
     def hash_to_check(self) -> str:
         """What a replay compares the live function against."""
@@ -498,6 +510,10 @@ class _LogBackedRegistry:
             importlib.import_module(module_name)
 
 
+def _sorted_or_none(names: frozenset[str] | None) -> list[str] | None:
+    return None if names is None else sorted(names)
+
+
 def _range_of(fields: dict[str, Any]) -> tuple:
     """Which handler a registration is a version of, ignoring its code."""
     return (
@@ -561,6 +577,8 @@ class HandlerRegistry(_LogBackedRegistry):
         *,
         match_field: str | None = None,
         stage: int = 0,
+        reads: str | Iterable[str] | None = None,
+        writes: str | Iterable[str] | None = None,
     ) -> HandlerVersion:
         """
         Register a handler version. Raises HandlerOverlapError on overlap.
@@ -579,6 +597,13 @@ class HandlerRegistry(_LogBackedRegistry):
         `stage` (default 0) controls replay ordering: replay runs stages in
         ascending order, and a stage > 0 handler is invoked as `fn(event,
         reader)` so it can read earlier stages' projections.
+
+        `reads` / `writes` name the tables (``"app.Model"``) or columns
+        (``"app.Model.field"``) the handler touches. Replay warns with
+        `UndeclaredTableWarning` when it emits or reads something outside them.
+        They are not part of the identity, so registering the same handler
+        again with different tables raises rather than silently keeping the
+        first set.
         """
         event_match = _canonical_event_match(event_match)
         if effective_from < 0:
@@ -604,6 +629,8 @@ class HandlerRegistry(_LogBackedRegistry):
             registered_in=_registration_site(),
             match_field=match_field,
             stage=stage,
+            reads=canonical_tables(reads, "reads"),
+            writes=canonical_tables(writes, "writes"),
         )
         version = replace(version, reference_hash=self._first_recorded_hash(version))
 
@@ -613,6 +640,15 @@ class HandlerRegistry(_LogBackedRegistry):
         # In-memory dedup: exact identical registration → no-op
         for existing in series:
             if existing.identity == version.identity:
+                if (existing.reads, existing.writes) != (version.reads, version.writes):
+                    raise ValueError(
+                        f"handler {name!r} is already registered with "
+                        f"reads={_sorted_or_none(existing.reads)}, "
+                        f"writes={_sorted_or_none(existing.writes)}; registering "
+                        f"it again with reads={_sorted_or_none(version.reads)}, "
+                        f"writes={_sorted_or_none(version.writes)} would leave "
+                        f"one of the two declarations unused"
+                    )
                 return existing
 
         self._check_overlap(version, series)
@@ -1135,6 +1171,8 @@ def register_handler(
     match_field: str | None = None,
     stage: int = 0,
     registry: HandlerRegistry | None = None,
+    reads: str | Iterable[str] | None = None,
+    writes: str | Iterable[str] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator that registers a handler version with the default registry.
@@ -1145,6 +1183,8 @@ def register_handler(
     `match_field` to route on a payload field (e.g. 'form_type') instead of the
     stream path. Pass `stage` (default 0) to place the handler in a replay stage;
     stage > 0 handlers are called `fn(event, reader)`.
+    Pass `reads` / `writes` to name the tables or columns it touches (see
+    `HandlerRegistry.register`).
 
     Example:
         @register_handler(
@@ -1180,6 +1220,8 @@ def register_handler(
             effective_to=effective_to,
             match_field=match_field,
             stage=stage,
+            reads=reads,
+            writes=writes,
         )
         return fn
 
@@ -1193,6 +1235,8 @@ def register_simple(
     match_field: str | None = None,
     stage: int = 0,
     registry: HandlerRegistry | None = None,
+    reads: str | Iterable[str] | None = None,
+    writes: str | Iterable[str] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register an always-on handler — the common "just project" case.
 
@@ -1200,7 +1244,8 @@ def register_simple(
     effective_to=None, ...)``: one open-ended version covering every sequence,
     with no seq-range ceremony. Reach for `register_handler` only when you
     actually need version brackets (a handler whose body changes at a known
-    sequence). `match_field` and `stage` pass straight through.
+    sequence). `match_field`, `stage`, `reads` and `writes` pass straight
+    through.
 
     Example:
         @register_simple("project_registry", "TF_6_1_1", match_field="form_type")
@@ -1215,6 +1260,8 @@ def register_simple(
         match_field=match_field,
         stage=stage,
         registry=registry,
+        reads=reads,
+        writes=writes,
     )
 
 

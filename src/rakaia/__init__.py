@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from .applying import RowAccessor, UpsertOutcome, apply_effects
     from .consumer import Consumer, ConsumerCursorStore, InMemoryConsumerCursorStore
     from .context import get_provenance, provenance
+    from .declared_tables import UndeclaredTableWarning
     from .drift import DriftLedger, OnDriftPolicy
     from .effects import (
         AnyEffect,
@@ -338,6 +339,7 @@ _EXPORTS: dict[str, str] = {
     "DriftLedger": "rakaia.drift",
     "ImpureHandlerError": "rakaia.source_hash",
     "ImpureHandlerWarning": "rakaia.source_hash",
+    "UndeclaredTableWarning": "rakaia.declared_tables",
     # Subscriber cursors
     "poll": "rakaia.subscription",
     "Poll": "rakaia.subscription",
@@ -489,6 +491,7 @@ __all__ = [
     "Transition",
     "UNHANDLED",
     "UPCASTERS_META_STREAM",
+    "UndeclaredTableWarning",
     "UndecodableEventError",
     "UnresolvedRefError",
     "UpcasterChainError",

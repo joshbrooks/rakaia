@@ -42,11 +42,13 @@ from __future__ import annotations
 
 import inspect
 import json
+import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from .batching import _drain, _StageBuffer
+from .declared_tables import CheckedReader, UndeclaredTableWarning, undeclared_writes
 from .drift import DriftLedger
 
 # `HandlerDriftError` and `OnDriftPolicy` live in `rakaia.drift` and are
@@ -182,6 +184,9 @@ class _ReplayCtx:
     # batched; None applies per event. See `_StageBuffer`.
     buffer: _StageBuffer | None = None
     upcasters: Any = None
+    # Each (handler, reads|writes, name) that went undeclared, so a replay warns
+    # once per miss rather than once per event.
+    undeclared_warned: set[tuple[str, str, str]] = field(default_factory=set)
 
     @property
     def drift(self) -> DriftLedger:
@@ -417,7 +422,9 @@ def _dispatch_event(
             stored_hash=version.hash_to_check,
             fn=version.fn,
         )
-        all_effects.extend(_call_handler(version, upcasted, ctx.reader))
+        all_effects.extend(
+            _call_handler(version, upcasted, ctx.reader, ctx.undeclared_warned)
+        )
     if ctx.track_touched:
         _record_touched(
             ctx, [e for e in all_effects if not isinstance(e, ExternalEffect)]
@@ -689,10 +696,36 @@ def _call_handler(
     version: HandlerVersion,
     event: dict,
     reader: ProjectionReader | None,
-) -> Iterable[AnyEffect]:
+    warned: set[tuple[str, str, str]] | None = None,
+) -> list[AnyEffect]:
     # Stage > 0 handlers take (event, reader); stage 0 takes (event).
-    result = version.fn(event, reader) if version.stage > 0 else version.fn(event)
-    return _normalize_effects(result)
+    checked = (
+        CheckedReader(reader, version.reads)
+        if reader is not None and version.reads is not None
+        else None
+    )
+    if version.stage > 0:
+        result = version.fn(event, checked if checked is not None else reader)
+    else:
+        result = version.fn(event)
+    effects = _normalize_effects(result)
+    misses = [("writes", n) for n in undeclared_writes(version.writes, effects)]
+    if checked is not None:
+        misses += [("reads", n) for n in checked.missing]
+    for kind, name in misses:
+        key = (version.name, kind, name)
+        if warned is not None:
+            if key in warned:
+                continue
+            warned.add(key)
+        verb = "wrote" if kind == "writes" else "read"
+        warnings.warn(
+            f"handler {version.name!r} {verb} {name!r}, which its registration's "
+            f"{kind}= does not name",
+            UndeclaredTableWarning,
+            stacklevel=2,
+        )
+    return effects
 
 
 def _normalize_effects(result: object) -> list[AnyEffect]:
