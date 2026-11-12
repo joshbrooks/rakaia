@@ -14,14 +14,11 @@ An :class:`ExternalEffect` (an email, a third-party call) is deliberately *not*
 one of them: it names no row, no executor applies it, and replay returns it to
 the caller instead.
 
-Modelling each operation as its own type is what removes cross-field validation
-from this module: a ``produces`` on a delete or a ``patch`` on an upsert is a
-type error, not a runtime ``ValueError``. The two constraints that live *within*
-one operation are modelled away too — the two alternative row-sparing
-mechanisms become one ``spare`` field with two shapes (:class:`Exclude` or
-:class:`SpareKeys`), and the transition pair becomes one :class:`Transition`
-object. Only ``Transition.key_fields`` being non-empty survives as a check, and
-it lives inside ``Transition``.
+Each operation is its own type, so a ``produces`` on a delete or a ``patch`` on
+an upsert is a type error rather than a runtime ``ValueError``. The two
+alternative row-sparing mechanisms are one ``spare`` field with two shapes
+(:class:`Exclude` or :class:`SpareKeys`), and the transition pair is one
+:class:`Transition` object.
 """
 
 from __future__ import annotations
@@ -50,17 +47,16 @@ class Ref:
     in the same ``apply()`` batch. The executor substitutes the real value at
     apply time.
 
-    Must be a **direct** value — a ``Ref`` nested inside a list or dict (e.g.
-    ``defaults={"tags": [Ref("t")]}``) is not resolved. Not resolved in
-    :class:`ExternalEffect` payloads either: external effects never reach an
-    executor, so a ``Ref`` there would never be substituted.
+    Must be a **direct** value: a ``Ref`` nested inside a list or dict (e.g.
+    ``defaults={"tags": [Ref("t")]}``) is not resolved, nor is one in an
+    :class:`ExternalEffect` payload, since external effects never reach an
+    executor.
 
     ``field`` defaults to ``"pk"`` (the produced row's primary key — the FK case),
     or names any other column, e.g. ``Ref("proj", "suku")``.
 
-    Determinism note: ``Ref("proj")`` resolves to a **DB-assigned pk**, which is
-    not stable across a full rebuild (correct for an FK column, whose integrity
-    holds; use a natural-key ``field`` if you need a value stable across rebuilds).
+    ``Ref("proj")`` resolves to a **DB-assigned pk**, which is not stable across
+    a full rebuild; use a natural-key ``field`` if you need a stable value.
     """
 
     produces: str
@@ -81,9 +77,7 @@ class Exclude:
 
     ``filter(**lookup).exclude(**spare.lookup)`` — e.g.
     ``Exclude({"idx__in": [0, 1]})``, the positional `reconcile_children` case.
-    For composite natural keys use :class:`SpareKeys` instead. The two are
-    alternatives, which is why a delete carries one ``spare`` field rather than
-    two fields and a rule forbidding both.
+    For composite natural keys use :class:`SpareKeys` instead.
     """
 
     lookup: dict[str, Any]
@@ -93,11 +87,9 @@ class Exclude:
 class SpareKeys:
     """Spare rows from a delete or retire by composite natural key.
 
-    ``filter(**lookup).exclude(Q(**k0) | Q(**k1) | ...)``. This is the
-    natural-key reconcile primitive — retire every row in scope *except* the
-    composite keys still present (e.g.
-    ``SpareKeys([{"alert_type": "ff4", "field_key": "a"}])``). An empty list
-    spares nothing (retires/deletes the whole scope).
+    ``filter(**lookup).exclude(Q(**k0) | Q(**k1) | ...)``: the natural-key
+    reconcile primitive, e.g. ``SpareKeys([{"alert_type": "ff4", "field_key":
+    "a"}])``. An empty list spares nothing (the whole scope is affected).
     """
 
     keys: list[dict[str, Any]]
@@ -114,16 +106,13 @@ class Transition:
 
     When a :class:`Retire` carries one, the replay orchestrator emits one
     :class:`ExternalEffect` of ``kind`` per row the retire actually flipped (its
-    liveness sentinel went NULL->set) — the "one transition per real machine
-    resolution" of a ``reconcile_by_key`` soft-delete. Opt-in: a retire without
-    it costs no extra query.
+    liveness sentinel went NULL->set). A retire without one costs no extra query.
 
-    The two values are a pair, which is why they are one object: ``key_fields``
-    names the columns identifying each flipped row, and the executor's
-    deterministic ``ORDER BY``/identity ``SELECT`` relies on them being present
-    whenever a transition is requested. It is the retire's scope-equality columns
-    *plus* its natural key, used verbatim (the executor does not re-derive them
-    from ``lookup``). ``reconcile_by_key`` sets it from ``scope`` + ``key_fields``.
+    ``key_fields`` names the columns identifying each flipped row; the executor's
+    ``ORDER BY`` and identity ``SELECT`` rely on it being non-empty. It is the
+    retire's scope-equality columns plus its natural key, used verbatim (the
+    executor does not re-derive it from ``lookup``). ``reconcile_by_key`` sets it
+    from ``scope`` + ``key_fields``.
     """
 
     kind: str
@@ -140,9 +129,8 @@ class Transition:
             )
 
 
-#: The ``state`` every synthesised transition payload carries. A transition is
-#: emitted only for a row whose liveness sentinel actually flipped, so there is
-#: no other value it could take — there is no "still open" transition.
+#: The ``state`` every transition payload carries: a transition is emitted only
+#: for a row that actually flipped, so there is no other value.
 TRANSITION_RESOLVED = "resolved"
 
 
@@ -151,16 +139,9 @@ def transition_payload(
 ) -> dict[str, Any]:
     """Build the payload a :class:`Transition` notification carries.
 
-    This is the shape a *consumer* actually receives, so it belongs next to the
-    `Transition` that requests it rather than at the one call site that happens
-    to assemble it. It used to be built inline in the replay orchestrator with
-    ``"resolved"`` written as a bare literal, which put the request and the
-    thing delivered against it in two different modules.
-
     ``patch`` is spread first so the orchestrator's own ``key`` and ``state``
-    always win: ``reconcile_by_key`` is a generic primitive, and a patch column
-    named ``key`` or ``state`` must not clobber the row identity or the
-    transition state.
+    always win: a patch column named ``key`` or ``state`` must not clobber the row
+    identity or the transition state.
     """
     return {
         **(patch or {}),
@@ -266,11 +247,10 @@ Effect = Upsert | Update | Delete | Retire
 class ExternalEffect:
     """An application-level side effect: an email, a webhook, a payment.
 
-    Not an :class:`Effect`. It names no row, shares none of the row fields, and
-    no executor applies it — ``replay()`` collects them into
-    ``ReplayResult.external`` and hands them back to the caller, who decides
-    whether to deliver them. A rebuild therefore never re-spams by accident, and
-    an executor never needs an external branch.
+    Not an :class:`Effect`. It names no row and no executor applies it:
+    ``replay()`` collects them into ``ReplayResult.external`` and hands them back
+    to the caller, who decides whether to deliver them, so a rebuild never
+    re-sends one by accident.
     """
 
     kind: str
@@ -332,14 +312,12 @@ class RefResolver:
 
     `rakaia.applying.apply_effects` keeps one resolver per ``apply()`` call. As
     it applies each write effect that declares ``produces=X``, it calls
-    ``record(X, accessor)`` with a callable mapping a field name to the produced row's value
-    (e.g. ``lambda f: obj.pk if f in ("pk", "id") else getattr(obj, f)``). Before
-    applying any effect it calls ``resolve_effect(effect)`` to substitute every
-    ``Ref`` value; a ``Ref`` to an id not yet produced raises
-    :class:`UnresolvedRefError` (deterministic — a forward ref is never a silent
-    ``None``). The `CollectingExecutor` resolves too, so an unknown ``Ref`` fails a
-    dry run as it fails a write, but it records the effects as emitted, with their
-    literal ``Ref`` values.
+    ``record(X, accessor)`` with a callable mapping a field name to the produced
+    row's value. Before applying any effect it calls ``resolve_effect(effect)`` to
+    substitute every ``Ref`` value; a ``Ref`` to an id not yet produced raises
+    :class:`UnresolvedRefError`, never a silent ``None``. The `CollectingExecutor`
+    resolves too, so an unknown ``Ref`` fails a dry run as it fails a write, but it
+    records the effects as emitted, with their literal ``Ref`` values.
     """
 
     def __init__(self) -> None:
@@ -350,9 +328,8 @@ class RefResolver:
         returns that row's value for a column (``"pk"`` for the primary key).
 
         Raises :class:`DuplicateProducesError` if `produces_id` was already
-        declared in this batch — a re-declaration would silently rebind every
-        `Ref` to the second producer's row, so it is a loud error, never a
-        silent wrong binding.
+        declared in this batch, since a re-declaration would silently rebind every
+        `Ref` to the second producer's row.
         """
         if produces_id in self._symbols:
             raise DuplicateProducesError(
@@ -396,10 +373,9 @@ class RefResolver:
         """Substitute Refs inside a `spare`, returning it unchanged when there
         is nothing to substitute (so the caller can compare by identity).
 
-        Generic in the spare's own type because the two effects that have one do
-        not have the *same* one: a `Delete` may spare by flat lookup or by
-        composite key, a `Retire` only by composite key. Returning the declared
-        union instead would make `dc_replace(retire, spare=...)` a type error.
+        Generic in the spare's own type because a `Delete` may spare by flat
+        lookup or composite key and a `Retire` only by composite key; returning
+        the declared union would make `dc_replace(retire, spare=...)` a type error.
         """
         if isinstance(spare, Exclude):
             resolved = self._resolve_lookup(spare.lookup)
@@ -417,18 +393,12 @@ class RefResolver:
         """Return `effect` with every `Ref` value substituted, or `effect`
         itself (unchanged) when it carries no refs — the common fast path.
 
-        **Each variant names its own ref-bearing fields, in code pyright checks.**
-        This used to walk a tuple of three field-name *strings* with `hasattr`,
-        which reintroduced the "which fields does this variant have?" reasoning
-        that one-type-per-operation removed — and got it wrong silently: a
-        renamed field made `hasattr` return False, so the `Ref` was never
-        substituted and the placeholder object itself was written to the
-        database. Reading `effect.patch` instead of ``getattr(effect, "patch")``
-        makes that rename a type error, and `assert_never` makes a *new* effect
-        variant one too, which nothing caught before (#161 item 2).
-
-        Mutation this is pinned by: rename `Retire.patch`, and
-        `just typecheck` fails here rather than the suite passing.
+        Each variant names its own ref-bearing fields as attribute reads rather
+        than a tuple of strings and `hasattr`: a renamed field made `hasattr`
+        return False, so the `Ref` was never substituted and the placeholder
+        object itself was written to the database (#161). Renaming `Retire.patch`
+        now fails `just typecheck` here, and `assert_never` does the same for a
+        new effect variant.
         """
         if isinstance(effect, (Upsert, Update)):
             lookup = self._resolve_lookup(effect.lookup)
@@ -498,13 +468,11 @@ class Executor(Protocol):
     Applies a batch of effects to durable storage.
 
     Concrete implementations live outside rakaia core (e.g. DjangoExecutor
-    in django_rakaia). Only database effects reach ``apply()`` — external
-    effects are not Effects and never arrive here.
+    in django_rakaia). Only database effects reach ``apply()``.
 
-    ``runtime_checkable`` so ``isinstance(x, Executor)`` works — every protocol
-    in ``protocols.py`` carries it, and the shared conformance suite
-    (``rakaia/testing/executor_contract.py``) opens with that assertion. It checks method
-    *presence* only, which is why the suite goes on to pin behaviour.
+    ``runtime_checkable`` so ``isinstance(x, Executor)`` works. That checks method
+    *presence* only, which is why the shared conformance suite
+    (``rakaia/testing/executor_contract.py``) goes on to pin behaviour.
     """
 
     def apply(self, effects: Iterable[Effect]) -> ApplyReport | None: ...
@@ -523,30 +491,23 @@ def _row_key(effect: RowEffect) -> tuple[str, str]:
 class _WrittenFields:
     """Which columns of which rows a batch of effects already writes.
 
-    `check_disjoint_defaults` is this class walked once over a whole batch. The
-    replay orchestrator needs the same question asked *incrementally* — "would
-    adding this event's effects to the batch I am holding collide?" — before
-    there is a batch to check. Both go through here so the rule that decides
-    what a collision is has one home rather than two that can drift (#152).
+    `check_disjoint_defaults` walks it once over a whole batch; the replay
+    orchestrator asks the same question incrementally ("would adding this event's
+    effects collide?") so the rule has one home (#152).
 
-    `collides` only reports; `record` only remembers. Keeping the raise out of
-    both is what lets the orchestrator use the answer to flush early, while
-    `check_disjoint_defaults` keeps raising with the same message and the same
-    effect indices it always did.
+    `collides` only reports and `record` only remembers; neither raises, which is
+    what lets the orchestrator flush early instead.
     """
 
     def __init__(self) -> None:
-        # (model_label, canonical lookup) -> {column: index of the effect that
-        # first wrote it}
+        # (model_label, canonical lookup) -> {column: index of first writer}
         self._seen: dict[tuple[str, str], dict[str, int]] = {}
 
     @staticmethod
     def _writes(effect: Effect) -> tuple[tuple[str, str], dict[str, Any]] | None:
         """The row and columns `effect` writes, or None if it writes none.
 
-        Only :class:`Upsert` and :class:`Update` carry `defaults`; a delete or a
-        retire names no column, and an effect with empty `defaults` writes
-        nothing to collide over.
+        Only :class:`Upsert` and :class:`Update` carry `defaults`.
         """
         if not isinstance(effect, (Upsert, Update)) or not effect.defaults:
             return None
@@ -583,11 +544,9 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
     Raise EffectCollisionError if two write effects targeting the same
     (model_label, lookup) row share any key in their `defaults`.
 
-    Covers both :class:`Upsert` and :class:`Update` (the effects that carry
-    `defaults`), including a mix of the two — the multi-owner invariant is that
-    each owner writes a *disjoint* set of columns, so two effects writing the
-    same column on the same row is always a bug. Delete and retire effects are
-    ignored, as are effects without `defaults`.
+    Covers :class:`Upsert` and :class:`Update`, including a mix of the two: the
+    multi-owner invariant is that each owner writes a disjoint set of columns.
+    Delete and retire effects are ignored, as are effects without `defaults`.
     """
     seen = _WrittenFields()
     for idx, eff in enumerate(effects):
@@ -609,16 +568,14 @@ def check_disjoint_defaults(effects: Iterable[Effect]) -> None:
 def _write_order_rank(effect: Effect) -> int:
     """Which pass of an applied batch `effect` belongs to.
 
-    Every executor applies a batch in three passes — every write, then every
-    delete, then every retire — so that a reconcile batch converges regardless
-    of the order its handlers emitted, and a ``produces=`` row is recorded
-    before any effect that :class:`Ref`s it. That is exactly why effects from
-    two different events cannot simply be poured into one batch: doing so would
-    hoist a later event's write above an earlier event's delete.
+    Every executor applies a batch in three passes (every write, then every
+    delete, then every retire) so a reconcile batch converges regardless of
+    emission order and a ``produces=`` row is recorded before any :class:`Ref`
+    to it. That is why effects from two events cannot simply be poured into one
+    batch: it would hoist a later event's write above an earlier event's delete.
 
-    Kept beside `check_disjoint_defaults` and consulted by the apply loop both
-    executors share (`rakaia.applying`) and by the replay buffer that decides
-    where a batch boundary falls, so the rule has one home (#152, #256, #325).
+    Consulted by the apply loop both executors share (`rakaia.applying`) and by
+    the replay buffer that decides where a batch boundary falls (#152, #256, #325).
     """
     if isinstance(effect, (Upsert, Update)):
         return 0
