@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-12
+
 ### Added
 
 - **`SqliteExecutor` and `SqliteProjectionReader`: replay into a SQLite database
