@@ -165,6 +165,7 @@ if TYPE_CHECKING:
     )
     from .seed import seed_stream
     from .source_hash import ImpureHandlerError, ImpureHandlerWarning
+    from .sqlite_executor import SqliteExecutor, SqliteProjectionReader
     from .store import StreamStore
     from .subscription import Consumed, OnErrorPolicy, Poll, PollStatus, consume, poll
     from .types import (
@@ -293,6 +294,8 @@ _EXPORTS: dict[str, str] = {
     "CollectingExecutor": "rakaia.executors",
     "InMemoryProjections": "rakaia.executors",
     "RecordingExecutor": "rakaia.executors",
+    "SqliteExecutor": "rakaia.sqlite_executor",
+    "SqliteProjectionReader": "rakaia.sqlite_executor",
     # Versioned handlers — projections
     "reconcile_by_key": "rakaia.projections",
     "reconcile_children": "rakaia.projections",
@@ -465,6 +468,8 @@ __all__ = [
     "SequenceConflict",
     "ServerOptions",
     "SpareKeys",
+    "SqliteExecutor",
+    "SqliteProjectionReader",
     "Stage",
     "Stream",
     "StreamClosed",

@@ -102,6 +102,8 @@ demos:
     @just protocol-demo
     @echo ">> effect primitives (no Django)"
     @just multi-owner-demo
+    @echo ">> sqlite replay — a real database, no Django"
+    @just sqlite-replay-demo
     @echo ">> orders — versioned handlers, upcasters, replay"
     @just orders-demo
     @echo ">> orders (hermeticity) — impure handlers refused, closure vs partial drift"
@@ -428,6 +430,10 @@ protocol-demo:
 # Effect primitives (no Django): Ref, reconcile_aggregate(owns=), reconcile_by_key
 multi-owner-demo:
     cd examples/multi_owner && uv run python demo.py
+
+# Replay into a SQLite file with the standard library only (no Django)
+sqlite-replay-demo:
+    uv run python examples/sqlite_replay/demo.py
 
 # formkit-ninja's real decomposition into a rakaia log (no Django, no database).
 #

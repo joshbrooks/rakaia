@@ -11,6 +11,17 @@ runnable demo for each.
 
 ### Added
 
+- **`SqliteExecutor` and `SqliteProjectionReader`: replay into a SQLite database
+  without Django.** Built on the standard library's `sqlite3` alone, they write
+  replayed rows to a file or an in-memory database and read them back. A model label
+  is a table created on first use, holding an integer `pk` and the row as JSON, so
+  there is nothing to migrate and values must be JSON-serialisable; a batch lands
+  whole or not at all. When your connection has no transaction open, each `apply`
+  commits at the end of its batch; when you have one open, it stays open and
+  nothing is committed. A `pk` in an upsert's lookup is used as the row's `pk`, a
+  `pk` in `defaults` or a retire's `patch` raises `ValueError`, and `close()` closes
+  only a connection the executor opened itself. Both are held to the same executor and reader contract suites
+  as `InMemoryProjections`, and the new `sqlite_replay` example runs them.
 - **`RAKAIA_STORE` can name a store of your own.** A value with a dot in it is the
   import path of a class or function that is called with no arguments and returns a
   store; the three short names work as before. A path that does not import, or a

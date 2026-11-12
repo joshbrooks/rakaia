@@ -120,7 +120,9 @@ page is the contract.
 | `RecordingExecutor` | `rakaia` | `(inner: 'Executor') -> 'None'` | Applies through another `Executor` **and** keeps what it passed on. |
 | `DjangoExecutor` | `django_rakaia` | `(*, skip_unchanged: 'bool' = False, using: 'str \| None' = None, normalizers: 'Sequence[Normalizer] \| None' = None, batch_updates: 'bool' = False) -> 'None'` | Apply Effects via Django's ORM. |
 | `InMemoryProjections` | `rakaia` | `() -> 'None'` | An in-memory `Executor` **and** `ProjectionReader` over dict-backed tables. |
+| `SqliteExecutor` | `rakaia` | `(database: 'str \| PathLike[str] \| sqlite3.Connection' = ':memory:') -> 'None'` | An `Executor` that applies effects to a SQLite database. |
 | `ProjectionReader` | `rakaia` | `(*args, **kwargs)` | Read-only view over materialised projections. |
+| `SqliteProjectionReader` | `rakaia` | `(connection: 'sqlite3.Connection') -> 'None'` | A `ProjectionReader` over the tables `SqliteExecutor` writes. |
 | `DjangoProjectionReader` | `django_rakaia` | `(*, using: 'str \| None' = None) -> 'None'` | Read-only projection accessor over `apps.get_model(...).objects`. |
 | `PreloadedProjectionReader` | `django_rakaia` | `(effects: 'Iterable[Effect]', *, using: 'str \| None' = None) -> 'None'` | A :class:`DjangoProjectionReader` that bulk-fetches, up front, the rows a batch of effects will look up — so each :meth:`get` serves from an in-memory snapshot instead of issuing one ``SELECT``… |
 | `ModelStreamReader` | `django_rakaia` | `(*, queryset_for: 'Callable[[str], QuerySet[Any]]', order_by: 'str', to_payload: 'Callable[[Any], dict[str, Any]]', chunk_size: 'int' = 1000) -> 'None'` | A read-only adapter that satisfies the subset of the `StreamStore` interface that `rakaia.replay` uses. |
@@ -300,6 +302,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-194 exported names across 17 sections. 168 carry a docstring; 26 do not and show `—` above.
+196 exported names across 17 sections. 170 carry a docstring; 26 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

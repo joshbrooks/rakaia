@@ -8,6 +8,7 @@ migrate themselves.
 
 * [protocol_streams](protocol-streams.md) - `StreamStore`, producer fencing, close, `poll` cursors.
 * [multi_owner](multi-owner.md) - `Ref`/`RefResolver`, `reconcile_aggregate(owns=)`, `reconcile_by_key`.
+* [sqlite_replay](sqlite-replay.md) - `SqliteExecutor` and `SqliteProjectionReader`: a real database file, no Django.
 * [formkit_emission](formkit-emission.md) - formkit-ninja's real `emit`/`wire` seam; absent key vs explicit null.
 
 ## Headless event-sourcing (Django)
