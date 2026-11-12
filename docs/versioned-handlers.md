@@ -412,6 +412,45 @@ re-registers it on import — which a closure built inside a function does not. 
 `partial` is unwrapped, so the recorded path and the hash both describe the
 wrapped function. A persisting registry warns if you use a closure anyway.
 
+### Saying which tables a handler touches
+
+A handler can name what it reads and writes when it is registered, so the
+pipeline can be drawn and checked without reading its source:
+
+```python
+reg.register(
+    "status",
+    "STATUS",
+    status,
+    0,
+    stage=1,
+    reads={"app.Line"},
+    writes={"app.Form.workflow_status_id", "app.Line.workflow_status_id"},
+)
+```
+
+A name is a table (`"app.Model"`, which covers its rows and every column) or one
+column (`"app.Model.field"`). Creating or removing rows needs the table. An
+update needs the table or each column it sets. Replay warns with
+`UndeclaredTableWarning` when the handler emits an effect or makes a reader
+call outside what it declared: at most once per handler and name in a replay,
+and Python's default warning filter also hides a repeat in a later replay in the
+same process. Leave both out and nothing is checked.
+
+The declarations are not part of the handler's identity. Adding them to a
+store-backed registry records nothing new, and they play no part in drift
+detection. Registering the same handler twice with different tables raises
+`ValueError`.
+
+**What the check cannot see.** It compares the declarations with what the handler
+*emits*, so an executor that discards some writes does not make a declaration
+wrong. Writes made outside effects (a direct ORM update in a step of your own)
+and reads made outside the reader are invisible to it. That includes every read
+by a stage-0 handler, which is given no reader, and anything done with what a
+reader call returned, such as following a foreign key from a returned row.
+Reducers cannot declare tables yet, so nothing a reducer reads or writes is
+checked.
+
 ### Reducers replace last-write-wins
 
 A **reducer** (`register_reducer(name, stage, fn)`) is a single *current*
