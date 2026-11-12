@@ -28,7 +28,7 @@ from .json_mode import (
 )
 from .offsets import COMPOUND
 from .producer import is_producer_state_expired
-from .read_decision import check_page_size, page_of
+from .read_decision import check_page_size, check_tagged_read, page_of, pick_tagged
 from .types import (
     AppendOptions,
     AppendResult,
@@ -412,6 +412,25 @@ class StreamStore:
         if stream is None:
             raise StreamNotFound(f"Stream not found: {path}")
         return self._messages_after(stream, offset)
+
+    def read_tagged(
+        self,
+        path: str,
+        *tags: str,
+        newest_first: bool = False,
+        limit: int | None = None,
+    ) -> list[StreamMessage]:
+        """The messages carrying every one of `tags`; see `TaggedReads`."""
+        stream = self._get_if_not_expired(path)
+        if stream is None:
+            raise StreamNotFound(f"Stream not found: {path}")
+        wanted = check_tagged_read(tags, limit)
+        return pick_tagged(
+            self._messages_after(stream, None),
+            wanted,
+            newest_first=newest_first,
+            limit=limit,
+        )
 
     def _messages_after(
         self, stream: Stream, offset: str | None

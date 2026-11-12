@@ -63,10 +63,11 @@ after an upgrade. They ship in the wheel: see
 currently held only by an `isinstance` check, which on a `runtime_checkable` Protocol
 compares method names and would not have caught the `0.6.0` widening.
 
-**`rakaia.testing` is Tier 1, and so are its five module paths:**
+**`rakaia.testing` is Tier 1, and so are its six module paths:**
 `rakaia.testing.store_contract`, `rakaia.testing.server_store_contract`,
-`rakaia.testing.executor_contract`, `rakaia.testing.outcome_store_contract` and
-`rakaia.testing.projection_reader_contract`. They are the one place a submodule path
+`rakaia.testing.executor_contract`, `rakaia.testing.outcome_store_contract`,
+`rakaia.testing.projection_reader_contract` and
+`rakaia.testing.tagged_reads_contract`. They are the one place a submodule path
 is promised, because a suite is something you subclass rather than call. The promise
 is the same narrow one as above, with one addition: a suite may gain checks on a
 minor release, so an implementation that passed before may fail afterwards, and the
@@ -133,6 +134,11 @@ whole stream and filter in Python, which is O(stream) on a write path. Querying
 `StreamEntry` with a JSON predicate is O(index). We are not going to pretend
 that choice is unreasonable while offering no alternative.
 
+The one question with a supported answer is *"which events carry these tags?"*:
+`read_tagged(path, *tags, newest_first=False, limit=None)` on `StreamStore`,
+`JsonlStreamStore` and `DjangoStreamStore`, described by the `TaggedReads`
+protocol. A predicate on the payload still has none.
+
 If you are on Tier 2, say so in your own code, and expect to read `UPGRADING.md`
 on every bump.
 
@@ -143,7 +149,7 @@ Everything else:
 - any name beginning with `_`, in either package;
 - any submodule of `django_rakaia` not listed in `_EXPORTS`;
 - `rakaia`'s submodules as *import paths* — the names they hold may be public,
-  the layout is not — except the five under `rakaia.testing`;
+  the layout is not — except the six under `rakaia.testing`;
 - the templates, URLs, views and admin registrations, unless you have registered
   them yourself.
 

@@ -74,12 +74,22 @@ Imported from `rakaia`:
   `(page, up_to_date)` and `check_page_size(limit)` refuses a limit below 1. These are
   the rules `StreamStore`, `JsonlStreamStore` and `DjangoStreamStore` share, so a store
   that calls them cannot disagree with those three.
+* Reading by tag: `TaggedReads` is an optional protocol, separate from
+  `StreamServerStore`, with `read_tagged(path, *tags, newest_first=False, limit=None)`
+  returning the messages that carry every one of `tags` (same messages `read` returns),
+  oldest first unless `newest_first`, cut to `limit` after ordering. It does not extend
+  the TTL window, raises `StreamNotFound` for a missing or expired stream, and
+  `ValueError` for no tags, a bad tag or a `limit` below 1. `StreamStore`,
+  `JsonlStreamStore` and `DjangoStreamStore` implement it. `check_tagged_read(tags, limit)`
+  and `pick_tagged(messages, tags, newest_first=, limit=)` are the shared argument check and
+  match, exported for a store of your own.
 * `rakaia.testing` — the contract suites a store, executor, outcome store or reader is
   held to, shipped in the wheel: `store_contract.StoreContract` (`WritableStore`),
   `server_store_contract.ServerStoreContract` (`StreamServerStore`),
-  `executor_contract.ExecutorContract`, `outcome_store_contract.OutcomeStoreContract`
-  and `projection_reader_contract.ProjectionReaderContract`. Subclass one in your own
-  tests and provide the fixture it names. The package and the five module paths are
+  `executor_contract.ExecutorContract`, `outcome_store_contract.OutcomeStoreContract`,
+  `projection_reader_contract.ProjectionReaderContract` and
+  `tagged_reads_contract.TaggedReadsContract` (`TaggedReads`). Subclass one in your own
+  tests and provide the fixture it names. The package and the six module paths are
   Tier 1. Importing a suite needs pytest (all but `outcome_store_contract`) and says so if it is missing;
   `import rakaia.testing` does not.
 

@@ -4,8 +4,8 @@ Subclass a suite in your own tests and provide the fixture it names; pytest then
 runs every check against your implementation, the same ones the built-in stores
 and executors pass. The suites are `store_contract` (`WritableStore`),
 `server_store_contract` (`StreamServerStore`), `executor_contract` (`Executor`),
-`outcome_store_contract` (`OutcomeStore`) and `projection_reader_contract`
-(`ProjectionReader`).
+`outcome_store_contract` (`OutcomeStore`), `projection_reader_contract`
+(`ProjectionReader`) and `tagged_reads_contract` (`TaggedReads`, optional).
 
 Importing this package needs nothing. Importing a suite needs pytest (all but
 `outcome_store_contract`), and says so if it is missing, so installing rakaia never
@@ -20,6 +20,7 @@ _SUITES = (
     "executor_contract",
     "outcome_store_contract",
     "projection_reader_contract",
+    "tagged_reads_contract",
 )
 
 try:

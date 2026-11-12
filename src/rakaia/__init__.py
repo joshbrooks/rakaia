@@ -122,9 +122,10 @@ if TYPE_CHECKING:
         ProjectionReader,
         ReadableStore,
         StreamServerStore,
+        TaggedReads,
         WritableStore,
     )
-    from .read_decision import check_page_size, page_of
+    from .read_decision import check_page_size, check_tagged_read, page_of, pick_tagged
     from .registry import (
         HANDLERS_META_STREAM,
         REDUCERS_META_STREAM,
@@ -224,6 +225,7 @@ _EXPORTS: dict[str, str] = {
     "ReadableStore": "rakaia.protocols",
     "WritableStore": "rakaia.protocols",
     "StreamServerStore": "rakaia.protocols",
+    "TaggedReads": "rakaia.protocols",
     "CursorStore": "rakaia.protocols",
     "OutcomeStore": "rakaia.protocols",
     "ProjectionReader": "rakaia.protocols",
@@ -371,6 +373,8 @@ _EXPORTS: dict[str, str] = {
     "PlannedWrite": "rakaia.append_decision",
     "page_of": "rakaia.read_decision",
     "check_page_size": "rakaia.read_decision",
+    "check_tagged_read": "rakaia.read_decision",
+    "pick_tagged": "rakaia.read_decision",
     "apply_effects": "rakaia.applying",
     "RowAccessor": "rakaia.applying",
     "UpsertOutcome": "rakaia.applying",
@@ -480,6 +484,7 @@ __all__ = [
     "StreamNotFound",
     "StreamServerStore",
     "StreamStore",
+    "TaggedReads",
     "TouchedSubject",
     "Transition",
     "UNHANDLED",
@@ -499,6 +504,7 @@ __all__ = [
     "calculate_cursor",
     "check_disjoint_defaults",
     "check_page_size",
+    "check_tagged_read",
     "consume",
     "create_app",
     "decode_outcome",
@@ -514,6 +520,7 @@ __all__ = [
     "migrate_all",
     "migrate_stream",
     "page_of",
+    "pick_tagged",
     "plan_appends",
     "plan_initial_write",
     "poll",

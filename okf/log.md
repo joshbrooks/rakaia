@@ -6,6 +6,11 @@
   SQLite file with `SqliteExecutor`, no Django (#368).
 * **Update**: [Effects & executors](concepts/effects-and-executors.md) — `SqliteExecutor` and
   `SqliteProjectionReader`.
+* **Update**: [Protocol & streams](concepts/protocol-and-streams.md) — `TaggedReads` and
+  `read_tagged`, asking a store for the events carrying given tags, and the
+  `tagged_reads_contract` suite (#365).
+* **Update**: [Protocol & streams](concepts/protocol-and-streams.md) — `check_tagged_read` and
+  `pick_tagged` exported from `rakaia` (#365).
 
 ## 2026-11-11 (store author kit)
 

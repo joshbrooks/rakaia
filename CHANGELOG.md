@@ -22,6 +22,14 @@ runnable demo for each.
   `pk` in `defaults` or a retire's `patch` raises `ValueError`, and `close()` closes
   only a connection the executor opened itself. Both are held to the same executor and reader contract suites
   as `InMemoryProjections`, and the new `sqlite_replay` example runs them.
+- **A store can be asked for the events carrying given tags.** `read_tagged(path,
+  *tags, newest_first=False, limit=None)` returns the messages that carry every one
+  of the tags, the same messages `read` returns, without extending the stream's TTL
+  window. `DjangoStreamStore` matches in the database and applies `limit` there; the
+  in-memory and file stores filter the stream in Python. `StreamStore`, `JsonlStreamStore`
+  and `DjangoStreamStore` all have it; the new `TaggedReads` protocol describes it
+  and `rakaia.testing.tagged_reads_contract` holds a store of your own to it. A
+  store that lacks it is unaffected, since it is not part of `StreamServerStore`.
 - **`RAKAIA_STORE` can name a store of your own.** A value with a dot in it is the
   import path of a class or function that is called with no arguments and returns a
   store; the three short names work as before. A path that does not import, or a

@@ -55,7 +55,7 @@ from rakaia.append_decision import (
 )
 from rakaia.context import correlation_for, merge_provenance
 from rakaia.json_mode import is_json_content_type
-from rakaia.read_decision import page_of
+from rakaia.read_decision import check_tagged_read, page_of
 from rakaia.types import (
     AppendOptions,
     AppendResult,
@@ -941,6 +941,32 @@ class DjangoStreamStore:
     def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
         """`read` without extending the TTL window; see `StreamServerStore.peek`."""
         return self._read_since(self._require(path), offset)
+
+    def read_tagged(
+        self,
+        path: str,
+        *tags: str,
+        newest_first: bool = False,
+        limit: int | None = None,
+    ) -> list[StreamMessage]:
+        """The messages carrying every one of `tags`; see `TaggedReads`.
+
+        The tags are matched in the database with `StreamEventQuerySet.tagged`,
+        and `limit` is a SQL ``LIMIT``, so a rare tag on a large stream does not
+        load the stream.
+        """
+        stream = self._require(path)
+        wanted = check_tagged_read(tags, limit)
+        tagged_ids = self._events().tagged(*wanted).values("pk")
+        entries = (
+            stream.entries.filter(event_id__in=tagged_ids)
+            .select_related("event")
+            .prefetch_related("event__tags")
+            .order_by("-offset" if newest_first else "offset")
+        )
+        if limit is not None:
+            entries = entries[:limit]
+        return [message_of(entry) for entry in entries]
 
     def _read_since(
         self, stream: Stream, offset: str | None = None, *, limit: int | None = None
