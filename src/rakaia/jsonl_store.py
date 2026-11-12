@@ -1,10 +1,8 @@
-"""A stream store backed by plain JSONL files on disk (spike — see #229).
+"""A stream store backed by plain JSONL files on disk (#229).
 
-**This is a proof of concept, not a shipped backend.** It exists to answer one
-question: is `rakaia.protocols.StreamServerStore` a real seam, or a description
-of what `DjangoStreamStore` happens to do? The measure is the two shared
-conformance suites — `rakaia/testing/store_contract.py` and `rakaia/testing/server_store_contract.py`
-— passing against a backend with no database under it at all.
+A `rakaia.protocols.StreamServerStore` over a directory, with no database under
+it, held to the same two conformance suites as the other stores:
+`rakaia/testing/store_contract.py` and `rakaia/testing/server_store_contract.py`.
 
 Layout, one directory per stream::
 
@@ -18,37 +16,32 @@ One JSON object per line. A segment seals at `segment_size` entries, so sealed
 segments are immutable, the filename is the index a read seeks with, and
 retention is `rm` of a file.
 
-What the spike does implement, because they are the parts that were uncertain:
+What it implements:
 
 * **The log is authoritative, `meta.json` is a cache.** An append and a metadata
   write are two files and cannot be made atomic against each other, so the head
   is recoverable by reading the last complete line of the last segment. A torn
-  trailing line — a crash mid-write — is ignored on read rather than parsed.
+  trailing line (a crash mid-write) is ignored on read rather than parsed.
 * **One exclusive `flock` per stream**, held across the whole check-then-write,
   standing in for `DjangoStreamStore._locked_write`'s `select_for_update`.
 * **`append_many` is one buffer and one `write()` per segment** under that lock.
-  A refused batch writes nothing (#214, #222). Each segment write is atomic, but
-  a batch that crosses a segment boundary is two writes, and a crash between
-  them leaves the first: recovery keeps that prefix.
+  A refused batch writes nothing (#214, #222). A batch that crosses a segment
+  boundary is two writes, and a crash between them leaves the first: recovery
+  keeps that prefix.
 * **Deletes and creates take the same lock** as writes, so neither can pull a
   stream out from under an append or reset its head beneath one (#346).
+* **fsync durability** is on by default (a batch pays one sync per segment, and a
+  new segment also syncs the directory entry naming it), and **reads skip
+  segments** by filename index rather than scanning the whole log.
 
-What it deliberately does not do, as shipped: **Windows** (`fcntl` only — the
-import is optional so `import rakaia` still works there, and the store refuses
-to be constructed rather than run unlocked), **NFS** (`flock` is not reliable
-across it), **readers do not take the lock**, and **appends are not broadcast**
-to live subscribers the way `DjangoStreamStore` broadcasts over channels, since
-this store cannot reach Django. `django_rakaia.checks` reports that last one as
-``rakaia.W002`` rather than leaving it to be discovered. One more, added when
-it was found rather than left implied: a **symlink inside the root** still leads
-a write out of the store, because `_contained` checks containment lexically and
-a lexical check cannot see one. See its docstring for why that trade was taken.
-
-Two things this list used to name are now implemented, and the note is kept
-because their absence was a documented limitation: **fsync durability** is on by
-default (a batch pays one sync per segment, and a new segment also syncs the
-directory entry naming it), and **reads skip segments** by filename index rather
-than scanning the whole log.
+What it does not do: **Windows** (`fcntl` only; the import is optional so
+`import rakaia` still works there, and the store refuses to be constructed
+rather than run unlocked), **NFS** (`flock` is not reliable across it), **reader
+locking** (readers do not take the lock), and **broadcast** (appends are not
+sent to live subscribers, since this store cannot reach Django;
+`django_rakaia.checks` reports that as ``rakaia.W002``). A **symlink inside the
+root** still leads a write out of the store, because `_contained` checks
+containment lexically; see its docstring.
 """
 
 from __future__ import annotations
@@ -71,12 +64,10 @@ from urllib.parse import quote, unquote
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows has no fcntl
-    # Not a soft failure with a degraded lock: without an exclusive lock two
-    # writers hand out the same offset, which loses events silently. The store
-    # refuses to be constructed instead, and `import rakaia` still works —
-    # this module is imported by the package `__init__`, so raising here would
-    # take the whole library down on a platform that merely cannot use one
-    # backend.
+    # Not a soft failure with a degraded lock: without one, two writers hand out
+    # the same offset and lose events silently. The store refuses to be
+    # constructed instead; raising here would take down the package `__init__`,
+    # which imports this module.
     fcntl = None  # type: ignore[assignment]
 
 from . import stream_rules
@@ -117,11 +108,10 @@ class SegmentSizeMismatch(ValueError):
 def _discard_torn_tail(fh: Any) -> None:
     """Truncate a partial trailing line before appending after it.
 
-    A crash mid-append leaves bytes with no newline. Reads already skip them —
-    but an append that simply continued would glue its own record onto the
-    fragment and lose *both*. Recovery has to happen on the write side too, and
-    this is the cheapest place: the file is already open and locked. Shared with
-    `JsonlOutcomeStore`, whose files have the same shape and the same failure.
+    A crash mid-append leaves bytes with no newline. Reads skip them, but an
+    append that simply continued would glue its record onto the fragment and
+    lose *both*. The file is already open and locked here. Shared with
+    `JsonlOutcomeStore`, whose files have the same shape.
     """
     fh.seek(0, os.SEEK_END)
     size = fh.tell()
@@ -138,40 +128,27 @@ def _discard_torn_tail(fh: Any) -> None:
 def _contained(root: Path, name: str, suffix: str = "") -> Path:
     """The path `name` maps to, *proven* to sit directly under `root`.
 
-    A caller-supplied name — a stream path, a consumer id — becomes exactly one
-    child of `root`. `quote(safe="")` does the mapping, because a stream path
-    contains slashes and a stream is one directory rather than a tree: `/a/b`
-    and `/a%2Fb` must not collide, and percent-encoding is the one mapping
-    `list_paths` can reverse.
+    A caller-supplied name (a stream path, a consumer id) becomes exactly one
+    child of `root`. `quote(safe="")` does the mapping, because a stream is one
+    directory rather than a tree: `/a/b` and `/a%2Fb` must not collide, and
+    percent-encoding is the one mapping `list_paths` can reverse.
 
-    What makes it safe is not the encoding, though. `quote` leaves a dot alone,
-    so a stream called `..` used to resolve *above* the root and write outside
-    the store entirely. The tempting repair is to extend the escaping until
-    every dangerous name is covered, and that is the losing move: the bad set is
-    open-ended, and the next encoding nobody thought of walks straight through.
-    So the rule here is the structural one instead — build the path,
-    canonicalise it, and check it really is a child of the root. Escaping the
-    dots is only the repair attempted when the check says no; the check, not a
-    list of known-bad names, is what decides. A name that still escapes after
-    the repair is refused rather than written.
+    The encoding is not what makes it safe. `quote` leaves a dot alone, so a
+    stream called `..` resolved *above* the root and wrote outside the store, and
+    an unencoded name still round-trips, so a read-back test passes. Extending
+    the escaping to every dangerous name is the losing move (the bad set is
+    open-ended), so the rule is structural: build the path, canonicalise it, and
+    check it is a child of the root. Escaping the dots is only the repair
+    attempted when the check says no, and a name that still escapes is refused.
 
-    The containment is *lexical*, and that is a real limit rather than a
-    detail. The encoded name can never contain a separator, so `normpath`
-    collapsing `.` and `..` covers every spelling a caller can put in a name —
-    but it cannot see a symlink, and a symlink planted inside the root still
-    leads a write out of the store. `Path.resolve()` would catch it — the name
-    would be refused rather than misplaced — at the cost of a filesystem walk on
-    a path taken on every single append. The trade
-    was taken because the two sides are not comparable threats: a name is
-    supplied by whoever calls the store, while the contents of the root are the
-    deployer's, and anyone who can create a directory entry inside the root can
-    write outside it whatever this function does. Named rather than glossed
-    over, and pinned by a strict `xfail` in `test_jsonl_containment.py` so the
-    limit is found deliberately instead of discovered.
-
-    Found by a containment test rather than by review, which is the part worth
-    remembering: an unencoded name still *round-trips*, so reading back what was
-    written passes while the file sits somewhere it should never have been.
+    The containment is *lexical*. The encoded name can never contain a
+    separator, so `normpath` covers every spelling a caller can put in a name,
+    but it cannot see a symlink planted inside the root. `Path.resolve()` would,
+    at the cost of a filesystem walk on every append. That trade was taken
+    because a name comes from whoever calls the store, while the contents of the
+    root are the deployer's, and anyone who can create an entry there can write
+    outside it whatever this function does. Pinned by a strict `xfail` in
+    `test_jsonl_containment.py`.
     """
     base = Path(os.path.normpath(root))
     encoded = quote(name, safe="")
@@ -179,7 +156,7 @@ def _contained(root: Path, name: str, suffix: str = "") -> Path:
     if candidate.parent == base:
         return candidate
     # Outside, so re-encode and re-check. `%00` covers the empty name, which
-    # would otherwise collapse a level away rather than escape one.
+    # would otherwise collapse a level away.
     encoded = encoded.replace(".", "%2E") or "%00"
     candidate = Path(os.path.normpath(base / (encoded + suffix)))
     if candidate.parent == base:
@@ -189,11 +166,10 @@ def _contained(root: Path, name: str, suffix: str = "") -> Path:
 
 #: Where retired offset high-marks live, as a sibling of the stream directories.
 #:
-#: The leading ``%`` is load-bearing. Stream directories are named
-#: ``quote(path, safe="")``, and `quote` escapes ``%`` itself — so no stream path
-#: can ever produce this name, while a plainer choice could: ``.retired`` is what
-#: this was, and `quote` leaves a leading dot alone, so a stream *called*
-#: ``.retired`` would have been handed the watermark directory to live in.
+#: The leading ``%`` is load-bearing: `quote` escapes ``%`` itself, so no stream
+#: path can produce this name. A plainer name could: `quote` leaves a leading dot
+#: alone, so a stream *called* ``.retired`` would have been handed the watermark
+#: directory to live in.
 _RETIRED_DIR = "%retired"
 _TRASH_GRACE_SECONDS = 60
 
@@ -202,10 +178,9 @@ _TRASH_GRACE_SECONDS = 60
 class _Meta:
     """The cached half of a stream's state — everything not in the log.
 
-    `head` and `next_id` are *also* derivable from the log, and are held here
-    only to save a scan. Everything else (closed_by, producer states, the TTL
-    window) is not, which is why this file is written with
-    write-temp-then-`os.replace` rather than appended to.
+    `head` is also derivable from the log and is held here only to save a scan.
+    Everything else (closed_by, producer states) is not, which is why this file
+    is replaced whole (temp file then `os.replace`) rather than appended to.
     """
 
     content_type: str | None = None
@@ -233,8 +208,7 @@ class _Meta:
     the log, which does not say which times were stamped and which were sent."""
 
     def to_json(self) -> dict[str, Any]:
-        # `last_activity_at` is deliberately absent: it lives in its own file.
-        # See `JsonlStreamStore._save_activity`.
+        # `last_activity_at` is absent on purpose; see `_save_activity`.
         return {
             "content_type": self.content_type,
             "ttl_seconds": self.ttl_seconds,
@@ -310,16 +284,12 @@ class JsonlStreamStore:
     ):
         """`fsync` on means an append that has returned has reached the disk.
 
-        On by default because that is what the store it is being measured
-        against does: a database commit is durable, and a backend that returned
-        from `append` with the record only in the page cache would be claiming
-        something weaker while looking the same. A power cut then loses writes
-        the caller was told had landed.
-
-        Turn it off for a root on tmpfs, where there is no disk to reach and the
-        syscall is pure cost, and for test fixtures. Process death is survived
-        either way — the page cache outlives the process — so this is a choice
-        about power loss and kernel panics, not about crashes.
+        On by default because a database commit is durable, and a backend that
+        returned with the record only in the page cache would claim something
+        weaker while looking the same: a power cut loses writes the caller was
+        told had landed. Turn it off for a root on tmpfs and for test fixtures.
+        Process death is survived either way (the page cache outlives the
+        process), so this is a choice about power loss and kernel panics.
 
         `permanent` keeps every stream for good; see `rakaia.stream_rules`.
         """
@@ -343,7 +313,7 @@ class JsonlStreamStore:
     # =========================================================================
 
     def _dir(self, path: str) -> Path:
-        """The directory for `path`, which `_contained` guarantees is under the root."""
+        """The directory for `path`, which `_contained` keeps under the root."""
         return _contained(self.root, path)
 
     def _segment(self, path: str, entry_id: int) -> Path:
@@ -367,15 +337,15 @@ class JsonlStreamStore:
             return 0
 
     def _retired_event_ts_path(self, path: str) -> Path:
-        # `%` cannot follow a name `quote` produced unless two hex digits do, so
-        # no stream's high-mark file can be called this.
+        # `%` only follows a `quote`d name before two hex digits, so no stream's
+        # high-mark file can be called this.
         return _contained(self.root / _RETIRED_DIR, path, "%event_ts")
 
     def _retired_event_ts(self, path: str) -> float | None:
         """The last `event_ts` this store stamped on a deleted `path`, if any.
 
-        Kept beside the retired high mark so a recreated path carries on from
-        it, as the durable store's watermark and the in-memory store do (#284).
+        Kept beside the retired high mark so a recreated path carries on from it
+        (#284).
         """
         try:
             return float(self._retired_event_ts_path(path).read_text())
@@ -391,25 +361,22 @@ class JsonlStreamStore:
         try:
             raw = json.loads(f.read_text())
         except FileNotFoundError:
-            # No metadata and no log is an absent stream. No metadata *with* a
-            # log is a lost cache, and the stream is still there — recovering it
-            # is the whole reason the head is derivable from the last line.
+            # No metadata and no log is an absent stream; no metadata *with* a
+            # log is a lost cache, and the stream is still there.
             if not self._segments(path):
                 return None
             raw = {}
         except (OSError, ValueError):
             # A torn meta.json costs a scan, not the stream: the log is
-            # authoritative, so rebuild what is derivable and accept the loss of
-            # what is not. This is the property the layout is chosen for.
+            # authoritative, so rebuild what is derivable.
             raw = {}
         meta = _Meta.from_json(raw)
         # The log is written before `meta.json`, so a process that died between
         # the two leaves a log ahead of its cache. The head is whichever is
         # higher, or the next append reissues an offset already in the log (#346).
-        # A fresh `meta.json` costs one read of the last segment's final line.
         meta.head = max(meta.head, self._scan_head(path))
         if meta.segment_size is None:
-            # A delete does not care about the size, so it must not be refused
+            # A delete does not care about the size, so must not be refused
             # for one it cannot work out.
             meta.segment_size = self._segment_size_on_disk(
                 path, meta.head, refuse=check_segment_size
@@ -421,9 +388,8 @@ class JsonlStreamStore:
                 f"segment_size={self.segment_size}; open it with "
                 f"{meta.segment_size}."
             )
-        # Only a stream with a TTL has a sliding window, so only that stream
-        # pays the extra read. Loading it unconditionally cost an `open()` on
-        # every append to every stream, for a field nothing would consult.
+        # Only a stream with a TTL has a sliding window, so only it pays the
+        # extra read.
         meta.last_activity_at = (
             self._load_activity(path, meta.created_at)
             if meta.ttl_seconds is not None
@@ -471,16 +437,13 @@ class JsonlStreamStore:
     def _save_activity(self, path: str, when: float) -> None:
         """Write the TTL sliding-window anchor, and nothing else.
 
-        This is the one field a *reader* writes, and it is in its own file for
-        exactly that reason. `DjangoStreamStore._touch` extends the window with
-        ``save(update_fields=["last_activity_at"])`` — a single-column update
-        that cannot disturb a concurrent writer's columns. Metadata here is a
-        file replaced whole, so keeping the window inside it would have a reader
-        write back a stale head over every append that landed while it was
-        reading, and the next append would reissue offsets that already exist.
-        A separate file is what buys back the column-level isolation; it also
-        means the touch needs no lock, since last-write-wins on a timestamp is
-        the correct answer.
+        This is the one field a *reader* writes, so it has its own file.
+        `DjangoStreamStore._touch` is a single-column update that cannot disturb
+        a concurrent writer; metadata here is replaced whole, so keeping the
+        window inside it would have a reader write back a stale head over every
+        append that landed meanwhile, and the next append would reissue existing
+        offsets. The touch also needs no lock: last-write-wins is correct for a
+        timestamp.
         """
         self._replace(self._dir(path) / "activity", str(when))
 
@@ -490,11 +453,9 @@ class JsonlStreamStore:
     def _replace(self, target: Path, text: str) -> None:
         """Write `text` to `target` atomically, via a temp file nobody shares.
 
-        The temp name carries the pid and thread id. It used to be a fixed
-        ``.tmp``, which two writers raced for: one replaced the file the other
-        was still writing, and the loser's `replace` failed with `FileNotFound`
-        on a path it had itself created. A shared scratch name is a lock by
-        accident, and a broken one.
+        The temp name carries the pid and thread id: with a shared name, two
+        writers race, one replacing the file the other is still writing so the
+        loser's `replace` fails with `FileNotFound`.
         """
         tmp = target.with_name(
             f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -523,8 +484,8 @@ class JsonlStreamStore:
         """The highest entry id in the log, by reading the end of the last segment.
 
         Reads backwards in blocks until it has one complete line, so the cost is
-        a line, not the segment. A trailing line with no newline is a crash
-        mid-append and is skipped, as `_read_segment` skips it.
+        a line, not the segment. A trailing line with no newline is skipped, as
+        `_read_segment` skips it.
         """
         segments = self._segments(path)
         if not segments:
@@ -559,20 +520,19 @@ class JsonlStreamStore:
     ) -> Iterator[tuple[_Meta, list[dict[str, Any]]]]:
         """Open the stream for writing: metadata loaded, lock held, buffer ready.
 
-        The single door every write goes through — the file-lock equivalent of
+        The single door every write goes through, the file-lock equivalent of
         `DjangoStreamStore._locked_write`. Yields the metadata and a line buffer;
-        on a clean exit the buffer is appended to the log in one `write()` and
-        the metadata is replaced. On an exception nothing is written at all,
-        which is what makes a refused batch leave no prefix.
+        on a clean exit the buffer is appended to the log in one `write()` and the
+        metadata is replaced. On an exception nothing is written, so a refused
+        batch leaves no prefix.
         """
         with self._stream_lock(path):
             meta = self._load_meta(path)
             if meta is None:
                 raise StreamNotFound(f"Stream not found: {path}")
             if check_expiry and self._is_expired(meta):
-                # Expiry is decided under the lock, exactly as the durable
-                # store decides it inside its transaction, and the reap
-                # happens on the far side — nothing has been written yet.
+                # Decided under the lock, as the durable store does inside its
+                # transaction; the reap happens on the far side.
                 raise _Expired(path)
             buffer: list[dict[str, Any]] = []
             yield meta, buffer
@@ -591,10 +551,8 @@ class JsonlStreamStore:
         which case the directory is made afresh. Not re-entrant: a second
         acquisition from the same process waits for the first.
         """
-        # Narrowing, not defence: `__init__` refuses to build a store on a
-        # platform without `fcntl`, so by here it is always a module. Stated as
-        # an assert rather than an ignore comment, the way `store.py` states the
-        # same kind of guarantee about a producer verdict.
+        # Narrowing, not defence: `__init__` refuses to build a store without
+        # `fcntl`, so by here it is always a module.
         assert fcntl is not None
         d = self._dir(path)
         lock_path = d / ".lock"
@@ -639,10 +597,9 @@ class JsonlStreamStore:
                     fh.flush()
                     os.fsync(fh.fileno())
             if self.fsync and not existed:
-                # A new segment's *name* lives in the directory, and fsyncing
-                # the file does not commit the directory entry that points at
-                # it. Without this a roll-over can survive as data nothing can
-                # find.
+                # fsyncing the file does not commit the directory entry naming
+                # it, so without this a roll-over can survive as data nothing
+                # can find.
                 self._fsync_dir(seg.parent)
 
     # =========================================================================
@@ -653,8 +610,7 @@ class JsonlStreamStore:
     def _encode(data: bytes) -> dict[str, Any]:
         """A payload as JSON. Text stays readable; anything else is base64.
 
-        Readability is most of the point of this backend, so a UTF-8 payload is
-        stored as itself rather than as base64 of itself.
+        Readability is the point of this backend, so UTF-8 is stored as itself.
         """
         try:
             return {"data": data.decode("utf-8"), "b64": False}
@@ -671,9 +627,8 @@ class JsonlStreamStore:
     def _read_segment(segment: Path) -> Iterator[dict[str, Any]]:
         """Every complete record in `segment`.
 
-        A trailing line with no newline is a crash mid-append and is skipped —
-        the log's own torn-write recovery, and the reason the head can be
-        rebuilt from it at all.
+        A trailing line with no newline is a crash mid-append and is skipped; this
+        is the log's own torn-write recovery.
         """
         try:
             text = segment.read_text()
@@ -691,15 +646,11 @@ class JsonlStreamStore:
     def _relevant_segments(self, path: str, after_id: int) -> list[Path]:
         """The segments that can hold an id above `after_id`.
 
-        This is the file-backed answer to `entries.filter(offset__gt=...)`: a
-        resume read on a long stream must not pay for the segments it has
-        already consumed. A segment is skippable when the *next* one starts at
-        or below `after_id`, because every id it holds is then below that too.
-
-        Expressed against the next segment's start rather than arithmetic on
-        `self.segment_size`. The two agree, because a store opened with another
-        size than the stream was written with is refused, but the filenames are
-        what the data says and need no assumption.
+        The file-backed answer to `entries.filter(offset__gt=...)`: a resume read
+        must not pay for segments it has already consumed. A segment is skippable
+        when the *next* one starts at or below `after_id`. That is judged from the
+        filenames, which are what the data says, rather than from
+        `self.segment_size`.
         """
         segments = self._segments(path)
         if after_id <= 0:
@@ -789,8 +740,8 @@ class JsonlStreamStore:
         stream_rules.check_expiry_allowed(
             path, ttl_seconds, expires_at, permanent=self.permanent
         )
-        # The whole create runs under the stream lock: two creators, or a create
-        # racing a delete, must not each decide the stream is absent.
+        # Under the stream lock, so two creators, or a create racing a delete,
+        # cannot each decide the stream is absent.
         with self._stream_lock(path, create=True):
             existing = self._load_meta(path)
             if existing is not None and self._is_expired(existing):
@@ -823,8 +774,7 @@ class JsonlStreamStore:
                 generation=uuid.uuid4().hex,
                 last_activity_at=now,
                 closed=closed,
-                # A recreated path resumes above the id it retired, so offsets
-                # stay globally monotonic across delete-and-recreate (#34).
+                # A recreated path resumes above the id it retired (#34).
                 head=self._retired(path),
                 segment_size=self.segment_size,
                 last_event_ts=self._retired_event_ts(path),
@@ -834,8 +784,7 @@ class JsonlStreamStore:
 
             if initial_data:
                 # No expiry check: a stream created with `ttl_seconds=0` is
-                # already expired the instant it exists, and `create` still has
-                # to return it — the reap belongs to the next *read*.
+                # already expired, and `create` still has to return it.
                 try:
                     buffer: list[dict[str, Any]] = []
                     self._write_plan(
@@ -844,11 +793,9 @@ class JsonlStreamStore:
                     self._flush(path, buffer)
                     self._save_meta(path, meta)
                 except Exception:
-                    # A create whose body is refused must leave nothing behind,
-                    # not an empty stream where the caller's failed one would
-                    # be: the directory is already on disk, so the rollback is
-                    # explicit. It also does not retire a high mark, because the
-                    # stream it removes never existed as far as the caller knows.
+                    # A create whose body is refused must leave nothing behind;
+                    # the directory is already on disk, so the rollback is
+                    # explicit, and it retires no high mark.
                     self._delete_files(path, retire=False)
                     raise
             return self._as_stream(path, meta)
@@ -900,8 +847,7 @@ class JsonlStreamStore:
         that reaps an expired stream and carries on inside the same lock.
         """
         d = self._dir(path)
-        # The size does not matter to a delete, so a store opened with the wrong
-        # one can still remove what it cannot read.
+        # The size does not matter to a delete.
         meta = self._load_meta(path, check_segment_size=False)
         if retire:
             high = max(self._retired(path), meta.head if meta else 0)
@@ -921,14 +867,12 @@ class JsonlStreamStore:
                 if child.name != ".lock":
                     child.unlink()
             return
-        # Renamed away in one step, then emptied: a writer queued on the lock
-        # sees the directory gone at once. Unlinking the lock file first and the
-        # directory after left a gap in which a waiter's `open` recreated it.
+        # Renamed away in one step, then emptied: unlinking the lock file first
+        # left a gap in which a waiter's `open` recreated the directory.
         gone = self.root / _RETIRED_DIR / f"%trash-{uuid.uuid4().hex}"
         d.rename(gone)
-        # A rename keeps the directory's old mtime, so without this a stream
-        # last written over a minute ago would look abandoned to another
-        # delete's sweep while this one is still emptying it.
+        # A rename keeps the old mtime; without this another delete's sweep
+        # would take a stream last written over a minute ago for abandoned.
         os.utime(gone)
         shutil.rmtree(gone)
         self._sweep_trash()
@@ -975,8 +919,8 @@ class JsonlStreamStore:
         """Buffer the plan's writes, returning per item the last message it
         became, or None for an item that writes nothing.
 
-        Runs under the stream's file lock, which is what makes reading
-        `meta.last_event_ts` and advancing it safe.
+        Runs under the stream's file lock, which makes reading and advancing
+        `meta.last_event_ts` safe.
         """
         writes, stamp = plan.stamped(meta.last_event_ts, time.time())
         if stamp is not None:
@@ -1000,8 +944,8 @@ class JsonlStreamStore:
                     "metadata": write.metadata,
                     **self._encode(payload),
                 }
-                # Written only when set, so a record without them is
-                # byte-for-byte what 0.7 wrote and reads back the same.
+                # Only when set, so a record without them is byte-for-byte what
+                # 0.7 wrote.
                 if write.tags:
                     record["tags"] = list(write.tags)
                 if write.correlation_id is not None:
@@ -1054,11 +998,9 @@ class JsonlStreamStore:
     ) -> list[AppendResult]:
         """Append an ordered batch under one lock and one write per segment.
 
-        All-or-nothing, and by construction rather than by care: the shared
-        `plan_appends` refuses the whole batch before a single record reaches
-        the buffer, and the buffer is not flushed until the block exits cleanly.
-        A conflict on item three leaves items one and two unwritten because they
-        were never written in the first place (#214).
+        All-or-nothing by construction: the shared `plan_appends` refuses the
+        whole batch before a record reaches the buffer, and the buffer is not
+        flushed until the block exits cleanly (#214).
         """
         items = list(events)
         if not items:
@@ -1160,8 +1102,8 @@ class JsonlStreamStore:
         meta = self._require(path)
         check_page_size(limit)
         self._touch(path, meta)
-        # The page is cut after the segment scan, so this bounds the response,
-        # not the read: the log is scanned from `offset` as before.
+        # The page is cut after the segment scan: this bounds the response, not
+        # the read.
         return page_of(self._read_since(path, offset), limit)
 
     def peek(self, path: str, offset: str | None) -> list[StreamMessage]:
@@ -1190,7 +1132,7 @@ class JsonlStreamStore:
         if not offset or offset == "-1":
             return self._messages(path)
         # `PLAIN.key` is the strict parse: it raises `ForeignOffset` for the
-        # in-memory store's compound token rather than letting `int()` read the
+        # in-memory store's compound token, where `int()` would read the
         # underscore as a digit separator and return a plausible wrong window.
         return self._messages(path, after_id=PLAIN.key(offset)[0])
 
@@ -1203,8 +1145,7 @@ class JsonlStreamStore:
         when the stream is recreated.
 
         A stream written before stamps existed is given one the first time it is
-        asked for, saved under the stream's lock, so a recreate after that is
-        told apart from the original.
+        asked for, under the stream's lock.
         """
         meta = self._live_meta(path)
         if meta is None or meta.generation is not None:
@@ -1238,18 +1179,11 @@ class JsonlStreamStore:
     async def run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a synchronous store call for an async server, in a thread.
 
-        The reason is not the durable store's reason. Django refuses ORM access
-        from an async context outright; `open()` does not, and this store's
-        first version called straight through on the grounds that file I/O is
-        allowed on the event loop.
-
-        Allowed, but not instant, and one call here is not I/O at all — it is
-        `flock`, which blocks for as long as *another process* holds the lock.
-        On the event loop that is not one slow request, it is every connection
-        the server is currently serving, stalled behind a writer it does not
-        know about. A batch commit or a fsync on a busy disk does the same thing
-        for shorter. The thread hop costs a few tens of microseconds and buys
-        back the property an async server exists for.
+        Unlike Django, `open()` is allowed on the event loop, but not instant, and
+        one call here is `flock`, which blocks for as long as *another process*
+        holds the lock. On the event loop that stalls every connection the server
+        is serving, behind a writer it does not know about. The thread hop costs a
+        few tens of microseconds.
         """
         return await asyncio.to_thread(fn, *args, **kwargs)
 
@@ -1257,9 +1191,9 @@ class JsonlStreamStore:
 class _Expired(Exception):
     """A stream was found expired under the lock — a signal, not an outcome.
 
-    Same trick as `django_rakaia.django_store._StreamExpired`: the reap has to
-    happen outside the write path (which is abandoning everything it did), so
-    the discovery leaves by exception and the deletion happens on the far side.
+    Same as `django_rakaia.django_store._StreamExpired`: the reap happens
+    outside the write path, so the discovery leaves by exception and the deletion
+    happens on the far side.
     """
 
     def __init__(self, path: str) -> None:
