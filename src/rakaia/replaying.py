@@ -3,10 +3,7 @@ Replay orchestrator: re-derive materialized state from a stream by running
 versioned handlers and an effect executor.
 
 This module is `rakaia.replaying`, not `rakaia.replay`, so that the package
-attribute `rakaia.replay` can only ever be the function. With a module of the
-same name, the attribute was whichever of the two was bound last, and a
-``monkeypatch.setattr("rakaia.replay.<name>", ...)`` silently patched nothing
-(#161 item 1).
+attribute `rakaia.replay` is only ever the function (#161).
 
 Per event the pipeline is:
     1. Load the raw event bytes from the stream
@@ -29,20 +26,13 @@ receives the `TouchedSubject`s the pass's handlers wrote, so one reducer can
 scope its recompute to what changed (incremental) or to everything (full
 rebuild). See `register_handler(stage=...)` and `register_reducer(...)`.
 
-**How far a replay gets before failing** follows from that, and is worth stating
-because it is observable and used not to be stated anywhere. A replay decodes
-ahead only as far as it must, so a malformed event partway through the range
-behaves differently in each shape:
+**How far a replay gets before failing** depends on how much it decodes ahead:
 
 * a single unstaged pass over one stream decodes one event at a time, so the
-  events *before* the bad one are dispatched and applied;
-* a staged replay must see the whole range before its second pass starts, so it
-  decodes everything up front and applies nothing;
+  events *before* a malformed one are dispatched and applied;
+* a staged replay decodes the whole range up front and applies nothing;
 * `merge_replay` cannot know the merged order until every stream is read, so it
-  too applies nothing — whether or not it is staged.
-
-Neither shape is wrong; the eager ones are eager because they have to be. See
-`EventSource`, which is the name that difference now has.
+  applies nothing, staged or not. See `EventSource`.
 
 Re-running the same range twice produces identical materialized state because
 every database effect is idempotent (an `Upsert` converges to the same row).
@@ -59,9 +49,8 @@ from typing import Any
 from .batching import _drain, _StageBuffer
 from .drift import DriftLedger
 
-# `HandlerDriftError` and `OnDriftPolicy` live in `rakaia.drift` with the check
-# they govern, and are re-exported here because callers (and `django_rakaia`)
-# have always imported them from the replay engine module.
+# `HandlerDriftError` and `OnDriftPolicy` live in `rakaia.drift` and are
+# re-exported here because callers import them from this module.
 from .drift import HandlerDriftError as HandlerDriftError
 from .drift import OnDriftPolicy as OnDriftPolicy
 from .effects import (
@@ -90,10 +79,8 @@ from .registry import (
 # Errors
 # =============================================================================
 #
-# Each also subclasses `ValueError`, which is what these sites raised before
-# they were named. Adding a type is then additive: a caller already catching
-# `ValueError` around a merge or a decode keeps catching it, and gains the
-# option of catching the specific failure or `RakaiaError` instead.
+# Each also subclasses `ValueError`, so a caller already catching `ValueError`
+# around a merge or a decode keeps catching it.
 
 
 class MissingReaderError(RakaiaError, ValueError):
@@ -152,8 +139,7 @@ class ReplayResult:
 
     @property
     def warnings(self) -> list[str]:
-        """The warnings this replay emitted. Read from the ledger, which owns
-        them, so the result and the log can never disagree."""
+        """The warnings this replay emitted, read from the ledger."""
         return self.drift.warnings
 
     @property
@@ -188,49 +174,37 @@ class _ReplayCtx:
     executor: Executor
     reader: ProjectionReader | None
     result: ReplayResult
-    # Only accumulate touched subjects when a reducer actually opts in (a second
-    # parameter), so the common path pays nothing.
+    # Only accumulate touched subjects when a reducer opts in (a second parameter).
     track_touched: bool = False
     touched: list[TouchedSubject] = field(default_factory=list)
     _touched_seen: set = field(default_factory=set)
-    # Set for the duration of a pass whose handlers take no reader, so that
-    # pass's effects can be batched. None means apply per event, which is what
-    # every reader-bearing pass and every reducer does. See `_StageBuffer`.
+    # Set for a pass whose handlers take no reader, so its effects can be
+    # batched; None applies per event. See `_StageBuffer`.
     buffer: _StageBuffer | None = None
-    # Carried so an event source can decode and upcast without re-deriving the
-    # registry.
     upcasters: Any = None
 
     @property
     def drift(self) -> DriftLedger:
-        """The one object that owns every drift question this replay asks — the
-        policy, the warn-once memory and the hash memo. Scoped to the replay: a
-        long-lived process that reloads code between replays must still be able
-        to detect the drift that reload introduced."""
+        """The ledger owning every drift question this replay asks: the policy,
+        the warn-once memory and the hash memo. Scoped to the replay, so a
+        long-lived process that reloads code between replays still detects the
+        drift that reload introduced."""
         return self.result.drift
 
 
 #: One event ready for dispatch: its sequence, the routing subject to match
 #: handlers against, and the decoded + upcasted payload. Whether the seq is an
-#: offset in one stream or a position in a merged order is the *source's*
-#: business, not the pipeline's.
+#: offset in one stream or a position in a merged order is the source's business.
 PipelineEvent = tuple[int, str, dict]
 
 #: Every event a replay will dispatch, in dispatch order.
 #:
-#: An `Iterable`, not a `Sequence`, because **how much of the range a replay
-#: decodes before the first handler runs is observable, and it is the one thing
-#: the entry points differ about.** A source consumed one event at a time leaves
-#: the events before a malformed one already applied; a source materialised in
-#: full applies nothing at all. Neither is more correct — but a caller can only
-#: predict which it gets if the difference has a name, and until this one did,
-#: `replay()` carried a second hand-written loop to keep its half and
-#: `merge_replay()` quietly did the other thing.
-#:
-#: `run_passes` decodes ahead only as far as it must, so what a caller hands over
-#: decides: `replay()` yields a generator, while `merge_replay()` has no choice
-#: but a list, because the merged order is not known until every stream has been
-#: read.
+#: An `Iterable`, not a `Sequence`, because how much of the range a replay
+#: decodes before the first handler runs is observable. A source consumed one
+#: event at a time leaves the events before a malformed one already applied; a
+#: source materialised in full applies nothing. `replay()` yields a generator;
+#: `merge_replay()` has no choice but a list, because the merged order is not
+#: known until every stream has been read.
 EventSource = Iterable[PipelineEvent]
 
 
@@ -244,13 +218,9 @@ def build_pipeline(
 ) -> _ReplayCtx:
     """Assemble everything a replay needs that does not depend on its event source.
 
-    Registry defaulting, the `ReplayResult` and the drift ledger were written out
-    identically in `replay()` and `merge_replay()`. So was the `_ReplayCtx`
-    construction — the same fields, in two places, where adding one meant
-    remembering both.
-
-    The returned context carries its own `upcasters` and `drift` ledger so a
-    source can decode and upcast events without re-deriving either.
+    Shared by `replay()` and `merge_replay()`. The returned context carries its
+    own `upcasters` and `drift` ledger so a source can decode and upcast events
+    without re-deriving either.
     """
     handlers = handler_registry or get_default_registry()
 
@@ -294,35 +264,29 @@ def run_passes(
     """Run `events` through every stage, in order, and return the result.
 
     One pass per stage in ascending order: that stage's per-event handlers over
-    **every** event, then its reducers once. An unstaged replay is the same
-    shape with a single `None` pass — `_run_stage_reducers(ctx, None)` is a no-op
-    when nothing is registered, so the two cases need no branch.
+    **every** event, then its reducers once. An unstaged replay is the same shape
+    with a single `None` pass (`_run_stage_reducers(ctx, None)` is a no-op when
+    nothing is registered).
 
-    **Decodes ahead only as far as it must**, which is the whole of what the
-    entry points used to differ about (see `EventSource`). One pass consumes the
-    source as it arrives, so a lazy source dispatches everything up to a
-    malformed event before failing. More than one pass has to see every event
-    before the second one starts, so a staged replay materialises the source
-    first and a malformed event anywhere applies nothing.
-
-    `events_processed` is what a single pass dispatched, so it counts each event
+    **Decodes ahead only as far as it must** (see `EventSource`). One pass
+    consumes the source as it arrives, so a lazy source dispatches everything up
+    to a malformed event before failing. A staged replay has to see every event
+    before the second pass starts, so it materialises the source first and a
+    malformed event anywhere applies nothing. `events_processed` counts each event
     once however many stages ran.
 
-    The events are already decoded and upcasted. What differs between `replay()`
-    and `merge_replay()` — reading one stream in order versus k-way-merging
-    several by an order key — happens before this, in the source. This is the
-    part that was written twice.
+    The events are already decoded and upcasted; what differs between `replay()`
+    and `merge_replay()` happens before this, in the source.
     """
     require_reader(ctx, what)
     staged = is_staged(ctx)
     source: EventSource = list(events) if staged else events
     passes: list[int | None] = list(ctx.handlers.stages()) if staged else [None]
     for stage in passes:
-        # Stage 0 handlers are called `fn(event)` with no reader, so nothing in
-        # the pass can observe a write that has not landed yet and the pass's
-        # effects can be batched. A stage > 0 handler *is* handed a reader, and
-        # both readers go straight to storage — a buffered write would be
-        # invisible to one, silently — so those passes keep applying per event.
+        # Stage 0 handlers get no reader, so nothing in the pass can observe a
+        # write that has not landed and its effects can be batched. A stage > 0
+        # handler is handed a reader that goes straight to storage, so those
+        # passes apply per event: a buffered write would be silently invisible.
         ctx.buffer = _make_buffer(ctx) if stage in (None, 0) else None
         dispatched = 0
         try:
@@ -330,23 +294,18 @@ def run_passes(
                 _dispatch_event(ctx, seq, match_str, event, stage)
                 dispatched += 1
         finally:
-            # In a `finally` because a lazy source that raises partway must
-            # still leave the events before it applied — the partial-progress
-            # behaviour `EventSource` exists to preserve. Without this, every
-            # buffered effect ahead of the bad event would be dropped.
+            # In a `finally` so a lazy source that raises partway still leaves
+            # the events before it applied (see `EventSource`).
             _drain(ctx)
         ctx.result.events_processed = dispatched
-        # Reducers read the projections, so the stage's writes must have landed
-        # before the first one runs. `_drain` above is that boundary.
+        # Reducers read the projections, so the `_drain` above must come first.
         _run_stage_reducers(ctx, stage)
     return ctx.result
 
 
 def _reducer_wants_touched(fn: Any) -> bool:
     """Whether a reducer opts in to the touched-subjects arg by declaring a
-    second positional parameter — mirroring how a stage > 0 handler opts in to
-    the reader. A plain ``fn(reader)`` returns False and is called with one arg,
-    so existing reducers are unchanged.
+    second positional parameter. A plain ``fn(reader)`` returns False.
     """
     try:
         sig = inspect.signature(fn)
@@ -365,17 +324,16 @@ def _reducer_wants_touched(fn: Any) -> bool:
 
 
 def _wants_touched_reducer(handlers: HandlerRegistry) -> bool:
-    """Whether any registered reducer opts in — decides if we bother tracking."""
+    """Whether any registered reducer opts in, which decides if we track."""
     return handlers.has_reducers() and any(
         _reducer_wants_touched(r.fn) for r in handlers.all_reducers()
     )
 
 
 def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
-    # A subject is a database effect's (model_label, lookup); externals never
-    # reach here. Dedup in first-seen (event) order so the set is a pure
-    # function of the events. A non-hashable lookup value is rare and simply
-    # skips dedup — order still deterministic.
+    # A subject is a database effect's (model_label, lookup). Dedup in
+    # first-seen order so the set is a pure function of the events; an unhashable
+    # lookup value skips dedup.
     for e in effects:
         try:
             key = (e.model_label, tuple(sorted(e.lookup.items())))
@@ -391,11 +349,9 @@ def _record_touched(ctx: _ReplayCtx, effects: list[Effect]) -> None:
 
 
 def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
-    # Turn the executor's retire-flip report into one external transition per
-    # row a retire actually flipped. `report` may be None (executors that don't
-    # observe flips) — treat that as nothing to synthesise. Typed as
-    # `ApplyReport | None` (not `object`) so a rename of `retire_flips` is a
-    # type error rather than a silent "synthesise nothing" regression.
+    # One external transition per row a retire actually flipped. `report` is
+    # typed `ApplyReport | None`, not `object`, so renaming `retire_flips` is a
+    # type error rather than a silent "synthesise nothing".
     if report is None:
         return []
     out: list[ExternalEffect] = []
@@ -403,13 +359,10 @@ def _synth_transitions(report: ApplyReport | None) -> list[ExternalEffect]:
         if eff.transition is None:
             continue
         patch = eff.patch or {}
-        # `kind` is bound out here rather than read inside the generator: the
-        # `is None` check above narrows `eff.transition` in this scope only, and
-        # a generator body is a scope of its own.
+        # Bound here because the `is None` check narrows `eff.transition` in
+        # this scope only, not inside the generator.
         kind = eff.transition.kind
         out.extend(
-            # The payload shape is defined beside `Transition`, which requests
-            # it — not here, which is only where it happens to be assembled.
             ExternalEffect(kind=kind, payload=transition_payload(patch, identity))
             for identity in rows
         )
@@ -420,8 +373,8 @@ def _make_buffer(ctx: _ReplayCtx) -> _StageBuffer:
     """A buffer for one pass, wired to this replay's executor and result.
 
     The buffer owns the ``apply()`` call, so the transitions a batch's retires
-    flipped come back through the sink rather than to the dispatch site — which
-    is what keeps the external list in handler-emission order.
+    flipped come back through the sink, which keeps the external list in
+    handler-emission order.
     """
     return _StageBuffer(
         ctx.executor,
@@ -432,8 +385,7 @@ def _make_buffer(ctx: _ReplayCtx) -> _StageBuffer:
 def _apply_effects(ctx: _ReplayCtx, effects: list[AnyEffect]) -> None:
     """Route a batch: external effects to the result, the rest to the executor.
 
-    The split is by *type*, so no executor ever needs an external branch and no
-    caller has to ask for one to be skipped.
+    The split is by type, so no executor needs an external branch.
     """
     to_apply: list[Effect] = []
     for e in effects:
@@ -445,14 +397,11 @@ def _apply_effects(ctx: _ReplayCtx, effects: list[AnyEffect]) -> None:
         return
     ctx.result.effects_applied += len(to_apply)
     if ctx.buffer is not None:
-        # Counted above rather than at flush time, so the number reads the same
-        # whether or not this pass batches. The buffer applies the batch and
-        # collects any transitions itself.
+        # Counted above, not at flush time, so the number is the same whether
+        # or not this pass batches.
         ctx.buffer.add(to_apply)
         return
     report = ctx.executor.apply(to_apply)
-    # A retire that flipped rows (a real machine resolution) yields external
-    # transitions — collect them alongside the handler-emitted ones.
     ctx.result.external.extend(_synth_transitions(report))
 
 
@@ -477,12 +426,10 @@ def _dispatch_event(
 
 
 def _run_stage_reducers(ctx: _ReplayCtx, stage: int | None) -> None:
-    # Reducers run once per stage, after that stage's per-event handlers have
-    # committed, reading the accumulated projections via the reader. A None
-    # stage (single, non-staged pass) has no reducers. A reducer declaring a
-    # second parameter also receives the subjects the pass's handlers touched so
-    # far (cumulative across stages already run this pass); reducer *outputs* are
-    # not themselves recorded as touched.
+    # Reducers run once per stage, after its per-event handlers have committed.
+    # A reducer declaring a second parameter also receives the subjects touched
+    # so far (cumulative across stages); reducer *outputs* are not recorded as
+    # touched.
     for reducer in ctx.handlers.reducers_for_stage(stage):
         ctx.drift.check(
             kind="reducer",
@@ -528,29 +475,25 @@ def replay(
         event_match: Match string passed to the registries; defaults to
             stream_path.
         on_drift: 'warn' (default) emits a warning and continues if a
-            handler's source has changed since registration; 'raise' raises
-            HandlerDriftError. (Drift detection itself lands in Step 6.)
+            handler's, reducer's or upcaster's source has changed since
+            registration; 'raise' raises HandlerDriftError.
         reader: A read-only projection reader forwarded to every stage > 0
             handler (as its second argument) and to every reducer. Required when
             any handler declares stage > 0 or any reducer is registered; unused
             for single-stage replay.
 
     Staged replay: when handlers span more than one stage (see
-    `register_handler(stage=...)`), replay runs the whole event range through
-    stage 0, then stage 1, and so on. Stage 0 handlers are called `fn(event)`;
-    stage > 0 handlers are called `fn(event, reader)` so they can resolve facts
-    earlier stages materialised (a form linking to a reference entity another
-    form created, regardless of arrival order). After a stage's per-event
-    handlers, its reducers (`register_reducer`) run once as `fn(reader)` — or
-    `fn(reader, touched)` for a reducer that opts in to the tuple of
-    `TouchedSubject`s the pass's handlers wrote — to recompute aggregates. With
-    only stage 0 handlers and no reducers, replay is a single pass, exactly as
-    before.
+    `register_handler(stage=...)`), the whole range runs through stage 0, then
+    stage 1, and so on. Stage 0 handlers are called `fn(event)`; stage > 0
+    handlers `fn(event, reader)`, so they can resolve facts earlier stages
+    materialised. After a stage's handlers, its reducers (`register_reducer`) run
+    once as `fn(reader)`, or `fn(reader, touched)` for a reducer that opts in to
+    the tuple of `TouchedSubject`s the pass wrote.
 
     How far it gets before failing: a single pass decodes one event at a time, so
-    a malformed event at offset N raises `UndecodableEventError` with the first N already
-    applied. A staged replay needs the whole range before its second pass, so it
-    decodes up front and the same event applies nothing. See `EventSource`.
+    a malformed event at offset N raises `UndecodableEventError` with the first N
+    already applied. A staged replay decodes up front and applies nothing. See
+    `EventSource`.
     """
     return replay_numbered_from(
         store,
@@ -599,17 +542,14 @@ def replay_numbered_from(
     )
 
     def _decoded() -> Iterator[PipelineEvent]:
-        # A lazy `EventSource`: one event decoded and upcasted at a time, so a
-        # single-pass replay dispatches the events before a malformed one rather
-        # than nothing. `run_passes` materialises this itself when it needs more
-        # than one pass, which is why there is no second loop here.
+        # A lazy `EventSource`: one event decoded and upcasted at a time.
         for seq, msg in enumerate(messages, start=first_seq):
             if end_seq is not None and seq >= end_seq:
                 break
             if seq < start_seq:
                 continue
-            # Target version is resolved per event so content-routed upcasters
-            # (match_field) can key off the event body, not just the stream path.
+            # Resolved per event so content-routed (match_field) upcasters can
+            # key off the event body.
             yield (
                 seq,
                 match_str,
@@ -638,59 +578,46 @@ def merge_replay(
     """
     Replay several streams merged into one deterministic total order.
 
-    Each stream is already ordered, so this is a k-way merge; the design point is
-    the **order key**. Every event is decoded, upcast, and tagged with
-    ``(sort_value, stream_path, offset)``, then the merged sequence is that tuple
-    sorted — so equal order-key values across streams break by stream path then
-    offset, giving an order that is a pure function of the streams and is
+    Every event is decoded, upcast, and tagged with ``(sort_value, stream_path,
+    offset)``, then the merged sequence is that tuple sorted: equal order-key
+    values across streams break by stream path then offset, so the order is
     **independent of the order `stream_paths` is passed**. The merged events then
-    run through exactly the same staged handler + reducer pipeline as `replay()`.
+    run through the same staged handler + reducer pipeline as `replay()`.
 
     Args:
         store: The store holding the events.
         stream_paths: The streams to merge, each read in full.
         executor: Effect executor.
-        order_key: What to merge on. **Two sources, deliberately distinct:**
+        order_key: What to merge on. Two sources, deliberately distinct:
 
             - a **string** (default ``"ts"``) reads a field out of the **decoded
-              payload body** (``event[order_key]``). This is *not* the transport
-              or envelope timestamp — it is whatever field the producer wrote into
-              the JSON. A missing key raises `MergeKeyError`.
-            - the ``ENVELOPE_TS`` sentinel reads the first-class **envelope**
-              timestamp (``StreamMessage.event_ts`` — the producer's logical event
-              time, defaulting to append time). Prefer this: it is unambiguous and
-              does not require the producer to duplicate a timestamp into the
-              payload. A message with no ``event_ts`` (only a hand-built one; a
-              store always sets it) raises `MergeKeyError`.
+              payload body** (``event[order_key]``), not the envelope timestamp.
+              A missing key raises `MergeKeyError`.
+            - the ``ENVELOPE_TS`` sentinel reads the **envelope** timestamp
+              (``StreamMessage.event_ts``). Prefer this: it does not need the
+              producer to duplicate a timestamp into the payload. A message with
+              no ``event_ts`` (only a hand-built one) raises `MergeKeyError`.
         handler_registry / upcaster_registry: default to the process-wide ones.
         event_match: Match string for handler routing + upcasting. Default None
-            uses each event's **source stream path** as its match string, so
-            content-routed handlers (`match_field`) and per-stream upcasters both
-            work; pass a value to route every merged event by one match string.
+            uses each event's source stream path; pass a value to route every
+            merged event by one match string.
         on_drift / reader: as for `replay()`. A reader is required when any
             handler declares stage > 0 or any reducer exists.
 
-    Note: merged `seq` is the event's position in the *merged* order (0-based),
-    not a per-stream one, so handlers routed by content (`match_field`) or
-    versioned over open ranges (`effective_to=None`) are unaffected, but a
-    handler with a **closed** seq range sized to a single stream will raise
-    `HandlerGapError` under merge (the merged range is longer). Version merged
-    handlers by content or open ranges.
+    Note: merged `seq` is the event's position in the *merged* order, not a
+    per-stream one. Handlers routed by content (`match_field`) or over open ranges
+    (`effective_to=None`) are unaffected, but a handler with a **closed** seq range
+    sized to a single stream raises `HandlerGapError` under merge.
 
-    Raises `MergeKeyError` when an event lacks the requested order key (payload
-    field, or `event_ts` under `ENVELOPE_TS`), and when the order-key values
-    aren't mutually comparable across events. Duplicate `stream_paths` raises a
-    plain `ValueError`: it is an argument that cannot be right, checked before a
-    single event is read, so a code for it would be one the published set carries
-    and no outcome can ever hold. Called from inside an `apply` it still reaches
-    the consume loop, which records it as `unhandled` with the type in `params` —
-    which is what an argument fault should look like. `MergeKeyError` is itself a
-    `ValueError`, so one `except ValueError` still catches all three.
+    Raises `MergeKeyError` when an event lacks the requested order key or the
+    order-key values aren't mutually comparable. Duplicate `stream_paths` raises a
+    plain `ValueError`, checked before any event is read, as an argument fault;
+    `MergeKeyError` is itself a `ValueError`, so one `except ValueError` catches
+    all three.
 
     How far it gets before failing: **nothing is applied unless everything
-    decodes.** Unlike a single-pass `replay()`, a merge has to read every stream
-    to know the order, so a malformed event — or a missing order key — in any
-    stream fails before the first handler runs. See `EventSource`.
+    decodes**, because a merge reads every stream to know the order. See
+    `EventSource`.
     """
     if len(set(stream_paths)) != len(stream_paths):
         raise ValueError(
@@ -705,13 +632,11 @@ def merge_replay(
         on_drift=on_drift,
     )
 
-    # Decode + upcast every event of every stream, tag with the sort key.
     tagged: list[tuple[tuple[Any, str, int], str, dict]] = []
     for path in stream_paths:
         match_str = event_match if event_match is not None else path
         messages, _ = store.read(path)
         for offset, msg in enumerate(messages):
-            # per-event target so content-routed (match_field) upcasters resolve
             upcasted = ctx.upcasters.upcast_to_current(
                 _decode_event(msg.data, path, offset),
                 match_str,
@@ -743,11 +668,8 @@ def merge_replay(
             f"not mutually comparable across events (mixed types or None?): {exc}"
         ) from exc
 
-    # seq is the event's position in the merged order, not its offset in any
-    # one stream — which is exactly why the pipeline takes seq per event. A list
-    # rather than a lazy `EventSource` is forced, not chosen: the sort above has
-    # already read every stream, so a merge cannot dispatch anything until all of
-    # it decodes.
+    # seq is the position in the merged order. A list rather than a lazy
+    # `EventSource` is forced: the sort has already read every stream.
     merged: list[PipelineEvent] = [
         (seq, m, ev) for seq, (_, m, ev) in enumerate(tagged)
     ]
@@ -768,8 +690,7 @@ def _call_handler(
     event: dict,
     reader: ProjectionReader | None,
 ) -> Iterable[AnyEffect]:
-    # Stage > 0 handlers take (event, reader); stage 0 keeps the (event)
-    # signature so existing single-stage handlers are unchanged.
+    # Stage > 0 handlers take (event, reader); stage 0 takes (event).
     result = version.fn(event, reader) if version.stage > 0 else version.fn(event)
     return _normalize_effects(result)
 
