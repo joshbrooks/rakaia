@@ -9,10 +9,15 @@ runnable demo for each.
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-11-12
-
 ### Added
 
+- **Explainers: one form, step by step.** A new section of the documentation
+  follows one village's month of forms through a six-step pipeline in plain
+  words. It covers how a save and a rebuild share one list of steps, and why the
+  email step is the one a rebuild leaves out. Each page names a command that
+  shows its step. Behind it is a new example, `examples/partisipa_pipeline`
+  (`just pipeline-demo`), the first to use `register_reducer` and
+  `rebuild_and_verify` as they are documented.
 - **`SqliteExecutor` and `SqliteProjectionReader`: replay into a SQLite database
   without Django.** Built on the standard library's `sqlite3` alone, they write
   replayed rows to a file or an in-memory database and read them back. A model label

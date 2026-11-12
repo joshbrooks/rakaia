@@ -36,6 +36,14 @@ nav = [
         { "Glossary" = "glossary.md" },
         { "What's new" = "whats-new.md" },
     ] },
+    { "Explainers: one form, step by step" = [
+        { "The pipeline in one picture" = "explainers/index.md" },
+        { "A form arrives" = "explainers/a-form-arrives.md" },
+        { "Forms become rows" = "explainers/forms-become-rows.md" },
+        { "Status and project links" = "explainers/status-and-project-links.md" },
+        { "Checks and emails" = "explainers/checks-and-notifications.md" },
+        { "Rebuild and compare" = "explainers/rebuild-and-compare.md" },
+    ] },
     { "How do I…" = [
         { "Add streams to a Django model" = "django-integration.md" },
         { "Preview a replay with no writes" = "dry-run-and-executors.md" },
