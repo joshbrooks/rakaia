@@ -18,6 +18,11 @@ runnable demo for each.
   shows its step. Behind it is a new example, `examples/partisipa_pipeline`
   (`just pipeline-demo`), the first to use `register_reducer` and
   `rebuild_and_verify` as they are documented.
+
+## [0.11.0] - 2026-11-12
+
+### Added
+
 - **`SqliteExecutor` and `SqliteProjectionReader`: replay into a SQLite database
   without Django.** Built on the standard library's `sqlite3` alone, they write
   replayed rows to a file or an in-memory database and read them back. A model label
