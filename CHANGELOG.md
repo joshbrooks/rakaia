@@ -18,6 +18,21 @@ runnable demo for each.
   shows its step. Behind it is a new example, `examples/partisipa_pipeline`
   (`just pipeline-demo`), the first to use `register_reducer` and
   `rebuild_and_verify` as they are documented.
+- **A handler can say which tables it reads and writes.** `register`, `register_handler`
+  and `register_simple` take `reads=` and `writes=`: each name is a table
+  (`"app.Model"`, covering its rows and every column) or one column
+  (`"app.Model.field"`, enough for an `Update` that sets only that column). During
+  replay, an effect or a reader call outside them warns with `UndeclaredTableWarning`,
+  at most once per handler and name in a replay (Python's default warning filter
+  also hides a repeat in a later replay in the same process). Reads are seen only
+  through the reader, so `reads=` on a stage-0 handler, which gets none, checks
+  nothing. Reducers cannot declare tables yet and are not checked. Leaving them out
+  checks nothing, as before. They are not
+  part of the handler's identity, so a store-backed registry records nothing new when
+  you add them; registering the same handler twice with different tables raises
+  `ValueError`. Replay checks what a handler emits, not what an executor finally
+  writes, and cannot see writes made outside effects or reads made outside the
+  reader.
 
 ## [0.11.0] - 2026-11-12
 

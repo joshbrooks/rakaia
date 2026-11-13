@@ -40,6 +40,7 @@ FRAMEWORK = {
     "applying",
     "batching",
     "context",
+    "declared_tables",
     "drift",
     "effects",
     "executors",

@@ -35,6 +35,11 @@ Imported from `rakaia`:
   `RAKAIA_STRICT_HANDLER_FINGERPRINTS` in [Django integration](django-integration.md).
   A `functools.partial` is unwrapped, so its hash still describes the wrapped function;
   a closure hashes its own wrapper, so an edit to what it calls is invisible.
+* Declared tables: `register(..., reads=…, writes=…)` (and the same keywords on
+  `register_handler` / `register_simple`) name the tables (`"app.Model"`) or columns
+  (`"app.Model.field"`) a handler touches. Replay warns with `UndeclaredTableWarning` at most
+  once per handler and name in a replay when an emitted effect or a reader call falls outside them. Not part
+  of the handler's identity, so declaring them appends nothing to the meta-stream (#375).
 * Registries and drift errors: `HandlerRegistry`, `UpcasterRegistry`,
   `HandlerVersion`, `ReducerVersion`, `HandlerOverlapError`, `HandlerGapError`,
   `HandlerDriftError`, `UpcasterConflictError`, `UpcasterChainError`.

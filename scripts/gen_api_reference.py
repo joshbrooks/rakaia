@@ -80,6 +80,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "DriftLedger",
         "ImpureHandlerError",
         "ImpureHandlerWarning",
+        "UndeclaredTableWarning",
         "fold_events",
         "project_latest",
     ),

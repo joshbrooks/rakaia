@@ -118,6 +118,7 @@ RAKAIA_PUBLIC = {
     "DriftLedger",
     "ImpureHandlerError",
     "ImpureHandlerWarning",
+    "UndeclaredTableWarning",
     "HandlerDriftError",
     "HandlerGapError",
     "HandlerOverlapError",

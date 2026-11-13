@@ -203,6 +203,8 @@ No example exercises these yet — a good place to contribute a demo:
   with `Delete`+`Exclude`).
 - Reading events by tag (`read_tagged`, `TaggedReads`): no example covers it; the
   contract suite `rakaia/testing/tagged_reads_contract.py` proves it.
+- Declared tables (`register(..., reads=…, writes=…)`, `UndeclaredTableWarning`):
+  no example declares them yet; `tests/test_rakaia/test_declared_tables.py` proves them.
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
 - `RecordingExecutor` — applying for real while keeping the effects. The demos

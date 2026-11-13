@@ -1428,6 +1428,35 @@ $ just sqlite-replay-demo
 
 → Deep dive: [Dry run and executors](dry-run-and-executors.md)
 
+## 43. A handler says which tables it touches
+
+**The problem.** A handler that chooses its table at runtime, from a mapping or an
+import inside its body, can't be drawn on a picture of the pipeline. Nothing can
+check whether the order of a rebuild lets it read what it needs.
+
+**What rakaia does.** A handler can name the tables, or single columns, it reads and
+writes when it is registered, and replay warns once when it touches anything else.
+
+```python
+@register_handler(
+    "status",
+    "STATUS",
+    0,
+    reads={"app.Line"},
+    writes={"app.Form.workflow_status_id", "app.Line.workflow_status_id"},
+    stage=1,
+)
+def status(event, reader): ...
+```
+
+**See it.** No example declares tables yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_declared_tables.py -q
+```
+
+→ Deep dive: [Versioned handlers](versioned-handlers.md)
+
 ---
 
 ## Where to go next

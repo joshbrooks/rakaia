@@ -71,6 +71,7 @@ page is the contract.
 | `DriftLedger` | `rakaia` | `(on_drift: 'OnDriftPolicy' = 'warn', warnings: 'list[str]' = <factory>, drifted: 'list[str]' = <factory>) -> None` | The drift check, its warn-once memory, and its hash memo, in one object. |
 | `ImpureHandlerError` | `rakaia` | — | A handler cannot be fingerprinted and strict fingerprints are on. |
 | `ImpureHandlerWarning` | `rakaia` | — | A handler cannot be fully fingerprinted: edits to part of it go unnoticed. |
+| `UndeclaredTableWarning` | `rakaia` | — | A handler wrote or read a table or column its registration did not declare. |
 | `fold_events` | `django_rakaia` | `(events: 'Sequence[dict[str, Any]]', registry: 'HandlerRegistry', *, reader: 'ProjectionReader \| None' = None, executor: 'Any' = None, label: 'str' = 'import', scratch_path: 'str' = '_scratch/fold', start_seq: 'int') -> 'None'` | Project ``events`` now, through the handlers a replay would use. |
 | `project_latest` | `rakaia` | `(messages: 'Sequence[StreamMessage]', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[StreamMessage, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', tombstone_labels: 'Sequence[str]' = ('delete',)) -> 'list[Effect]'` | Project each subject's **latest** snapshot into one row — the current-state read model behind an event log. |
 
@@ -97,14 +98,14 @@ page is the contract.
 
 | Name | Import from | Signature | What it does |
 |---|---|---|---|
-| `register_handler` | `rakaia` | `(name: 'str', event_match: 'str \| Iterable[str]', effective_from: 'int', effective_to: 'int \| None' = None, *, match_field: 'str \| None' = None, stage: 'int' = 0, registry: 'HandlerRegistry \| None' = None) -> 'Callable[[Callable[..., Any]], Callable[..., Any]]'` | Decorator that registers a handler version with the default registry. |
+| `register_handler` | `rakaia` | `(name: 'str', event_match: 'str \| Iterable[str]', effective_from: 'int', effective_to: 'int \| None' = None, *, match_field: 'str \| None' = None, stage: 'int' = 0, registry: 'HandlerRegistry \| None' = None, reads: 'str \| Iterable[str] \| None' = None, writes: 'str \| Iterable[str] \| None' = None) -> 'Callable[[Callable[..., Any]], Callable[..., Any]]'` | Decorator that registers a handler version with the default registry. |
 | `register_reducer` | `rakaia` | `(name: 'str', stage: 'int', *, registry: 'HandlerRegistry \| None' = None) -> 'Callable[[Callable[..., Any]], Callable[..., Any]]'` | Decorator that registers a per-stage reduce step with the default registry. |
-| `register_simple` | `rakaia` | `(name: 'str', event_match: 'str \| Iterable[str]', *, match_field: 'str \| None' = None, stage: 'int' = 0, registry: 'HandlerRegistry \| None' = None) -> 'Callable[[Callable[..., Any]], Callable[..., Any]]'` | Register an always-on handler — the common "just project" case. |
+| `register_simple` | `rakaia` | `(name: 'str', event_match: 'str \| Iterable[str]', *, match_field: 'str \| None' = None, stage: 'int' = 0, registry: 'HandlerRegistry \| None' = None, reads: 'str \| Iterable[str] \| None' = None, writes: 'str \| Iterable[str] \| None' = None) -> 'Callable[[Callable[..., Any]], Callable[..., Any]]'` | Register an always-on handler — the common "just project" case. |
 | `register_upcaster` | `rakaia` | `(event_match: 'str', from_version: 'int', *, match_field: 'str \| None' = None, registry: 'UpcasterRegistry \| None' = None) -> 'Callable[[Callable[[dict[str, Any]], dict[str, Any]]], Callable[[dict[str, Any]], dict[str, Any]]]'` | Decorator that registers an upcaster from `from_version` to `from_version+1`. |
 | `upcast` | `rakaia` | `(event: 'dict[str, Any]', event_match: 'str', *, registry: 'UpcasterRegistry \| None' = None, drift: 'DriftLedger \| None' = None) -> 'dict[str, Any]'` | Normalise `event` to the current schema for `event_match`. |
 | `HandlerRegistry` | `rakaia` | `(store: 'WritableStore \| None' = None, *, stream_path: 'str' = '__rakaia__:handlers') -> 'None'` | Registry of versioned handlers, optionally backed by a meta-stream. |
 | `UpcasterRegistry` | `rakaia` | `(store: 'WritableStore \| None' = None, *, stream_path: 'str' = '__rakaia__:upcasters') -> 'None'` | Registry of schema-version upcasters, keyed by (event_match, from_version, match_field). |
-| `HandlerVersion` | `rakaia` | `(name: 'str', event_match: 'str \| frozenset[str]', effective_from: 'int', effective_to: 'int \| None', fn: 'Callable[..., Any]', dotted_path: 'str', source_hash: 'str', match_field: 'str \| None' = None, stage: 'int' = 0, registered_in: 'str \| None' = None, reference_hash: 'str \| None' = None) -> None` | One registered version of a handler. |
+| `HandlerVersion` | `rakaia` | `(name: 'str', event_match: 'str \| frozenset[str]', effective_from: 'int', effective_to: 'int \| None', fn: 'Callable[..., Any]', dotted_path: 'str', source_hash: 'str', match_field: 'str \| None' = None, stage: 'int' = 0, registered_in: 'str \| None' = None, reference_hash: 'str \| None' = None, reads: 'frozenset[str] \| None' = None, writes: 'frozenset[str] \| None' = None) -> None` | One registered version of a handler. |
 | `ReducerVersion` | `rakaia` | `(name: 'str', stage: 'int', fn: 'Callable[..., Any]', dotted_path: 'str', source_hash: 'str', registered_in: 'str \| None' = None) -> None` | A per-stage reduce step: recompute an aggregate once from the projections. |
 | `UpcasterVersion` | `rakaia` | `(event_match: 'str', from_version: 'int', fn: 'Callable[[dict[str, Any]], dict[str, Any]]', dotted_path: 'str', source_hash: 'str', match_field: 'str \| None' = None, registered_in: 'str \| None' = None) -> None` | One registered upcaster: transforms event from `from_version` to next. |
 | `get_default_registry` | `rakaia` | `() -> 'HandlerRegistry'` | Return the process-wide default handler registry. |
@@ -305,6 +306,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-199 exported names across 17 sections. 173 carry a docstring; 26 do not and show `—` above.
+200 exported names across 17 sections. 174 carry a docstring; 26 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

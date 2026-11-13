@@ -5,6 +5,8 @@
 * **Creation**: [partisipa_pipeline](examples/partisipa-pipeline.md) — one suku's forms through a
   six-step pipeline, saved one at a time and then rebuilt and compared with live; the code behind
   the new explainer pages in `docs/explainers/`.
+* **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) —
+  `reads=` / `writes=` on handler registration and `UndeclaredTableWarning` (#375).
 
 ## 2026-11-12
 
