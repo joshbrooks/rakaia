@@ -1,10 +1,16 @@
 # Directory Update Log
 
-## 2026-11-12
+## 2026-11-13
 
 * **Creation**: [partisipa_pipeline](examples/partisipa-pipeline.md) — one suku's forms through a
   six-step pipeline, saved one at a time and then rebuilt and compared with live; the code behind
   the new explainer pages in `docs/explainers/`.
+
+## 2026-11-12
+
+* **Note**: released as 0.11.0. `docs/whats-new.md` sections 39–42 tour the store-author kit,
+  `RAKAIA_STORE` by import path, `read_tagged` and `SqliteExecutor`; the bundle pages above
+  already name each of them.
 * **Creation**: [sqlite_replay](examples/sqlite-replay.md) — replay an order stream into a
   SQLite file with `SqliteExecutor`, no Django (#368).
 * **Update**: [Effects & executors](concepts/effects-and-executors.md) — `SqliteExecutor` and

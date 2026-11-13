@@ -220,6 +220,8 @@ No example exercises these yet — a good place to contribute a demo:
   `apply_effects` and the `rakaia.testing` suites. [Write your own
   store](write-your-own-store.md) holds a worked store and a test runs it against
   `StoreContract`, but no `examples/` demo does, and nothing shows a custom executor.
+- `RAKAIA_STORE` naming a store of your own by its import path: no example serves
+  one; `tests/test_django_rakaia/test_store_by_dotted_path.py` is the only cover.
 - `SqliteExecutor` with a handler that emits a value JSON cannot hold (a `Decimal`,
   a `datetime`): `sqlite_replay` keeps money in cents and shows only the batch that
   fails on such a value rolling back. The `orders` handlers would need converting
