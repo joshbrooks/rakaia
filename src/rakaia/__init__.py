@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from .jsonl_store import JsonlStreamStore, SegmentSizeMismatch
     from .migrate import Migration, migrate_all, migrate_stream
     from .offsets import ForeignOffset
+    from .order_check import OrderFinding, OrderReport, PipelineStep, check_order
     from .outcomes import (
         InMemoryOutcomeStore,
         Outcome,
@@ -340,6 +341,10 @@ _EXPORTS: dict[str, str] = {
     "ImpureHandlerError": "rakaia.source_hash",
     "ImpureHandlerWarning": "rakaia.source_hash",
     "UndeclaredTableWarning": "rakaia.declared_tables",
+    "PipelineStep": "rakaia.order_check",
+    "check_order": "rakaia.order_check",
+    "OrderReport": "rakaia.order_check",
+    "OrderFinding": "rakaia.order_check",
     # Subscriber cursors
     "poll": "rakaia.subscription",
     "Poll": "rakaia.subscription",
@@ -443,9 +448,12 @@ __all__ = [
     "MissingReaderError",
     "OnDriftPolicy",
     "OnErrorPolicy",
+    "OrderFinding",
+    "OrderReport",
     "Outcome",
     "OutcomeStatus",
     "OutcomeStore",
+    "PipelineStep",
     "PlannedWrite",
     "Poll",
     "PollStatus",
@@ -506,6 +514,7 @@ __all__ = [
     "apply_effects",
     "calculate_cursor",
     "check_disjoint_defaults",
+    "check_order",
     "check_page_size",
     "check_tagged_read",
     "consume",

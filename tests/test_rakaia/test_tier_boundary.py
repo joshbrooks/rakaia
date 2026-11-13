@@ -45,6 +45,7 @@ FRAMEWORK = {
     "effects",
     "executors",
     "history",
+    "order_check",
     "projections",
     "registration_log",
     "registry",
