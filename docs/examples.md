@@ -195,6 +195,9 @@ example exercises it yet (see [known gaps](#known-gaps)).
 
 No example exercises these yet — a good place to contribute a demo:
 
+- `check_order` and `PipelineStep` (checking a pipeline's step order). The
+  `partisipa_pipeline` example has a step list, but its steps do not declare what
+  they read and write yet; `tests/test_rakaia/test_order_check.py` proves it.
 - A consumer that stops on a rewound stream (`Consumed.needs_rebuild`): the
   `consumer_rebuild` demo recreates (replaces) a stream, but never rewinds one.
 - `@stream_model` on a closed stream (`StreamClosed`) and on the memory or file

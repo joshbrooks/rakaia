@@ -36,9 +36,10 @@ is named by the registration form that creates it, never by a project number.
 ## Where things are
 
 - `pipeline/steps.py` holds the step list and every handler and reducer. The
-  list is this example's own code, modelled on partisipa-import's proposal
-  (catalpainternational/partisipa-import GitHub #3443). It is not a rakaia API;
-  joshbrooks/rakaia GitHub #374 asks for one.
+  list is this example's own code, modelled on partisipa-import's ADR-0056
+  (catalpainternational/partisipa-import GitHub #3443). rakaia does not run
+  the list; its `check_order` can check the list's order once the steps
+  declare what they read and write, which these do not yet.
 - `pipeline/routes.py` holds the two routes. `save_form` appends one form and
   replays just that event. `rebuild` replays the whole stream.
 - `pipeline/management/commands/demo_pipeline.py` is the demo. Its comparison

@@ -1457,6 +1457,45 @@ $ uv run pytest tests/test_rakaia/test_declared_tables.py -q
 
 → Deep dive: [Versioned handlers](versioned-handlers.md)
 
+## 44. Check the order a rebuild runs its steps in
+
+**The problem.** A project that rebuilds its tables in several steps decides the
+order in its own code. A step that runs too early reads tables a later step still
+changes, and a step that runs too late can wipe what an earlier one made. Nothing
+says so until a rebuild gives a wrong answer.
+
+**What rakaia does.** Hand it your steps in the order you run them, each saying
+what it reads, what it writes and which earlier steps it may overwrite, and it
+reports what is out of place.
+
+```python
+from rakaia import PipelineStep, check_order
+
+report = check_order(
+    [
+        PipelineStep(
+            "rows", reads=set(), writes={"app.Form", "app.Line", "app.Form.status"}
+        ),
+        PipelineStep("totals", reads={"app.Line"}, writes={"app.Form.total"}),
+        PipelineStep(
+            "status",
+            reads={"app.Line"},
+            writes={"app.Form.status"},
+            may_overwrite={"rows"},
+        ),
+    ]
+)
+print(report)  # order ok: nothing found
+```
+
+**See it.** No example checks an order yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_order_check.py -q
+```
+
+→ Deep dive: [Versioned handlers](versioned-handlers.md)
+
 ---
 
 ## Where to go next

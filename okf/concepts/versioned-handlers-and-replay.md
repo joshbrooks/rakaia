@@ -40,6 +40,10 @@ Imported from `rakaia`:
   (`"app.Model.field"`) a handler touches. Replay warns with `UndeclaredTableWarning` at most
   once per handler and name in a replay when an emitted effect or a reader call falls outside them. Not part
   of the handler's identity, so declaring them appends nothing to the meta-stream (#375).
+* Step order: `check_order(steps)` checks a project's own ordered `PipelineStep`s (reads,
+  writes, `may_overwrite`) and returns an `OrderReport` of `OrderFinding`s (`stale_read`,
+  `unnamed_overwrite`, `shared_writer`, `outside_input`, `undeclared`).
+  `PipelineStep.from_registry` builds a step from a registry's declared tables (#374).
 * Registries and drift errors: `HandlerRegistry`, `UpcasterRegistry`,
   `HandlerVersion`, `ReducerVersion`, `HandlerOverlapError`, `HandlerGapError`,
   `HandlerDriftError`, `UpcasterConflictError`, `UpcasterChainError`.

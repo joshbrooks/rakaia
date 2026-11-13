@@ -3,9 +3,10 @@
 A save and a rebuild both build their handlers from `STEPS`, so neither can
 leave a step out without saying so. A step that does not run the same way on a
 rebuild carries a `Skip` with the kind of reason and the reason itself. This
-shape is borrowed from partisipa-import's proposal for the same problem. It is
+shape is borrowed from partisipa-import's ADR-0056, for the same problem. It is
 this example's own code, not part of rakaia: rakaia sees the handlers, not the
-list (GitHub #374 is the request for it to see the list too).
+list. `rakaia.check_order` can check a list's order once each step declares
+what it reads and writes; these steps do not declare yet.
 
 The order matters because of stages. Every stage-0 handler runs over the whole
 batch before any stage-1 work starts, so a later step can read what an earlier
@@ -15,8 +16,8 @@ One step also decides something on a save: which project a report belongs to.
 It records the decision as an event, and a rebuild replays the event instead of
 deciding again.
 
-Apart from that, the example runs the same handlers on a save and on a rebuild, which is where
-rakaia GitHub #374 points. partisipa-import's list shares the order and the
+Apart from that, the example runs the same handlers on a save and on a rebuild.
+partisipa-import's list shares the order and the
 inventory between its two routes, but most of its steps have a separate function
 for each route.
 """
