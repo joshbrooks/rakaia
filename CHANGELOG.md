@@ -9,6 +9,8 @@ runnable demo for each.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-16
+
 ### Added
 
 - **Check the order of a pipeline's steps.** `check_order(steps)` takes a project's own
