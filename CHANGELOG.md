@@ -11,6 +11,17 @@ runnable demo for each.
 
 ### Added
 
+- **Check the order of a pipeline's steps.** `check_order(steps)` takes a project's own
+  steps, in the order it runs them, each a `PipelineStep` naming the tables or columns it
+  reads and writes and the earlier steps it may overwrite. It returns an `OrderReport`
+  of `OrderFinding`s: a read a later step still changes (`stale_read`), an overwrite the
+  step does not name (`unnamed_overwrite`), rows of one table created or removed by
+  more than one function named with `by=` (`shared_writer`), and reads no step fills
+  (`outside_input`). A step that declares nothing is `undeclared`, and `report.ok` is
+  true only with no stale read, no unnamed overwrite and no undeclared step.
+  `PipelineStep.from_registry` builds a step from a registry's declared handler tables,
+  one stage at a time with `stage=`; a handler without declarations, or any reducer,
+  makes it undeclared. The order is checked, never worked out (#374).
 - **Explainers: one form, step by step.** A new section of the documentation
   follows one village's month of forms through a six-step pipeline in plain
   words. It covers how a save and a rebuild share one list of steps, and why the

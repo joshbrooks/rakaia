@@ -72,6 +72,10 @@ page is the contract.
 | `ImpureHandlerError` | `rakaia` | — | A handler cannot be fingerprinted and strict fingerprints are on. |
 | `ImpureHandlerWarning` | `rakaia` | — | A handler cannot be fully fingerprinted: edits to part of it go unnoticed. |
 | `UndeclaredTableWarning` | `rakaia` | — | A handler wrote or read a table or column its registration did not declare. |
+| `PipelineStep` | `rakaia` | `(name: 'str', reads: 'str \| Iterable[str] \| None' = None, writes: 'str \| Iterable[str] \| None' = None, *, may_overwrite: 'str \| Iterable[str]' = (), by: 'str \| None' = None, writers: 'dict[str, frozenset[str]] \| None' = None, undeclared: 'Iterable[str]' = ()) -> 'None'` | One step of a consumer's pipeline, and what it reads and writes. |
+| `check_order` | `rakaia` | `(steps: 'Sequence[PipelineStep]') -> 'OrderReport'` | Check that ``steps``, in the order given, read and overwrite only what they should. |
+| `OrderReport` | `rakaia` | `(findings: 'tuple[OrderFinding, ...]') -> None` | What `check_order` found. ``ok`` only when every step is known and nothing reads stale data or overwrites without saying so; shared writers and outside inputs are information, not failures. |
+| `OrderFinding` | `rakaia` | `(kind: 'FindingKind', step: 'str', unit: 'str', others: 'tuple[str, ...]' = ()) -> None` | One thing `check_order` found, about one step and one table or column. |
 | `fold_events` | `django_rakaia` | `(events: 'Sequence[dict[str, Any]]', registry: 'HandlerRegistry', *, reader: 'ProjectionReader \| None' = None, executor: 'Any' = None, label: 'str' = 'import', scratch_path: 'str' = '_scratch/fold', start_seq: 'int') -> 'None'` | Project ``events`` now, through the handlers a replay would use. |
 | `project_latest` | `rakaia` | `(messages: 'Sequence[StreamMessage]', model_label: 'str', *, subject_of: 'Callable[[dict[str, Any]], Any]', defaults_of: 'Callable[[StreamMessage, dict[str, Any]], dict[str, Any]]', subject_field: 'str' = 'subject', tombstone_labels: 'Sequence[str]' = ('delete',)) -> 'list[Effect]'` | Project each subject's **latest** snapshot into one row — the current-state read model behind an event log. |
 
@@ -306,6 +310,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-200 exported names across 17 sections. 174 carry a docstring; 26 do not and show `—` above.
+204 exported names across 17 sections. 178 carry a docstring; 26 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

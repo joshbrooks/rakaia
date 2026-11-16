@@ -88,10 +88,11 @@ stop after a given step, add `--until` and the step's name, for example
   - `pipeline/forms.py` holds the seven forms.
 - **The step list belongs to the example, not to rakaia.** Rakaia sees the
   handlers each step registers, never the list. The idea comes from
-  partisipa-import's proposal *A save and a rebuild run one list of steps*
-  (catalpainternational/partisipa-import GitHub #3443, open when this was
-  written). joshbrooks/rakaia GitHub #374 asks for rakaia to take the list
-  itself.
+  partisipa-import's ADR-0056, *A save and a rebuild run one list of steps*
+  (catalpainternational/partisipa-import GitHub #3443, merged 2026-11-13).
+  rakaia's `check_order` can check the order of a list like this one once each
+  step declares what it reads and writes; the example's steps do not declare
+  yet.
 - **Steps map to stages.** Steps 1 to 3 are stage-0 handlers; step 3 also has a
   part only a save runs, which records the assignments. Step 4 is a stage-1
   reducer, step 5 a stage-2 reducer, and step 6 a stage-3 handler. A
@@ -100,9 +101,9 @@ stop after a given step, add `--until` and the step's name, for example
   [Stage / staged replay](../glossary.md#stage-staged-replay).
 - **Mostly one handler per step, on both routes.** Every step's handlers run on
   a save and on a rebuild. The one exception is deciding a report's project,
-  which only a save does; a rebuild replays what the save recorded. That is
-  where rakaia GitHub #374 points. partisipa-import's list (its open PR GitHub
-  #3443) shares the order and the inventory between its two routes, but most of
+  which only a save does; a rebuild replays what the save recorded.
+  partisipa-import's list (its GitHub #3443) shares the order and the
+  inventory between its two routes, but most of
   its steps have a separate function for each route, so do not read the example
   as a description of how that list works today.
 - **One stream for the whole suku.** Partisipa keeps one stream per form type.

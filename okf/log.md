@@ -7,6 +7,9 @@
   the new explainer pages in `docs/explainers/`.
 * **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) —
   `reads=` / `writes=` on handler registration and `UndeclaredTableWarning` (#375).
+* **Update**: [Versioned handlers & replay](concepts/versioned-handlers-and-replay.md) —
+  `check_order`, `PipelineStep`, `OrderReport` and `OrderFinding`, checking a project's own
+  step order (#374).
 
 ## 2026-11-12
 

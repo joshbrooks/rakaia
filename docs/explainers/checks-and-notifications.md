@@ -77,7 +77,7 @@ def approval_email(event, reader):
   `Skip("not_reproduced", "...")` in `on_rebuild`: the rebuild leaves the
   result out on purpose. The other kind the example uses is `not_needed`, work
   that means nothing on a rebuild, which is how deciding a report's project is
-  marked. Both kinds come from partisipa-import's open proposal (GitHub
+  marked. Both kinds come from partisipa-import's ADR-0056 (its GitHub
   #3443), which has a third, `done_elsewhere`.
 - Partisipa (read 2026-11-13, in GitHub #3443's ADR-0056) has a third case
   this example does not: checks, such as flags and

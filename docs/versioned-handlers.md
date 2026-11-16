@@ -451,6 +451,77 @@ reader call returned, such as following a foreign key from a returned row.
 Reducers cannot declare tables yet, so nothing a reducer reads or writes is
 checked.
 
+### Checking the order of a pipeline's steps
+
+A project that rebuilds its tables in several steps, one after another, decides
+the order in its own code. `check_order` checks that order: hand it the steps in
+the order you run them, each saying what it reads, what it writes, and which
+earlier steps it is meant to overwrite.
+
+```python
+from rakaia import PipelineStep, check_order
+
+report = check_order(
+    [
+        PipelineStep(
+            "rows", reads=set(), writes={"app.Form", "app.Line", "app.Form.status"}
+        ),
+        PipelineStep("totals", reads={"app.Line"}, writes={"app.Form.total"}),
+        PipelineStep(
+            "status",
+            reads={"app.Line"},
+            writes={"app.Form.status"},
+            may_overwrite={"rows"},
+        ),
+    ]
+)
+assert report.ok, str(report)
+```
+
+The report lists four kinds of finding:
+
+* **`stale_read`**: a step reads something a later step still changes, so it ran
+  too early.
+* **`unnamed_overwrite`**: a step writes over an earlier step's work without
+  naming that step in `may_overwrite`. This catches the order a read check cannot:
+  a step that wipes what an earlier step made, when nothing reads it afterwards.
+* **`shared_writer`**: rows of one table are created or removed by more than one
+  function. Only steps that say which function does it, with `by="app.module.fn"`,
+  take part. This is information, not a failure.
+* **`outside_input`**: a step reads something no step fills, such as reference
+  data loaded some other way. Setting a column does not fill a read of the whole
+  table: something still has to create the rows. This is information too.
+
+A step that declares nothing is reported as `undeclared` and keeps `report.ok`
+false: an unknown step is never treated as clean. `ok` is true only when there is
+no stale read, no unnamed overwrite and no undeclared step.
+
+A table name (`"app.Model"`) covers its rows and every column, as it does for a
+handler. Writing a table means creating or removing rows: it changes what any read
+of that table or its columns sees, and it overwrites every column an earlier step
+wrote on it. Writing a column changes reads of that column and of the whole table,
+and replaces only that column. So declare the columns a step really needs, not the
+whole table: a step that reads `"app.Line.parent"` still sees lines being added or
+removed, but is not made stale by a later step that only changes `"app.Line.cost"`.
+
+`PipelineStep.from_registry(name, registry)` builds a step
+from the declared tables of a registry's handlers, with each table's writers named
+by handler function (a handler's newest version, so versioning one is not a second
+writer). A handler without `reads=` / `writes=`, or any reducer, makes the step
+undeclared. A staged replay runs its stages in order, so build one step per stage
+to have that order checked too:
+
+```python
+steps = [
+    PipelineStep.from_registry(f"replay[{stage}]", registry, stage=stage)
+    for stage in registry.stages()
+]
+```
+
+`check_order` checks the order it is given; it never works one out. It cannot see
+anything a step does outside what it declares, so a hand-written step, such as a
+direct ORM update, is only as good as its declaration.
+
 ### Reducers replace last-write-wins
 
 A **reducer** (`register_reducer(name, stage, fn)`) is a single *current*

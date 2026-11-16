@@ -31,8 +31,9 @@ the one step whose list entry says, with a reason, that a rebuild does not
 reproduce it.
 
 The step list (`pipeline/steps.py`) is the example's own code, modelled on
-partisipa-import's proposal (catalpainternational/partisipa-import GitHub #3443).
-It is not a rakaia API; joshbrooks/rakaia GitHub #374 asks for one.
+partisipa-import's ADR-0056 (catalpainternational/partisipa-import GitHub #3443).
+rakaia does not run the list; `check_order` (#374) can check its order once the
+steps declare what they read and write, which these do not yet.
 
 # Run
 
