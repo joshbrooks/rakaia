@@ -236,9 +236,11 @@ Its bounds are conditional, which is the part that tells you what to check:
 queries the ORM models or imports a submodule path directly pins to an exact
 minor, because the table shape and the module layout are both allowed to move
 within a minor. partisipa-import is squarely in that second case —
-`django_rakaia.models.StreamEntry`/`StreamEvent` across seven backfill commands,
+`django_rakaia.models.StreamEntry`/`StreamEvent` across eight management commands,
 and `rakaia.replaying._reducer_wants_touched` (`rakaia.replay` before 0.8) in one
-test — so it pins `==0.6.*`.
+test — so it pins an exact minor: `==0.10.*` on `develop` and `==0.9.*` on `main`
+(measured 2026-11-16, `git show origin/<branch>:backend/pyproject.toml`). That pin
+moves often; re-measure it rather than quote this line.
 
 **So work out which tier you changed before writing that it reaches them.** A
 Tier 1 change is not supposed to arrive until a minor. A Tier 2 change — an ORM
