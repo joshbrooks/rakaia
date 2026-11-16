@@ -505,11 +505,14 @@ whole table: a step that reads `"app.Line.parent"` still sees lines being added 
 removed, but is not made stale by a later step that only changes `"app.Line.cost"`.
 
 `PipelineStep.from_registry(name, registry)` builds a step
-from the declared tables of a registry's handlers, with each table's writers named
-by handler function (a handler's newest version, so versioning one is not a second
-writer). A handler without `reads=` / `writes=`, or any reducer, makes the step
-undeclared. A staged replay runs its stages in order, so build one step per stage
-to have that order checked too:
+from the declared tables of a registry's handlers. Every version counts, retired
+ones included, because a rebuild replays old events through them. Each table's
+writers are named per handler (a name and the events it matches, as the registry
+keys it) by its newest version's function, so versioning a handler is not a second
+writer, while two handlers that share a name for different events are. A handler
+without `reads=` / `writes=`, or any reducer, makes the step undeclared. A staged
+replay runs its stages in order, so build one step per stage to have that order
+checked too:
 
 ```python
 steps = [
@@ -517,6 +520,11 @@ steps = [
     for stage in registry.stages()
 ]
 ```
+
+A later stage that writes a whole table an earlier stage created overwrites it, so
+pass that earlier step's name in `may_overwrite` when building the later one. A
+stage number with nothing registered at it gives an empty step that reports clean,
+so take the stages from `registry.stages()` rather than typing them.
 
 `check_order` checks the order it is given; it never works one out. It cannot see
 anything a step does outside what it declares, so a hand-written step, such as a
