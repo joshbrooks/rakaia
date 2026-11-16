@@ -1,5 +1,11 @@
 # Directory Update Log
 
+## 2026-11-16
+
+* **Note**: released as 0.12.0. `docs/whats-new.md` sections 43–44 tour declared tables
+  (`reads=` / `writes=`, `UndeclaredTableWarning`) and the step-order check (`check_order`,
+  `PipelineStep`); the bundle pages above already name each of them.
+
 ## 2026-11-13
 
 * **Creation**: [partisipa_pipeline](examples/partisipa-pipeline.md) — one suku's forms through a
