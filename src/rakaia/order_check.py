@@ -147,9 +147,12 @@ class PipelineStep:
     ) -> PipelineStep:
         """A step that replays through ``registry``, declared by its handlers.
 
-        Reads and writes are the union over every handler version, and each table's
-        writers are the handlers' functions, one per handler: its newest version, so
-        versioning a handler does not look like a second function. A handler missing
+        Reads and writes are the union over every handler version, retired ones included,
+        since a rebuild replays old events through them. Each table's writers are the
+        handlers' functions, one per handler (a name and the events it matches, as the
+        registry keys it), labelled with its newest version's function and covering the
+        tables of all its versions, so versioning a handler does not look like a second
+        function but two handlers, or a retired version's tables, are not lost. A handler missing
         ``reads=`` or ``writes=``, and any reducer (reducers cannot declare tables yet),
         is listed in ``undeclared``.
 
@@ -159,7 +162,8 @@ class PipelineStep:
         """
         reads: set[str] = set()
         writes: set[str] = set()
-        newest: dict[str, HandlerVersion] = {}
+        newest: dict[tuple[str, object], HandlerVersion] = {}
+        tables: dict[tuple[str, object], set[str]] = {}
         undeclared: set[str] = set()
         for version in registry.all_versions():
             if stage is not None and version.stage != stage:
@@ -168,14 +172,17 @@ class PipelineStep:
                 undeclared.add(f"handler {version.name}")
             reads |= version.reads or frozenset()
             writes |= version.writes or frozenset()
-            current = newest.get(version.name)
+            handler = (version.name, version.event_match)
+            current = newest.get(handler)
             if current is None or version.effective_from > current.effective_from:
-                newest[version.name] = version
+                newest[handler] = version
+            tables.setdefault(handler, set()).update(
+                u for u in version.writes or frozenset() if _is_table(u)
+            )
         writers: dict[str, set[str]] = {}
-        for version in newest.values():
-            for unit in version.writes or frozenset():
-                if _is_table(unit):
-                    writers.setdefault(unit, set()).add(version.dotted_path)
+        for handler, version in newest.items():
+            for unit in tables[handler]:
+                writers.setdefault(unit, set()).add(version.dotted_path)
         undeclared |= {
             f"reducer {r.name}"
             for r in registry.all_reducers()

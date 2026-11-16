@@ -385,6 +385,43 @@ def test_a_new_version_of_a_handler_is_not_a_second_writer() -> None:
     assert check_order([step]).shared_writers == ()
 
 
+def test_a_shared_writer_says_rows_are_created_or_removed_by_two_functions() -> None:
+    steps = [
+        PipelineStep("a", reads=set(), writes={FORM}, by="app.one"),
+        PipelineStep("b", reads=set(), writes={FORM}, may_overwrite="a", by="app.two"),
+    ]
+
+    assert [str(f) for f in check_order(steps).shared_writers] == [
+        "rows of app.Form are created or removed by more than one function: app.one, app.two"
+    ]
+
+
+def test_two_handlers_sharing_a_name_for_different_events_are_two_writers() -> None:
+    """The registry keys a handler by its name and the events it matches."""
+    registry = HandlerRegistry()
+    registry.register("rows", "forms.submitted", _rows, 0, reads=set(), writes={FORM})
+    registry.register("rows", "forms.deleted", _rows_v2, 0, reads=set(), writes={FORM})
+
+    step = PipelineStep.from_registry("replay", registry)
+
+    assert [f.others for f in check_order([step]).shared_writers] == [
+        (f"{__name__}._rows", f"{__name__}._rows_v2")
+    ]
+
+
+def test_a_retired_versions_tables_still_count_on_a_rebuild() -> None:
+    """Old events replay through the retired version, so its rows are still created."""
+    registry = HandlerRegistry()
+    registry.register("rows", "forms", _rows, 0, 100, reads=set(), writes={FORM})
+    registry.register("rows", "forms", _rows_v2, 100, reads=set(), writes={LINE})
+    registry.register("import", "imports", _cost, 0, reads=set(), writes={FORM})
+
+    step = PipelineStep.from_registry("replay", registry)
+
+    assert FORM in step.writes
+    assert [f.unit for f in check_order([step]).shared_writers] == [FORM]
+
+
 def test_a_stage_reading_what_a_later_stage_writes_is_stale() -> None:
     registry = HandlerRegistry()
     registry.register(
