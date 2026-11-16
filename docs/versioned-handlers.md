@@ -485,10 +485,12 @@ The report lists four kinds of finding:
 * **`unnamed_overwrite`**: a step writes over an earlier step's work without
   naming that step in `may_overwrite`. This catches the order a read check cannot:
   a step that wipes what an earlier step made, when nothing reads it afterwards.
-* **`shared_writer`**: rows of one table are created by more than one function.
-  This is information, not a failure.
+* **`shared_writer`**: rows of one table are created or removed by more than one
+  function. Only steps that say which function does it, with `by="app.module.fn"`,
+  take part. This is information, not a failure.
 * **`outside_input`**: a step reads something no step fills, such as reference
-  data loaded some other way. This is information too.
+  data loaded some other way. Setting a column does not fill a read of the whole
+  table: something still has to create the rows. This is information too.
 
 A step that declares nothing is reported as `undeclared` and keeps `report.ok`
 false: an unknown step is never treated as clean. `ok` is true only when there is
@@ -504,8 +506,17 @@ removed, but is not made stale by a later step that only changes `"app.Line.cost
 
 `PipelineStep.from_registry(name, registry)` builds a step
 from the declared tables of a registry's handlers, with each table's writers named
-by handler function. A handler without `reads=` / `writes=`, or any reducer, makes
-the step undeclared.
+by handler function (a handler's newest version, so versioning one is not a second
+writer). A handler without `reads=` / `writes=`, or any reducer, makes the step
+undeclared. A staged replay runs its stages in order, so build one step per stage
+to have that order checked too:
+
+```python
+steps = [
+    PipelineStep.from_registry(f"replay[{stage}]", registry, stage=stage)
+    for stage in registry.stages()
+]
+```
 
 `check_order` checks the order it is given; it never works one out. It cannot see
 anything a step does outside what it declares, so a hand-written step, such as a

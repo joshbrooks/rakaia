@@ -65,8 +65,7 @@ def test_the_correct_order_passes() -> None:
     report = _check(GOOD)
 
     assert report.ok, str(report)
-    assert report.stale_reads == ()
-    assert report.unnamed_overwrites == ()
+    assert report.findings == (), str(report)
 
 
 def test_a_read_a_later_step_still_changes_is_stale() -> None:
@@ -280,6 +279,63 @@ def test_only_rows_count_towards_a_shared_writer() -> None:
     assert check_order(steps).shared_writers == ()
 
 
+def test_steps_without_by_are_not_reported_as_shared_writers() -> None:
+    """Without ``by`` the step names no function, so there is nothing to compare."""
+    steps = [
+        PipelineStep("rows", reads=set(), writes={LINE}),
+        PipelineStep("removed", reads=set(), writes={LINE}, may_overwrite="rows"),
+    ]
+
+    assert check_order(steps).shared_writers == ()
+
+
+def test_by_and_writers_together_are_refused() -> None:
+    with pytest.raises(ValueError, match="not both"):
+        PipelineStep(
+            "s", set(), {FORM}, by="app.rows", writers={FORM: frozenset({"app.rows"})}
+        )
+
+
+def test_writers_must_name_tables_the_step_writes() -> None:
+    with pytest.raises(ValueError, match="not tables it writes"):
+        PipelineStep(
+            "s",
+            set(),
+            {f"{FORM}.status"},
+            writers={f"{FORM}.status": frozenset({"app.a", "app.b"})},
+        )
+    with pytest.raises(ValueError, match="not tables it writes"):
+        PipelineStep("s", set(), {FORM}, writers={LINE: frozenset({"app.a"})})
+
+
+def test_a_read_no_step_fills_is_an_outside_input() -> None:
+    steps = [
+        PipelineStep("rows", reads=set(), writes={FORM}),
+        PipelineStep("totals", reads={"ref.Rate"}, writes={f"{FORM}.total"}),
+    ]
+
+    report = check_order(steps)
+
+    assert [(f.step, f.unit) for f in report.outside_inputs] == [("totals", "ref.Rate")]
+    assert report.ok
+
+
+def test_setting_a_column_does_not_fill_a_read_of_the_whole_table() -> None:
+    """Nothing creates the lines, so reading the table still needs an outside source."""
+    steps = [
+        PipelineStep("fix_cost", reads=set(), writes={f"{LINE}.cost"}),
+        PipelineStep("totals", reads={LINE, f"{LINE}.cost"}, writes={f"{FORM}.total"}),
+    ]
+
+    assert [f.unit for f in check_order(steps).outside_inputs] == [LINE]
+
+
+def test_a_read_the_step_fills_itself_is_not_an_outside_input() -> None:
+    steps = [PipelineStep("replay", reads={LINE}, writes={FORM, LINE})]
+
+    assert check_order(steps).outside_inputs == ()
+
+
 def _rows(event):  # pragma: no cover - never replayed here
     return Upsert(model_label=FORM, lookup={"key": event["key"]})
 
@@ -308,6 +364,74 @@ def test_a_step_from_a_registry_takes_its_handlers_declarations() -> None:
     assert step.reads == {LINE}
     assert step.writes == {FORM, LINE, f"{FORM}.status"}
     assert step.writers[FORM] == {f"{__name__}._rows"}
+
+
+def _rows_v2(event):  # pragma: no cover - never replayed here
+    return Upsert(model_label=FORM, lookup={"key": event["key"], "v": 2})
+
+
+def _cost(_event, _reader):  # pragma: no cover - never replayed here
+    return []
+
+
+def test_a_new_version_of_a_handler_is_not_a_second_writer() -> None:
+    registry = HandlerRegistry()
+    registry.register("rows", "forms", _rows, 0, 100, reads=set(), writes={FORM})
+    registry.register("rows", "forms", _rows_v2, 100, reads=set(), writes={FORM})
+
+    step = PipelineStep.from_registry("replay", registry)
+
+    assert step.writers[FORM] == {f"{__name__}._rows_v2"}
+    assert check_order([step]).shared_writers == ()
+
+
+def test_a_stage_reading_what_a_later_stage_writes_is_stale() -> None:
+    registry = HandlerRegistry()
+    registry.register(
+        "totals", "forms", _status, 0, reads={f"{LINE}.cost"}, writes=f"{FORM}.total"
+    )
+    registry.register(
+        "cost", "forms", _cost, 0, stage=1, reads=set(), writes=f"{LINE}.cost"
+    )
+
+    steps = [
+        PipelineStep.from_registry(f"replay[{stage}]", registry, stage=stage)
+        for stage in registry.stages()
+    ]
+
+    assert [(s.reads, s.writes) for s in steps] == [
+        ({f"{LINE}.cost"}, {f"{FORM}.total"}),
+        (set(), {f"{LINE}.cost"}),
+    ]
+    assert [(f.step, f.unit, f.others) for f in check_order(steps).stale_reads] == [
+        ("replay[0]", f"{LINE}.cost", ("replay[1]",))
+    ]
+
+
+def test_a_reducer_makes_only_its_own_stage_unknown() -> None:
+    registry = HandlerRegistry()
+    registry.register("rows", "forms", _rows, 0, reads=set(), writes={FORM})
+    registry.register_reducer("tally", 1, lambda _reader: [])
+
+    first, second = (
+        PipelineStep.from_registry(f"replay[{stage}]", registry, stage=stage)
+        for stage in registry.stages()
+    )
+
+    assert first.known
+    assert second.undeclared == ("reducer tally",)
+
+
+def test_from_registry_may_overwrite_can_be_one_name() -> None:
+    registry = HandlerRegistry()
+    registry.register("rows", "forms", _rows, 0, reads=set(), writes={FORM})
+
+    steps = [
+        PipelineStep("live", reads=set(), writes={FORM}),
+        PipelineStep.from_registry("replay", registry, may_overwrite="live"),
+    ]
+
+    assert check_order(steps).unnamed_overwrites == ()
 
 
 def test_a_handler_without_declarations_or_a_reducer_makes_the_step_unknown() -> None:

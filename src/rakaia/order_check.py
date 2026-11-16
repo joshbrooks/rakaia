@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Literal
 from .declared_tables import canonical_tables
 
 if TYPE_CHECKING:
-    from .registry import HandlerRegistry
+    from .registry import HandlerRegistry, HandlerVersion
 
 FindingKind = Literal[
     "stale_read", "unnamed_overwrite", "shared_writer", "outside_input", "undeclared"
@@ -54,15 +54,25 @@ def _affects(written: str, read: str) -> bool:
     return _table(written) == _table(read) and (_is_table(written) or _is_table(read))
 
 
+def _fills(written: str, read: str) -> bool:
+    """Whether a write of ``written`` provides what a read of ``read`` needs.
+
+    Narrower than `_affects`: setting one column does not create the rows a read of the
+    whole table needs, so only a write of the table itself fills that.
+    """
+    return written == read or (_is_table(written) and _table(read) == written)
+
+
 class PipelineStep:
     """One step of a consumer's pipeline, and what it reads and writes.
 
     ``reads`` and ``writes`` take the same names as a handler's: ``"app.Model"`` or
     ``"app.Model.field"``; ``None`` means not declared, and the step is then reported as
     unknown. ``may_overwrite`` names the earlier steps whose writes this one is meant to
-    replace. ``by`` names the function that does the writing, so `check_order` can tell
-    two functions creating one table's rows from one function used twice; it defaults to
-    the step's name. `from_registry` builds a step from its handlers' declarations.
+    replace. ``by`` names the function that creates or removes the rows of each table
+    the step writes, so `check_order` can tell two functions doing that from one function
+    used twice; a step without ``by`` (or ``writers``) names no function and is left out
+    of that check. `from_registry` builds a step from its handlers' declarations.
     """
 
     __slots__ = ("may_overwrite", "name", "reads", "undeclared", "writers", "writes")
@@ -95,12 +105,21 @@ class PipelineStep:
             [may_overwrite] if isinstance(may_overwrite, str) else may_overwrite
         )
         if writers is None:
-            function = by or name
             writers = {
-                unit: frozenset({function})
+                unit: frozenset({by})
                 for unit in self.writes or ()
-                if _is_table(unit)
+                if by is not None and _is_table(unit)
             }
+        elif by is not None:
+            raise ValueError(f"step {name!r}: pass by= or writers=, not both")
+        elif stray := sorted(
+            unit
+            for unit in writers
+            if not _is_table(unit) or unit not in (self.writes or ())
+        ):
+            raise ValueError(
+                f"step {name!r}: writers names {stray}, which are not tables it writes"
+            )
         self.writers = dict(writers)
         self.undeclared = tuple(undeclared)
 
@@ -123,32 +142,50 @@ class PipelineStep:
         name: str,
         registry: HandlerRegistry,
         *,
-        may_overwrite: Iterable[str] = (),
+        stage: int | None = None,
+        may_overwrite: str | Iterable[str] = (),
     ) -> PipelineStep:
         """A step that replays through ``registry``, declared by its handlers.
 
         Reads and writes are the union over every handler version, and each table's
-        writers are the handlers' functions. A handler missing ``reads=`` or ``writes=``,
-        and any reducer (reducers cannot declare tables yet), is listed in ``undeclared``.
+        writers are the handlers' functions, one per handler: its newest version, so
+        versioning a handler does not look like a second function. A handler missing
+        ``reads=`` or ``writes=``, and any reducer (reducers cannot declare tables yet),
+        is listed in ``undeclared``.
+
+        A staged registry replays its stages in order, which is a step order too. Pass
+        ``stage`` to build the step for one stage only, one step per `registry.stages()`
+        entry, so `check_order` can see a stage that reads what a later stage writes.
         """
         reads: set[str] = set()
         writes: set[str] = set()
-        writers: dict[str, set[str]] = {}
+        newest: dict[str, HandlerVersion] = {}
         undeclared: set[str] = set()
         for version in registry.all_versions():
+            if stage is not None and version.stage != stage:
+                continue
             if version.reads is None or version.writes is None:
                 undeclared.add(f"handler {version.name}")
             reads |= version.reads or frozenset()
+            writes |= version.writes or frozenset()
+            current = newest.get(version.name)
+            if current is None or version.effective_from > current.effective_from:
+                newest[version.name] = version
+        writers: dict[str, set[str]] = {}
+        for version in newest.values():
             for unit in version.writes or frozenset():
-                writes.add(unit)
                 if _is_table(unit):
                     writers.setdefault(unit, set()).add(version.dotted_path)
-        undeclared |= {f"reducer {r.name}" for r in registry.all_reducers()}
+        undeclared |= {
+            f"reducer {r.name}"
+            for r in registry.all_reducers()
+            if stage is None or r.stage == stage
+        }
         return cls(
             name,
             reads=frozenset(reads),
             writes=frozenset(writes),
-            may_overwrite=frozenset(may_overwrite),
+            may_overwrite=may_overwrite,
             writers={unit: frozenset(fns) for unit, fns in writers.items()},
             undeclared=tuple(sorted(undeclared)),
         )
@@ -171,9 +208,7 @@ class OrderFinding:
         if self.kind == "unnamed_overwrite":
             return f"{self.step} overwrites {self.unit} from {others}, which it does not name in may_overwrite"
         if self.kind == "shared_writer":
-            return (
-                f"rows of {self.unit} are created by more than one function: {others}"
-            )
+            return f"rows of {self.unit} are created or removed by more than one function: {others}"
         if self.kind == "outside_input":
             return f"{self.step} reads {self.unit}, which no step fills"
         return f"{self.step} is unknown: {others or 'it does not declare its reads and writes'}"
@@ -226,8 +261,9 @@ def check_order(steps: Sequence[PipelineStep]) -> OrderReport:
 
     Reports a read that a later step still changes (``stale_read``), a write over an
     earlier step's that the step does not name in ``may_overwrite``
-    (``unnamed_overwrite``), a table whose rows more than one function creates
-    (``shared_writer``), a read no step fills (``outside_input``), and every step that
+    (``unnamed_overwrite``), a table whose rows more than one named function creates or
+    removes (``shared_writer``), a read no step fills (``outside_input``: for a table,
+    no step writes its rows), and every step that
     does not declare in full (``undeclared``). Raises `ValueError` for two steps with one
     name, or a ``may_overwrite`` naming no step at all. Naming a step that runs later is
     allowed: it overwrites nothing of that step's, and the order is what gets reported.
@@ -253,10 +289,13 @@ def check_order(steps: Sequence[PipelineStep]) -> OrderReport:
                 for s in steps[i + 1 :]
                 if any(_affects(w, unit) for w in s.writes or ())
             )
-            earlier = any(_affects(w, unit) for s in steps[:i] for w in s.writes or ())
+            # The step itself counts: a replay's handlers fill what its others read.
+            filled = any(
+                _fills(w, unit) for s in steps[: i + 1] for w in s.writes or ()
+            )
             if later:
                 findings.append(OrderFinding("stale_read", step.name, unit, later))
-            elif not earlier:
+            elif not filled:
                 findings.append(OrderFinding("outside_input", step.name, unit))
 
     last: dict[str, str] = {}

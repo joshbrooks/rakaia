@@ -43,7 +43,8 @@ Imported from `rakaia`:
 * Step order: `check_order(steps)` checks a project's own ordered `PipelineStep`s (reads,
   writes, `may_overwrite`) and returns an `OrderReport` of `OrderFinding`s (`stale_read`,
   `unnamed_overwrite`, `shared_writer`, `outside_input`, `undeclared`).
-  `PipelineStep.from_registry` builds a step from a registry's declared tables (#374).
+  `PipelineStep.from_registry` builds a step from a registry's declared tables, one
+  replay stage per step with `stage=` (#374).
 * Registries and drift errors: `HandlerRegistry`, `UpcasterRegistry`,
   `HandlerVersion`, `ReducerVersion`, `HandlerOverlapError`, `HandlerGapError`,
   `HandlerDriftError`, `UpcasterConflictError`, `UpcasterChainError`.
