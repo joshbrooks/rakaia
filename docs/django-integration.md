@@ -299,6 +299,35 @@ signal kwargs. Without the guard this handler appends a phantom event per
 fixture row on every `loaddata` — and `auth.User`, the model that drives you to
 the manual path in the first place, is the one most likely to be in a dump.
 
+## Appending to several streams at once
+
+Sometimes one change has to put different events on different streams, and
+they must all land or none of them. An edit goes on the submission's stream, and
+the project it registers goes on another. You do not need a special call for
+this. Wrap ordinary appends in your own transaction:
+
+```python
+from django.db import transaction
+from django_rakaia import DjangoStreamStore
+
+store = DjangoStreamStore()
+
+with transaction.atomic():
+    store.append("submission:42", edit_json)
+    store.append("projects", registration_json)
+```
+
+If anything inside the block raises, both appends roll back. That includes a
+refusal from the store on the second append, or your own code failing after
+both. Live subscribers hear about neither, and the stream's offsets carry on
+as if the appends had never happened.
+
+Two conditions. The store must be the Django one, because the in-memory and
+file stores have no transaction to join. And the transaction must be on the
+same database as the store. A store built with `using="other"` needs
+`transaction.atomic(using="other")`, because a bare `atomic()` holds the
+default database, and each append then commits on its own.
+
 ## Real-time SSE
 
 When a `StreamEntry` is saved, `django_rakaia.channels_signals` broadcasts
@@ -492,6 +521,20 @@ register_stream_event_admin(MyStreamEvent)
 ```
 
 ## Appendix
+
+**Appending to several streams at once, precisely.** Every append
+`DjangoStreamStore` makes runs in its own `transaction.atomic(using=…)`
+on the store's alias. Inside a caller's outer `atomic()` on that alias, that
+block becomes a savepoint, so it can only commit when the outer one does.
+Everything an append writes or advances rolls back with the outer block: the
+`StreamEvent`, `StreamEventTag` and `StreamEntry` rows, the offset watermark's
+`high` and `last_event_ts` (including the watermark row a path's first append
+creates), `Stream.last_seq`, and `StreamProducer` state. Frames for live
+subscribers are sent through `transaction.on_commit`, so a rolled-back append
+publishes nothing. `append_many` (several events, one stream) and
+`append_to_many` (one event, several streams) are single calls that do the same
+thing on their own; an outer transaction is how to get several events on
+several streams. Measured on SQLite and Postgres 16 on 18 November 2026.
 
 **A store named by dotted path, precisely.** `get_store()` runs
 `import_string` on the value, calls the result with no arguments, and checks the
