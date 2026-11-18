@@ -9,6 +9,15 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Appends to several streams can share one transaction.** A change that must put
+  different events on different streams can wrap ordinary appends in one
+  `transaction.atomic()`, and they land or roll back together, subscribers included.
+  The transaction has to be on the store's own database: a bare `atomic()` does not
+  hold a store built with `using=`. Documented in *Add streams to a Django model* and
+  pinned by tests (#387); the behaviour itself is unchanged.
+
 ## [0.12.0] - 2026-11-16
 
 ### Added
