@@ -238,8 +238,8 @@ minor, because the table shape and the module layout are both allowed to move
 within a minor. partisipa-import is squarely in that second case —
 `django_rakaia.models.StreamEntry`/`StreamEvent` across eight management commands,
 and `rakaia.replaying._reducer_wants_touched` (`rakaia.replay` before 0.8) in one
-test — so it pins an exact minor: `==0.10.*` on `develop` and `==0.9.*` on `main`
-(measured 2026-11-16, `git show origin/<branch>:backend/pyproject.toml`). That pin
+test — so it pins an exact minor: `==0.12.*` on `develop` and `==0.10.*` on `main`
+(measured 2026-11-26, `git show origin/<branch>:backend/pyproject.toml`). That pin
 moves often; re-measure it rather than quote this line.
 
 **So work out which tier you changed before writing that it reaches them.** A
