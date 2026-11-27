@@ -19,6 +19,12 @@ runnable demo for each.
   ends, unless something changes first. Set it in every process that writes, not
   only the one that serves. Off by default and ignored on other databases, which keep
   polling. With psycopg 3 it needs 3.2 or later (#290).
+- **Offsets that answer 410 after a rebuild or a restore.** Wrapping a store in
+  `StampedOffsetStore(store, stamp=...)` puts the stream's generation and a stamp the app
+  supplies in front of every offset the protocol server hands out. An offset from before
+  the stream was created again, or from before the app rotated its stamp on a restore, is
+  answered `410 Gone`, which tells a client to read again from the start, where it would
+  otherwise have skipped or repeated changes. A new failure, `OffsetGone`, carries it.
 - **Readers woken by the same change share one read.** When an append wakes the
   long-poll and SSE readers waiting at the end of a stream, those at the same offset now
   read it once between them instead of once each. A thousand SSE connections waiting on

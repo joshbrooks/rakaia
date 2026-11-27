@@ -28,6 +28,11 @@ Imported from `rakaia`:
   alone, and only when the copy kept every offset — so a consumer that ran before
   the migration resumes instead of stopping as `replaced`. A custom target without
   it still migrates, but the consumer stops, and `Migration.notes` says so.
+* `StampedOffsetStore(store, stamp=...)` — wraps a server store so every offset it
+  hands out reads `<generation>.<app stamp>_<offset>`; `stamp(path)` is the app's part,
+  which it rotates on a restore. An offset under another stamp, or past the tail,
+  raises `OffsetGone`, which `create_app` answers with `410 Gone` (read again from
+  `-1`); one with no `_` is `400`.
 * `AppendOptions(producer_id, producer_epoch, producer_seq, close, label,
   metadata, event_ts)` and `AppendResult(message, producer_result,
   stream_closed)`.
