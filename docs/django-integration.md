@@ -396,6 +396,25 @@ last message, so a client that follows the protocol reads on from there without
 knowing a page size exists. The setting is read when `get_asgi_app()` is called
 without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
 
+### Wake waiting readers on Postgres
+
+A long-poll or SSE reader waiting at the end of a stream re-reads it every 50 ms,
+because another process may append at any moment. On Postgres, set
+
+```python
+RAKAIA_NOTIFY_READERS = True
+```
+
+in every process that writes to streams and in the one that serves them. Each write
+then sends a notification when its transaction commits, and the serving process keeps
+one extra connection open that hears them and wakes only the readers waiting on that
+stream. A waiting reader makes no queries until something changes or its wait ends
+(`LONG_POLL_TIMEOUT`, 3 seconds by default), when it reads once more. A notification
+that goes astray — a writing process without the setting, or a listening connection
+that dies — makes a message late by up to that wait, never lost. On other databases
+the setting does nothing. With psycopg 3 it needs version 3.2 or later; psycopg2
+works too.
+
 ### Protect the protocol app
 
 > **Warning.** The mount above bypasses Django's middleware, so sessions,

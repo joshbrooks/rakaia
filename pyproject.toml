@@ -63,8 +63,11 @@ postgres = [
     # Only needed to run the test suite with RAKAIA_TEST_DB=postgres, which is
     # what makes the select_for_update() calls in django_rakaia actually emit
     # FOR UPDATE. Kept out of `dev` so the default SQLite run stays free of a
-    # compiled driver.
-    "psycopg[binary]>=3.1",
+    # compiled driver. 3.2 is the first with `notifies(timeout=)`, which the
+    # Postgres wake-ups listen with. psycopg2 is here so the same wake-ups are
+    # tested on the driver Partisipa runs; Django itself uses psycopg.
+    "psycopg[binary]>=3.2",
+    "psycopg2-binary>=2.9",
 ]
 docs = [
     "zensical>=0.0.51",

@@ -47,6 +47,11 @@ Settings and operator commands:
 * `RAKAIA_READ_PAGE_SIZE` — the page a catch-up read answers with, applied when
   `get_asgi_app()` is called without `options`; on the durable store the page is a
   SQL `LIMIT`, so a first sync no longer loads the whole log.
+* `RAKAIA_NOTIFY_READERS` — off by default. On Postgres, every write to a stream sends
+  `NOTIFY rakaia_streams` with the path on commit, and each process serving long-poll or
+  SSE holds one `LISTEN` connection per alias and wakes the readers waiting on that path,
+  instead of polling every 50 ms (#290). Set it in every process that writes as well as
+  the one that serves. No effect on other databases; psycopg 3 needs 3.2 or later.
 * `RAKAIA_AUTHORIZE` — a function (or dotted path) `(scope, action)` the protocol app
   asks before every create, append, read or delete; `None` allows, a status refuses.
   Default: none, so everything is allowed. The mount bypasses Django's auth middleware.

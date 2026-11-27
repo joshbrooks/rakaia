@@ -9,6 +9,17 @@ runnable demo for each.
 
 ## [Unreleased]
 
+### Added
+
+- **Waiting readers on Postgres wake when a stream changes instead of polling.** With
+  `RAKAIA_NOTIFY_READERS = True`, every append, close or delete sends a Postgres
+  notification when it commits, and each process serving long-poll or SSE keeps one
+  listening connection and wakes only the readers waiting on that stream. A waiting
+  device used to cost about eighty queries a second; now it reads once when its wait
+  ends, unless something changes first. Set it in every process that writes, not
+  only the one that serves. Off by default and ignored on other databases, which keep
+  polling. With psycopg 3 it needs 3.2 or later (#290).
+
 ### Documentation
 
 - **Appends to several streams can share one transaction.** A change that must put

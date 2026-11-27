@@ -779,8 +779,11 @@ async def _wait_for_messages(
     A store offering `new_messages_event` is waited on rather than polled. The
     event is taken before the read, so a message landing between the read and
     the wait has already set it. The event must be set on the event loop, which
-    `asyncio.Event` requires; a store whose writes run in a thread cannot offer
-    one.
+    `asyncio.Event` requires. A store that answers None for now (its
+    notifications are off, or reconnecting) is polled for that pass. A wait on
+    an event that times out reads once more before it answers, so a lost
+    notification delays a message by at most `timeout_seconds` and never
+    drops it.
     """
     deadline = time.monotonic() + timeout_seconds
     first = True
@@ -820,7 +823,9 @@ async def _wait_for_messages(
         try:
             await asyncio.wait_for(event.wait(), timeout=remaining)
         except TimeoutError:
-            return [], True, False
+            # One last look before answering: a missed signal would otherwise
+            # report an append that also closed as closed, its message unsent.
+            continue
 
 
 def _response_body(content_type: str | None, messages: list[StreamMessage]) -> bytes:

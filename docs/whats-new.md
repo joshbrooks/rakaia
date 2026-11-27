@@ -1498,6 +1498,34 @@ $ uv run pytest tests/test_rakaia/test_order_check.py -q
 
 ---
 
+## 45. Waiting readers on Postgres wake when something changes
+
+**The problem.** A device holding a long-poll or SSE connection open re-read its
+stream every 50 ms, in case another process had appended. A hundred idle devices
+cost several thousand queries a second.
+
+On Postgres, turn on notifications in every process that writes and in the one that
+serves:
+
+```python
+# settings.py
+RAKAIA_NOTIFY_READERS = True
+```
+
+Each append, close or delete then notifies on commit, the serving process listens on
+one extra connection, and a waiting reader makes no queries until its stream changes
+or its wait ends.
+
+**See it.** No example runs against Postgres yet; the tests that prove it are named below.
+
+```console
+$ just test-pg tests/test_django_rakaia/test_wake_on_notify.py -q
+```
+
+→ Deep dive: [Django integration](django-integration.md#wake-waiting-readers-on-postgres)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

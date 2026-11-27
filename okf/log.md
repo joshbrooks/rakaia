@@ -1,5 +1,10 @@
 # Directory Update Log
 
+## 2026-11-28
+
+* **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_NOTIFY_READERS`,
+  waking waiting readers with Postgres `LISTEN`/`NOTIFY` instead of polling (#290).
+
 ## 2026-11-16
 
 * **Note**: released as 0.12.0. `docs/whats-new.md` sections 43–44 tour declared tables
