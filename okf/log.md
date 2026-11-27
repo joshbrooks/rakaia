@@ -2,6 +2,8 @@
 
 ## 2026-11-28
 
+* **Update**: [Protocol & streams](concepts/protocol-and-streams.md) —
+  `ServerOptions(reshape_events=…)`, reshaping a stream's stored events on the way out.
 * **Update**: [Protocol & streams](concepts/protocol-and-streams.md) — `StampedOffsetStore` and
   `OffsetGone`, offsets that answer 410 once the stream is rebuilt or the app restored.
 * **Update**: [Django integration](concepts/django-integration.md) — `RAKAIA_NOTIFY_READERS`,

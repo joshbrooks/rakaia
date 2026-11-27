@@ -382,6 +382,23 @@ class ServerOptions:
     Django entry point sets this from ``RAKAIA_AUTHORIZE``.
     """
 
+    reshape_events: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
+    """What a stream's stored events are sent as, by stream path.
+
+    Each function takes one stored event of a JSON-mode stream, decoded, and
+    returns the JSON value to send for it, or ``None`` to send nothing. A
+    skipped event's offset still counts, so a reader moves past it. Streams not
+    named here, and streams that are not JSON, are sent as stored. It runs on
+    every read, for every reader, so keep it cheap. A function that raises, or
+    returns something JSON cannot encode, fails every read that reaches that
+    event until it is fixed. Reshaped catch-up reads are sent ``no-store``,
+    since their ETag cannot tell one shape from another.
+
+    Keys are the stream path as this app sees it, after any mount prefix is
+    stripped. From Django, pass ``get_asgi_app(reshape_events=...)``, which keeps
+    the ``RAKAIA_*`` settings; ``options`` passed in would replace them all.
+    """
+
     sse_max_seconds: float | None = DEFAULT_SSE_MAX_SECONDS
     """How long an SSE connection stays open before the server ends it.
 
@@ -910,12 +927,38 @@ async def _wait_for_messages(
         woken_by = event
 
 
-def _response_body(content_type: str | None, messages: list[StreamMessage]) -> bytes:
-    """A JSON-mode stream's messages as one JSON array; anything else, the
-    payloads concatenated."""
+def _reshaped(opts: ServerOptions, path: str, content_type: str | None) -> bool:
+    """Whether `reshape_events` changes what this stream sends."""
+    return path in opts.reshape_events and is_json_content_type(content_type)
+
+
+def _payloads(
+    opts: ServerOptions,
+    path: str,
+    content_type: str | None,
+    messages: list[StreamMessage],
+) -> list[bytes | None]:
+    """What is sent for each message: as stored, or as `reshape_events` says,
+    with None for one it skips."""
+    reshape = opts.reshape_events.get(path)
+    if reshape is None or not _reshaped(opts, path, content_type):
+        return [m.data for m in messages]
+    sent: list[bytes | None] = []
+    for message in messages:
+        value = reshape(json.loads(message.data))
+        sent.append(
+            None if value is None else json.dumps(value, separators=(",", ":")).encode()
+        )
+    return sent
+
+
+def _response_body(content_type: str | None, payloads: list[bytes | None]) -> bytes:
+    """A JSON-mode stream's payloads as one JSON array; anything else, the
+    payloads concatenated. Skipped ones (None) are left out."""
+    kept = [p for p in payloads if p is not None]
     if is_json_content_type(content_type):
-        return format_json_response([m.data for m in messages])
-    return b"".join(m.data for m in messages)
+        return format_json_response(kept)
+    return b"".join(kept)
 
 
 async def _handle_read(
@@ -1057,8 +1100,16 @@ async def _handle_read(
         await _send_verdict(send, verdict)
         return
 
-    response_data = _response_body(stream.content_type, messages)
-    await send_response(send, 200, verdict.headers, response_data)
+    response_data = _response_body(
+        stream.content_type, _payloads(opts, path, stream.content_type, messages)
+    )
+    headers = verdict.headers
+    if _reshaped(opts, path, stream.content_type):
+        # The ETag names a range of the log, not the shape it was sent in, so a
+        # cache revalidating it after the function changed would keep the old
+        # shape.
+        headers = {**headers, "cache-control": "no-store"}
+    await send_response(send, 200, headers, response_data)
 
 
 # =============================================================================
@@ -1235,16 +1286,31 @@ async def _handle_sse(
 
             if messages:
                 # Pair every data event with its own control event so consumers can
-                # rely on a strict data -> control framing during catch-up.
-                for message in messages:
+                # rely on a strict data -> control framing during catch-up. A
+                # message `reshape_events` skips sends neither, unless it is the
+                # last, whose control alone carries the reader past it.
+                payloads = _payloads(opts, path, stream.content_type, messages)
+                for n, (message, payload) in enumerate(
+                    zip(messages, payloads, strict=True)
+                ):
+                    if payload is None:
+                        if n == len(messages) - 1:
+                            buffer += _build_sse_control(
+                                message.offset,
+                                tail_offset,
+                                stream_is_closed,
+                                up_to_date,
+                                cursor,
+                                cursor_opts,
+                            )
+                        current_offset = message.offset
+                        continue
                     if use_base64:
-                        data_payload = base64.b64encode(message.data).decode()
+                        data_payload = base64.b64encode(payload).decode()
                     elif is_json_stream:
-                        data_payload = format_json_response([message.data]).decode(
-                            "utf-8"
-                        )
+                        data_payload = format_json_response([payload]).decode("utf-8")
                     else:
-                        data_payload = message.data.decode("utf-8")
+                        data_payload = payload.decode("utf-8")
 
                     sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
                     buffer += sse_data.encode("utf-8")

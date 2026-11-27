@@ -19,6 +19,13 @@ runnable demo for each.
   ends, unless something changes first. Set it in every process that writes, not
   only the one that serves. Off by default and ignored on other databases, which keep
   polling. With psycopg 3 it needs 3.2 or later (#290).
+- **Send a stream's events in another shape.** `ServerOptions(reshape_events={path: fn})`
+  runs each stored event of a JSON stream through `fn` on the way out, for catch-up,
+  long-poll and SSE alike, so a stream can store what happened and still hand readers
+  the messages they expect. Returning `None` sends nothing for that event, and the
+  reader still moves past it. Streams not named are sent as stored, and reshaped reads
+  are sent uncached. From Django, `get_asgi_app(reshape_events=...)` applies it on top
+  of the project's `RAKAIA_*` settings.
 - **Offsets that answer 410 after a rebuild or a restore.** Wrapping a store in
   `StampedOffsetStore(store, stamp=...)` puts the stream's generation and a stamp the app
   supplies in front of every offset the protocol server hands out. An offset from before

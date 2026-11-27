@@ -1,3 +1,7 @@
+import dataclasses
+from collections.abc import Callable
+from typing import Any
+
 from django.conf import settings
 from django.utils.module_loading import import_string
 
@@ -13,10 +17,18 @@ from .store import get_store
 
 
 def get_asgi_app(
-    options: ServerOptions | None = None, store: StreamServerStore | None = None
+    options: ServerOptions | None = None,
+    store: StreamServerStore | None = None,
+    *,
+    reshape_events: dict[str, Callable[[Any], Any]] | None = None,
 ) -> object:
     """
     Get the Rakaia ASGI application configured with the store `RAKAIA_STORE` names.
+
+    `reshape_events` is `ServerOptions.reshape_events`, applied on top of the
+    options the settings give (or of `options`, when passed, replacing its own
+    `reshape_events`). It is its own argument because passing `options`
+    replaces every `RAKAIA_*` setting, the access check included.
 
     Pass `store` to supply one directly and skip the setting entirely. This
     exists so the function can be *driven*: resolving the store internally left
@@ -66,6 +78,8 @@ def get_asgi_app(
                 settings, "RAKAIA_SSE_MAX_SECONDS", DEFAULT_SSE_MAX_SECONDS
             ),
         )
+    if reshape_events is not None:
+        options = dataclasses.replace(options, reshape_events=dict(reshape_events))
     return create_app(
         store=store if store is not None else get_store(), options=options
     )

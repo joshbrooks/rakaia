@@ -450,6 +450,36 @@ the wrapper adds several queries to each read (on the Django store, about twelve
 statements instead of seven), so keep the stamp cheap: cache it if it comes from the
 database.
 
+### Send a stream's events in another shape
+
+A stream can store what happened and still send readers the messages they expect.
+Name a function per stream path; it takes one stored event and returns what to send,
+or `None` to send nothing for it (the reader still moves past it):
+
+```python
+from django_rakaia import get_asgi_app
+
+
+def change_message(event: dict) -> dict | None:
+    if event["type"] != "translation:set":
+        return None
+    return {
+        "type": "translation",
+        "key": event["msgid"],
+        "value": event,
+        "headers": {"operation": "insert"},
+    }
+
+
+app = get_asgi_app(reshape_events={"/translations": change_message})
+```
+
+The key is the stream path as the app sees it, after the mount's prefix is stripped.
+Pass it as `reshape_events=` rather than inside `options`: options passed in replace
+every `RAKAIA_*` setting, the access check included. It applies to JSON streams only,
+reshaped catch-up reads are sent `no-store`, and a function that raises fails every
+read that reaches that event until it is fixed.
+
 ### Protect the protocol app
 
 > **Warning.** The mount above bypasses Django's middleware, so sessions,
