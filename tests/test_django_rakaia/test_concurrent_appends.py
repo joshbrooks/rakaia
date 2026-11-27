@@ -424,3 +424,52 @@ def test_two_plain_closes_cannot_both_claim_the_close() -> None:
     assert sorted(got.values()) == [False, True], (
         f"both closes claimed the stream: {got}. The row lock did not hold."
     )
+
+
+@requires_row_locks
+@pytest.mark.django_db(transaction=True)
+def test_two_appends_with_the_same_next_stream_seq_cannot_both_succeed() -> None:
+    """The `Stream-Seq` check reads `last_seq` under the stream's row lock.
+
+    Thread A appends with `seq="2"` inside a transaction it holds open. Without
+    the lock, B reads `last_seq` as A left it before committing -- still `"1"` --
+    passes the check with the same `"2"`, and only then waits at its write, so
+    both appends succeed and the stream holds two messages at one sequence
+    number. With it, B waits at the read, sees A's `"2"` and raises
+    `SequenceConflict`: exactly one caller wins.
+    """
+    from rakaia.types import AppendOptions, SequenceConflict
+
+    store = DjangoStreamStore()
+    store.create(PATH)
+    store.append(PATH, b'{"seed": true}', AppendOptions(seq="1"))
+
+    outcome: dict[str, str] = {}
+    a_appended = threading.Event()
+    b_started = threading.Event()
+
+    def writer_a() -> None:
+        with transaction.atomic():
+            store.append(PATH, b'{"w": "a"}', AppendOptions(seq="2"))
+            outcome["a"] = "ok"
+            a_appended.set()
+            assert b_started.wait(timeout=10)
+            time.sleep(0.5)
+
+    def writer_b() -> None:
+        assert a_appended.wait(timeout=10)
+        b_started.set()
+        try:
+            store.append(PATH, b'{"w": "b"}', AppendOptions(seq="2"))
+            outcome["b"] = "ok"
+        except SequenceConflict:
+            outcome["b"] = "conflict"
+
+    _run(writer_a, writer_b)
+
+    assert outcome == {"a": "ok", "b": "conflict"}, (
+        f"both appends claimed seq 2: {outcome}. The row lock did not hold."
+    )
+    assert (
+        StreamEntry.objects.filter(stream__stream_id=PATH).count() == 2
+    )  # the seed and A's append; B's never landed
