@@ -1515,6 +1515,8 @@ RAKAIA_NOTIFY_READERS = True
 Each append, close or delete then notifies on commit, the serving process listens on
 one extra connection, and a waiting reader makes no queries until its stream changes
 or its wait ends.
+Readers woken by the same change at the same position share one read, so over SSE an
+append costs one read with a thousand devices listening, as with one.
 
 **See it.** No example runs against Postgres yet; the tests that prove it are named below.
 
