@@ -68,6 +68,7 @@ PROTOCOL_SERVER = {
     "migrate",
     "producer",
     "protocol_server",
+    "read_body",
     "read_decision",
     "response_cursor",
     "stamped_offsets",
