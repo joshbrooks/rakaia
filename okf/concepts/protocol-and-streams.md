@@ -50,6 +50,10 @@ Imported from `rakaia`:
   `*`), the body limit that answers `413` (default 8 MiB), and the timer after which
   a live SSE connection is closed (default 60 s). An SSE handler also ends when the
   client disconnects.
+* `ServerOptions(reshape_events={path: fn})` — what a JSON stream's stored events are
+  sent as: `fn(event)` returns the value to send, or `None` to send nothing, and a
+  skipped event's offset still counts. Catch-up, long-poll and SSE alike; reshaped
+  catch-up reads are `no-store`. From Django: `get_asgi_app(reshape_events=…)`.
 * `ServerOptions(read_page_size=…)` — the most messages one catch-up read answers
   with, a thousand by default and `None` to turn paging off. A page that stops
   short omits `Stream-Up-To-Date` and points `Stream-Next-Offset` at its last

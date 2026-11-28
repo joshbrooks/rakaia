@@ -1553,6 +1553,47 @@ $ uv run pytest tests/test_rakaia/test_stamped_offsets.py -q
 
 ---
 
+## 47. Send a stream's events in the shape readers want
+
+**The problem.** A stream stores what happened (`translation:set`), but a device wants
+change messages (`insert`, `update`, `delete`), and the server sent each event exactly
+as stored.
+
+```python
+from rakaia import ServerOptions, StreamStore, create_app
+
+
+def change_message(event):
+    if event["type"] != "translation:set":
+        return None  # send nothing; the reader still moves past it
+    return {
+        "type": "translation",
+        "key": event["msgid"],
+        "value": event,
+        "headers": {"operation": "insert"},
+    }
+
+
+app = create_app(
+    store=StreamStore(),
+    options=ServerOptions(reshape_events={"/translations": change_message}),
+)
+```
+
+From Django, `get_asgi_app(reshape_events={...})` does the same and keeps the
+project's `RAKAIA_*` settings, the access check included.
+
+**See it.** No example uses it yet. `test_a_translation_set_event_is_served_as_an_insert_or_update`
+and `test_a_page_of_skipped_events_still_moves_the_reader_on` prove it:
+
+```console
+$ uv run pytest tests/test_rakaia/test_reshape_events.py -q
+```
+
+→ Deep dive: [Django integration](django-integration.md#send-a-streams-events-in-another-shape)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)
