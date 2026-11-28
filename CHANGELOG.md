@@ -19,6 +19,12 @@ runnable demo for each.
   ends, unless something changes first. Set it in every process that writes, not
   only the one that serves. Off by default and ignored on other databases, which keep
   polling. With psycopg 3 it needs 3.2 or later (#290).
+- **Readers woken by the same change share one read.** When an append wakes the
+  long-poll and SSE readers waiting at the end of a stream, those at the same offset now
+  read it once between them instead of once each. A thousand SSE connections waiting on
+  a stream cost one read per append, not a thousand; a long-poll still looks the stream
+  up once per device as it answers. Works on any store that signals new messages: the
+  in-memory store, and the Django store with `RAKAIA_NOTIFY_READERS`.
 
 ### Documentation
 

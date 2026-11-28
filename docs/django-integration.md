@@ -415,6 +415,10 @@ that dies — makes a message late by up to that wait, never lost. On other data
 the setting does nothing. With psycopg 3 it needs version 3.2 or later; psycopg2
 works too.
 
+When a change wakes many readers at once, those waiting at the same position share
+one read. Over SSE an append then costs one read whether one device is listening or a
+thousand; a long-poll still looks the stream up once per device as it answers.
+
 ### Protect the protocol app
 
 > **Warning.** The mount above bypasses Django's middleware, so sessions,
