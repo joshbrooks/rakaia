@@ -22,6 +22,7 @@ RAKAIA_PUBLIC = {
     "create_app",
     # store
     "StreamStore",
+    "StampedOffsetStore",
     "JsonlStreamStore",
     "SegmentSizeMismatch",
     "seed_stream",
@@ -73,6 +74,7 @@ RAKAIA_PUBLIC = {
     "InvalidJson",
     "ForeignOffset",
     "InvalidOffset",
+    "OffsetGone",
     "SequenceConflict",
     "StreamClosed",
     "StreamConfigConflict",

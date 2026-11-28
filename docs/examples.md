@@ -208,6 +208,9 @@ No example exercises these yet — a good place to contribute a demo:
   contract suite `rakaia/testing/tagged_reads_contract.py` proves it.
 - Declared tables (`register(..., reads=…, writes=…)`, `UndeclaredTableWarning`):
   no example declares them yet; `tests/test_rakaia/test_declared_tables.py` proves them.
+- `StampedOffsetStore` and `OffsetGone` (offsets that answer 410 after a rebuild
+  or a restore): no example serves one yet; `tests/test_rakaia/test_stamped_offsets.py`
+  proves them.
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
 - `RecordingExecutor` — applying for real while keeping the effects. The demos

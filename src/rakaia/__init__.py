@@ -169,6 +169,7 @@ if TYPE_CHECKING:
     from .seed import seed_stream
     from .source_hash import ImpureHandlerError, ImpureHandlerWarning
     from .sqlite_executor import SqliteExecutor, SqliteProjectionReader
+    from .stamped_offsets import StampedOffsetStore
     from .store import StreamStore
     from .subscription import Consumed, OnErrorPolicy, Poll, PollStatus, consume, poll
     from .types import (
@@ -184,6 +185,7 @@ if TYPE_CHECKING:
         ExpiryNotAllowed,
         InvalidJson,
         InvalidOffset,
+        OffsetGone,
         ProducerAccepted,
         ProducerDuplicate,
         ProducerInvalidEpochSeq,
@@ -216,6 +218,7 @@ _EXPORTS: dict[str, str] = {
     # "app" is computed, not imported — see __getattr__.
     # Store
     "StreamStore": "rakaia.store",
+    "StampedOffsetStore": "rakaia.stamped_offsets",
     "JsonlStreamStore": "rakaia.jsonl_store",
     "SegmentSizeMismatch": "rakaia.jsonl_store",
     "seed_stream": "rakaia.seed",
@@ -273,6 +276,7 @@ _EXPORTS: dict[str, str] = {
     "DeleteNotAllowed": "rakaia.types",
     "ForeignOffset": "rakaia.offsets",
     "InvalidOffset": "rakaia.types",
+    "OffsetGone": "rakaia.types",
     # Cursor
     "calculate_cursor": "rakaia.response_cursor",
     "generate_response_cursor": "rakaia.response_cursor",
@@ -446,6 +450,7 @@ __all__ = [
     "MergeKeyError",
     "Migration",
     "MissingReaderError",
+    "OffsetGone",
     "OnDriftPolicy",
     "OnErrorPolicy",
     "OrderFinding",
@@ -485,6 +490,7 @@ __all__ = [
     "SqliteExecutor",
     "SqliteProjectionReader",
     "Stage",
+    "StampedOffsetStore",
     "Stream",
     "StreamClosed",
     "StreamConfigConflict",

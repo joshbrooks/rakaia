@@ -34,6 +34,7 @@ page is the contract.
 |---|---|---|---|
 | `Stream` | `rakaia` | `(path: 'str', content_type: 'str \| None' = None, current_offset: 'str' = '0000000000000000_0000000000000000', last_seq: 'str \| None' = None, ttl_seconds: 'int \| None' = None, expires_at: 'str \| None' = None, created_at: 'float' = 0.0, generation: 'str' = '', last_activity_at: 'float' = 0.0, producers: 'dict[str, ProducerState]' = <factory>, closed: 'bool' = False, closed_by: 'ClosedBy \| None' = None) -> None` | Stream metadata. |
 | `StreamStore` | `rakaia` | `(*, permanent: 'bool' = False) -> 'None'` | In-memory store for durable streams. |
+| `StampedOffsetStore` | `rakaia` | `(store: 'StreamServerStore', *, stamp: 'Callable[[str], str]') -> 'None'` | A `StreamServerStore` whose offsets carry the stream's generation and an app stamp, so an offset from another copy of the stream answers 410. |
 | `JsonlStreamStore` | `rakaia` | `(root: 'str \| Path', *, segment_size: 'int' = 10000, fsync: 'bool' = True, permanent: 'bool' = False)` | A `rakaia.StreamServerStore` over a directory of JSONL files. |
 | `SegmentSizeMismatch` | `rakaia` | — | The store was opened with a `segment_size` other than the stream's own. |
 | `DjangoStreamStore` | `django_rakaia` | `(*, using: 'str \| None' = None, permanent: 'bool \| None' = None) -> 'None'` | A durable store backed by the django_rakaia ORM models. |
@@ -288,6 +289,7 @@ page is the contract.
 | `ContentTypeMismatch` | `rakaia` | — | An append's content type disagrees with the stream's. |
 | `InvalidJson` | `rakaia` | — | A JSON-mode payload did not parse. |
 | `InvalidOffset` | `rakaia` | — | An offset is syntactically valid but not one this store can read. |
+| `OffsetGone` | `rakaia` | — | An offset from another copy of the stream, or past its end. |
 | `ForeignOffset` | `rakaia` | — | An offset was used where its format does not belong — passed to a store that did not issue it, or compared against one from another store. |
 | `EmptyJsonArray` | `rakaia` | — | A JSON-mode append carried an empty array. |
 | `ExpiryNotAllowed` | `rakaia` | — | A create asked for a TTL or an expiry on a store whose streams are permanent. |
@@ -310,6 +312,6 @@ page is the contract.
 
 ## Appendix — coverage
 
-204 exported names across 17 sections. 178 carry a docstring; 26 do not and show `—` above.
+206 exported names across 17 sections. 180 carry a docstring; 26 do not and show `—` above.
 
 Undocumented: `AnyEffect`, `ChangeLabel`, `DEFAULT_NORMALIZERS`, `ENVELOPE_TS`, `EXCEPTION_TYPE_KEY`, `Effect`, `GREEN`, `HANDLERS_META_STREAM`, `Normalizer`, `OnDriftPolicy`, `OnErrorPolicy`, `OutcomeStatus`, `PollStatus`, `ProducerValidationResult`, `REASON_CODES`, `RED`, `REDUCERS_META_STREAM`, `RowAccessor`, `SCRATCH_PATH`, `Stage`, `UNHANDLED`, `UPCASTERS_META_STREAM`, `UpsertOutcome`, `VACUOUS`, `__version__`, `app`.

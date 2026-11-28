@@ -73,6 +73,7 @@ from .types import (
     ExpiryNotAllowed,
     InvalidJson,
     InvalidOffset,
+    OffsetGone,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -111,6 +112,7 @@ STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     # failure, which is the point of it. A later offset failure might warrant 409
     # or 410, and inheriting silently is how that would go unnoticed.
     ForeignOffset: (400, b"Invalid offset"),
+    OffsetGone: (410, b"Offset is not in this copy of the stream; read from -1"),
     # A store whose streams are permanent. The spec answers a creation header
     # the server will not accept with 400, and a delete it does not support
     # with 405 (§5.4); `create_app` adds the `Allow` header a 405 needs.
