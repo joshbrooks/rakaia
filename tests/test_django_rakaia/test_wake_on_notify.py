@@ -25,8 +25,8 @@ from django.test import override_settings
 from django_rakaia.django_store import DjangoStreamStore
 from django_rakaia.wakeups import Listener, listener_for, stop_listeners
 from rakaia import AppendOptions
-from rakaia.protocol_server import _wait_for_messages
 from tests.asgi_client import asgi_client
+from tests.live_wait import wait_for_messages as _wait_for_messages
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -44,16 +44,18 @@ def _close_listeners() -> Iterator[None]:
     stop_listeners()
 
 
-def _count_peeks(store: DjangoStreamStore) -> list[str]:
-    """Record every `peek` the store is asked for."""
+def _count_looks(store: DjangoStreamStore) -> list[str]:
+    """Record every stream lookup (`get`) and message read (`read`, `peek`)
+    the store is asked for, by name."""
     calls: list[str] = []
-    real = store.peek
+    for name in ("get", "read", "peek"):
+        real = getattr(store, name)
 
-    def peek(path: str, offset: str | None) -> Any:
-        calls.append(path)
-        return real(path, offset)
+        def counted(*args: Any, _name: str = name, _real: Any = real, **kw: Any) -> Any:
+            calls.append(_name)
+            return _real(*args, **kw)
 
-    store.peek = peek  # type: ignore[method-assign]
+        setattr(store, name, counted)
     return calls
 
 
@@ -78,13 +80,14 @@ async def test_a_waiting_reader_makes_no_query_while_nothing_changes() -> None:
     await store.run_sync(store.create, "s", content_type="application/json")
     await _listening(store, "s")
     head = await store.run_sync(store.get_current_offset, "s")
-    peeks = _count_peeks(store)
+    looks = _count_looks(store)
 
     messages, timed_out, _ = await _wait_for_messages(store, "s", head, 0.6)
 
-    # One read on arrival and one as the wait ends; none in between.
+    # One lookup on arrival and one as the wait ends; none in between, and no
+    # messages read, since the tail never moved.
     assert (messages, timed_out) == ([], True)
-    assert len(peeks) == 2, f"the reader polled: {len(peeks)} reads in 0.6 s"
+    assert looks == ["get", "get"], f"the reader polled: {looks} in 0.6 s"
 
 
 @on_postgres
@@ -101,11 +104,11 @@ async def test_a_reader_woken_once_is_quiet_on_its_next_wait() -> None:
     await writer
     assert not timed_out and time.monotonic() - started < 2.0, "never woken"
     head = await store.run_sync(store.get_current_offset, "s")
-    peeks = _count_peeks(store)
+    looks = _count_looks(store)
 
     await _wait_for_messages(store, "s", head, 0.6)
 
-    assert len(peeks) == 2, f"the reader polled: {len(peeks)} reads in 0.6 s"
+    assert looks == ["get", "get"], f"the reader polled: {looks} in 0.6 s"
 
 
 @on_postgres

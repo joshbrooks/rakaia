@@ -43,7 +43,6 @@ import pytest
 
 from rakaia.append_decision import plan_initial_write
 from rakaia.jsonl_store import JsonlStreamStore
-from rakaia.protocol_server import _wait_for_messages
 from rakaia.types import (
     PRODUCER_EPOCH_HEADER,
     PRODUCER_ID_HEADER,
@@ -52,6 +51,7 @@ from rakaia.types import (
     AppendOptions,
     StreamNotFound,
 )
+from tests.live_wait import wait_for_messages as _wait_for_messages
 
 PATH = "s"
 

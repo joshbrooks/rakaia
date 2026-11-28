@@ -64,6 +64,7 @@ PROTOCOL_SERVER = {
     "consumer",
     "jsonl_outcomes",
     "jsonl_store",
+    "live_read",
     "migrate",
     "producer",
     "protocol_server",

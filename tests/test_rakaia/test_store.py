@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from rakaia import protocol_server
-from rakaia.protocol_server import _wait_for_messages
+from rakaia import live_read
 from rakaia.store import StreamStore
 from rakaia.types import (
     INITIAL_OFFSET,
@@ -19,6 +18,7 @@ from rakaia.types import (
     ProducerSequenceGap,
     ProducerStaleEpoch,
 )
+from tests.live_wait import wait_for_messages as _wait_for_messages
 
 
 @pytest.fixture
@@ -481,7 +481,7 @@ class TestLongPoll:
     ):
         # A poll interval longer than the wait, so a loop that polls instead of
         # waiting on the store's event sleeps until the timeout.
-        monkeypatch.setattr(protocol_server, "_POLL_INTERVAL_SECONDS", 60.0)
+        monkeypatch.setattr(live_read, "POLL_INTERVAL_SECONDS", 60.0)
         store.create("foo", content_type="application/octet-stream")
         stream = store.get("foo")
         assert stream is not None

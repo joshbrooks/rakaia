@@ -542,7 +542,7 @@ async def test_expiry_mid_long_poll_is_a_timeout_not_an_error():
 
     from asgiref.sync import sync_to_async
 
-    from rakaia.protocol_server import _wait_for_messages
+    from tests.live_wait import wait_for_messages as _wait_for_messages
 
     store = DjangoStreamStore()
     await sync_to_async(store.create)("s", ttl_seconds=3600)

@@ -15,6 +15,20 @@ ones you are crossing.
 
 ---
 
+# Unreleased
+
+## An idle live connection no longer keeps a stream's TTL alive
+
+A stream created with `Stream-TTL` used to have its window extended every few
+seconds by any SSE connection waiting on it, because each keep-alive read the
+stream. A keep-alive now only looks the stream up, the way a waiting long-poll
+always has, so the window moves when a connection opens, when a reader is sent
+messages, and when a client reads or appends, but not while a connection waits. A stream that nothing writes to and that only idle live
+connections watch now expires on time. If you relied on that, give the stream a
+longer TTL, or no TTL, rather than relying on readers (#395).
+
+---
+
 # 0.11.0
 
 ## The store protocols say what they return
