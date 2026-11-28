@@ -108,6 +108,15 @@ class EmptyJsonArray(StreamError, ValueError):
     """A JSON-mode append carried an empty array."""
 
 
+class OffsetGone(StreamError):
+    """An offset from another copy of the stream, or past its end.
+
+    Raised by `StampedOffsetStore` when an offset's stamp is not the stream's
+    current one: the stream was created again, or the app restored. The server
+    answers ``410 Gone``, which tells a client to read again from ``-1``.
+    """
+
+
 class InvalidOffset(StreamError, ValueError):
     """An offset is syntactically valid but not one this store can read.
 

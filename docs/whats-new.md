@@ -1498,6 +1498,61 @@ $ uv run pytest tests/test_rakaia/test_order_check.py -q
 
 ---
 
+## 45. Waiting readers on Postgres wake when something changes
+
+**The problem.** A device holding a long-poll or SSE connection open re-read its
+stream every 50 ms, in case another process had appended. A hundred idle devices
+cost several thousand queries a second.
+
+On Postgres, turn on notifications in every process that writes and in the one that
+serves:
+
+```python
+# settings.py
+RAKAIA_NOTIFY_READERS = True
+```
+
+Each append, close or delete then notifies on commit, the serving process listens on
+one extra connection, and a waiting reader makes no queries until its stream changes
+or its wait ends.
+Readers woken by the same change at the same position share one read, so over SSE an
+append costs one read with a thousand devices listening, as with one.
+
+**See it.** No example runs against Postgres yet; the tests that prove it are named below.
+
+```console
+$ just test-pg tests/test_django_rakaia/test_wake_on_notify.py -q
+```
+
+→ Deep dive: [Django integration](django-integration.md#wake-waiting-readers-on-postgres)
+
+---
+
+## 46. Offsets that know which copy of a stream they came from
+
+**The problem.** A device resumes from the offset it kept. After the stream is created
+again, or the database is restored, that offset can name a different event, and the
+device skips or repeats changes without knowing.
+
+```python
+from rakaia import StampedOffsetStore, StreamStore, create_app
+
+app = create_app(store=StampedOffsetStore(StreamStore(), stamp=lambda path: "r1"))
+```
+
+Offsets now read `<generation>.r1_<position>`. One from another generation or stamp,
+or past the end, is answered `410 Gone`, and the client starts again from `-1`.
+
+**See it.** No example uses it yet; the tests that prove it are named below.
+
+```console
+$ uv run pytest tests/test_rakaia/test_stamped_offsets.py -q
+```
+
+→ Deep dive: [Django integration](django-integration.md#send-clients-back-to-the-start-after-a-rebuild-or-a-restore)
+
+---
+
 ## Where to go next
 
 - Want the reference for handlers, upcasters and drift? → [Versioned handlers](versioned-handlers.md)

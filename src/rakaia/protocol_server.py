@@ -73,6 +73,7 @@ from .types import (
     ExpiryNotAllowed,
     InvalidJson,
     InvalidOffset,
+    OffsetGone,
     ProducerAccepted,
     ProducerDuplicate,
     ProducerInvalidEpochSeq,
@@ -80,6 +81,7 @@ from .types import (
     ProducerStaleEpoch,
     ProducerStreamClosed,
     SequenceConflict,
+    Stream,
     StreamClosed,
     StreamConfigConflict,
     StreamError,
@@ -110,6 +112,7 @@ STORE_FAILURE_STATUS: dict[type[StreamError], tuple[int, bytes]] = {
     # failure, which is the point of it. A later offset failure might warrant 409
     # or 410, and inheriting silently is how that would go unnoticed.
     ForeignOffset: (400, b"Invalid offset"),
+    OffsetGone: (410, b"Offset is not in this copy of the stream; read from -1"),
     # A store whose streams are permanent. The spec answers a creation header
     # the server will not accept with 400, and a delete it does not support
     # with 405 (§5.4); `create_app` adds the `Allow` header a 405 needs.
@@ -765,6 +768,83 @@ async def _validate_read_params(
 _POLL_INTERVAL_SECONDS = 0.05
 
 
+# The reads in flight for readers woken together: one per store, kind of read,
+# path, offset, the event that woke them and the event that will wake them next.
+# See `_read_once_for_all`.
+_shared_reads: dict[
+    tuple[int, str, str, str, asyncio.Event, asyncio.Event | None], asyncio.Future[Any]
+] = {}
+
+
+async def _read_once_for_all(
+    woken_by: asyncio.Event | None,
+    next_event: asyncio.Event | None,
+    kind: str,
+    store: StreamServerStore,
+    path: str,
+    offset: str,
+    read: Callable[[], Any],
+) -> Any:
+    """Run `read()` once for every reader woken by `woken_by` at `offset`.
+
+    One append wakes every reader waiting on the stream, and each would read
+    the same messages. The first to wake starts the read and the rest await it.
+    Only readers that were woken share, and only one started after the wake-up,
+    so a shared read never predates the change it was woken for. A reader that
+    was not woken (`woken_by` None) reads alone. The read is shielded, so one
+    reader leaving does not cancel it for the others.
+
+    `next_event`, the event each reader took before reading, is in the key too.
+    A reader that arrives late, after a second change has fired the event the
+    first readers took, holds a newer one: sharing their read would miss that
+    change and then wait on an event nothing will set.
+    """
+    if woken_by is None:
+        return await read()
+    key = (id(store), kind, path, offset, woken_by, next_event)
+    shared = _shared_reads.get(key)
+    if shared is None:
+        shared = asyncio.ensure_future(read())
+        _shared_reads[key] = shared
+
+        def forget(done: asyncio.Future[Any]) -> None:
+            _shared_reads.pop(key, None)
+            if not done.cancelled():
+                done.exception()  # retrieved, even if every reader has left
+
+        shared.add_done_callback(forget)
+    return await asyncio.shield(shared)
+
+
+async def _look(
+    store: StreamServerStore, path: str, offset: str
+) -> tuple[Stream | None, list[StreamMessage] | None]:
+    """The stream, then the messages after `offset`, for one pass of a wait.
+
+    The stream before the messages, never after: an append that also closes,
+    landing between the two, would otherwise read as closed with its message
+    never delivered. Messages are None when the stream went between the two.
+    Extends the TTL window when there are messages.
+    """
+    stream = await store.run_sync(store.get, path)
+    if stream is None:
+        return None, None
+    try:
+        messages = await store.run_sync(store.peek, path, offset)
+    except StreamNotFound:
+        return stream, None
+    if messages:
+        await store.run_sync(store.touch, path)
+    return stream, messages
+
+
+def _signal_for(store: StreamServerStore, path: str) -> asyncio.Event | None:
+    """The store's event for the next change to `path`, or None to poll."""
+    if isinstance(store, SignalsNewMessages):
+        return store.new_messages_event(path)
+    return None
+
+
 async def _wait_for_messages(
     store: StreamServerStore, path: str, offset: str, timeout_seconds: float
 ) -> tuple[list[StreamMessage], bool, bool]:
@@ -779,34 +859,36 @@ async def _wait_for_messages(
     A store offering `new_messages_event` is waited on rather than polled. The
     event is taken before the read, so a message landing between the read and
     the wait has already set it. The event must be set on the event loop, which
-    `asyncio.Event` requires; a store whose writes run in a thread cannot offer
-    one.
+    `asyncio.Event` requires. A store that answers None for now (its
+    notifications are off, or reconnecting) is polled for that pass. A wait on
+    an event that times out reads once more before it answers, so a lost
+    notification delays a message by at most `timeout_seconds` and never
+    drops it. Readers woken by the same event at the same offset share one
+    read (`_read_once_for_all`).
     """
     deadline = time.monotonic() + timeout_seconds
     first = True
+    woken_by: asyncio.Event | None = None
     while True:
-        event = (
-            store.new_messages_event(path)
-            if isinstance(store, SignalsNewMessages)
-            else None
+        event = _signal_for(store, path)
+        stream, messages = await _read_once_for_all(
+            woken_by,
+            event,
+            "wait",
+            store,
+            path,
+            offset,
+            lambda: _look(store, path, offset),
         )
-        # The stream before the messages, never after: an append that also
-        # closes, landing between the two, would otherwise read as closed with
-        # its message never delivered.
-        stream = await store.run_sync(store.get, path)
         if stream is None:
             if first:
                 raise StreamNotFound(f"Stream not found: {path}")
             return [], True, False
         first = False
-
-        try:
-            messages = await store.run_sync(store.peek, path, offset)
-        except StreamNotFound:
+        if messages is None:
             # Gone between the `get` and the `peek`: the same mid-wait expiry.
             return [], True, False
         if messages:
-            await store.run_sync(store.touch, path)
             return messages, False, False
         if stream.closed:
             return [], False, True
@@ -815,12 +897,17 @@ async def _wait_for_messages(
         if remaining <= 0:
             return [], True, False
         if event is None:
+            woken_by = None
             await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
             continue
         try:
             await asyncio.wait_for(event.wait(), timeout=remaining)
         except TimeoutError:
-            return [], True, False
+            # One last look before answering: a missed signal would otherwise
+            # report an append that also closed as closed, its message unsent.
+            woken_by = None
+            continue
+        woken_by = event
 
 
 def _response_body(content_type: str | None, messages: list[StreamMessage]) -> bytes:
@@ -1102,22 +1189,41 @@ async def _handle_sse(
         current_offset = initial_offset
         is_json_stream = is_json_content_type(stream.content_type)
 
+        # The change that woke this connection, so connections woken by the
+        # same one at the same offset share one read (`_read_once_for_all`).
+        woken_by: asyncio.Event | None = None
+
         while True:
-            # Read messages from offset
+            # Taken before the read, so a change landing during the read or the
+            # send has already set it and the wait below returns at once.
+            event = _signal_for(store, path)
             if pending_read is not None:
-                messages, up_to_date = pending_read
+                (messages, up_to_date), current_stream = (
+                    pending_read,
+                    await store.run_sync(store.get, path),
+                )
                 pending_read = None
             else:
-                try:
+                offset_now = current_offset
+
+                async def read_page(
+                    offset_now: str = offset_now,
+                ) -> tuple[Any, Stream | None]:
                     # A page cut short comes back with `up_to_date` false, and the
                     # loop reads the next one straight away instead of waiting.
-                    messages, up_to_date = await store.run_sync(
-                        store.read, path, current_offset, limit=opts.read_page_size
+                    page = await store.run_sync(
+                        store.read, path, offset_now, limit=opts.read_page_size
+                    )
+                    return page, await store.run_sync(store.get, path)
+
+                try:
+                    (messages, up_to_date), current_stream = await _read_once_for_all(
+                        woken_by, event, "sse", store, path, offset_now, read_page
                     )
                 except (KeyError, StreamError):
                     break
+            woken_by = None
 
-            current_stream = await store.run_sync(store.get, path)
             if current_stream is None:
                 break
 
@@ -1183,16 +1289,28 @@ async def _handle_sse(
                     await send_body_chunk(send, _closed_control(current_offset))
                     break
 
-                try:
-                    (
-                        _wait_messages,
-                        timed_out,
-                        stream_closed,
-                    ) = await _wait_for_messages(
-                        store, path, current_offset, opts.long_poll_timeout
-                    )
-                except (KeyError, StreamError):
-                    break
+                if event is not None:
+                    # Wait for the change alone; the read at the top of the loop
+                    # is the one woken connections share.
+                    try:
+                        await asyncio.wait_for(event.wait(), opts.long_poll_timeout)
+                    except TimeoutError:
+                        # Back to the read, which doubles as the keep-alive: a
+                        # stream closed by an append whose signal was lost must
+                        # send that message before it reports the close.
+                        continue
+                    woken_by, timed_out, stream_closed = event, False, False
+                else:
+                    try:
+                        (
+                            _wait_messages,
+                            timed_out,
+                            stream_closed,
+                        ) = await _wait_for_messages(
+                            store, path, current_offset, opts.long_poll_timeout
+                        )
+                    except (KeyError, StreamError):
+                        break
 
                 if stream_closed:
                     await send_body_chunk(send, _closed_control(current_offset))

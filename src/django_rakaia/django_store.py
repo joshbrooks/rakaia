@@ -26,6 +26,7 @@ by one pure module (`rakaia.append_decision`) that every store calls.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Iterable, Iterator, Sequence
@@ -86,6 +87,7 @@ from .models import (
 # Re-exported: the payload helpers live in `event_message` (#153) but callers
 # import them from here.
 from .offsets import format_offset, parse_offset
+from .wakeups import listener_for, notify_readers
 
 __all__ = [
     "DjangoStreamStore",
@@ -212,6 +214,7 @@ def write_events(
     )
     for stream, entries in zip(streams, per_stream, strict=True):
         _publish(stream.stream_id, entries)
+    notify_readers(using, (stream.stream_id for stream in streams))
     return rows, per_stream
 
 
@@ -626,6 +629,8 @@ class DjangoStreamStore:
                 fields.append("last_activity_at")
             if fields:
                 stream.save(update_fields=fields)
+            if verdict.close:
+                notify_readers(self._using, [path])
             return CloseResult(
                 final_offset=stream.current_offset,
                 already_closed=verdict.already_closed,
@@ -964,6 +969,17 @@ class DjangoStreamStore:
 
         return await sync_to_async(_guarded, thread_sensitive=True)(*args, **kwargs)
 
+    def new_messages_event(self, path: str) -> asyncio.Event | None:
+        """An event set on the next append, close or delete at `path`, or None
+        to poll; see `rakaia.protocols.SignalsNewMessages`.
+
+        None unless `RAKAIA_NOTIFY_READERS` is on and this store's alias is
+        Postgres, and also while the listening connection is starting or
+        reconnecting (`django_rakaia.wakeups`).
+        """
+        listener = listener_for(self._using)
+        return None if listener is None else listener.event_for(path)
+
     def get(self, path: str) -> ProtocolStream | None:
         """Return a snapshot of the stream's metadata, or None if absent.
 
@@ -1047,6 +1063,7 @@ class DjangoStreamStore:
                     )
                 )
             self._streams().filter(pk=stream_pk).delete()
+            notify_readers(self._using, [path])
         return True
 
     def check_protocol_delete(self, path: str) -> None:

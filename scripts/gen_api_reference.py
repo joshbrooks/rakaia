@@ -46,6 +46,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "Reading and writing streams": (
         "Stream",
         "StreamStore",
+        "StampedOffsetStore",
         "JsonlStreamStore",
         "SegmentSizeMismatch",
         "DjangoStreamStore",
@@ -255,6 +256,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "ContentTypeMismatch",
         "InvalidJson",
         "InvalidOffset",
+        "OffsetGone",
         "ForeignOffset",
         "EmptyJsonArray",
         "ExpiryNotAllowed",

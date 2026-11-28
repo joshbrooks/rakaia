@@ -396,6 +396,60 @@ last message, so a client that follows the protocol reads on from there without
 knowing a page size exists. The setting is read when `get_asgi_app()` is called
 without `options`; pass `ServerOptions(read_page_size=...)` to set it yourself.
 
+### Wake waiting readers on Postgres
+
+A long-poll or SSE reader waiting at the end of a stream re-reads it every 50 ms,
+because another process may append at any moment. On Postgres, set
+
+```python
+RAKAIA_NOTIFY_READERS = True
+```
+
+in every process that writes to streams and in the one that serves them. Each write
+then sends a notification when its transaction commits, and the serving process keeps
+one extra connection open that hears them and wakes only the readers waiting on that
+stream. A waiting reader makes no queries until something changes or its wait ends
+(`LONG_POLL_TIMEOUT`, 3 seconds by default), when it reads once more. A notification
+that goes astray — a writing process without the setting, or a listening connection
+that dies — makes a message late by up to that wait, never lost. On other databases
+the setting does nothing. With psycopg 3 it needs version 3.2 or later; psycopg2
+works too.
+
+When a change wakes many readers at once, those waiting at the same position share
+one read. Over SSE an append then costs one read whether one device is listening or a
+thousand; a long-poll still looks the stream up once per device as it answers.
+
+### Send clients back to the start after a rebuild or a restore
+
+A device keeps its offset and resumes from it. If the stream is deleted and created
+again, or the database restored from a backup, the same offset can name a different
+event. Wrap the store so its offsets say which copy they came from:
+
+```python
+from django_rakaia import get_asgi_app, get_store
+from rakaia import StampedOffsetStore
+
+
+def restore_stamp(path: str) -> str:
+    return "r1"  # the app's own token, changed whenever it is restored
+
+
+app = get_asgi_app(store=StampedOffsetStore(get_store(), stamp=restore_stamp))
+```
+
+Build it with `get_asgi_app`, not `create_app`: only `get_asgi_app` applies
+`RAKAIA_AUTHORIZE` and the other settings below, so a bare `create_app` serves every
+stream to anyone.
+
+Every offset then reads `<generation>.<stamp>_<position>`. An offset under another
+generation or stamp, or past the end of the stream, is answered `410 Gone`, and the
+client reads again from `-1`. The stamp must be a non-empty string of at most about
+150 characters, with no `_`, no whitespace and none of `/ , & = ?`; anything else
+raises when the first offset is built. `stamp` runs several times per request, and
+the wrapper adds several queries to each read (on the Django store, about twelve
+statements instead of seven), so keep the stamp cheap: cache it if it comes from the
+database.
+
 ### Protect the protocol app
 
 > **Warning.** The mount above bypasses Django's middleware, so sessions,

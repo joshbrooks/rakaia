@@ -135,7 +135,7 @@ class StreamServerStore(WritableStore, Protocol):
     and does long-poll and response framing itself, so a store only answers
     questions about its own state (#323).
 
-    A store whose appends happen in this process can also define
+    A store that can tell when a stream changes can also define
     `new_messages_event(path)` (see `SignalsNewMessages`) so a long-poll wakes
     the moment a message lands instead of on the server's next poll.
 
@@ -315,14 +315,16 @@ class SignalsNewMessages(Protocol):
     The server's long-poll otherwise polls with `peek`. A store with this
     method hands back an event that is set when the next message lands on
     `path` (or the stream is closed or deleted), and the server waits on that
-    instead. The event must be set on the server's event loop, so this suits
-    a store whose `run_sync` calls straight through, and not one that hops to
-    a thread. The server asks for the event before it reads, so a message
-    landing between the read and the wait still wakes it.
+    instead. The event must be set on the server's event loop: a store whose
+    writes happen elsewhere has to hand each change to that loop, as
+    `DjangoStreamStore` does with Postgres `LISTEN`. The server asks for the
+    event before it reads, so a message landing between the read and the wait
+    still wakes it. None means the store cannot signal right now, and the
+    server polls for that pass.
     """
 
-    def new_messages_event(self, path: str) -> asyncio.Event:
-        """An event set on the next change to `path`."""
+    def new_messages_event(self, path: str) -> asyncio.Event | None:
+        """An event set on the next change to `path`, or None to poll."""
         ...
 
 

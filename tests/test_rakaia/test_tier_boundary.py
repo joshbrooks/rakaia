@@ -69,6 +69,7 @@ PROTOCOL_SERVER = {
     "protocol_server",
     "read_decision",
     "response_cursor",
+    "stamped_offsets",
     "store",
     "stream_rules",
     "subscription",
