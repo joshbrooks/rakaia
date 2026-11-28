@@ -211,9 +211,6 @@ No example exercises these yet — a good place to contribute a demo:
 - `StampedOffsetStore` and `OffsetGone` (offsets that answer 410 after a rebuild
   or a restore): no example serves one yet; `tests/test_rakaia/test_stamped_offsets.py`
   proves them.
-- `ServerOptions(reshape_events=…)` and `get_asgi_app(reshape_events=…)` (sending a
-  stream's events in another shape): no example uses it yet;
-  `tests/test_rakaia/test_reshape_events.py` proves it.
 - `replay_stream` (the Django convenience wrapper).
 - `DjangoExecutor(skip_unchanged=True)`.
 - `RecordingExecutor` — applying for real while keeping the effects. The demos
