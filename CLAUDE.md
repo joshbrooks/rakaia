@@ -158,6 +158,8 @@
 
 ## Writing it up
 
+- **Aim for a PR under about 400 changed lines.** Split a bigger one, unless the
+  size is generated output or a pure move.
 - **Two plain paragraphs.** A commit message body, an issue body and a PR body are each
   at most two paragraphs, written so someone who only reads the notification email gets
   the whole point. Say what changed and what it means for whoever uses this. That is the
