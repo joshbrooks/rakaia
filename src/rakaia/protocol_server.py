@@ -9,7 +9,6 @@ application with zero framework dependencies. Can be run with any ASGI server
 from __future__ import annotations
 
 import asyncio
-import base64
 import inspect
 import json
 import os
@@ -35,10 +34,10 @@ from ._asgi import (
     send_response,
     start_streaming_response,
 )
-from .json_mode import format_json_response, is_json_content_type
 from .live_read import LiveRead, Page
 from .offsets import ForeignOffset
 from .protocols import StreamServerStore
+from .read_body import catch_up_body, sse_encoding, sse_frames
 from .read_decision import (
     STREAM_CLOSED_HEADER_RESP,
     STREAM_OFFSET_HEADER_RESP,
@@ -50,7 +49,6 @@ from .read_decision import (
     decide_read,
     decide_wait_ended,
     read_param_error,
-    sse_control_fields,
     stream_ended,
 )
 from .response_cursor import CursorOptions, generate_response_cursor
@@ -64,7 +62,6 @@ from .types import (
     STREAM_CLOSED_HEADER,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_SEQ_HEADER,
-    STREAM_SSE_DATA_ENCODING_HEADER,
     STREAM_TTL_HEADER,
     AppendOptions,
     ContentTypeMismatch,
@@ -84,7 +81,6 @@ from .types import (
     StreamClosed,
     StreamConfigConflict,
     StreamError,
-    StreamMessage,
     StreamNotFound,
 )
 
@@ -777,40 +773,6 @@ async def _validate_read_params(
     return False
 
 
-def _reshaped(opts: ServerOptions, path: str, content_type: str | None) -> bool:
-    """Whether `reshape_events` changes what this stream sends."""
-    return path in opts.reshape_events and is_json_content_type(content_type)
-
-
-def _payloads(
-    opts: ServerOptions,
-    path: str,
-    content_type: str | None,
-    messages: list[StreamMessage],
-) -> list[bytes | None]:
-    """What is sent for each message: as stored, or as `reshape_events` says,
-    with None for one it skips."""
-    reshape = opts.reshape_events.get(path)
-    if reshape is None or not _reshaped(opts, path, content_type):
-        return [m.data for m in messages]
-    sent: list[bytes | None] = []
-    for message in messages:
-        value = reshape(json.loads(message.data))
-        sent.append(
-            None if value is None else json.dumps(value, separators=(",", ":")).encode()
-        )
-    return sent
-
-
-def _response_body(content_type: str | None, payloads: list[bytes | None]) -> bytes:
-    """A JSON-mode stream's payloads as one JSON array; anything else, the
-    payloads concatenated. Skipped ones (None) are left out."""
-    kept = [p for p in payloads if p is not None]
-    if is_json_content_type(content_type):
-        return format_json_response(kept)
-    return b"".join(kept)
-
-
 async def _handle_read(
     path: str,
     scope: Scope,
@@ -833,13 +795,6 @@ async def _handle_read(
     if not await _validate_read_params(send, qs, offset, live, cors):
         return
 
-    # Determine base64 encoding for SSE binary streams
-    use_base64 = False
-    if live == "sse":
-        ct = (stream.content_type or "").lower().split(";")[0].strip()
-        is_text_compatible = ct.startswith("text/") or ct == "application/json"
-        use_base64 = not is_text_compatible
-
     # Handle SSE mode
     if live == "sse":
         sse_offset = stream.current_offset if offset == "now" else (offset or "")
@@ -848,7 +803,6 @@ async def _handle_read(
             stream,
             sse_offset,
             cursor,
-            use_base64,
             scope,
             receive,
             send,
@@ -943,59 +897,15 @@ async def _handle_read(
         await _send_verdict(send, verdict)
         return
 
-    response_data = _response_body(
-        stream.content_type, _payloads(opts, path, stream.content_type, messages)
+    body, extra_headers = catch_up_body(
+        stream.content_type, messages, opts.reshape_events.get(path)
     )
-    headers = verdict.headers
-    if _reshaped(opts, path, stream.content_type):
-        # The ETag names a range of the log, not the shape it was sent in, so a
-        # cache revalidating it after the function changed would keep the old
-        # shape.
-        headers = {**headers, "cache-control": "no-store"}
-    await send_response(send, 200, headers, response_data)
+    await send_response(send, 200, {**verdict.headers, **extra_headers}, body)
 
 
 # =============================================================================
 # SSE Mode
 # =============================================================================
-
-
-def _encode_sse_data(payload: str) -> str:
-    """Encode data for SSE format, handling multi-line payloads and preventing CRLF injection."""
-    # Protocol Section 5.7: any \r\n or stray \r in payload data is normalized to
-    # \n before framing, so each becomes its own `data:` line rather than
-    # terminating the frame early (CRLF injection).
-    sanitized = payload.replace("\r\n", "\n").replace("\r", "\n")
-    lines = sanitized.split("\n")
-    result = ""
-    for line in lines:
-        result += f"data:{line}\n"
-    result += "\n"
-    return result
-
-
-def _build_sse_control(
-    control_offset: str,
-    tail_offset: str,
-    stream_is_closed: bool,
-    up_to_date: bool,
-    cursor: str | None,
-    cursor_options: CursorOptions,
-) -> bytes:
-    """Frame an SSE ``control`` event. The fields are decided by
-    `read_decision.sse_control_fields`; this only encodes them.
-
-    Emitted immediately after each ``data`` event during catch-up so consumers
-    can rely on strict data -> control pairing.
-    """
-    control_data = sse_control_fields(
-        control_offset=control_offset,
-        tail_offset=tail_offset,
-        closed=stream_is_closed,
-        up_to_date=up_to_date,
-        response_cursor=generate_response_cursor(cursor, cursor_options),
-    )
-    return f"event: control\n{_encode_sse_data(json.dumps(control_data))}".encode()
 
 
 async def _run_until_disconnect_or_deadline(
@@ -1031,7 +941,6 @@ async def _handle_sse(
     stream: Any,
     initial_offset: str,
     cursor: str | None,
-    use_base64: bool,
     _scope: Scope,
     receive: Receive,
     send: Send,
@@ -1052,11 +961,9 @@ async def _handle_sse(
         "connection": "keep-alive",
     }
 
-    if use_base64:
-        sse_headers[STREAM_SSE_DATA_ENCODING_HEADER.title().replace("_", "-")] = (
-            "base64"
-        )
-        sse_headers["Stream-Sse-Data-Encoding"] = "base64"
+    encoding = sse_encoding(stream.content_type)
+    if encoding is not None:
+        sse_headers["Stream-Sse-Data-Encoding"] = encoding
 
     # The first look runs before the response starts: a StreamError here (bad
     # offset, vanished stream) must surface as its mapped 4xx, which is
@@ -1074,74 +981,30 @@ async def _handle_sse(
 
     async def pump() -> None:
         page: Page | None = first
-        is_json_stream = is_json_content_type(stream.content_type)
+        reshape = opts.reshape_events.get(path)
         while page is not None:
             tail_offset = page.stream.current_offset
-            stream_is_closed = page.stream.closed
-            up_to_date = page.up_to_date
-            cursor_opts = opts.cursor_options
-            messages = page.messages
+            await send_body_chunk(
+                send,
+                sse_frames(
+                    page.messages,
+                    content_type=stream.content_type,
+                    tail_offset=tail_offset,
+                    closed=page.stream.closed,
+                    up_to_date=page.up_to_date,
+                    response_cursor=generate_response_cursor(
+                        cursor, opts.cursor_options
+                    ),
+                    reshape=reshape,
+                ),
+            )
 
-            buffer = b""
-
-            if messages:
-                # Pair every data event with its own control event so consumers can
-                # rely on a strict data -> control framing during catch-up. A
-                # message `reshape_events` skips sends neither, unless it is the
-                # last, whose control alone carries the reader past it.
-                payloads = _payloads(opts, path, stream.content_type, messages)
-                for n, (message, payload) in enumerate(
-                    zip(messages, payloads, strict=True)
-                ):
-                    if payload is None:
-                        if n == len(messages) - 1:
-                            buffer += _build_sse_control(
-                                message.offset,
-                                tail_offset,
-                                stream_is_closed,
-                                up_to_date,
-                                cursor,
-                                cursor_opts,
-                            )
-                        continue
-                    if use_base64:
-                        data_payload = base64.b64encode(payload).decode()
-                    elif is_json_stream:
-                        data_payload = format_json_response([payload]).decode("utf-8")
-                    else:
-                        data_payload = payload.decode("utf-8")
-
-                    sse_data = f"event: data\n{_encode_sse_data(data_payload)}"
-                    buffer += sse_data.encode("utf-8")
-                    buffer += _build_sse_control(
-                        message.offset,
-                        tail_offset,
-                        stream_is_closed,
-                        up_to_date,
-                        cursor,
-                        cursor_opts,
-                    )
-
-                control_offset = messages[-1].offset
-            else:
-                # Caught up with nothing new, or a wait that ran out: a single
-                # control event, which doubles as the keep-alive.
-                control_offset = tail_offset
-                buffer += _build_sse_control(
-                    control_offset,
-                    tail_offset,
-                    stream_is_closed,
-                    up_to_date,
-                    cursor,
-                    cursor_opts,
-                )
-
-            await send_body_chunk(send, buffer)
-
-            # End the connection once there can be nothing more: a closed stream at
-            # its tail. `stream_ended`, not `closed_at_tail` — see `read_decision`.
+            # End the connection once there can be nothing more: a closed stream
+            # at its tail. `stream_ended`, not `closed_at_tail`; see
+            # `read_decision`. The reader's position is the page's last message,
+            # or the tail when there were none.
             if stream_ended(
-                closed=stream_is_closed, at_tail=control_offset == tail_offset
+                closed=page.stream.closed, at_tail=reader.offset == tail_offset
             ):
                 break
 
