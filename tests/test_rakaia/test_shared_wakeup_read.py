@@ -11,8 +11,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+
 from rakaia import AppendOptions, StreamStore, create_app
-from rakaia.protocol_server import ServerOptions, _wait_for_messages
+from rakaia.protocol_server import ServerOptions
+from tests.live_wait import wait_for_messages as _wait_for_messages
 
 WAITERS = 1000
 
@@ -109,6 +112,7 @@ class SseConnection:
         self.body = b""
         self.gone = asyncio.Event()
         self._asked = False
+        self.start_query = b"offset=-1&live=sse"
 
     async def _receive(self) -> dict[str, Any]:
         if not self._asked:
@@ -125,7 +129,7 @@ class SseConnection:
             "type": "http",
             "method": "GET",
             "path": "/s",
-            "query_string": b"offset=-1&live=sse",
+            "query_string": self.start_query,
             "headers": [],
         }
         return asyncio.create_task(self.app(scope, self._receive, self._send))
@@ -187,26 +191,32 @@ async def test_a_reader_leaving_does_not_cancel_the_read_it_shares() -> None:
     assert [m.data for m in (await second)[0]] == [b'{"n":1}']
 
 
-async def test_sse_and_long_poll_readers_woken_together_each_get_the_message() -> None:
-    """The two read different things, so they must not share one read."""
+async def test_sse_and_long_poll_readers_woken_together_share_one_read() -> None:
+    """Both modes wait the same way, so they read the same page."""
     store = await _store()
     head = store.get_current_offset("/s")
     assert head is not None
     app = create_app(store=store, options=ServerOptions(long_poll_timeout=30))
     connection = SseConnection(app)
     handler = connection.start()
-    long_poll = asyncio.create_task(_wait_for_messages(store, "/s", head, 5.0))
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    )
+    long_poll = asyncio.create_task(client.get(f"/s?offset={head}&live=long-poll"))
     await _settle()
+    store.reads = 0
 
     store.append("/s", b'{"n":1}')
     await _settle()
 
     try:
-        assert [m.data for m in (await long_poll)[0]] == [b'{"n":1}']
+        assert (await long_poll).json() == [{"n": 1}]
         assert b'{"n":1}' in connection.body
+        assert store.reads == 1, f"{store.reads} reads for one append"
     finally:
         connection.gone.set()
         await handler
+        await client.aclose()
 
 
 class SlowReadStore(StreamStore):

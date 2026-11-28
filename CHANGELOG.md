@@ -39,6 +39,18 @@ runnable demo for each.
   up once per device as it answers. Works on any store that signals new messages: the
   in-memory store, and the Django store with `RAKAIA_NOTIFY_READERS`.
 
+### Fixed
+
+- **A live (SSE) reader no longer misses the message that closed a stream.** If an
+  append that also closed the stream landed while a live connection was reading,
+  the connection could report the stream closed at the message before it and
+  never send the last one. Long-poll and SSE now wait for changes the same way,
+  which also means a long-poll woken by a burst of appends answers one page
+  (`read_page_size`) instead of all of them, an SSE connection on a store that
+  polls reads each message once rather than twice, and an idle SSE keep-alive
+  looks the stream up without reading its messages, so it no longer extends
+  the stream's TTL (see `UPGRADING.md`) (#395).
+
 ### Documentation
 
 - **Appends to several streams can share one transaction.** A change that must put

@@ -206,8 +206,8 @@ async def test_the_guard_survives_the_server_s_fenced_writes_and_long_poll(call)
     database call raises, so the later ones are never reached here.
     """
     from django_rakaia.django_store import DjangoStreamStore
-    from rakaia.protocol_server import _wait_for_messages
     from rakaia.types import AppendOptions
+    from tests.live_wait import wait_for_messages as _wait_for_messages
 
     store = DjangoStreamStore()
     await store.run_sync(store.create, "guarded-async")

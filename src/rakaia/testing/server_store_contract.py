@@ -31,7 +31,7 @@ import asyncio
 import inspect
 import json
 
-from rakaia.protocol_server import _wait_for_messages
+from rakaia.live_read import LiveRead
 from rakaia.protocols import StreamServerStore
 from rakaia.types import (
     AppendOptions,
@@ -48,11 +48,24 @@ from rakaia.types import (
     ProducerStreamClosed,
     SequenceConflict,
     StreamConfigConflict,
+    StreamMessage,
     StreamNotFound,
 )
 from rakaia.types import Stream as ProtocolStream
 
 from ._need_pytest import pytest
+
+
+async def _wait_for_messages(
+    store: StreamServerStore, path: str, offset: str, timeout_seconds: float
+) -> tuple[list[StreamMessage], bool, bool]:
+    """`(messages, timed_out, closed)` for one long-poll wait on `store`."""
+    page = await LiveRead(store, path, offset, limit=None).next_page(timeout_seconds)
+    if page is None:
+        return [], True, False
+    if page.messages:
+        return page.messages, False, False
+    return [], not page.stream.closed, page.stream.closed
 
 
 def _protocol_methods() -> list[str]:
